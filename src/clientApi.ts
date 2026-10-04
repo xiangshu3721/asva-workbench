@@ -1,0 +1,92 @@
+import type { Customer, CustomerProfile, Database, FeedbackInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
+import type { createLocalApi } from './api'
+
+export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
+export interface TeamSnapshot { mentor: Staff; customerCount: number; following: number; waitFeedback: number; completed: number }
+export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'FOLLOWING' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
+export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
+
+export interface WorkbenchApi {
+  login(phone: string, code: string): Promise<Staff>
+  dashboard(staffId: string): Promise<Database>
+  staff(staffId: string): Promise<Staff | undefined>
+  customer(actorId: string, id: string): Promise<Customer | undefined>
+  createAppointment(input: NewAppointmentInput): Promise<Database>
+  assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
+  markFollowupDone(actorId: string, appointmentId: string): Promise<Database>
+  saveFeedback(actorId: string, feedback: FeedbackInput): Promise<Database>
+  profile(actorId: string, customerId: string): Promise<CustomerProfile | undefined>
+  profileDraft(actorId: string, customerId: string, text: string): Promise<ProfileDraft>
+  confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): Promise<CustomerProfile>
+  updateCustomerReferrer(actorId: string, customerId: string, referrerName: string): Promise<Customer | undefined>
+  createMentor(actorId: string, input: MentorAccountInput): Promise<Staff>
+  updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Promise<Staff>
+  deactivateMentor(actorId: string, mentorId: string): Promise<Staff>
+  teamSnapshot(actorId: string): Promise<TeamSnapshot[]>
+  dashboardSnapshot(actorId: string): Promise<DashboardSnapshot>
+  serviceSummary(input: FeedbackDraftInput): Promise<AiDraft>
+  brief(input: { name: string; need: string; expectation: string }): Promise<string>
+  saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
+}
+
+type LocalApi = ReturnType<typeof createLocalApi>
+
+export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
+  return {
+    login: async (phone, code) => api.login(phone, code),
+    dashboard: async (staffId) => api.dashboard(staffId),
+    staff: async (staffId) => api.staff(staffId),
+    customer: async (actorId, id) => api.customer(actorId, id),
+    createAppointment: async (input) => api.createAppointment(input),
+    assignAppointment: async (actorId, appointmentId, mentorId) => api.assignAppointment(actorId, appointmentId, mentorId),
+    markFollowupDone: async (actorId, appointmentId) => api.markFollowupDone(actorId, appointmentId),
+    saveFeedback: async (actorId, feedback) => api.saveFeedback(actorId, feedback),
+    profile: async (actorId, customerId) => api.profile(actorId, customerId),
+    profileDraft: async (actorId, customerId, text) => api.profileDraft(actorId, customerId, text),
+    confirmProfile: async (actorId, customerId, updates) => api.confirmProfile(actorId, customerId, updates),
+    updateCustomerReferrer: async (actorId, customerId, referrerName) => api.updateCustomerReferrer(actorId, customerId, referrerName),
+    createMentor: async (actorId, input) => api.createMentor(actorId, input),
+    updateMentor: async (actorId, mentorId, input) => api.updateMentor(actorId, mentorId, input),
+    deactivateMentor: async (actorId, mentorId) => api.deactivateMentor(actorId, mentorId),
+    teamSnapshot: async (actorId) => api.teamSnapshot(actorId),
+    dashboardSnapshot: async (actorId) => api.dashboardSnapshot(actorId),
+    serviceSummary: async (input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待导师确认记录。', nextStep: input.result === '暂无进一步需求' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入状态流程。' }),
+    brief: async (input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
+    saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
+  }
+}
+
+export function createHttpApi(baseUrl: string): WorkbenchApi {
+  const base = baseUrl.replace(/\/$/, '')
+  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit): Promise<T> {
+    const headers = new Headers(init?.headers)
+    headers.set('Content-Type', 'application/json')
+    if (staffId) headers.set('X-Staff-Id', staffId)
+    const response = await fetch(`${base}${path}`, { ...init, headers })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`)
+    return payload as T
+  }
+  return {
+    login: (phone, code) => request<Staff>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, code }) }),
+    dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
+    staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
+    customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
+    createAppointment: (input) => request<Database>('/api/appointments', undefined, { method: 'POST', body: JSON.stringify(input) }),
+    assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
+    markFollowupDone: (actorId, appointmentId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/complete-followup`, actorId, { method: 'POST', body: '{}' }),
+    saveFeedback: (actorId, feedback) => request<Database>(`/api/appointments/${encodeURIComponent(feedback.appointmentId)}/feedback`, actorId, { method: 'POST', body: JSON.stringify(feedback) }),
+    profile: (actorId, customerId) => request<CustomerProfile>('/api/customers/' + encodeURIComponent(customerId) + '/profile', actorId),
+    profileDraft: (actorId, customerId, text) => request<ProfileDraft>('/api/customers/' + encodeURIComponent(customerId) + '/profile/extract', actorId, { method: 'POST', body: JSON.stringify({ text }) }),
+    confirmProfile: (actorId, customerId, updates) => request<CustomerProfile>('/api/customers/' + encodeURIComponent(customerId) + '/profile/confirm', actorId, { method: 'POST', body: JSON.stringify({ updates }) }),
+    updateCustomerReferrer: (actorId, customerId, referrerName) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/referrer`, actorId, { method: 'POST', body: JSON.stringify({ referrerName }) }),
+    createMentor: (actorId, input) => request<Staff>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    updateMentor: (actorId, mentorId, input) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
+    deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
+    teamSnapshot: (actorId) => request<TeamSnapshot[]>('/api/staff/mentors', actorId),
+    dashboardSnapshot: (actorId) => request<DashboardSnapshot>('/api/dashboard/snapshot', actorId),
+    serviceSummary: (input) => request<AiDraft>('/api/ai/service-summary', undefined, { method: 'POST', body: JSON.stringify(input) }),
+    brief: async (input) => (await request<{ brief: string }>('/api/ai/brief', undefined, { method: 'POST', body: JSON.stringify(input) })).brief,
+    saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),
+  }
+}

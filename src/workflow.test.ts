@@ -1,0 +1,152 @@
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createLocalApi } from './api'
+import { seedDatabase } from './data'
+import type { FeedbackInput } from './domain'
+import { createLocalRepository } from './repositories'
+
+function setupStorage() {
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { localStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) } },
+  })
+}
+
+beforeEach(() => setupStorage())
+
+describe('V0.3 appointment workflow and permissions', () => {
+  it('opens the demo as the default administrator account', () => {
+    const api = createLocalApi(createLocalRepository())
+    const account = api.login('15021512537', '888888')
+    expect(account.id).toBe('staff-founder')
+    expect(account.permissionRole).toBe('ADMIN')
+    expect(() => api.login('15021512537', '123456')).toThrow('手机号或验证码错误')
+  })
+
+  it('starts a new appointment in WAIT_ASSIGN and hides it from a mentor', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-01')?.status).toBe('WAIT_ASSIGN')
+    expect(api.dashboard('mentor-zhang').appointments.some((item) => item.id === 'A-20261004-01')).toBe(false)
+  })
+
+  it('moves WAIT_ASSIGN to FOLLOWING only through ADMIN assignment', () => {
+    const api = createLocalApi(createLocalRepository())
+    api.assignAppointment('staff-admin', 'A-20261004-01', 'mentor-li')
+    expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-01')?.status).toBe('FOLLOWING')
+    expect(api.dashboard('mentor-li').appointments.some((item) => item.id === 'A-20261004-01')).toBe(true)
+    expect(() => api.assignAppointment('mentor-li', 'A-20261004-02', 'mentor-zhang')).toThrow('只有 ADMIN')
+  })
+
+  it('moves FOLLOWING to WAIT_FEEDBACK and only the assigned mentor can do it', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(() => api.markFollowupDone('mentor-li', 'A-20261004-02')).toThrow('无权访问')
+    api.markFollowupDone('mentor-zhang', 'A-20261004-02')
+    expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-02')?.status).toBe('WAIT_FEEDBACK')
+  })
+
+  it('moves WAIT_FEEDBACK to COMPLETED only after feedback is saved', () => {
+    const api = createLocalApi(createLocalRepository())
+    const feedback: FeedbackInput = { appointmentId: 'A-20261003-07', topic: '确认行动后的变化', result: '需要继续关注', coreNeed: '希望把行动变成稳定习惯。', paid: true, grade: 'A', intendedCourse: '镜像技术', notes: '先保留本次沟通的行动记录。' }
+    api.saveFeedback('mentor-li', feedback)
+    const appointment = api.dashboard('staff-admin').appointments.find((item) => item.id === feedback.appointmentId)
+    expect(appointment?.status).toBe('COMPLETED')
+    expect(appointment?.followupInfoCompleted).toBe(true)
+    expect(api.dashboard('mentor-li').appointments.some((item) => item.id === feedback.appointmentId && item.status !== 'COMPLETED')).toBe(false)
+  })
+
+  it('keeps a completed appointment when the same customer receives a new appointment', () => {
+    const api = createLocalApi(createLocalRepository())
+    const oldAppointmentId = 'A-20261002-11'
+    const database = api.createAppointment({ customerId: 'C00001298', topic: '再次沟通', submittedAt: '刚刚', description: '客户再次提交预约。', expectation: '希望继续获得支持。', source: '解忧小屋', createdAt: '2026-10-04' })
+    const newAppointment = database.appointments.find((item) => item.customerId === 'C00001298' && item.id !== oldAppointmentId && item.status === 'WAIT_ASSIGN')
+    expect(newAppointment).toBeDefined()
+    expect(database.appointments.find((item) => item.id === oldAppointmentId)?.status).toBe('COMPLETED')
+  })
+
+  it('uses the unified ADMIN role and keeps dashboard counts sourced from appointments', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(api.dashboard('staff-founder').customers).toHaveLength(seedDatabase.customers.length)
+    const snapshot = api.dashboardSnapshot('staff-admin')
+    const all = api.dashboard('staff-admin').appointments
+    expect(Object.values(snapshot.statusCounts).reduce((sum, count) => sum + count, 0)).toBe(all.length)
+    expect(snapshot.mentorCount).toBe(4)
+  })
+
+  it('enforces customer reads at the API boundary', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(api.customer('mentor-zhang', 'C00001301')?.name).toBe('沈嘉禾')
+    expect(api.customer('mentor-zhang', 'C00001276')).toBeUndefined()
+    expect(api.customer('staff-admin', 'C00001276')?.name).toBe('许清和')
+  })
+
+  it('allows only ADMIN to update a customer referrer', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(api.customer('staff-admin', 'C00001305')?.referrerName).toBe('')
+    api.updateCustomerReferrer('staff-admin', 'C00001305', '李老师')
+    expect(api.customer('staff-admin', 'C00001305')?.referrerName).toBe('李老师')
+    expect(() => api.updateCustomerReferrer('mentor-zhang', 'C00001305', '陈某')).toThrow('只有 ADMIN')
+  })
+
+  it('lets ADMIN manage active mentor accounts and rejects duplicate phones', () => {
+    const api = createLocalApi(createLocalRepository())
+    const created = api.createMentor('staff-admin', { name: '新导师', phone: '13900000005' })
+    expect(created.permissionRole).toBe('MENTOR')
+    expect(created.status).toBe('ACTIVE')
+    expect(() => api.createMentor('staff-admin', { name: '重复手机号', phone: '13900000005' })).toThrow('该手机号已绑定账户')
+    expect(() => api.createMentor('mentor-li', { name: '越权导师', phone: '13900000006' })).toThrow('只有 ADMIN')
+    const updated = api.updateMentor('staff-admin', created.id, { name: '新导师二号', phone: '13900000007' })
+    expect(updated.name).toBe('新导师二号')
+    expect(updated.phone).toBe('13900000007')
+  })
+
+  it('blocks mentor deactivation while unfinished appointments remain', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(() => api.deactivateMentor('staff-admin', 'mentor-li')).toThrow('未完成客户')
+    expect(api.staff('mentor-li')?.status).toBe('ACTIVE')
+  })
+
+  it('soft-deactivates an idle mentor and rejects future login and assignment', () => {
+    const api = createLocalApi(createLocalRepository())
+    const created = api.createMentor('staff-admin', { name: '待停用导师', phone: '13900000008' })
+    const deactivated = api.deactivateMentor('staff-admin', created.id)
+    expect(deactivated.status).toBe('INACTIVE')
+    expect(() => api.login('13900000008', '888888')).toThrow('账户已停用')
+    expect(() => api.assignAppointment('staff-admin', 'A-20261004-01', created.id)).toThrow('账户已停用')
+    expect(api.dashboard('staff-admin').staff.some((item) => item.id === created.id && item.status === 'INACTIVE')).toBe(true)
+  })
+
+  it('extracts natural profile facts without writing until mentor confirmation', () => {
+    const api = createLocalApi(createLocalRepository())
+    const draft = api.profileDraft('mentor-zhang', 'C00001301', '客户 36 岁，住在杭州，从事产品设计，已婚，有一个女儿，喜欢瑜伽和旅行，可能缺乏安全感。')
+    expect(draft.updates.map((item) => item.field)).toEqual(expect.arrayContaining(['age', 'city', 'occupation', 'marital_status', 'children_summary', 'hobbies']))
+    expect(draft.updates.find((item) => item.field === 'self_description')?.source).toBe('AI_INFERENCE')
+    expect(draft.updates.find((item) => item.field === 'self_description')?.confirmed).toBe(false)
+    expect(api.profile('staff-admin', 'C00001301')?.fields.age).toBeUndefined()
+    const saved = api.confirmProfile('mentor-zhang', 'C00001301', draft.updates)
+    expect(saved.fields.age).toBe(36)
+    expect(saved.fieldMeta.age.confirmed).toBe(true)
+    expect(api.dashboard('staff-admin').profileChanges.some((item) => item.customerId === 'C00001301' && item.field === 'age')).toBe(true)
+  })
+
+  it('allows a mentor to read only assigned profiles and rejects another customer', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(api.profile('mentor-zhang', 'C00001301')?.customerId).toBe('C00001301')
+    expect(() => api.profileDraft('mentor-zhang', 'C00001276', '她喜欢阅读。')).toThrow('无权访问')
+  })
+
+  it('marks a changed existing profile fact as a conflict before confirmation', () => {
+    const api = createLocalApi(createLocalRepository())
+    const draft = api.profileDraft('mentor-zhang', 'C00001298', '客户现在住在上海。')
+    expect(draft.updates.find((item) => item.field === 'city')?.conflict).toBe(true)
+    expect(api.profile('staff-admin', 'C00001298')?.fields.city).toBe('杭州')
+  })
+
+  it('persists confirmed profile updates together with a service record', () => {
+    const api = createLocalApi(createLocalRepository())
+    const feedback: FeedbackInput = { appointmentId: 'A-20261003-07', topic: '确认近期行动', result: '继续跟进', coreNeed: '希望稳定行动节奏。', paid: false, grade: 'B', intendedCourse: null, notes: '下次继续回看行动。', profileText: '她最近开始跑步，也在杭州生活。', profileUpdates: [{ field: 'hobbies', value: ['跑步'], source: 'MENTOR_OBSERVATION', confidence: 0.9 }] }
+    api.saveFeedback('mentor-li', feedback)
+    const database = api.dashboard('staff-admin')
+    expect(database.sessions[0].profileUpdates?.[0].field).toBe('hobbies')
+    expect(database.profiles.find((item) => item.customerId === 'C00001276')?.fields.hobbies).toEqual(['跑步'])
+  })
+})
