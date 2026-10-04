@@ -1,9 +1,13 @@
 import type { Customer, CustomerProfile, Database, FeedbackInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
 import type { createLocalApi } from './api'
+import { queryLocalAssistant } from './assistant'
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface TeamSnapshot { mentor: Staff; customerCount: number; following: number; waitFeedback: number; completed: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'FOLLOWING' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
+export interface AssistantResultRecord { id: string; customerId?: string; name: string; mentor?: string; date?: string; amount?: number; detail?: string }
+export interface AssistantQueryContext { page?: 'CUSTOMER_DETAIL'; customerId?: string; lastQuery?: { kind: string; productName?: string; customerIds?: string[]; customerId?: string } }
+export interface AssistantQueryResult { kind: string; answer: string; customerId?: string; records?: AssistantResultRecord[]; candidates?: AssistantResultRecord[]; continuation?: { kind: string; productName?: string; customerIds?: string[]; customerId?: string } }
 export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
 
 export interface WorkbenchApi {
@@ -24,6 +28,7 @@ export interface WorkbenchApi {
   deactivateMentor(actorId: string, mentorId: string): Promise<Staff>
   teamSnapshot(actorId: string): Promise<TeamSnapshot[]>
   dashboardSnapshot(actorId: string): Promise<DashboardSnapshot>
+  assistantQuery(actorId: string, question: string, context?: AssistantQueryContext): Promise<AssistantQueryResult>
   serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
   brief(actorId: string, input: { name: string; need: string; expectation: string }): Promise<string>
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
@@ -50,6 +55,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     deactivateMentor: async (actorId, mentorId) => api.deactivateMentor(actorId, mentorId),
     teamSnapshot: async (actorId) => api.teamSnapshot(actorId),
     dashboardSnapshot: async (actorId) => api.dashboardSnapshot(actorId),
+    assistantQuery: async (actorId, question, context) => queryLocalAssistant(api.dashboard(actorId), question, context),
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
     brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
@@ -85,6 +91,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
     teamSnapshot: (actorId) => request<TeamSnapshot[]>('/api/staff/mentors', actorId),
     dashboardSnapshot: (actorId) => request<DashboardSnapshot>('/api/dashboard/snapshot', actorId),
+    assistantQuery: (actorId, question, context) => request<AssistantQueryResult>('/api/ai/query', actorId, { method: 'POST', body: JSON.stringify({ question, context }) }),
     serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),
     brief: async (actorId, input) => (await request<{ brief: string }>('/api/ai/brief', actorId, { method: 'POST', body: JSON.stringify(input) })).brief,
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),

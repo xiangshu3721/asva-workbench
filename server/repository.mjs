@@ -1,6 +1,7 @@
 import { config } from './config.mjs'
 import { createRecord, listRecords, updateRecord } from './feishu.mjs'
 import { createProfileDraft } from './deepseek.mjs'
+import { queryAssistant } from './assistant.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'FOLLOWING', 已联系: 'FOLLOWING', 待联系: 'FOLLOWING', 待跟进: 'WAIT_FEEDBACK', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -129,6 +130,11 @@ export class FeishuRepository {
   }
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
+  async assistantQuery(actorId, question, context) {
+    const database = await this.load()
+    scope(database, actorId)
+    return queryAssistant(database, question, context)
+  }
   async staff(staffId) {
     const record = (await this.load()).staff.find((item) => item.id === staffId)
     if (!record) throw new Error('账号不存在')

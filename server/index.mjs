@@ -44,6 +44,7 @@ async function handle(request, response) {
   if (request.method === 'POST' && assign) { const body = await readBody(request); return send(response, 200, await repository.assignAppointment(guard(request), decodeURIComponent(assign[1]), body.mentorId)) }
   const complete = url.pathname.match(/^\/api\/appointments\/([^/]+)\/complete-followup$/)
   if (request.method === 'POST' && complete) return send(response, 200, await repository.markFollowupDone(guard(request), decodeURIComponent(complete[1])))
+  if (request.method === 'POST' && url.pathname === '/api/ai/query') { const body = await readBody(request); return send(response, 200, await repository.assistantQuery(guard(request), body.question, body.context)) }
   if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(response, 200, await createServiceSummary(await readBody(request))) }
   if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(response, 200, { brief: await createBrief(await readBody(request)) }) }
   const feedback = url.pathname.match(/^\/api\/appointments\/([^/]+)\/feedback$/)
