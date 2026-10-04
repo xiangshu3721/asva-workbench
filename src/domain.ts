@@ -194,6 +194,7 @@ export interface Database {
   enrollments: Enrollment[]
   profiles: CustomerProfile[]
   profileChanges: ProfileChange[]
+  _missingRepositories?: string[]
 }
 
 export interface DashboardStats {

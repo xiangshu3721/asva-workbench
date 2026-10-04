@@ -83,6 +83,19 @@ VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 - 支持浏览器能力范围内的中文一次性语音输入、异步语音回复、重播和停止播放；不支持时可继续使用文字输入
 - 支持当前客户详情上下文、简单追问和浏览器本地最近对话；真实数据缺失时明确提示，不编造营收或报名数据
 
+## V0.7 AI 查询机制
+
+查询链路已升级为：`自然语言 → QueryPlanner → EntityResolver / DateRangeResolver → 权限校验 → Repository Query → Aggregator → ResultValidator → AnswerGenerator`。
+
+- 客户姓名支持空格、全半角、昵称后缀、手机号和一字符近似匹配；多个候选会明确要求确认
+- 支持客户详情跨 Customers、画像、预约、服务记录、报名和课程表聚合
+- 支持时间范围：今天、昨天、本周、上周、本月、上个月、今年、去年、最近 N 天 / N 个月
+- “上个月客户数据”会进入 `CUSTOMER_SUMMARY`，不再当作客户姓名搜索
+- 只统计 `payment_status = PAID` 的报名金额；报名表未配置、字段缺失、结果重复或关联异常会返回数据源错误，不伪装成“没有数据”
+- 每次查询返回 QueryPlan 和 QueryExecutionContext；服务端管理员可通过 `/api/ai/query-logs` 查看最近 100 条调试记录
+
+真实飞书环境如需报名、付费和营收查询，请配置 `FEISHU_ENROLLMENTS_TABLE_ID`，最小字段为 `enrollment_id`、`customer_id`、`product_id` / `product_name`、`amount`、`payment_status`、`paid_at`、`status`。未配置时，相关问题会明确提示 EnrollmentRepository 不可用。
+
 ## 目录
 
 ```text

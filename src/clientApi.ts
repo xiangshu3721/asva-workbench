@@ -5,9 +5,15 @@ import { queryLocalAssistant } from './assistant'
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface TeamSnapshot { mentor: Staff; customerCount: number; following: number; waitFeedback: number; completed: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'FOLLOWING' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
-export interface AssistantResultRecord { id: string; customerId?: string; name: string; mentor?: string; date?: string; amount?: number; detail?: string }
-export interface AssistantQueryContext { page?: 'CUSTOMER_DETAIL'; customerId?: string; lastQuery?: { kind: string; productName?: string; customerIds?: string[]; customerId?: string } }
-export interface AssistantQueryResult { kind: string; answer: string; customerId?: string; records?: AssistantResultRecord[]; candidates?: AssistantResultRecord[]; continuation?: { kind: string; productName?: string; customerIds?: string[]; customerId?: string } }
+export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
+export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
+export interface QueryTimeRange { start: string; end: string; label: string }
+export interface QueryPlan { query_type: AssistantQueryType; entity: { type: 'CUSTOMER' | 'MENTOR' | 'PRODUCT' | 'NONE'; name?: string; id?: string } | null; filters: Record<string, string | boolean | undefined>; metrics: string[]; time_range: QueryTimeRange | null; joins: string[]; result_mode: 'SINGLE_ENTITY' | 'SUMMARY' | 'LIST' }
+export interface QueryExecutionContext { user_id: string; role: 'ADMIN'; query_plan: QueryPlan; resolved_entities: Record<string, unknown>; repositories_used: string[]; row_count: number; executed_at: string; status: AssistantQueryStatus; error_reason?: string }
+export interface AssistantResultField { label: string; value: string }
+export interface AssistantResultRecord { id: string; customerId?: string; name: string; mentor?: string; date?: string; amount?: number; detail?: string; fields?: AssistantResultField[] }
+export interface AssistantQueryContext { page?: 'CUSTOMER_DETAIL'; customerId?: string; now?: string; lastQuery?: { kind: string; queryType?: AssistantQueryType; productName?: string; customerIds?: string[]; customerId?: string; timeRange?: QueryTimeRange | null } }
+export interface AssistantQueryResult { kind: string; answer: string; customerId?: string; records?: AssistantResultRecord[]; candidates?: AssistantResultRecord[]; continuation?: { kind: string; queryType?: AssistantQueryType; productName?: string; customerIds?: string[]; customerId?: string; timeRange?: QueryTimeRange | null }; plan?: QueryPlan; debug?: QueryExecutionContext }
 export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
 
 export interface WorkbenchApi {
@@ -55,7 +61,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     deactivateMentor: async (actorId, mentorId) => api.deactivateMentor(actorId, mentorId),
     teamSnapshot: async (actorId) => api.teamSnapshot(actorId),
     dashboardSnapshot: async (actorId) => api.dashboardSnapshot(actorId),
-    assistantQuery: async (actorId, question, context) => queryLocalAssistant(api.dashboard(actorId), question, context),
+    assistantQuery: async (actorId, question, context) => queryLocalAssistant(api.dashboard(actorId), question, context, actorId),
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
     brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),

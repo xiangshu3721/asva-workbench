@@ -20,7 +20,7 @@ function appointment(row) {
 function customer(row) {
   const f = row.fields || {}
   const name = text(f['昵称']) || '未命名客户'
-  return { id: text(f.customer_id) || row.record_id, createdAt: date(f.created_at), name, initials: name.slice(0, 1), phone: text(f['联系电话']), status: '活跃', grade: text(f.SABC) || 'C', gradeSource: '导师确认', mentorId: text(f['当前导师ID']) || null, referrerName: text(f.referrer_name), need: text(f['当前困扰']), helpExpectation: text(f['希望获得帮助']), goal: '', brief: text(f['AI接待前Brief']), intendedCourse: text(f['意向课程']) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(f['是否付费']), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(f['备注']), _recordId: row.record_id }
+  return { id: text(f.customer_id) || row.record_id, createdAt: date(f.created_at) || date(f['创建时间']) || date(f['提交时间']), name, initials: name.slice(0, 1), phone: text(f['联系电话']), status: '活跃', grade: text(f.SABC) || 'C', gradeSource: '导师确认', mentorId: text(f['当前导师ID']) || null, referrerName: text(f.referrer_name), need: text(f['当前困扰']), helpExpectation: text(f['希望获得帮助']), goal: '', brief: text(f['AI接待前Brief']), intendedCourse: text(f['意向课程']) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(f['是否付费']), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(f['备注']), _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -37,6 +37,13 @@ function staff(row) {
 function product(row) {
   const f = row.fields || {}
   return { id: text(f.product_id) || row.record_id, name: text(f['课程名称']), system: '', audience: '', cycle: '', format: '', status: text(f['状态']) === '停用' ? '筹备中' : '在售', summary: text(f['描述']), fit: [], _recordId: row.record_id }
+}
+
+function enrollment(row) {
+  const f = row.fields || {}
+  const rawAmount = Number(f.amount ?? f['金额'] ?? NaN)
+  const paymentStatus = text(f.payment_status || f['支付状态'])
+  return { id: text(f.enrollment_id) || row.record_id, customerId: text(f.customer_id), productId: text(f.product_id) || text(f.product_name) || text(f['课程名称']), paid: paymentStatus === 'PAID' || boolean(f.paid) || boolean(f['是否付费']), amount: Number.isFinite(rawAmount) ? rawAmount : Number.NaN, date: date(f.paid_at) || date(f['支付时间']) || date(f.created_at), status: text(f.status) || paymentStatus || '学习中', _recordId: row.record_id }
 }
 
 function service(row) {
@@ -120,21 +127,35 @@ async function persistProfile(database, customerId, updates, serviceRecordId) {
 }
 
 export class FeishuRepository {
+  constructor() { this.queryLogs = [] }
   async load() {
-    const [appointmentRows, customerRows, serviceRows, staffRows, productRows, profileRows, profileChangeRows] = await Promise.all(Object.values(config.feishu.tables).map(listRecords))
+    const entries = [['appointments', config.feishu.tables.appointments], ['customers', config.feishu.tables.customers], ['serviceRecords', config.feishu.tables.serviceRecords], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['profiles', config.feishu.tables.profiles], ['profileChanges', config.feishu.tables.profileChanges]]
+    const rows = await Promise.all(entries.map(([, tableId]) => tableId ? listRecords(tableId) : Promise.resolve([])))
+    const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileRows, profileChangeRows] = rows
     const customers = customerRows.map(customer)
     return {
-      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: [], profiles: profileRows.map(profile), profileChanges: profileChangeRows.map(profileChange),
-      _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, profiles: profileRows, profileChanges: profileChangeRows },
+      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profiles: profileRows.map(profile), profileChanges: profileChangeRows.map(profileChange),
+      _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
+      _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profiles: profileRows, profileChanges: profileChangeRows },
     }
   }
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
   async assistantQuery(actorId, question, context) {
-    const database = await this.load()
-    scope(database, actorId)
-    return queryAssistant(database, question, context)
+    try {
+      const database = await this.load()
+      scope(database, actorId)
+      const result = queryAssistant(database, question, context, actorId)
+      this.queryLogs.unshift(result.debug)
+      this.queryLogs = this.queryLogs.filter(Boolean).slice(0, 100)
+      return result
+    } catch (error) {
+      this.queryLogs.unshift({ user_id: actorId, role: 'ADMIN', query_plan: { query_type: 'UNSUPPORTED', entity: null, filters: {}, metrics: [], time_range: null, joins: [], result_mode: 'SUMMARY' }, resolved_entities: {}, repositories_used: [], row_count: 0, executed_at: new Date().toISOString(), status: 'DATA_SOURCE_ERROR', error_reason: error instanceof Error ? error.message : '数据查询出现异常' })
+      this.queryLogs = this.queryLogs.slice(0, 100)
+      throw error
+    }
   }
+  async assistantQueryLogs(actorId) { await this.dashboard(actorId); return this.queryLogs }
   async staff(staffId) {
     const record = (await this.load()).staff.find((item) => item.id === staffId)
     if (!record) throw new Error('账号不存在')
