@@ -2,7 +2,7 @@
 
 ASVA 内部客户服务与经营管理 H5 的第一版可运行原型。
 
-## 当前版本：V0.5.1 管理员工作台
+## 当前版本：V1.0 管理员工作台与只读 AI 数据查询
 
 当前只服务一条状态驱动链路：预约进入 → 管理员分配导师 → 线下真人沟通 → 管理员代录反馈 → AI 整理确认 → 预约完成。
 
@@ -26,7 +26,7 @@ ASVA 内部客户服务与经营管理 H5 的第一版可运行原型。
 - 管理员专属：团队管理和基础数据看板
 - 浏览器 `localStorage` 持久化演示操作
 
-暂时隐藏：独立预约页、复杂 Follow-up、全局 AI、销售 AI、课程中心、复杂课程推荐和完整经营驾驶舱。
+暂时隐藏：独立预约页、复杂 Follow-up、销售 AI、课程中心、复杂课程推荐和完整经营驾驶舱。
 
 ## 启动本地演示
 
@@ -96,6 +96,21 @@ VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 
 真实飞书环境如需报名、付费和营收查询，请配置 `FEISHU_ENROLLMENTS_TABLE_ID`，最小字段为 `enrollment_id`、`customer_id`、`product_id` / `product_name`、`amount`、`payment_status`、`paid_at`、`status`。未配置时，相关问题会明确提示 EnrollmentRepository 不可用。
 
+## V1.0 自然语言全业务数据引擎
+
+V1 保留 V0.7 的本地演示和 HTTP 查询入口，但将查询能力收敛到同一套共享语义引擎 `shared/semantic-engine.mjs`：
+
+- `SCHEMA_REGISTRY`：Customers、CustomerProfile、Appointments、ServiceRecords、Staff、Products、Enrollments 的字段、数据类型、时间字段、搜索 / 筛选 / 分组和敏感字段元数据
+- `ENTITY_REGISTRY` 与 `RELATIONSHIP_GRAPH`：客户、导师、课程、预约、服务记录、报名记录及其关联关系
+- `BUSINESS_GLOSSARY`、`METRIC_REGISTRY`、`DIMENSION_REGISTRY`：业务术语、固定指标公式和可分组维度；指标计算不交给模型
+- QueryDSL：`ENTITY_DETAIL`、`ENTITY_LIST`、`COUNT`、`AGGREGATE`、`GROUP_AGGREGATE`、`SUMMARY`、`RANK`、`TREND`、`COMPARE`
+- 上下文槽位：只在代词、省略和明确承接表达出现时继承；独立问题会清空上轮客户、课程、时间和筛选条件
+- 数据依据与质量：返回使用的数据源、时间字段、聚合方式、匹配行数、覆盖率和异常提示；缺失报名表会区分为数据源不可用
+- 服务端 DeepSeek（已配置时）：只发送问题和语义注册表用于自然语言理解，不发送客户明细，不计算指标，不执行写入；不可用时由确定性 QueryPlanner 安全降级
+- 管理员只读：AI 查询没有创建、修改、删除正式业务数据的工具入口
+
+V1 黄金查询集包含 59 条用例，覆盖实体解析、模糊匹配、时间范围、筛选、分组、排名、趋势、对比、上下文继承、独立问题清空、歧义、无数据和缺失数据源。
+
 ## 目录
 
 ```text
@@ -113,4 +128,6 @@ server/
   repository.mjs   飞书数据 Repository 与权限裁剪
   deepseek.mjs     DeepSeek 服务端调用
   feishu.mjs       飞书 token 和多维表 API 客户端
+shared/
+  semantic-engine.mjs  浏览器与 HTTP 服务共用的 Schema / DSL / Planner / Compiler / Aggregator
 ```

@@ -1,4 +1,5 @@
 import { config } from './config.mjs'
+import { BUSINESS_GLOSSARY, DIMENSION_REGISTRY, ENTITY_REGISTRY, METRIC_REGISTRY } from '../shared/semantic-engine.mjs'
 
 export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
@@ -30,6 +31,32 @@ async function callDeepSeek(messages, temperature = 0.2) {
 
 function parseJson(content) {
   try { return JSON.parse(content) } catch { return null }
+}
+
+const QUERY_OPERATIONS = new Set(['ENTITY_DETAIL', 'ENTITY_LIST', 'COUNT', 'AGGREGATE', 'GROUP_AGGREGATE', 'SUMMARY', 'RANK', 'TREND', 'COMPARE'])
+const QUERY_ENTITIES = new Set(Object.keys(ENTITY_REGISTRY))
+const QUERY_METRICS = new Set(Object.keys(METRIC_REGISTRY))
+const QUERY_DIMENSIONS = new Set(Object.keys(DIMENSION_REGISTRY))
+const QUERY_FILTER_FIELDS = new Set(['customer_id', 'product', 'mentor', 'referrer', 'city', 'grade', 'payment_status', 'appointment_status'])
+
+function cleanQueryUnderstanding(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null
+  const operation = QUERY_OPERATIONS.has(parsed.operation) ? parsed.operation : null
+  const entity = QUERY_ENTITIES.has(parsed.entity) ? parsed.entity : null
+  const metrics = Array.isArray(parsed.metrics) ? parsed.metrics.filter((item) => QUERY_METRICS.has(item)) : []
+  const dimensions = Array.isArray(parsed.dimensions) ? parsed.dimensions.filter((item) => QUERY_DIMENSIONS.has(item)) : []
+  const filters = Array.isArray(parsed.filters) ? parsed.filters.filter((item) => QUERY_FILTER_FIELDS.has(item?.field) && ['EQ', 'NEQ', 'IN', 'CONTAINS'].includes(item?.operator)).map((item) => ({ field: item.field, operator: item.operator, value: typeof item.value === 'string' || typeof item.value === 'boolean' || Array.isArray(item.value) ? item.value : String(item.value ?? '') })) : []
+  if (!operation || !entity) return null
+  return { operation, entity, metrics, dimensions, filters, time_range_label: typeof parsed.time_range_label === 'string' ? parsed.time_range_label.slice(0, 40) : '', sort: Array.isArray(parsed.sort) ? parsed.sort.filter((item) => QUERY_METRICS.has(item?.metric) && ['ASC', 'DESC'].includes(item?.direction)).slice(0, 3) : [], limit: Math.min(50, Math.max(1, Number(parsed.limit) || 20)) }
+}
+
+export async function createQueryUnderstanding(question) {
+  if (!config.deepseek.apiKey) return null
+  const raw = await callDeepSeek([
+    { role: 'system', content: `你是 ASVA 内部数据查询的语义解析器。只把自然语言映射为 JSON，不读取数据、不计算、不写库。只能使用给定注册表中的值。严格返回：{"operation":"ENTITY_DETAIL|ENTITY_LIST|COUNT|AGGREGATE|GROUP_AGGREGATE|SUMMARY|RANK|TREND|COMPARE","entity":"CUSTOMER|MENTOR|PRODUCT|APPOINTMENT|SERVICE_RECORD|ENROLLMENT","metrics":["指标名"],"dimensions":["维度名"],"filters":[{"field":"字段","operator":"EQ|NEQ|IN|CONTAINS","value":"值"}],"time_range_label":"今天/上个月/具体月份/日期区间","sort":[{"metric":"指标名","direction":"ASC|DESC"}],"limit":20}。业务术语：${JSON.stringify(BUSINESS_GLOSSARY)}。指标：${JSON.stringify(Object.keys(METRIC_REGISTRY))}。维度：${JSON.stringify(Object.keys(DIMENSION_REGISTRY))}。实体：${JSON.stringify(Object.keys(ENTITY_REGISTRY))}` },
+    { role: 'user', content: question },
+  ], 0)
+  return cleanQueryUnderstanding(parseJson(raw))
 }
 
 const PROFILE_FIELD_KEYS = new Set([

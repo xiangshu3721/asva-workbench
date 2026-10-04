@@ -145,7 +145,7 @@ export class FeishuRepository {
     try {
       const database = await this.load()
       scope(database, actorId)
-      const result = queryAssistant(database, question, context, actorId)
+      const result = await queryAssistant(database, question, context, actorId)
       this.queryLogs.unshift(result.debug)
       this.queryLogs = this.queryLogs.filter(Boolean).slice(0, 100)
       return result
