@@ -11,7 +11,8 @@ function send(response, status, body) { response.writeHead(status, headers); res
 async function readBody(request) { let raw = ''; for await (const chunk of request) { raw += chunk; if (raw.length > 1_000_000) throw new Error('请求体过大') } return JSON.parse(raw || '{}') }
 function actorId(request) { return typeof request.headers['x-staff-id'] === 'string' ? request.headers['x-staff-id'] : '' }
 function guard(request) { const id = actorId(request); if (!id) throw Object.assign(new Error('缺少 X-Staff-Id'), { status: 401 }); return id }
-function status(error) { if (error?.status) return error.status; if (error instanceof FeishuUnavailableError) return 502; if (error instanceof DeepSeekUnavailableError) return 502; if (/无权|账号不存在|只有 ADMIN|账户已停用/.test(error?.message || '')) return 403; return 400 }
+function status(error) { if (error?.status) return error.status; if (error instanceof FeishuUnavailableError) return 502; if (error instanceof DeepSeekUnavailableError) return 502; if (/无权|账号不存在|只有 ADMIN|账户已停用|导师端暂未开放/.test(error?.message || '')) return 403; return 400 }
+async function guardAdmin(request) { const id = guard(request); await repository.staff(id); return id }
 
 async function handle(request, response) {
   if (request.method === 'OPTIONS') return send(response, 204, {})
@@ -43,8 +44,8 @@ async function handle(request, response) {
   if (request.method === 'POST' && assign) { const body = await readBody(request); return send(response, 200, await repository.assignAppointment(guard(request), decodeURIComponent(assign[1]), body.mentorId)) }
   const complete = url.pathname.match(/^\/api\/appointments\/([^/]+)\/complete-followup$/)
   if (request.method === 'POST' && complete) return send(response, 200, await repository.markFollowupDone(guard(request), decodeURIComponent(complete[1])))
-  if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') return send(response, 200, await createServiceSummary(await readBody(request)))
-  if (request.method === 'POST' && url.pathname === '/api/ai/brief') return send(response, 200, { brief: await createBrief(await readBody(request)) })
+  if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(response, 200, await createServiceSummary(await readBody(request))) }
+  if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(response, 200, { brief: await createBrief(await readBody(request)) }) }
   const feedback = url.pathname.match(/^\/api\/appointments\/([^/]+)\/feedback$/)
   if (request.method === 'POST' && feedback) { const body = await readBody(request); return send(response, 200, await repository.saveFeedback(guard(request), { ...body, appointmentId: decodeURIComponent(feedback[1]) })) }
   if (request.method === 'POST' && url.pathname === '/api/appointments') return send(response, 200, await repository.createAppointment(await readBody(request)))

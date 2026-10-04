@@ -21,7 +21,7 @@ function normalize(database: Database): Database {
   const profiles = customers.map((customer) => existingProfiles.find((profile) => profile.customerId === customer.id) ?? emptyProfile(customer.id))
   return {
     ...database,
-    staff: database.staff.map((staff) => { const role = permissionRole(staff); return { ...staff, role, permissionRole: role, status: staff.status ?? 'ACTIVE', displayRole: role === 'ADMIN' ? '管理员' : '导师', title: role === 'ADMIN' ? '管理员' : '导师' } }),
+    staff: database.staff.map((staff) => { const role = permissionRole(staff); return { ...staff, role, permissionRole: role, status: staff.status ?? 'ACTIVE', loginEnabled: role === 'ADMIN' ? staff.loginEnabled !== false : false, displayRole: role === 'ADMIN' ? '管理员' : '导师', title: role === 'ADMIN' ? '管理员' : '导师' } }),
     customers,
     profiles,
     profileChanges: database.profileChanges ?? [],
@@ -53,12 +53,11 @@ function assertActive(staff: Staff) {
 }
 
 function assertAdmin(staff: Staff) {
-  if (permissionRole(staff) !== 'ADMIN') throw new Error('只有 ADMIN 可以执行这个操作')
+  if (permissionRole(staff) !== 'ADMIN' || staff.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
 }
 
-function assertAppointmentAccess(staff: Staff, appointment: Appointment) {
-  if (permissionRole(staff) === 'ADMIN') return
-  if (appointment.assignedMentorId !== staff.id) throw new Error('无权访问其他导师的预约')
+function assertAppointmentAccess(staff: Staff, _appointment: Appointment) {
+  assertAdmin(staff)
 }
 
 function sameProfileValue(a: unknown, b: unknown) {
@@ -94,18 +93,8 @@ function applyProfileUpdates(database: Database, customerId: string, updates: Pr
 }
 
 function scopedDatabase(database: Database, staff: Staff): Database {
-  if (permissionRole(staff) === 'ADMIN') return database
-  const appointments = database.appointments.filter((item) => item.assignedMentorId === staff.id)
-  const customerIds = new Set(appointments.map((item) => item.customerId))
-  return {
-    ...database,
-    staff: database.staff.filter((item) => item.id === staff.id),
-    customers: database.customers.filter((item) => customerIds.has(item.id)),
-    appointments,
-    sessions: database.sessions.filter((item) => customerIds.has(item.customerId)),
-    followups: database.followups.filter((item) => customerIds.has(item.customerId)),
-    enrollments: database.enrollments.filter((item) => customerIds.has(item.customerId)),
-  }
+  assertAdmin(staff)
+  return database
 }
 
 export interface AsvaRepository {
@@ -142,9 +131,10 @@ export function createLocalRepository(): AsvaRepository {
       if (code !== '888888') throw new Error('手机号或验证码错误')
       const database = readDatabase()
       const normalized = normalizePhone(phone)
-      const account = database.staff.find((item) => normalizePhone(item.phone) === normalized && item.status === 'ACTIVE')
-      if (account) return account
-      if (database.staff.some((item) => normalizePhone(item.phone) === normalized && item.status === 'INACTIVE')) throw new Error('该账户已停用，请联系管理员。')
+      const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
+      if (account?.status === 'INACTIVE') throw new Error('该账户已停用，请联系管理员。')
+      if (account?.permissionRole === 'MENTOR') throw new Error('导师端暂未开放，请联系管理员。')
+      if (account?.status === 'ACTIVE' && account.loginEnabled === true) return account
       throw new Error('手机号或验证码错误')
     },
     createAppointment(input) {
@@ -198,7 +188,7 @@ export function createLocalRepository(): AsvaRepository {
       const customer = database.customers.find((item) => item.id === appointment.customerId)
       if (!customer) throw new Error('客户不存在')
       const serviceRecordId = 'S-' + Date.now()
-      database.sessions.unshift({ id: serviceRecordId, customerId: customer.id, mentorId: appointment.assignedMentorId ?? actor.id, type: '跟进反馈', date: new Date().toISOString().slice(0, 16).replace('T', ' '), duration: 0, topic: feedback.topic, note: feedback.notes || feedback.coreNeed, result: feedback.result, nextStep: '本次预约已完成，后续如有新预约将重新进入流程。', followupDate: null, aiSummary: feedback.aiSummary || 'AI 已根据本次反馈整理本次客户状态与下一步建议。', profileText: feedback.profileText, profileUpdates: feedback.profileUpdates })
+      database.sessions.unshift({ id: serviceRecordId, customerId: customer.id, mentorId: appointment.assignedMentorId ?? actor.id, operatorId: actor.id, type: '跟进反馈', date: new Date().toISOString().slice(0, 16).replace('T', ' '), duration: 0, topic: feedback.topic, note: feedback.notes || feedback.coreNeed, result: feedback.result, nextStep: '本次预约已完成，后续如有新预约将重新进入流程。', followupDate: null, aiSummary: feedback.aiSummary || 'AI 已根据本次反馈整理本次客户状态与下一步建议。', profileText: feedback.profileText, profileUpdates: feedback.profileUpdates })
       if (feedback.profileUpdates?.length) applyProfileUpdates(database, customer.id, normalizedProfileUpdates(feedback.profileUpdates, database.profiles.find((item) => item.customerId === customer.id) ?? emptyProfile(customer.id), true), serviceRecordId)
       customer.need = feedback.coreNeed || customer.need
       customer.paid = feedback.paid
@@ -247,7 +237,7 @@ export function createLocalRepository(): AsvaRepository {
       if (database.staff.some((item) => item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw new Error('该手机号已绑定账户')
       let id = `M${Date.now()}`
       while (database.staff.some((item) => item.id === id)) id = `M${Date.now()}${Math.floor(Math.random() * 10)}`
-      const mentor: Staff = { id, name, role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', displayRole: '导师', title: '导师', phone, specialty: '', avatar: name.slice(0, 1) }
+      const mentor: Staff = { id, name, role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, displayRole: '导师', title: '导师', phone, specialty: '', avatar: name.slice(0, 1) }
       database.staff.push(mentor)
       writeDatabase(database)
       return mentor
@@ -267,6 +257,7 @@ export function createLocalRepository(): AsvaRepository {
       if (database.staff.some((item) => item.id !== mentorId && item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw new Error('该手机号已绑定账户')
       mentor.name = name
       mentor.phone = phone
+      mentor.loginEnabled = false
       mentor.avatar = name.slice(0, 1)
       writeDatabase(database)
       return mentor
@@ -283,6 +274,7 @@ export function createLocalRepository(): AsvaRepository {
       const waitFeedback = database.appointments.filter((item) => item.assignedMentorId === mentorId && item.status === 'WAIT_FEEDBACK').length
       if (following || waitFeedback) throw new Error(`该导师还有未完成客户，请先重新分配后再注销。跟进中 ${following}，待反馈 ${waitFeedback}`)
       mentor.status = 'INACTIVE'
+      mentor.loginEnabled = false
       writeDatabase(database)
       return mentor
     },

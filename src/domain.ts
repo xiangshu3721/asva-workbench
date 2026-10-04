@@ -33,6 +33,7 @@ export interface Staff {
   role: Role
   permissionRole: PermissionRole
   status: StaffStatus
+  loginEnabled: boolean
   displayRole: string
   title: string
   phone: string
@@ -136,6 +137,7 @@ export interface ServiceSession {
   id: string
   customerId: string
   mentorId: string
+  operatorId?: string
   type: string
   date: string
   duration: number

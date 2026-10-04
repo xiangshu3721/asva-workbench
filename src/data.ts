@@ -2,12 +2,12 @@ import type { Database } from './domain'
 
 export const seedDatabase: Database = {
   staff: [
-    { id: 'staff-founder', name: '林砚', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', displayRole: '管理员', title: '管理员', phone: '15021512537', specialty: '经营与服务设计', avatar: '林' },
-    { id: 'staff-admin', name: '苏棠', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', displayRole: '管理员', title: '管理员', phone: '15021512538', specialty: '客户运营', avatar: '苏' },
-    { id: 'mentor-zhang', name: '周予安', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', displayRole: '导师', title: '导师', phone: '15021512539', specialty: '关系与人生方向', avatar: '周' },
-    { id: 'mentor-li', name: '沈知夏', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', displayRole: '导师', title: '导师', phone: '15021512540', specialty: '表达与主体性', avatar: '沈' },
-    { id: 'mentor-qiao', name: '顾南枝', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', displayRole: '导师', title: '导师', phone: '15021512541', specialty: '职业转型与行动', avatar: '顾' },
-    { id: 'mentor-chen', name: '贺闻舟', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', displayRole: '导师', title: '导师', phone: '15021512542', specialty: '情绪稳定与自我关系', avatar: '贺' },
+    { id: 'staff-founder', name: '林砚', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true, displayRole: '管理员', title: '管理员', phone: '15021512537', specialty: '经营与服务设计', avatar: '林' },
+    { id: 'staff-admin', name: '苏棠', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true, displayRole: '管理员', title: '管理员', phone: '15021512538', specialty: '客户运营', avatar: '苏' },
+    { id: 'mentor-zhang', name: '周予安', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, displayRole: '导师', title: '导师', phone: '15021512539', specialty: '关系与人生方向', avatar: '周' },
+    { id: 'mentor-li', name: '沈知夏', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, displayRole: '导师', title: '导师', phone: '15021512540', specialty: '表达与主体性', avatar: '沈' },
+    { id: 'mentor-qiao', name: '顾南枝', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, displayRole: '导师', title: '导师', phone: '15021512541', specialty: '职业转型与行动', avatar: '顾' },
+    { id: 'mentor-chen', name: '贺闻舟', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, displayRole: '导师', title: '导师', phone: '15021512542', specialty: '情绪稳定与自我关系', avatar: '贺' },
   ],
   customers: [
     {

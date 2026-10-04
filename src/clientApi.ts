@@ -24,8 +24,8 @@ export interface WorkbenchApi {
   deactivateMentor(actorId: string, mentorId: string): Promise<Staff>
   teamSnapshot(actorId: string): Promise<TeamSnapshot[]>
   dashboardSnapshot(actorId: string): Promise<DashboardSnapshot>
-  serviceSummary(input: FeedbackDraftInput): Promise<AiDraft>
-  brief(input: { name: string; need: string; expectation: string }): Promise<string>
+  serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
+  brief(actorId: string, input: { name: string; need: string; expectation: string }): Promise<string>
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
 }
 
@@ -50,8 +50,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     deactivateMentor: async (actorId, mentorId) => api.deactivateMentor(actorId, mentorId),
     teamSnapshot: async (actorId) => api.teamSnapshot(actorId),
     dashboardSnapshot: async (actorId) => api.dashboardSnapshot(actorId),
-    serviceSummary: async (input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待导师确认记录。', nextStep: input.result === '暂无进一步需求' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入状态流程。' }),
-    brief: async (input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
+    serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
+    brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
   }
 }
@@ -85,8 +85,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
     teamSnapshot: (actorId) => request<TeamSnapshot[]>('/api/staff/mentors', actorId),
     dashboardSnapshot: (actorId) => request<DashboardSnapshot>('/api/dashboard/snapshot', actorId),
-    serviceSummary: (input) => request<AiDraft>('/api/ai/service-summary', undefined, { method: 'POST', body: JSON.stringify(input) }),
-    brief: async (input) => (await request<{ brief: string }>('/api/ai/brief', undefined, { method: 'POST', body: JSON.stringify(input) })).brief,
+    serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    brief: async (actorId, input) => (await request<{ brief: string }>('/api/ai/brief', actorId, { method: 'POST', body: JSON.stringify(input) })).brief,
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),
   }
 }

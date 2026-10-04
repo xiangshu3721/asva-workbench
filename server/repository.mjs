@@ -28,7 +28,9 @@ function staff(row) {
   const status = text(f.status) === 'INACTIVE' || text(f['状态']) === '停用' ? 'INACTIVE' : 'ACTIVE'
   const name = text(f.nickname) || text(f['姓名']) || '未命名人员'
   const phone = normalizePhone(f.phone || f['手机号'])
-  return { id: text(f.staff_id) || row.record_id, name, role: permissionRole, permissionRole, status, displayRole: permissionRole === 'MENTOR' ? '导师' : '管理员', title: permissionRole === 'MENTOR' ? '导师' : '管理员', phone, specialty: text(f['专业方向']), avatar: name.slice(0, 1), _recordId: row.record_id }
+  const rawLoginEnabled = f.login_enabled ?? f['允许登录']
+  const loginEnabled = permissionRole === 'ADMIN' ? rawLoginEnabled === '' || rawLoginEnabled === undefined || rawLoginEnabled === null ? true : boolean(rawLoginEnabled) : false
+  return { id: text(f.staff_id) || row.record_id, name, role: permissionRole, permissionRole, status, loginEnabled, displayRole: permissionRole === 'MENTOR' ? '导师' : '管理员', title: permissionRole === 'MENTOR' ? '导师' : '管理员', phone, specialty: text(f['专业方向']), avatar: name.slice(0, 1), _recordId: row.record_id }
 }
 
 function product(row) {
@@ -40,7 +42,7 @@ function service(row) {
   const f = row.fields || {}
   let profileUpdates = []
   try { profileUpdates = JSON.parse(text(f.profile_updates_json) || '[]') } catch { profileUpdates = [] }
-  return { id: text(f.service_record_id) || row.record_id, customerId: text(f.customer_id), mentorId: text(f.mentor_id), type: '跟进反馈', date: date(f.created_at), duration: 0, topic: text(f['本次主要聊了什么']), note: text(f['备注']) || text(f['当前核心需求']), result: text(f['本次结果']), nextStep: text(f['AI下一步建议']), followupDate: null, aiSummary: text(f['AI本次总结']), profileText: text(f.profile_text), profileUpdates, _recordId: row.record_id }
+  return { id: text(f.service_record_id) || row.record_id, customerId: text(f.customer_id), mentorId: text(f.mentor_id), operatorId: text(f.operator_id), type: '跟进反馈', date: date(f.created_at), duration: 0, topic: text(f['本次主要聊了什么']), note: text(f['备注']) || text(f['当前核心需求']), result: text(f['本次结果']), nextStep: text(f['AI下一步建议']), followupDate: null, aiSummary: text(f['AI本次总结']), profileText: text(f.profile_text), profileUpdates, _recordId: row.record_id }
 }
 
 function jsonValue(value) {
@@ -75,10 +77,8 @@ function scope(database, actorId) {
   const actor = database.staff.find((item) => item.id === actorId)
   if (!actor) throw new Error('账号不存在')
   if (actor.status !== 'ACTIVE') throw new Error('该账户已停用，请联系管理员。')
-  if (actor.permissionRole === 'ADMIN') return database
-  const appointments = database.appointments.filter((item) => item.assignedMentorId === actorId)
-  const customerIds = new Set(appointments.map((item) => item.customerId))
-  return { ...database, staff: [actor], customers: database.customers.filter((item) => customerIds.has(item.id)), appointments, sessions: database.sessions.filter((item) => customerIds.has(item.customerId)), profiles: database.profiles.filter((item) => customerIds.has(item.customerId)), profileChanges: database.profileChanges.filter((item) => customerIds.has(item.customerId)), followups: [], enrollments: [] }
+  if (actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
+  return database
 }
 
 function sameProfileValue(a, b) { return JSON.stringify(a ?? null) === JSON.stringify(b ?? null) }
@@ -133,15 +133,17 @@ export class FeishuRepository {
     const record = (await this.load()).staff.find((item) => item.id === staffId)
     if (!record) throw new Error('账号不存在')
     if (record.status !== 'ACTIVE') throw new Error('该账户已停用，请联系管理员。')
+    if (record.permissionRole !== 'ADMIN' || record.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
     return record
   }
   async authenticate(phone, code) {
     if (code !== '888888') throw new Error('手机号或验证码错误')
     const database = await this.load()
     const normalized = normalizePhone(phone)
-    const active = database.staff.find((item) => item.status === 'ACTIVE' && normalizePhone(item.phone) === normalized)
-    if (active) return active
-    if (database.staff.some((item) => item.status === 'INACTIVE' && normalizePhone(item.phone) === normalized)) throw new Error('该账户已停用，请联系管理员。')
+    const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
+    if (account?.status === 'INACTIVE') throw new Error('该账户已停用，请联系管理员。')
+    if (account?.permissionRole === 'MENTOR') throw new Error('导师端暂未开放，请联系管理员。')
+    if (account?.status === 'ACTIVE' && account.loginEnabled === true) return account
     throw new Error('手机号或验证码错误')
   }
   async customer(actorId, customerId) { return (await this.dashboard(actorId)).customers.find((item) => item.id === customerId) }
@@ -171,7 +173,7 @@ export class FeishuRepository {
   async createMentor(actorId, input) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
-    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以管理导师账户')
+    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
     const name = text(input?.name).trim()
     const phone = normalizePhone(input?.phone)
     if (!name) throw new Error('导师昵称不能为空')
@@ -179,14 +181,14 @@ export class FeishuRepository {
     if (database.staff.some((item) => item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
     const createdAt = now()
     const staffId = `M${Date.now()}`
-    await createRecord(config.feishu.tables.staff, { staff_id: staffId, nickname: name, phone, role: 'MENTOR', status: 'ACTIVE', created_at: createdAt, updated_at: createdAt, deactivated_at: null, '姓名': name, '手机号': phone, permission_role: 'MENTOR', '状态': '在职', display_role: '导师', mentor_id: staffId, '专业方向': '' })
+    await createRecord(config.feishu.tables.staff, { staff_id: staffId, nickname: name, phone, role: 'MENTOR', status: 'ACTIVE', login_enabled: false, created_at: createdAt, updated_at: createdAt, deactivated_at: null, '姓名': name, '手机号': phone, permission_role: 'MENTOR', '状态': '在职', display_role: '导师', mentor_id: staffId, '专业方向': '' })
     return (await this.load()).staff.find((item) => item.id === staffId)
   }
 
   async updateMentor(actorId, mentorId, input) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
-    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以管理导师账户')
+    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
     const mentor = database.staff.find((item) => item.id === mentorId && item.permissionRole === 'MENTOR')
     const row = database._rows.staff.find((item) => item.record_id === mentor?._recordId)
     if (!mentor || !row) throw new Error('导师不存在')
@@ -196,14 +198,14 @@ export class FeishuRepository {
     if (!name) throw new Error('导师昵称不能为空')
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
     if (database.staff.some((item) => item.id !== mentorId && item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
-    await updateRecord(config.feishu.tables.staff, row.record_id, { nickname: name, phone, role: 'MENTOR', status: 'ACTIVE', updated_at: now(), '姓名': name, '手机号': phone, permission_role: 'MENTOR', '状态': '在职', display_role: '导师' })
+    await updateRecord(config.feishu.tables.staff, row.record_id, { nickname: name, phone, role: 'MENTOR', status: 'ACTIVE', login_enabled: false, updated_at: now(), '姓名': name, '手机号': phone, permission_role: 'MENTOR', '状态': '在职', display_role: '导师' })
     return (await this.load()).staff.find((item) => item.id === mentorId)
   }
 
   async deactivateMentor(actorId, mentorId) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
-    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以管理导师账户')
+    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
     const mentor = database.staff.find((item) => item.id === mentorId && item.permissionRole === 'MENTOR')
     const row = database._rows.staff.find((item) => item.record_id === mentor?._recordId)
     if (!mentor || !row) throw new Error('导师不存在')
@@ -212,14 +214,14 @@ export class FeishuRepository {
     const waitFeedback = database.appointments.filter((item) => item.assignedMentorId === mentorId && item.status === 'WAIT_FEEDBACK').length
     if (following || waitFeedback) throw new Error(`该导师还有未完成客户，请先重新分配后再注销。跟进中 ${following}，待反馈 ${waitFeedback}`)
     const deactivatedAt = now()
-    await updateRecord(config.feishu.tables.staff, row.record_id, { status: 'INACTIVE', '状态': '停用', updated_at: deactivatedAt, deactivated_at: deactivatedAt })
+    await updateRecord(config.feishu.tables.staff, row.record_id, { status: 'INACTIVE', login_enabled: false, '状态': '停用', updated_at: deactivatedAt, deactivated_at: deactivatedAt })
     return (await this.load()).staff.find((item) => item.id === mentorId)
   }
 
   async updateCustomerReferrer(actorId, customerId, referrerName) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
-    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以修改介绍人')
+    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以修改介绍人')
     const row = database._rows.customers.find((item) => text(item.fields?.customer_id) === customerId)
     if (!row) throw new Error('客户不存在')
     const value = typeof referrerName === 'string' ? referrerName.trim() : ''
@@ -230,7 +232,7 @@ export class FeishuRepository {
   async assignAppointment(actorId, appointmentId, mentorId) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
-    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以分配导师')
+    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以分配导师')
     const appointment = database.appointments.find((item) => item.id === appointmentId)
     const mentor = database.staff.find((item) => item.id === mentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')
     if (!appointment || !mentor) throw new Error('预约或导师不存在')
@@ -244,7 +246,8 @@ export class FeishuRepository {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     const appointment = database.appointments.find((item) => item.id === appointmentId)
-    if (!actor || actor.status !== 'ACTIVE' || !appointment || (actor.permissionRole !== 'ADMIN' && appointment.assignedMentorId !== actorId)) throw new Error('无权访问其他导师的预约')
+    if (!actor || actor.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
+    if (!appointment) throw new Error('预约不存在')
     if (appointment.status !== 'FOLLOWING') throw new Error('只有跟进中的预约可以完成跟进')
     await updateRecord(config.feishu.tables.appointments, appointment._recordId, { followup_handled: true, status: 'WAIT_FEEDBACK' })
     return scope(await this.load(), actorId)
@@ -254,12 +257,13 @@ export class FeishuRepository {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     const appointment = database.appointments.find((item) => item.id === input.appointmentId)
-    if (!actor || actor.status !== 'ACTIVE' || !appointment || (actor.permissionRole !== 'ADMIN' && appointment.assignedMentorId !== actorId)) throw new Error('无权访问其他导师的预约')
+    if (!actor || actor.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
+    if (!appointment) throw new Error('预约不存在')
     if (appointment.status !== 'WAIT_FEEDBACK') throw new Error('当前预约还不能提交反馈')
     const now = new Date().toISOString()
     const serviceRecordId = `SR-${appointment.id}-${Date.now()}`
     const profileUpdates = normalizeProfileUpdates(input.profileUpdates, database.profiles.find((item) => item.customerId === appointment.customerId), Boolean(input.profileUpdates?.length))
-    await createRecord(config.feishu.tables.serviceRecords, { service_record_id: serviceRecordId, customer_id: appointment.customerId, appointment_id: appointment.id, mentor_id: appointment.assignedMentorId || actorId, '本次主要聊了什么': input.topic, '本次结果': input.result, '当前核心需求': input.coreNeed, '是否付费': input.paid, SABC: input.grade, '意向课程': input.intendedCourse || '', '备注': input.notes, profile_text: input.profileText || '', profile_updates_json: JSON.stringify(profileUpdates), profile_update_confirmed: profileUpdates.length > 0, 'AI本次总结': input.aiSummary || '', 'AI当前客户状态': input.aiStatus || '', 'AI下一步建议': input.aiNextStep || '', '导师已确认': true, created_at: now })
+    await createRecord(config.feishu.tables.serviceRecords, { service_record_id: serviceRecordId, customer_id: appointment.customerId, appointment_id: appointment.id, mentor_id: appointment.assignedMentorId || actorId, operator_id: actorId, '本次主要聊了什么': input.topic, '本次结果': input.result, '当前核心需求': input.coreNeed, '是否付费': input.paid, SABC: input.grade, '意向课程': input.intendedCourse || '', '备注': input.notes, profile_text: input.profileText || '', profile_updates_json: JSON.stringify(profileUpdates), profile_update_confirmed: profileUpdates.length > 0, 'AI本次总结': input.aiSummary || '', 'AI当前客户状态': input.aiStatus || '', 'AI下一步建议': input.aiNextStep || '', '导师已确认': true, created_at: now })
     if (profileUpdates.length) await persistProfile(database, appointment.customerId, profileUpdates, serviceRecordId)
     await updateRecord(config.feishu.tables.appointments, appointment._recordId, { followup_info_completed: true, status: 'COMPLETED', completed_at: now })
     const customerRow = database._rows.customers.find((row) => text(row.fields?.customer_id) === appointment.customerId)
@@ -275,14 +279,14 @@ export class FeishuRepository {
   async teamSnapshot(actorId) {
     const database = await this.dashboard(actorId)
     const actor = database.staff.find((item) => item.id === actorId)
-    if (actor?.permissionRole !== 'ADMIN') throw new Error('无权查看团队数据')
+    if (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看团队数据')
     const all = await this.load()
     return all.staff.filter((item) => item.permissionRole === 'MENTOR').map((mentor) => ({ mentor, customerCount: all.customers.filter((item) => item.mentorId === mentor.id).length, following: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'FOLLOWING').length, waitFeedback: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'WAIT_FEEDBACK').length, completed: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'COMPLETED').length }))
   }
 
   async dashboardSnapshot(actorId) {
     const database = await this.dashboard(actorId)
-    if (database.staff.find((item) => item.id === actorId)?.permissionRole !== 'ADMIN') throw new Error('无权查看数据看板')
+    if (database.staff.find((item) => item.id === actorId)?.permissionRole !== 'ADMIN' || database.staff.find((item) => item.id === actorId)?.loginEnabled !== true) throw new Error('无权查看数据看板')
     const all = await this.load()
     const appointments = all.appointments
     const statusCounts = Object.fromEntries(['WAIT_ASSIGN', 'FOLLOWING', 'WAIT_FEEDBACK', 'COMPLETED'].map((status) => [status, appointments.filter((item) => item.status === status).length]))
