@@ -127,6 +127,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .review-update > span input { margin: 0; }
 .review-update small { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .contact-row { margin-bottom: 0; }
+.contact-row > label { display: grid; gap: 8px; color: #657287; font-size: 11px; font-weight: 600; }
 .field-hint { display: block; margin: -8px 0 17px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; }
 .contact-hint { margin: 7px 0 17px; }
 .multi-select { position: relative; }

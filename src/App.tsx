@@ -18,7 +18,8 @@ type CustomerFilter = '待处理' | '待跟进' | '已完成'
 const statusLabel: Record<AppointmentWorkflowStatus, string> = { WAIT_ASSIGN: '待分配', WAIT_FOLLOW_UP: '待跟进', WAIT_FEEDBACK: '待反馈', COMPLETED: '已完成' }
 const statusTone: Record<AppointmentWorkflowStatus, 'amber' | 'blue' | 'rose' | 'green'> = { WAIT_ASSIGN: 'amber', WAIT_FOLLOW_UP: 'blue', WAIT_FEEDBACK: 'rose', COMPLETED: 'green' }
 const statusRank: Record<AppointmentWorkflowStatus, number> = { WAIT_ASSIGN: 0, WAIT_FOLLOW_UP: 1, WAIT_FEEDBACK: 2, COMPLETED: 3 }
-type BrowserSpeechRecognitionInstance = { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: ((event?: { error?: string }) => void) | null; onend: (() => void) | null }
+type BrowserSpeechResult = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
+type BrowserSpeechRecognitionInstance = { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: ((event: { results: ArrayLike<BrowserSpeechResult> }) => void) | null; onerror: ((event?: { error?: string }) => void) | null; onend: (() => void) | null }
 type BrowserSpeechRecognition = new () => BrowserSpeechRecognitionInstance
 
 function Avatar({ staff, size = 'md' }: { staff?: Staff; size?: 'sm' | 'md' | 'lg' }) { return <span className={`avatar avatar-${size}`}>{staff?.avatar ?? '客'}</span> }
@@ -186,6 +187,8 @@ function ManualCustomerDialog({ database, onClose, onPreview, onCreate, onUpdate
   const [isRecording, setIsRecording] = useState(false)
   const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
   const keepRecordingRef = useRef(false)
+  const voiceBaseSituationRef = useRef('')
+  const voiceTextRef = useRef('')
   const input = (): ManualCustomerInput => {
     const enrollments: EnrollmentDraft[] = selectedProductIds.map((productId) => ({ productId }))
     return { nickname, phone, wechat, situation, needsFollowup, mentorId: null, source: '管理员手动录入', caseSource: 'ADMIN_MANUAL', enrollments, confirmedNotSame: step === 'duplicate' }
@@ -208,12 +211,20 @@ function ManualCustomerDialog({ database, onClose, onPreview, onCreate, onUpdate
     const recognition = new SpeechRecognition()
     recognition.lang = 'zh-CN'
     recognition.continuous = true
-    recognition.interimResults = false
+    recognition.interimResults = true
     recognition.onresult = (event) => {
-      const transcript = event.results[event.results.length - 1]?.[0]?.transcript
+      let transcript = ''
+      for (let index = 0; index < event.results.length; index += 1) {
+        const result = event.results[index]
+        const text = result?.[0]?.transcript?.trim()
+        if (text) transcript += `${transcript ? ' ' : ''}${text}`
+      }
       if (!transcript) return
-      setSituation((value) => `${value}${value ? ' ' : ''}${transcript}`)
-      setVoiceHint('正在录音，再次点击结束。')
+      const base = voiceBaseSituationRef.current.trim()
+      const nextSituation = `${base}${base ? ' ' : ''}${transcript}`
+      voiceTextRef.current = nextSituation
+      setSituation(nextSituation)
+      setVoiceHint('正在录音，文字会实时显示，再次点击结束。')
     }
     recognition.onerror = (event) => {
       if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
@@ -227,6 +238,7 @@ function ManualCustomerDialog({ database, onClose, onPreview, onCreate, onUpdate
     }
     recognition.onend = () => {
       if (keepRecordingRef.current && recognitionRef.current === recognition) {
+        voiceBaseSituationRef.current = voiceTextRef.current
         window.setTimeout(() => {
           if (!keepRecordingRef.current || recognitionRef.current !== recognition) return
           try { recognition.start() } catch { /* 浏览器仍在切换状态时，等待下一次 end 事件 */ }
@@ -236,6 +248,8 @@ function ManualCustomerDialog({ database, onClose, onPreview, onCreate, onUpdate
       if (recognitionRef.current === recognition) recognitionRef.current = null
       setIsRecording(false)
     }
+    voiceBaseSituationRef.current = situation
+    voiceTextRef.current = situation
     keepRecordingRef.current = true
     recognitionRef.current = recognition
     setIsRecording(true)
