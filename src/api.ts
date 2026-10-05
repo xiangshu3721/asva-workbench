@@ -1,6 +1,10 @@
 import type { Customer, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
 import type { AsvaRepository } from './repositories'
 
+const requireLiveHttp = (): never => {
+  throw new Error('当前前端未连接真实 HTTP 服务，导师数据不会写入飞书。请配置 VITE_API_BASE_URL=http://127.0.0.1:8788 后重启前端。')
+}
+
 export function createLocalApi(repository: AsvaRepository) {
   return {
     dashboard(staffId: string): Database { return repository.getDatabaseForUser(staffId) },
@@ -53,5 +57,17 @@ export function createLocalApi(repository: AsvaRepository) {
         mentorLoad: all.staff.filter((staff) => staff.permissionRole === 'MENTOR').map((mentor) => ({ name: mentor.name, count: all.customers.filter((customer) => customer.mentorId === mentor.id).length })),
       }
     },
+  }
+}
+
+export function createGuardedLocalApi(repository: AsvaRepository) {
+  const api = createLocalApi(repository)
+  return {
+    ...api,
+    assignAppointment: (_actorId: string, _appointmentId: string, _mentorId: string): never => requireLiveHttp(),
+    createMentor: (_actorId: string, _input: MentorAccountInput): never => requireLiveHttp(),
+    updateMentor: (_actorId: string, _mentorId: string, _input: MentorAccountInput): never => requireLiveHttp(),
+    deactivateMentor: (_actorId: string, _mentorId: string): never => requireLiveHttp(),
+    teamSnapshot: (_actorId: string, _status?: StaffStatus): never => requireLiveHttp(),
   }
 }

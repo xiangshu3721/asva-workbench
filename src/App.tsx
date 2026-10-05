@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { createLocalApi } from './api'
+import { createGuardedLocalApi, createLocalApi } from './api'
 import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, CustomerDraftPreview, Database, EnrollmentDraft, EnrollmentPaymentStatus, FeedbackInput, ManualCustomerInput, ProfileDraft, ProfileUpdate, ProfileValue, Product, Staff } from './domain'
 import { createLocalRepository } from './repositories'
 import { createHttpApi, createLocalAsyncApi, type FeedbackDraftInput, type WorkbenchApi } from './clientApi'
@@ -9,7 +9,7 @@ import { GlobalAIAssistant } from './GlobalAIAssistant'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
 const remoteBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined
-const workbenchApi: WorkbenchApi = remoteBaseUrl ? createHttpApi(remoteBaseUrl) : createLocalAsyncApi(api)
+const workbenchApi: WorkbenchApi = remoteBaseUrl ? createHttpApi(remoteBaseUrl) : createLocalAsyncApi(createGuardedLocalApi(repository))
 
 type View = 'home' | 'customers' | 'me'
 type MePanel = 'account' | 'team'
