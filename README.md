@@ -45,7 +45,21 @@ npm test
 
 ## GitHub Pages
 
-项目通过 `.github/workflows/deploy-pages.yml` 自动发布到 GitHub Pages。Pages 使用本地演示数据和默认验证码，不包含飞书或 DeepSeek 密钥；真实 HTTP / 飞书服务需要单独部署 `server/index.mjs`，再配置 `VITE_API_BASE_URL`。
+项目通过 `.github/workflows/deploy-pages.yml` 自动发布到 GitHub Pages。Pages 不包含飞书或 DeepSeek 密钥，前端请求统一发送到 CloudBase 上的 ASVA HTTP 服务。
+
+当前线上 HTTP 服务已部署到腾讯云 CloudBase `root-journey-prod`，地址为：
+
+```text
+https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.com/asva-api
+```
+
+部署命令：
+
+```bash
+npm run deploy:cloudbase
+```
+
+部署脚本会从本地 `.env.local` 读取 DeepSeek 和飞书服务端配置，并只写入 CloudBase 云函数环境变量；不会把密钥提交到 Git。GitHub Pages 工作流会自动将前端 API 地址指向该服务。
 
 ## 接入真实 HTTP / 飞书 / DeepSeek
 

@@ -8,6 +8,8 @@
     "dev:server": "node server/index.mjs",
     "server": "node server/index.mjs",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build:cloudbase": "node scripts/build-cloudbase-function.mjs",
+    "deploy:cloudbase": "npm run build:cloudbase && node scripts/deploy-cloudbase.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

@@ -3,5 +3,5 @@ dist
 .env
 .env.*
 !.env.example
+cloudbase/functions/asva-api/index.js
 .DS_Store
-

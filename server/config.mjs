@@ -1,8 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
-const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const rootDir = path.resolve(process.env.ASVA_CONFIG_DIR || process.cwd())
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return
@@ -24,6 +23,7 @@ const value = (key, fallback = '') => process.env[key]?.trim() || fallback
 
 export const config = {
   port: Number(value('PORT', '8788')),
+  host: value('HOST', '127.0.0.1'),
   authSecret: value('ASVA_AUTH_SECRET'),
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),
