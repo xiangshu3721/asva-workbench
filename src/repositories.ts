@@ -263,16 +263,14 @@ export function createLocalRepository(): AsvaRepository {
       const customer = createManualCustomer(database, input, updates)
       mergeEnrollments(database, customer.id, input.enrollments, actor.id)
       if (input.needsFollowup) {
-        let status: AppointmentWorkflowStatus = 'WAIT_ASSIGN'
         let mentorId: string | null = null
         if (input.mentorId) {
           const mentor = database.staff.find((item) => item.id === input.mentorId && permissionRole(item) === 'MENTOR')
           if (!mentor || mentor.status !== 'ACTIVE') throw new Error('只能选择 ACTIVE 导师')
           mentorId = mentor.id
-          status = 'WAIT_FOLLOW_UP'
           customer.mentorId = mentor.id
         }
-        database.appointments.unshift({ id: `A-${Date.now()}`, customerId: customer.id, topic: '手动录入跟进', submittedAt: new Date().toISOString(), description: input.situation.trim(), expectation: customer.helpExpectation, status, mentorId, assignedMentorId: mentorId, followupHandled: false, followupInfoCompleted: false, createdAt: new Date().toISOString(), completedAt: null, source: input.caseSource ?? 'ADMIN_MANUAL', caseSource: input.caseSource ?? 'ADMIN_MANUAL' })
+        database.appointments.unshift({ id: `A-${Date.now()}`, customerId: customer.id, topic: '手动录入跟进', submittedAt: new Date().toISOString(), description: input.situation.trim(), expectation: customer.helpExpectation, status: 'WAIT_FOLLOW_UP', mentorId, assignedMentorId: mentorId, followupHandled: false, followupInfoCompleted: false, createdAt: new Date().toISOString(), completedAt: null, source: input.caseSource ?? 'ADMIN_MANUAL', caseSource: input.caseSource ?? 'ADMIN_MANUAL' })
       }
       writeDatabase(database)
       return scopedDatabase(database, actor)
@@ -299,7 +297,7 @@ export function createLocalRepository(): AsvaRepository {
           customer.mentorId = mentor.id
         }
         const assignedMentorId = customer.mentorId
-        database.appointments.unshift({ id: `A-${Date.now()}`, customerId, topic: '手动录入跟进', submittedAt: new Date().toISOString(), description: input.situation.trim(), expectation: customer.helpExpectation, status: assignedMentorId ? 'WAIT_FOLLOW_UP' : 'WAIT_ASSIGN', mentorId: assignedMentorId, assignedMentorId, followupHandled: false, followupInfoCompleted: false, createdAt: new Date().toISOString(), completedAt: null, source: input.caseSource ?? 'ADMIN_MANUAL', caseSource: input.caseSource ?? 'ADMIN_MANUAL' })
+        database.appointments.unshift({ id: `A-${Date.now()}`, customerId, topic: '手动录入跟进', submittedAt: new Date().toISOString(), description: input.situation.trim(), expectation: customer.helpExpectation, status: 'WAIT_FOLLOW_UP', mentorId: assignedMentorId, assignedMentorId, followupHandled: false, followupInfoCompleted: false, createdAt: new Date().toISOString(), completedAt: null, source: input.caseSource ?? 'ADMIN_MANUAL', caseSource: input.caseSource ?? 'ADMIN_MANUAL' })
       }
       writeDatabase(database)
       return scopedDatabase(database, actor)

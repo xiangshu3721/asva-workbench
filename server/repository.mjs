@@ -318,7 +318,7 @@ export class FeishuRepository {
         const customerRow = current._rows.customers.find((row) => text(get('customers', row.fields, 'customer_id')) === customerId)
         if (customerRow) await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { mentor_id: assignedMentorId }))
       }
-      await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: `A-${Date.now()}`, customer_id: customerId, current_issue_description: normalized.situation, expectation: current.customers.find((item) => item.id === customerId)?.helpExpectation || '', submitted_at: createdAt, status: assignedMentorId ? 'WAIT_FOLLOW_UP' : 'WAIT_ASSIGN', assigned_mentor_id: assignedMentorId, followup_handled: false, followup_info_completed: false, created_at: createdAt, case_source: input.caseSource || 'ADMIN_MANUAL' }))
+      await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: `A-${Date.now()}`, customer_id: customerId, current_issue_description: normalized.situation, expectation: current.customers.find((item) => item.id === customerId)?.helpExpectation || '', submitted_at: createdAt, status: 'WAIT_FOLLOW_UP', assigned_mentor_id: assignedMentorId, followup_handled: false, followup_info_completed: false, created_at: createdAt, case_source: input.caseSource || 'ADMIN_MANUAL' }))
     }
     return this.dashboard(actorId)
   }
@@ -342,7 +342,7 @@ export class FeishuRepository {
         if (!mentor) throw new Error('只能选择 ACTIVE 导师')
         assignedMentorId = mentor.id
       }
-      await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: `A-${Date.now()}`, customer_id: customerId, current_issue_description: normalized.situation, expectation: latest.customers.find((item) => item.id === customerId)?.helpExpectation || '', submitted_at: now(), status: assignedMentorId ? 'WAIT_FOLLOW_UP' : 'WAIT_ASSIGN', assigned_mentor_id: assignedMentorId, followup_handled: false, followup_info_completed: false, created_at: now(), case_source: input.caseSource || 'ADMIN_MANUAL' }))
+      await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: `A-${Date.now()}`, customer_id: customerId, current_issue_description: normalized.situation, expectation: latest.customers.find((item) => item.id === customerId)?.helpExpectation || '', submitted_at: now(), status: 'WAIT_FOLLOW_UP', assigned_mentor_id: assignedMentorId, followup_handled: false, followup_info_completed: false, created_at: now(), case_source: input.caseSource || 'ADMIN_MANUAL' }))
     }
     return this.dashboard(actorId)
   }

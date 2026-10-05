@@ -25,6 +25,8 @@ button, input, textarea, select { font: inherit; }
 button { border: 0; cursor: pointer; }
 button:active { transform: translateY(1px); }
 button:disabled { cursor: not-allowed; opacity: .45; }
+.button-spinner { display: inline-block; width: 12px; height: 12px; margin-right: 6px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -2px; animation: button-spin .7s linear infinite; }
+@keyframes button-spin { to { transform: rotate(360deg); } }
 input, textarea, select { color: var(--ink); outline: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--blue) !important; box-shadow: 0 0 0 3px rgba(78, 110, 232, .13); }
 
@@ -124,7 +126,24 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .review-update > span { display: grid; gap: 5px; min-width: 0; }
 .review-update > span input { margin: 0; }
 .review-update small { color: var(--muted); font-size: 9px; white-space: nowrap; }
-.product-picker { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
-.enrollment-options { margin-top: 10px; }
+.contact-row { margin-bottom: 0; }
+.field-hint { display: block; margin: -8px 0 17px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; }
+.multi-select { position: relative; }
+.multi-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 44px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: #fbfcfe; text-align: left; }
+.multi-select-trigger[aria-expanded='true'] { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(78, 110, 232, .13); }
+.selected-tags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.selected-tag { display: inline-flex; align-items: center; padding: 5px 8px; border-radius: 6px; color: var(--blue-dark); background: var(--blue-pale); font-size: 10px; font-weight: 600; }
+.multi-select-placeholder { color: #9aa5b4; font-weight: 400; }
+.multi-select-chevron { flex: 0 0 auto; color: var(--muted); font-size: 16px; line-height: 1; }
+.multi-select-menu { position: absolute; z-index: 2; top: calc(100% + 6px); right: 0; left: 0; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 13px 30px rgba(23, 32, 51, .14); }
+.multi-select-menu > input { margin-bottom: 6px; }
+.multi-select-options { display: grid; gap: 2px; max-height: 170px; overflow-y: auto; }
+.multi-select-option { display: flex !important; grid-template-columns: none !important; align-items: center; gap: 8px !important; margin: 0 !important; padding: 8px 7px; border-radius: 7px; color: var(--ink) !important; font-size: 11px !important; font-weight: 500 !important; cursor: pointer; }
+.multi-select-option:hover { background: #f5f7fb; }
+.multi-select-option input { width: auto !important; margin: 0; }
+.voice-button { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 47px; margin-top: 2px; font-size: 12px; }
+.voice-button span { font-size: 16px; line-height: 1; }
+.form-actions { display: flex; gap: 9px; margin-top: 19px; }
+.form-actions button { flex: 1; }
 .course-tags { display: flex; flex-wrap: wrap; gap: 8px; }
 .course-tag { display: inline-flex; padding: 7px 10px; border-radius: 999px; color: var(--blue-dark); background: var(--blue-pale); font-size: 11px; }

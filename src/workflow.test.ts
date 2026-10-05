@@ -80,6 +80,14 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(archiveOnly.appointments.some((item) => item.customerId === archiveCustomer?.id)).toBe(false)
   })
 
+  it('creates manual follow-up cases directly in WAIT_FOLLOW_UP without WAIT_ASSIGN', () => {
+    const api = createLocalApi(createLocalRepository())
+    const created = api.createCustomer('staff-admin', { nickname: '沈知远', phone: '13900001235', situation: '需要尽快安排一次跟进。', needsFollowup: true })
+    const customer = created.customers.find((item) => item.name === '沈知远')
+    const manualCase = created.appointments.find((item) => item.customerId === customer?.id)
+    expect(manualCase).toMatchObject({ status: 'WAIT_FOLLOW_UP', assignedMentorId: null, caseSource: 'ADMIN_MANUAL' })
+  })
+
   it('stores manual enrolled courses as deduplicated structured relations', () => {
     const api = createLocalApi(createLocalRepository())
     const first = api.createCustomer('staff-admin', { nickname: '温知遥', phone: '13900001111', situation: '先记录第一门课程。', needsFollowup: false, enrollments: [{ productId: 'P-001' }] })
