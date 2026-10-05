@@ -14,7 +14,10 @@ function permissionRole(staff: Staff): 'ADMIN' | 'MENTOR' {
   return staff.permissionRole ?? (staff.role === 'MENTOR' ? 'MENTOR' : 'ADMIN')
 }
 
-function normalizePhone(phone: string) { return phone.replace(/\s+/g, '') }
+function normalizePhone(phone: string) {
+  const digits = phone.replace(/\D/g, '')
+  return digits.startsWith('86') && digits.length === 13 ? digits.slice(2) : digits
+}
 function assertValidPhone(phone: string) { if (!/^1\d{10}$/.test(normalizePhone(phone))) throw new Error('请输入有效手机号') }
 
 function normalize(database: Database): Database {
@@ -313,8 +316,9 @@ export function createLocalRepository(): AsvaRepository {
       if (permissionRole(mentor) !== 'MENTOR') throw new Error('只能分配给导师账号')
       appointment.assignedMentorId = mentor.id
       appointment.mentorId = mentor.id
-      appointment.status = 'WAIT_FOLLOW_UP'
-      appointment.followupHandled = false
+      if (!['WAIT_ASSIGN', 'WAIT_FOLLOW_UP', 'WAIT_FEEDBACK'].includes(appointment.status)) throw new Error('已完成的预约不能更换导师')
+      appointment.status = appointment.status === 'WAIT_ASSIGN' ? 'WAIT_FOLLOW_UP' : appointment.status
+      appointment.followupHandled = appointment.status === 'WAIT_FEEDBACK'
       appointment.followupInfoCompleted = false
       const customer = database.customers.find((item) => item.id === appointment.customerId)
       if (customer) {
@@ -400,7 +404,9 @@ export function createLocalRepository(): AsvaRepository {
       const phone = normalizePhone(input.phone)
       if (!name) throw new Error('导师昵称不能为空')
       assertValidPhone(phone)
-      if (database.staff.some((item) => item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw new Error('该手机号已绑定账户')
+      const duplicate = database.staff.find((item) => normalizePhone(item.phone) === phone)
+      if (duplicate?.status === 'ACTIVE') throw new Error('该手机号已绑定账户')
+      if (duplicate?.status === 'INACTIVE') throw new Error('该手机号对应一个已停用导师，请编辑原导师记录，不要重复创建')
       let id = `M${Date.now()}`
       while (database.staff.some((item) => item.id === id)) id = `M${Date.now()}${Math.floor(Math.random() * 10)}`
       const mentor: Staff = { id, name, role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, displayRole: '导师', title: '导师', phone, specialty: '', avatar: name.slice(0, 1) }
@@ -420,7 +426,9 @@ export function createLocalRepository(): AsvaRepository {
       const phone = normalizePhone(input.phone)
       if (!name) throw new Error('导师昵称不能为空')
       assertValidPhone(phone)
-      if (database.staff.some((item) => item.id !== mentorId && item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw new Error('该手机号已绑定账户')
+      const duplicate = database.staff.find((item) => item.id !== mentorId && normalizePhone(item.phone) === phone)
+      if (duplicate?.status === 'ACTIVE') throw new Error('该手机号已绑定账户')
+      if (duplicate?.status === 'INACTIVE') throw new Error('该手机号对应一个已停用导师，请使用未占用的手机号')
       mentor.name = name
       mentor.phone = phone
       mentor.loginEnabled = false

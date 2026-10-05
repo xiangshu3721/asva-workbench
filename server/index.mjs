@@ -21,7 +21,11 @@ async function handle(request, response) {
   if (request.method === 'POST' && url.pathname === '/api/auth/login') { const body = await readBody(request); return send(response, 200, await repository.authenticate(body.phone, body.code)) }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(response, 200, await repository.dashboard(guard(request)))
   if (request.method === 'GET' && url.pathname === '/api/staff/me') return send(response, 200, await repository.staff(guard(request)))
-  if (request.method === 'GET' && url.pathname === '/api/staff/mentors') return send(response, 200, await repository.teamSnapshot(guard(request)))
+  if (request.method === 'GET' && url.pathname === '/api/staff/mentors') {
+    const filter = url.searchParams.get('status') || ''
+    if (filter && !['ACTIVE', 'INACTIVE'].includes(filter)) return send(response, 400, { error: 'status 只支持 ACTIVE 或 INACTIVE' })
+    return send(response, 200, await repository.teamSnapshot(guard(request), filter))
+  }
   if (request.method === 'POST' && url.pathname === '/api/staff/mentors') { const body = await readBody(request); return send(response, 201, await repository.createMentor(guard(request), body)) }
   const mentorEdit = url.pathname.match(/^\/api\/staff\/mentors\/([^/]+)$/)
   if (request.method === 'PATCH' && mentorEdit) { const body = await readBody(request); return send(response, 200, await repository.updateMentor(guard(request), decodeURIComponent(mentorEdit[1]), body)) }
@@ -42,7 +46,7 @@ async function handle(request, response) {
   if (request.method === 'POST' && referrerCustomer) { const body = await readBody(request); return send(response, 200, await repository.updateCustomerReferrer(guard(request), decodeURIComponent(referrerCustomer[1]), body.referrerName)) }
   if (request.method === 'GET' && url.pathname === '/api/team') return send(response, 200, await repository.teamSnapshot(guard(request)))
   if (request.method === 'GET' && url.pathname === '/api/dashboard/snapshot') return send(response, 200, await repository.dashboardSnapshot(guard(request)))
-  const assign = url.pathname.match(/^\/api\/appointments\/([^/]+)\/assign$/)
+  const assign = url.pathname.match(/^\/api\/(?:appointments|cases)\/([^/]+)\/(?:assign|reassign)$/)
   if (request.method === 'POST' && assign) { const body = await readBody(request); return send(response, 200, await repository.assignAppointment(guard(request), decodeURIComponent(assign[1]), body.mentorId)) }
   const complete = url.pathname.match(/^\/api\/appointments\/([^/]+)\/complete-followup$/)
   if (request.method === 'POST' && complete) return send(response, 200, await repository.markFollowupDone(guard(request), decodeURIComponent(complete[1])))
@@ -56,4 +60,4 @@ async function handle(request, response) {
   return send(response, 404, { error: '接口不存在' })
 }
 
-http.createServer((request, response) => { handle(request, response).catch((error) => send(response, status(error), { error: error instanceof Error ? error.message : '服务器错误', code: error?.code })) }).listen(config.port, '127.0.0.1', () => console.log(`ASVA API listening on http://127.0.0.1:${config.port}`))
+http.createServer((request, response) => { handle(request, response).catch((error) => { console.error('[ASVA_API_ERROR]', JSON.stringify({ method: request.method, path: request.url, operator_id: actorId(request), timestamp: new Date().toISOString(), error: error instanceof Error ? error.message : String(error), code: error?.code })); send(response, status(error), { error: error instanceof Error ? error.message : '服务器错误', code: error?.code, details: error?.details }) }) }).listen(config.port, '127.0.0.1', () => console.log(`ASVA API listening on http://127.0.0.1:${config.port}`))

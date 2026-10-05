@@ -1,4 +1,4 @@
-import type { Customer, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
+import type { Customer, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
 import type { AsvaRepository } from './repositories'
 
 export function createLocalApi(repository: AsvaRepository) {
@@ -20,12 +20,12 @@ export function createLocalApi(repository: AsvaRepository) {
     updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Staff { return repository.updateMentor(actorId, mentorId, input) },
     deactivateMentor(actorId: string, mentorId: string): Staff { return repository.deactivateMentor(actorId, mentorId) },
     updateCustomerReferrer(actorId: string, customerId: string, referrerName: string): Customer { return repository.updateCustomerReferrer(actorId, customerId, referrerName) },
-    teamSnapshot(actorId: string) {
+    teamSnapshot(actorId: string, status?: StaffStatus) {
       const database = repository.getDatabaseForUser(actorId)
       const actor = database.staff.find((item) => item.id === actorId)
       if (actor?.permissionRole !== 'ADMIN') throw new Error('无权查看团队数据')
       const all = repository.getDatabase()
-      return all.staff.filter((item) => item.permissionRole === 'MENTOR').map((mentor) => ({
+      return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!status || item.status === status)).map((mentor) => ({
         mentor,
         customerCount: all.customers.filter((customer) => customer.mentorId === mentor.id).length,
         waitFollowUp: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'WAIT_FOLLOW_UP').length,

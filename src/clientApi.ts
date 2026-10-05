@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
+import type { Customer, CustomerDraftPreview, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 
@@ -40,7 +40,7 @@ export interface WorkbenchApi {
   createMentor(actorId: string, input: MentorAccountInput): Promise<Staff>
   updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Promise<Staff>
   deactivateMentor(actorId: string, mentorId: string): Promise<Staff>
-  teamSnapshot(actorId: string): Promise<TeamSnapshot[]>
+  teamSnapshot(actorId: string, status?: StaffStatus): Promise<TeamSnapshot[]>
   dashboardSnapshot(actorId: string): Promise<DashboardSnapshot>
   assistantQuery(actorId: string, question: string, context?: AssistantQueryContext): Promise<AssistantQueryResult>
   serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
@@ -69,7 +69,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     createMentor: async (actorId, input) => api.createMentor(actorId, input),
     updateMentor: async (actorId, mentorId, input) => api.updateMentor(actorId, mentorId, input),
     deactivateMentor: async (actorId, mentorId) => api.deactivateMentor(actorId, mentorId),
-    teamSnapshot: async (actorId) => api.teamSnapshot(actorId),
+    teamSnapshot: async (actorId, status) => api.teamSnapshot(actorId, status),
     dashboardSnapshot: async (actorId) => api.dashboardSnapshot(actorId),
     assistantQuery: async (actorId, question, context) => queryLocalAssistant(api.dashboard(actorId), question, context, actorId),
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
@@ -107,7 +107,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     createMentor: (actorId, input) => request<Staff>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input) }),
     updateMentor: (actorId, mentorId, input) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
     deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
-    teamSnapshot: (actorId) => request<TeamSnapshot[]>('/api/staff/mentors', actorId),
+    teamSnapshot: (actorId, status) => request<TeamSnapshot[]>(`/api/staff/mentors${status ? `?status=${encodeURIComponent(status)}` : ''}`, actorId),
     dashboardSnapshot: (actorId) => request<DashboardSnapshot>('/api/dashboard/snapshot', actorId),
     assistantQuery: (actorId, question, context) => request<AssistantQueryResult>('/api/ai/query', actorId, { method: 'POST', body: JSON.stringify({ question, context }) }),
     serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),

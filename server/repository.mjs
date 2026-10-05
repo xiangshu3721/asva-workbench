@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, listRecords, updateRecord } from './feishu.mjs'
+import { createRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
 import { createProfileDraft } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -8,7 +8,10 @@ const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已�
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 const boolean = (value) => value === true || value === 'true' || value === '是'
 const date = (value) => typeof value === 'number' ? new Date(value).toISOString() : text(value)
-const normalizePhone = (value) => text(value).replace(/\s+/g, '')
+const normalizePhone = (value) => {
+  const digits = text(value).replace(/\D/g, '')
+  return digits.startsWith('86') && digits.length === 13 ? digits.slice(2) : digits
+}
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
 const get = (table, recordFields, key) => readField(table, recordFields, key)
@@ -44,8 +47,10 @@ function customer(row) {
 
 function staff(row) {
   const f = row.fields || {}
-  const permissionRole = text(get('staff', f, 'role')) === 'MENTOR' || text(get('staff', f, 'permission_role')) === 'MENTOR' ? 'MENTOR' : 'ADMIN'
-  const status = text(get('staff', f, 'status')) === 'INACTIVE' || text(get('staff', f, 'display_status')) === '停用' ? 'INACTIVE' : 'ACTIVE'
+  const rawRole = text(get('staff', f, 'role')) || text(get('staff', f, 'permission_role'))
+  const permissionRole = ['MENTOR', '导师'].includes(rawRole) ? 'MENTOR' : 'ADMIN'
+  const rawStatus = text(get('staff', f, 'status')) || text(get('staff', f, 'display_status'))
+  const status = ['INACTIVE', '停用', '已停用'].includes(rawStatus) ? 'INACTIVE' : 'ACTIVE'
   const name = text(get('staff', f, 'nickname')) || text(get('staff', f, 'name')) || '未命名人员'
   const phone = normalizePhone(get('staff', f, 'phone') || get('staff', f, 'login_phone'))
   const rawLoginEnabled = get('staff', f, 'login_enabled')
@@ -218,7 +223,13 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
 }
 
 export class FeishuRepository {
-  constructor() { this.queryLogs = [] }
+  constructor() { this.queryLogs = []; this.auditLogs = [] }
+  audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
+    const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error: error || undefined, timestamp: now() }
+    this.auditLogs.unshift(entry)
+    if (this.auditLogs.length > 200) this.auditLogs.length = 200
+    console.info('[ASVA_AUDIT]', JSON.stringify(entry))
+  }
   async load() {
     const entries = [['appointments', config.feishu.tables.appointments], ['customers', config.feishu.tables.customers], ['serviceRecords', config.feishu.tables.serviceRecords], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['profileChanges', config.feishu.tables.profileChanges]]
     const rows = await Promise.all(entries.map(([, tableId]) => tableId ? listRecords(tableId) : Promise.resolve([])))
@@ -357,11 +368,22 @@ export class FeishuRepository {
     const phone = normalizePhone(input?.phone)
     if (!name) throw new Error('导师昵称不能为空')
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
-    if (database.staff.some((item) => item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
+    const duplicate = database.staff.find((item) => normalizePhone(item.phone) === phone)
+    if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
+    if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请编辑原导师记录，不要重复创建'), { status: 409 })
     const createdAt = now()
-    const staffId = `M${Date.now()}`
-    await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, created_at: createdAt, updated_at: createdAt, deactivated_at: null, display_role: '导师', mentor_id: staffId, specialty: '' }))
-    return (await this.load()).staff.find((item) => item.id === staffId)
+    let staffId = `M${Date.now()}`
+    while (database.staff.some((item) => item.id === staffId)) staffId = `M${Date.now()}${Math.floor(Math.random() * 10)}`
+    try {
+      await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }))
+    } catch (error) {
+      this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
+      throw error
+    }
+    this.audit('CREATE_MENTOR', staffId, actorId)
+    const created = (await this.load()).staff.find((item) => item.id === staffId)
+    if (!created) throw new FeishuUnavailableError('导师已写入，但刷新后无法读取该人员记录')
+    return created
   }
 
   async updateMentor(actorId, mentorId, input) {
@@ -376,9 +398,19 @@ export class FeishuRepository {
     const phone = normalizePhone(input?.phone)
     if (!name) throw new Error('导师昵称不能为空')
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
-    if (database.staff.some((item) => item.id !== mentorId && item.status === 'ACTIVE' && normalizePhone(item.phone) === phone)) throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
-    await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, updated_at: now(), display_role: '导师' }))
-    return (await this.load()).staff.find((item) => item.id === mentorId)
+    const duplicate = database.staff.find((item) => item.id !== mentorId && normalizePhone(item.phone) === phone)
+    if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
+    if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请使用未占用的手机号'), { status: 409 })
+    try {
+      await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, updated_at: now(), display_role: '导师' }))
+    } catch (error) {
+      this.audit('UPDATE_MENTOR', mentorId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
+      throw error
+    }
+    this.audit('UPDATE_MENTOR', mentorId, actorId)
+    const updated = (await this.load()).staff.find((item) => item.id === mentorId)
+    if (!updated) throw new FeishuUnavailableError('导师已更新，但刷新后无法读取该人员记录')
+    return updated
   }
 
   async deactivateMentor(actorId, mentorId) {
@@ -391,10 +423,21 @@ export class FeishuRepository {
     if (mentor.status !== 'ACTIVE') throw new Error('导师账户已注销')
     const following = database.appointments.filter((item) => item.assignedMentorId === mentorId && item.status === 'WAIT_FOLLOW_UP').length
     const waitFeedback = database.appointments.filter((item) => item.assignedMentorId === mentorId && item.status === 'WAIT_FEEDBACK').length
-    if (following || waitFeedback) throw new Error(`该导师还有未完成客户，请先重新分配后再注销。待跟进 ${following}，待反馈 ${waitFeedback}`)
+    if (following || waitFeedback) {
+      const cases = database.appointments.filter((item) => item.assignedMentorId === mentorId && ['WAIT_FOLLOW_UP', 'WAIT_FEEDBACK'].includes(item.status)).map((item) => ({ id: item.id, customerId: item.customerId, status: item.status }))
+      throw Object.assign(new Error(`该导师还有未完成客户，请先重新分配后再注销。待跟进 ${following}，待反馈 ${waitFeedback}`), { status: 409, details: { following, waitFeedback, cases } })
+    }
     const deactivatedAt = now()
-    await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { status: 'INACTIVE', login_enabled: false, display_status: '停用', updated_at: deactivatedAt, deactivated_at: deactivatedAt }))
-    return (await this.load()).staff.find((item) => item.id === mentorId)
+    try {
+      await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { status: 'INACTIVE', login_enabled: false, display_status: '停用', updated_at: deactivatedAt, deactivated_at: deactivatedAt }))
+    } catch (error) {
+      this.audit('DEACTIVATE_MENTOR', mentorId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
+      throw error
+    }
+    this.audit('DEACTIVATE_MENTOR', mentorId, actorId)
+    const deactivated = (await this.load()).staff.find((item) => item.id === mentorId)
+    if (!deactivated) throw new FeishuUnavailableError('导师已停用，但刷新后无法读取该人员记录')
+    return deactivated
   }
 
   async updateCustomerReferrer(actorId, customerId, referrerName) {
@@ -415,13 +458,21 @@ export class FeishuRepository {
     const appointment = database.appointments.find((item) => item.id === appointmentId)
     const mentor = database.staff.find((item) => item.id === mentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')
     if (!appointment || !mentor) throw new Error('预约或导师不存在')
-    await updateRecord(config.feishu.tables.appointments, appointment._recordId, mapFields('appointments', { assigned_mentor_id: mentorId, status: 'WAIT_FOLLOW_UP', followup_handled: false, followup_info_completed: false, mentor_name: mentor.name }))
-    const customerRow = database._rows.customers.find((row) => text(get('customers', row.fields, 'customer_id')) === appointment.customerId)
-    if (customerRow) {
-      const currentCustomer = database.customers.find((item) => item.id === appointment.customerId)
-      if (currentCustomer && currentCustomer.mentorId !== mentorId) await persistCustomerProfile(database, appointment.customerId, [{ field: 'mentor_id', value: mentorId, source: 'USER_EXPLICIT', confidence: 1, confirmed: true }], undefined, actorId)
-      else await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { mentor_id: mentorId }))
+    if (!['WAIT_ASSIGN', 'WAIT_FOLLOW_UP', 'WAIT_FEEDBACK'].includes(appointment.status)) throw new Error('已完成的预约不能更换导师')
+    const nextStatus = appointment.status === 'WAIT_ASSIGN' ? 'WAIT_FOLLOW_UP' : appointment.status
+    try {
+      await updateRecord(config.feishu.tables.appointments, appointment._recordId, mapFields('appointments', { assigned_mentor_id: mentorId, status: nextStatus, followup_handled: nextStatus === 'WAIT_FEEDBACK', followup_info_completed: false, mentor_name: mentor.name }))
+      const customerRow = database._rows.customers.find((row) => text(get('customers', row.fields, 'customer_id')) === appointment.customerId)
+      if (customerRow) {
+        const currentCustomer = database.customers.find((item) => item.id === appointment.customerId)
+        if (currentCustomer && currentCustomer.mentorId !== mentorId) await persistCustomerProfile(database, appointment.customerId, [{ field: 'mentor_id', value: mentorId, source: 'USER_EXPLICIT', confidence: 1, confirmed: true }], undefined, actorId)
+        else await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { mentor_id: mentorId }))
+      }
+    } catch (error) {
+      this.audit('ASSIGN_MENTOR', appointmentId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
+      throw error
     }
+    this.audit('ASSIGN_MENTOR', appointmentId, actorId)
     return scope(await this.load(), actorId)
   }
 
@@ -474,12 +525,12 @@ export class FeishuRepository {
     return this.load()
   }
 
-  async teamSnapshot(actorId) {
+  async teamSnapshot(actorId, statusFilter = '') {
     const database = await this.dashboard(actorId)
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看团队数据')
     const all = await this.load()
-    return all.staff.filter((item) => item.permissionRole === 'MENTOR').map((mentor) => ({ mentor, customerCount: all.customers.filter((item) => item.mentorId === mentor.id).length, waitFollowUp: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'WAIT_FOLLOW_UP').length, waitFeedback: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'WAIT_FEEDBACK').length, completed: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'COMPLETED').length }))
+    return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!statusFilter || item.status === statusFilter)).map((mentor) => ({ mentor, customerCount: all.customers.filter((item) => item.mentorId === mentor.id).length, waitFollowUp: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'WAIT_FOLLOW_UP').length, waitFeedback: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'WAIT_FEEDBACK').length, completed: all.appointments.filter((item) => item.assignedMentorId === mentor.id && item.status === 'COMPLETED').length }))
   }
 
   async dashboardSnapshot(actorId) {
