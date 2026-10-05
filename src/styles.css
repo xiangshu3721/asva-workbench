@@ -128,6 +128,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .review-update small { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .contact-row { margin-bottom: 0; }
 .field-hint { display: block; margin: -8px 0 17px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; }
+.contact-hint { margin: 7px 0 17px; }
 .multi-select { position: relative; }
 .multi-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 44px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: #fbfcfe; text-align: left; }
 .multi-select-trigger[aria-expanded='true'] { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(78, 110, 232, .13); }
