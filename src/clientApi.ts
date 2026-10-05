@@ -1,10 +1,10 @@
-import type { Customer, CustomerProfile, Database, FeedbackInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
+import type { Customer, CustomerDraftPreview, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
-export interface TeamSnapshot { mentor: Staff; customerCount: number; following: number; waitFeedback: number; completed: number }
-export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'FOLLOWING' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
+export interface TeamSnapshot { mentor: Staff; customerCount: number; waitFollowUp: number; waitFeedback: number; completed: number }
+export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -28,12 +28,14 @@ export interface WorkbenchApi {
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
   createAppointment(input: NewAppointmentInput): Promise<Database>
+  previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
+  createCustomer(actorId: string, input: ManualCustomerInput): Promise<Database>
+  updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<Database>
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
   markFollowupDone(actorId: string, appointmentId: string): Promise<Database>
   saveFeedback(actorId: string, feedback: FeedbackInput): Promise<Database>
-  profile(actorId: string, customerId: string): Promise<CustomerProfile | undefined>
   profileDraft(actorId: string, customerId: string, text: string): Promise<ProfileDraft>
-  confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): Promise<CustomerProfile>
+  confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): Promise<Customer>
   updateCustomerReferrer(actorId: string, customerId: string, referrerName: string): Promise<Customer | undefined>
   createMentor(actorId: string, input: MentorAccountInput): Promise<Staff>
   updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Promise<Staff>
@@ -55,10 +57,12 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
     createAppointment: async (input) => api.createAppointment(input),
+    previewCustomer: async (actorId, input) => api.previewCustomer(actorId, input),
+    createCustomer: async (actorId, input) => api.createCustomer(actorId, input),
+    updateCustomer: async (actorId, customerId, input) => api.updateCustomer(actorId, customerId, input),
     assignAppointment: async (actorId, appointmentId, mentorId) => api.assignAppointment(actorId, appointmentId, mentorId),
     markFollowupDone: async (actorId, appointmentId) => api.markFollowupDone(actorId, appointmentId),
     saveFeedback: async (actorId, feedback) => api.saveFeedback(actorId, feedback),
-    profile: async (actorId, customerId) => api.profile(actorId, customerId),
     profileDraft: async (actorId, customerId, text) => api.profileDraft(actorId, customerId, text),
     confirmProfile: async (actorId, customerId, updates) => api.confirmProfile(actorId, customerId, updates),
     updateCustomerReferrer: async (actorId, customerId, referrerName) => api.updateCustomerReferrer(actorId, customerId, referrerName),
@@ -91,12 +95,14 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
     createAppointment: (input) => request<Database>('/api/appointments', undefined, { method: 'POST', body: JSON.stringify(input) }),
+    previewCustomer: (actorId, input) => request<CustomerDraftPreview>('/api/customers/preview', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    createCustomer: (actorId, input) => request<Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    updateCustomer: (actorId, customerId, input) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
     assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
     markFollowupDone: (actorId, appointmentId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/complete-followup`, actorId, { method: 'POST', body: '{}' }),
     saveFeedback: (actorId, feedback) => request<Database>(`/api/appointments/${encodeURIComponent(feedback.appointmentId)}/feedback`, actorId, { method: 'POST', body: JSON.stringify(feedback) }),
-    profile: (actorId, customerId) => request<CustomerProfile>('/api/customers/' + encodeURIComponent(customerId) + '/profile', actorId),
     profileDraft: (actorId, customerId, text) => request<ProfileDraft>('/api/customers/' + encodeURIComponent(customerId) + '/profile/extract', actorId, { method: 'POST', body: JSON.stringify({ text }) }),
-    confirmProfile: (actorId, customerId, updates) => request<CustomerProfile>('/api/customers/' + encodeURIComponent(customerId) + '/profile/confirm', actorId, { method: 'POST', body: JSON.stringify({ updates }) }),
+    confirmProfile: (actorId, customerId, updates) => request<Customer>('/api/customers/' + encodeURIComponent(customerId) + '/profile/confirm', actorId, { method: 'POST', body: JSON.stringify({ updates }) }),
     updateCustomerReferrer: (actorId, customerId, referrerName) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/referrer`, actorId, { method: 'POST', body: JSON.stringify({ referrerName }) }),
     createMentor: (actorId, input) => request<Staff>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input) }),
     updateMentor: (actorId, mentorId, input) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),

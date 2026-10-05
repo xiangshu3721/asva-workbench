@@ -1,4 +1,4 @@
-import type { Customer, CustomerProfile, Database, FeedbackInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
+import type { Customer, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff } from './domain'
 import type { AsvaRepository } from './repositories'
 
 export function createLocalApi(repository: AsvaRepository) {
@@ -8,12 +8,14 @@ export function createLocalApi(repository: AsvaRepository) {
     login(phone: string, code: string): Staff { return repository.authenticate(phone, code) },
     customer(actorId: string, id: string): Customer | undefined { return repository.getDatabaseForUser(actorId).customers.find((item) => item.id === id) },
     createAppointment(input: NewAppointmentInput): Database { return repository.createAppointment(input) },
+    previewCustomer(actorId: string, input: ManualCustomerInput) { return repository.previewCustomer(actorId, input) },
+    createCustomer(actorId: string, input: ManualCustomerInput): Database { return repository.createCustomer(actorId, input) },
+    updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Database { return repository.updateCustomer(actorId, customerId, input) },
     assignAppointment(actorId: string, appointmentId: string, mentorId: string): Database { return repository.assignAppointment(actorId, appointmentId, mentorId) },
     markFollowupDone(actorId: string, appointmentId: string): Database { return repository.markFollowupDone(actorId, appointmentId) },
     saveFeedback(actorId: string, feedback: FeedbackInput): Database { return repository.saveFeedback(actorId, feedback) },
-    profile(actorId: string, customerId: string): CustomerProfile | undefined { return repository.profile(actorId, customerId) },
     profileDraft(actorId: string, customerId: string, text: string): ProfileDraft { return repository.profileDraft(actorId, customerId, text) },
-    confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): CustomerProfile { return repository.confirmProfile(actorId, customerId, updates) },
+    confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): Customer { return repository.confirmProfile(actorId, customerId, updates) },
     createMentor(actorId: string, input: MentorAccountInput): Staff { return repository.createMentor(actorId, input) },
     updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Staff { return repository.updateMentor(actorId, mentorId, input) },
     deactivateMentor(actorId: string, mentorId: string): Staff { return repository.deactivateMentor(actorId, mentorId) },
@@ -26,7 +28,7 @@ export function createLocalApi(repository: AsvaRepository) {
       return all.staff.filter((item) => item.permissionRole === 'MENTOR').map((mentor) => ({
         mentor,
         customerCount: all.customers.filter((customer) => customer.mentorId === mentor.id).length,
-        following: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'FOLLOWING').length,
+        waitFollowUp: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'WAIT_FOLLOW_UP').length,
         waitFeedback: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'WAIT_FEEDBACK').length,
         completed: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'COMPLETED').length,
       }))
@@ -46,7 +48,7 @@ export function createLocalApi(repository: AsvaRepository) {
         monthCompleted: appointments.filter((appointment) => appointment.completedAt?.startsWith(month)).length,
         paidCustomers: all.customers.filter((customer) => customer.paid).length,
         mentorCount: all.staff.filter((staff) => staff.permissionRole === 'MENTOR').length,
-        statusCounts: { WAIT_ASSIGN: appointments.filter((item) => item.status === 'WAIT_ASSIGN').length, FOLLOWING: appointments.filter((item) => item.status === 'FOLLOWING').length, WAIT_FEEDBACK: appointments.filter((item) => item.status === 'WAIT_FEEDBACK').length, COMPLETED: appointments.filter((item) => item.status === 'COMPLETED').length },
+        statusCounts: { WAIT_ASSIGN: appointments.filter((item) => item.status === 'WAIT_ASSIGN').length, WAIT_FOLLOW_UP: appointments.filter((item) => item.status === 'WAIT_FOLLOW_UP').length, WAIT_FEEDBACK: appointments.filter((item) => item.status === 'WAIT_FEEDBACK').length, COMPLETED: appointments.filter((item) => item.status === 'COMPLETED').length },
         customerTrend: bars,
         mentorLoad: all.staff.filter((staff) => staff.permissionRole === 'MENTOR').map((mentor) => ({ name: mentor.name, count: all.customers.filter((customer) => customer.mentorId === mentor.id).length })),
       }

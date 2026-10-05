@@ -1,4 +1,4 @@
-import type { ProfileSource, ProfileValue, CustomerProfile, ProfileUpdate } from './domain'
+import type { ProfileSource, ProfileValue, CustomerProfileState, ProfileUpdate } from './domain'
 
 export const PROFILE_FIELD_KEYS = [
   'gender', 'age', 'birth_year', 'city', 'hometown', 'marital_status', 'education', 'living_status', 'children_summary',
@@ -9,7 +9,7 @@ export const PROFILE_FIELD_KEYS = [
   'hobbies', 'sports', 'reading', 'travel', 'art_preferences', 'social_preference', 'sleep', 'diet', 'routine', 'life_satisfaction',
   'self_description', 'personality_traits', 'communication_style', 'decision_style', 'emotion_expression', 'stress_response', 'conflict_style', 'action_style', 'strengths', 'common_blocks',
   'core_values', 'family_values', 'career_values', 'money_values', 'relationship_values', 'success_definition', 'happiness_definition', 'freedom_definition', 'growth_attitude',
-  'current_core_issue', 'secondary_issues', 'current_stressors', 'current_goal', 'current_expectation', 'current_resources', 'support_system', 'current_barriers', 'energy_state', 'recent_major_changes',
+  'current_core_issue', 'secondary_issues', 'current_stressors', 'current_goal', 'current_expectation', 'current_resources', 'support_system', 'current_barriers', 'energy_state', 'recent_major_changes', 'ai_customer_summary',
 ] as const
 
 export type ProfileField = typeof PROFILE_FIELD_KEYS[number]
@@ -23,8 +23,8 @@ export const PROFILE_SECTIONS: Array<{ title: string; fields: Array<{ key: Profi
   { title: '当前状态', fields: [{ key: 'current_core_issue', label: '核心困扰' }, { key: 'secondary_issues', label: '其他困扰' }, { key: 'current_stressors', label: '当前压力' }, { key: 'current_goal', label: '当前目标' }, { key: 'current_expectation', label: '期待获得' }, { key: 'current_resources', label: '已有资源' }, { key: 'support_system', label: '支持系统' }, { key: 'current_barriers', label: '当前阻碍' }, { key: 'energy_state', label: '能量状态' }, { key: 'recent_major_changes', label: '近期变化' }] },
 ]
 
-export function emptyProfile(customerId: string, id = 'profile-' + customerId): CustomerProfile {
-  return { id, customerId, fields: {}, fieldMeta: {}, updatedAt: null, schemaVersion: 'v0.4' }
+export function emptyProfileState(customerId: string): CustomerProfileState {
+  return { customerId, fields: {}, fieldMeta: {}, updatedAt: null, schemaVersion: 'v0.4' }
 }
 
 export function displayProfileValue(value: ProfileValue) {
@@ -35,7 +35,7 @@ export function displayProfileValue(value: ProfileValue) {
 
 export function updateValue(value: unknown): ProfileValue {
   if (value === null || value === undefined || value === '') return null
-  if (typeof value === 'number' || typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return value
   if (Array.isArray(value)) return value.filter((item) => typeof item === 'string' || typeof item === 'number').map(String)
   return String(value)
 }
@@ -52,7 +52,7 @@ export function profileSourceLabel(source: ProfileSource) {
   return source === 'AI_INFERENCE' ? 'AI 推测' : source === 'MENTOR_OBSERVATION' ? '导师观察' : source === 'MENTOR_CONFIRMED' ? '导师确认' : '客户明确表达'
 }
 
-export function extractLocalProfile(text: string, existing: CustomerProfile): { updates: ProfileUpdate[] } {
+export function extractLocalProfile(text: string, existing: CustomerProfileState): { updates: ProfileUpdate[] } {
   const updates: ProfileUpdate[] = []
   const add = (field: string, value: ProfileValue, confidence = 0.92, source: ProfileSource = 'MENTOR_OBSERVATION') => {
     if (value === null || value === '') return

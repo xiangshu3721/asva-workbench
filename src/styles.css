@@ -117,3 +117,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
   .side-rail { width: 214px; }
   .main-content { width: calc(100% - 214px); margin-left: 214px; }
 }
+/* V0.9 manual customer review */
+.check-line { display: flex !important; grid-template-columns: none; align-items: center; gap: 8px !important; }
+.check-line input, .review-update > input { width: auto !important; }
+.review-update { display: grid !important; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px !important; padding: 10px; border: 1px solid var(--line); border-radius: 9px; }
+.review-update > span { display: grid; gap: 5px; min-width: 0; }
+.review-update > span input { margin: 0; }
+.review-update small { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.product-picker { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+.enrollment-options { margin-top: 10px; }
+.course-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.course-tag { display: inline-flex; padding: 7px 10px; border-radius: 999px; color: var(--blue-dark); background: var(--blue-pale); font-size: 11px; }

@@ -91,4 +91,32 @@ describe('V0.7 Query Planner and read-only assistant', () => {
     expect(result.debug?.query_plan.joins).toEqual(['AppointmentRepository'])
     expect(result.debug?.executed_at).toMatch(/T/)
   })
+
+  it('TEST13 reads a customer enrolled course list from EnrollmentRepository', () => {
+    const result = queryLocalAssistant(seedDatabase, '林知微报过哪些课程', context)
+    expect(result.kind).toBe('CUSTOMER_PURCHASES')
+    expect(result.answer).toContain('觉塑')
+    expect(result.answer).not.toContain('镜像技术')
+  })
+
+  it('TEST14 finds customers by structured product enrollment', () => {
+    const result = queryLocalAssistant(seedDatabase, '报名觉塑的客户有哪些', context)
+    expect(result.answer).toContain('林知微')
+    expect(result.debug?.repositories_used).toContain('EnrollmentRepository')
+  })
+
+  it('TEST15 supports intersection and no-enrollment queries', () => {
+    const intersection = queryLocalAssistant(seedDatabase, '同时报名觉塑和镜像技术的客户有多少', context)
+    expect(intersection.answer).toContain('0 位')
+    const none = queryLocalAssistant(seedDatabase, '目前没有报名任何课程的客户有哪些', context)
+    expect(none.answer).toContain('没有报名课程的客户')
+  })
+
+  it('TEST16 ranks customers by structured enrollment count', () => {
+    const database = structuredClone(seedDatabase)
+    database.enrollments.push({ id: 'E-EXTRA', customerId: 'C00001298', productId: 'P-002', paid: false, amount: Number.NaN, date: '2026-10-04', status: '学习中' })
+    const result = queryLocalAssistant(database, '报名课程最多的客户有哪些', context)
+    expect(result.answer).toContain('林知微')
+    expect(result.answer).toContain('2 门')
+  })
 })

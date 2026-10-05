@@ -42,7 +42,6 @@ export const config = {
       staff: value('FEISHU_STAFF_TABLE_ID', 'tblojNfk4bVM5KxH'),
       products: value('FEISHU_PRODUCTS_TABLE_ID', 'tblLG2SFwYpKgiMQ'),
       enrollments: value('FEISHU_ENROLLMENTS_TABLE_ID'),
-      profiles: value('FEISHU_PROFILES_TABLE_ID', 'tblgtkXFXhPrDEVQ'),
       profileChanges: value('FEISHU_PROFILE_CHANGES_TABLE_ID', 'tblTH3OmBuzUsBVu'),
     },
   },

@@ -1,9 +1,9 @@
 export type Role = 'ADMIN' | 'MENTOR'
 export type PermissionRole = 'ADMIN' | 'MENTOR'
 export type StaffStatus = 'ACTIVE' | 'INACTIVE'
-export type AppointmentWorkflowStatus = 'WAIT_ASSIGN' | 'FOLLOWING' | 'WAIT_FEEDBACK' | 'COMPLETED'
+export type AppointmentWorkflowStatus = 'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED'
 export type ProfileSource = 'USER_EXPLICIT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_INFERENCE'
-export type ProfileValue = string | number | string[] | null
+export type ProfileValue = string | number | boolean | string[] | null
 
 export type AppointmentStatus =
   | '待分配'
@@ -52,6 +52,8 @@ export interface Customer {
   name: string
   initials: string
   phone: string
+  wechat?: string
+  source?: string
   status: CustomerStatus
   grade: CustomerGrade
   gradeSource: 'AI建议' | '导师确认'
@@ -69,8 +71,13 @@ export interface Customer {
   nextFollowup: string | null
   lastFollowupAt: string | null
   nextFollowupAt: string | null
-  followupStatus: '待跟进' | '跟进中' | '已完成'
+  followupStatus: '待跟进' | '已完成'
   notes: string
+  /** The customer's current structured profile; persisted on the Customer record. */
+  profileFields?: Record<string, ProfileValue>
+  profileFieldMeta?: Record<string, ProfileFieldMeta>
+  profileUpdatedAt?: string | null
+  profileSchemaVersion?: string
 }
 
 export interface ProfileFieldMeta {
@@ -80,8 +87,7 @@ export interface ProfileFieldMeta {
   updatedAt: string
 }
 
-export interface CustomerProfile {
-  id: string
+export interface CustomerProfileState {
   customerId: string
   fields: Record<string, ProfileValue>
   fieldMeta: Record<string, ProfileFieldMeta>
@@ -107,12 +113,14 @@ export interface ProfileChange {
   id: string
   customerId: string
   field: string
+  fieldName?: string
   oldValue: ProfileValue
   newValue: ProfileValue
   source: ProfileSource
   confidence: number
   confirmed: boolean
   updatedAt: string
+  operatorId?: string
   serviceRecordId?: string
 }
 
@@ -131,6 +139,8 @@ export interface Appointment {
   createdAt: string
   completedAt?: string | null
   source: string
+  /** Existing Appointment records are the V0.9 Case/跟进事项. */
+  caseSource?: string
 }
 
 export interface ServiceSession {
@@ -170,8 +180,20 @@ export interface Product {
   cycle: string
   format: string
   status: '在售' | '筹备中'
+  /** Production Feishu products are normalized to this flag when available. */
+  active?: boolean
   summary: string
   fit: string[]
+}
+
+export type EnrollmentPaymentStatus = 'UNRECORDED' | 'PAID' | 'UNPAID'
+
+export interface EnrollmentDraft {
+  productId: string
+  paymentStatus?: EnrollmentPaymentStatus
+  amount?: number | null
+  enrolledAt?: string | null
+  paidAt?: string | null
 }
 
 export interface Enrollment {
@@ -181,7 +203,12 @@ export interface Enrollment {
   paid: boolean
   amount: number
   date: string
-  status: '学习中' | '已完成'
+  status: '学习中' | '已完成' | 'CANCELLED'
+  paymentStatus?: EnrollmentPaymentStatus
+  enrollmentSource?: string
+  enrolledAt?: string | null
+  paidAt?: string | null
+  operatorId?: string
 }
 
 export interface Database {
@@ -192,7 +219,6 @@ export interface Database {
   followups: Followup[]
   products: Product[]
   enrollments: Enrollment[]
-  profiles: CustomerProfile[]
   profileChanges: ProfileChange[]
   _missingRepositories?: string[]
 }
@@ -233,4 +259,33 @@ export interface NewAppointmentInput {
   expectation: string
   source: string
   createdAt: string
+  nickname?: string
+  phone?: string
+  wechat?: string
+  customerSituation?: string
+  caseSource?: string
+}
+
+export interface ManualCustomerInput {
+  nickname: string
+  phone?: string
+  wechat?: string
+  situation: string
+  needsFollowup: boolean
+  mentorId?: string | null
+  source?: string
+  caseSource?: string
+  profileUpdates?: ProfileUpdate[]
+  confirmedNotSame?: boolean
+  enrollments?: EnrollmentDraft[]
+}
+
+export interface CustomerDuplicateMatch {
+  customer: Customer
+  matchedBy: 'phone' | 'wechat' | 'nickname_exact' | 'nickname_fuzzy'
+}
+
+export interface CustomerDraftPreview {
+  duplicates: CustomerDuplicateMatch[]
+  updates: ProfileUpdate[]
 }

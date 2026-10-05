@@ -31,14 +31,14 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(() => api.dashboard('mentor-zhang')).toThrow('导师端暂未开放，请联系管理员。')
   })
 
-  it('moves WAIT_ASSIGN to FOLLOWING only through ADMIN assignment', () => {
+  it('moves WAIT_ASSIGN to WAIT_FOLLOW_UP only through ADMIN assignment', () => {
     const api = createLocalApi(createLocalRepository())
     api.assignAppointment('staff-admin', 'A-20261004-01', 'mentor-li')
-    expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-01')?.status).toBe('FOLLOWING')
+    expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-01')?.status).toBe('WAIT_FOLLOW_UP')
     expect(() => api.assignAppointment('mentor-li', 'A-20261004-02', 'mentor-zhang')).toThrow('导师端暂未开放，请联系管理员。')
   })
 
-  it('moves FOLLOWING to WAIT_FEEDBACK through ADMIN operation', () => {
+  it('moves WAIT_FOLLOW_UP to WAIT_FEEDBACK through ADMIN operation', () => {
     const api = createLocalApi(createLocalRepository())
     expect(() => api.markFollowupDone('mentor-li', 'A-20261004-02')).toThrow('导师端暂未开放，请联系管理员。')
     api.markFollowupDone('staff-admin', 'A-20261004-02')
@@ -63,6 +63,38 @@ describe('V0.3 appointment workflow and permissions', () => {
     const newAppointment = database.appointments.find((item) => item.customerId === 'C00001298' && item.id !== oldAppointmentId && item.status === 'WAIT_ASSIGN')
     expect(newAppointment).toBeDefined()
     expect(database.appointments.find((item) => item.id === oldAppointmentId)?.status).toBe('COMPLETED')
+  })
+
+  it('creates a customer only after duplicate review and optionally creates a Case', () => {
+    const api = createLocalApi(createLocalRepository())
+    const preview = api.previewCustomer('staff-admin', { nickname: '林知微', phone: '13800001212', situation: '希望梳理职业方向。', needsFollowup: true })
+    expect(preview.duplicates[0]?.matchedBy).toBe('nickname_exact')
+    expect(() => api.createCustomer('staff-admin', { nickname: '林知微', phone: '13800001212', situation: '希望梳理职业方向。', needsFollowup: true })).toThrow('重复')
+    const created = api.createCustomer('staff-admin', { nickname: '顾清弦', wechat: 'gqx-demo', situation: '最近在考虑换行业，希望有人帮我拆解下一步。', needsFollowup: true, mentorId: 'mentor-li', profileUpdates: [{ field: 'current_core_issue', value: '职业方向选择', source: 'AI_INFERENCE', confidence: 0.94 }] })
+    const customer = created.customers.find((item) => item.name === '顾清弦')
+    expect(customer?.source).toBe('管理员手动录入')
+    expect(customer?.profileFields?.current_core_issue).toBe('职业方向选择')
+    expect(created.appointments.some((item) => item.customerId === customer?.id && item.status === 'WAIT_FOLLOW_UP' && item.caseSource === 'ADMIN_MANUAL')).toBe(true)
+    const archiveOnly = api.createCustomer('staff-admin', { nickname: '闻溪月', phone: '13900001234', situation: '先存档，暂时不安排跟进。', needsFollowup: false })
+    const archiveCustomer = archiveOnly.customers.find((item) => item.name === '闻溪月')
+    expect(archiveOnly.appointments.some((item) => item.customerId === archiveCustomer?.id)).toBe(false)
+  })
+
+  it('stores manual enrolled courses as deduplicated structured relations', () => {
+    const api = createLocalApi(createLocalRepository())
+    const first = api.createCustomer('staff-admin', { nickname: '温知遥', phone: '13900001111', situation: '先记录第一门课程。', needsFollowup: false, enrollments: [{ productId: 'P-001' }] })
+    const existing = first.customers.find((item) => item.name === '温知遥')!
+    api.updateCustomer('staff-admin', existing.id, { nickname: existing.name, situation: '', needsFollowup: false, enrollments: [{ productId: 'P-001' }, { productId: 'P-002' }] })
+    const saved = api.dashboard('staff-admin')
+    const relations = saved.enrollments.filter((item) => item.customerId === existing.id && item.status !== 'CANCELLED')
+    expect(relations.map((item) => item.productId).sort()).toEqual(['P-001', 'P-002'])
+    expect(relations).toHaveLength(2)
+    expect(saved.customers.find((item) => item.id === existing.id)?.intendedCourse).not.toBe('P-002')
+  })
+
+  it('does not allow manual entry to select an inactive product', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(() => api.createCustomer('staff-admin', { nickname: '沈知遥', wechat: 'szy-demo', situation: '先记录课程关系。', needsFollowup: false, enrollments: [{ productId: 'P-003' }] })).toThrow('有效课程')
   })
 
   it('uses the unified ADMIN role and keeps dashboard counts sourced from appointments', () => {
@@ -122,16 +154,15 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(draft.updates.map((item) => item.field)).toEqual(expect.arrayContaining(['age', 'city', 'occupation', 'marital_status', 'children_summary', 'hobbies']))
     expect(draft.updates.find((item) => item.field === 'self_description')?.source).toBe('AI_INFERENCE')
     expect(draft.updates.find((item) => item.field === 'self_description')?.confirmed).toBe(false)
-    expect(api.profile('staff-admin', 'C00001301')?.fields.age).toBeUndefined()
+    expect(api.dashboard('staff-admin').customers.find((item) => item.id === 'C00001301')?.profileFields?.age).toBeUndefined()
     const saved = api.confirmProfile('staff-admin', 'C00001301', draft.updates)
-    expect(saved.fields.age).toBe(36)
-    expect(saved.fieldMeta.age.confirmed).toBe(true)
+    expect(saved.profileFields?.age).toBe(36)
+    expect(saved.profileFieldMeta?.age.confirmed).toBe(true)
     expect(api.dashboard('staff-admin').profileChanges.some((item) => item.customerId === 'C00001301' && item.field === 'age')).toBe(true)
   })
 
   it('blocks mentor profile access while mentor login is disabled', () => {
     const api = createLocalApi(createLocalRepository())
-    expect(() => api.profile('mentor-zhang', 'C00001301')).toThrow('导师端暂未开放，请联系管理员。')
     expect(() => api.profileDraft('mentor-zhang', 'C00001276', '她喜欢阅读。')).toThrow('导师端暂未开放，请联系管理员。')
   })
 
@@ -139,7 +170,7 @@ describe('V0.3 appointment workflow and permissions', () => {
     const api = createLocalApi(createLocalRepository())
     const draft = api.profileDraft('staff-admin', 'C00001298', '客户现在住在上海。')
     expect(draft.updates.find((item) => item.field === 'city')?.conflict).toBe(true)
-    expect(api.profile('staff-admin', 'C00001298')?.fields.city).toBe('杭州')
+    expect(api.dashboard('staff-admin').customers.find((item) => item.id === 'C00001298')?.profileFields?.city).toBe('杭州')
   })
 
   it('persists confirmed profile updates together with a service record', () => {
@@ -148,6 +179,6 @@ describe('V0.3 appointment workflow and permissions', () => {
     api.saveFeedback('staff-admin', feedback)
     const database = api.dashboard('staff-admin')
     expect(database.sessions[0].profileUpdates?.[0].field).toBe('hobbies')
-    expect(database.profiles.find((item) => item.customerId === 'C00001276')?.fields.hobbies).toEqual(['跑步'])
+    expect(database.customers.find((item) => item.id === 'C00001276')?.profileFields?.hobbies).toEqual(['跑步'])
   })
 })

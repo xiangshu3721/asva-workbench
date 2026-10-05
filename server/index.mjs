@@ -27,12 +27,14 @@ async function handle(request, response) {
   if (request.method === 'PATCH' && mentorEdit) { const body = await readBody(request); return send(response, 200, await repository.updateMentor(guard(request), decodeURIComponent(mentorEdit[1]), body)) }
   const mentorDeactivate = url.pathname.match(/^\/api\/staff\/mentors\/([^/]+)\/deactivate$/)
   if (request.method === 'POST' && mentorDeactivate) return send(response, 200, await repository.deactivateMentor(guard(request), decodeURIComponent(mentorDeactivate[1])))
-  const profileCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile$/)
-  if (request.method === 'GET' && profileCustomer) return send(response, 200, await repository.profile(guard(request), decodeURIComponent(profileCustomer[1])))
   const profileExtract = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile\/extract$/)
   if (request.method === 'POST' && profileExtract) { const body = await readBody(request); return send(response, 200, await repository.profileDraft(guard(request), decodeURIComponent(profileExtract[1]), body.text)) }
   const profileConfirm = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile\/confirm$/)
   if (request.method === 'POST' && profileConfirm) { const body = await readBody(request); return send(response, 200, await repository.confirmProfile(guard(request), decodeURIComponent(profileConfirm[1]), body.updates)) }
+  if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(response, 200, await repository.previewCustomer(await guardAdmin(request), await readBody(request)))
+  if (request.method === 'POST' && url.pathname === '/api/customers') return send(response, 201, await repository.createCustomer(await guardAdmin(request), await readBody(request)))
+  const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
+  if (request.method === 'PATCH' && customerEdit) return send(response, 200, await repository.updateCustomer(await guardAdmin(request), decodeURIComponent(customerEdit[1]), await readBody(request)))
   if (request.method === 'GET' && url.pathname.startsWith('/api/customers/')) return send(response, 200, await repository.customer(guard(request), decodeURIComponent(url.pathname.slice('/api/customers/'.length))))
   const briefCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/brief$/)
   if (request.method === 'POST' && briefCustomer) { const body = await readBody(request); return send(response, 200, await repository.saveBrief(guard(request), decodeURIComponent(briefCustomer[1]), body.brief)) }

@@ -13,14 +13,14 @@ ASVA 内部客户服务与经营管理 H5 的第一版可运行原型。
 - 登录规则：只有 `role=ADMIN`、`status=ACTIVE`、`login_enabled=true` 才能进入工作台；导师登录统一提示“导师端暂未开放，请联系管理员。”
 - API / Repository 权限边界：所有业务数据读取和写入均由服务端校验 ADMIN；导师仍可作为分配对象
 - 三项底部导航：首页、客户、我的
-- 管理员首页：待分配、跟进中、待反馈和已完成状态卡片
-- 客户列表：搜索、待处理、跟进中、已完成
+- 管理员首页：待分配、待跟进、待反馈和已完成状态卡片
+- 客户列表：搜索、待处理、待跟进、已完成
 - 客户单页：基础信息、当前困扰、帮助期待、AI Brief、历史预约、历史服务和服务判断信息
 - 服务反馈：管理员代导师填写沟通主题、结果、核心需要等信息，确认 AI 整理后保存
 - 客户画像：管理员可用自然语言或浏览器支持的语音输入描述客户，AI 生成新增 / 更新草稿；冲突信息先提示，只有管理员确认后才写入
 - 画像来源：`USER_EXPLICIT`、`MENTOR_CONFIRMED`、`MENTOR_OBSERVATION`、`AI_INFERENCE`，AI 推测默认 `confirmed=false`
 - 客户详情：按“TA是谁、工作与事业、家庭与关系、兴趣与生活、价值观与特点、当前状态”展示已记录信息，不展示底层大字段表
-- Appointment 状态机：`WAIT_ASSIGN` → `FOLLOWING` → `WAIT_FEEDBACK` → `COMPLETED`
+- Appointment 作为 Case 承载的状态机：`WAIT_ASSIGN` → `WAIT_FOLLOW_UP` → `WAIT_FEEDBACK` → `COMPLETED`
 - 导师账户管理：管理员可新增、编辑和软停用导师；导师账户 `login_enabled=false`，停用账户保留历史记录且不能承接新分配
 - 服务记录审计：`mentor_id` 表示实际服务导师，`operator_id` 表示在系统中录入记录的管理员
 - 管理员专属：团队管理和基础数据看板
@@ -60,17 +60,19 @@ VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 
 服务端入口是 `server/index.mjs`，前端只通过 `/api` 调用；DeepSeek 密钥和飞书应用密钥不会进入浏览器。`/api/health` 会显示配置状态但不会返回密钥。
 
-当前 Base 结构：原预约表继续作为预约主表，并使用 Customers、Appointments、ServiceRecords、Staff、Products 五类数据；本轮新增真实飞书表 `ASVA 客户画像`（`tblgtkXFXhPrDEVQ`）和 `ASVA 画像变更历史`（`tblTH3OmBuzUsBVu`），并在 Staff 增加 `login_enabled`、在 ServiceRecords 增加 `operator_id`，服务记录还保留 `profile_text`、`profile_updates_json`、`profile_update_confirmed` 字段。原表的“预约编号”作为 `appointment_id`，新增的 `status` 字段使用 `WAIT_ASSIGN / FOLLOWING / WAIT_FEEDBACK / COMPLETED`。
+当前 Base 结构：原预约表继续作为预约主表，并使用 Customers、Appointments、ServiceRecords、Staff、Products 五类数据；结构化客户档案字段已并入 `ASVA 客户`，每条 Customer Record 表示客户当前完整档案。`ASVA 画像变更历史`（`tblTH3OmBuzUsBVu`）保留用于重要字段审计，并在其中维护 `field_key`、`field_name`、`operator_id`、`changed_at`。旧 `ASVA 客户画像` 已改名为 `ASVA 客户画像（已停用）`，当前为 0 条记录。
+
+飞书显示字段与内部 key 由 `server/field-mapping.mjs` 统一维护：Repository 始终使用英文 key，飞书写入使用中文显示名；字段改名迁移期间，读取层集中兼容旧字段名，避免逐个业务模块散落兼容逻辑。
 
 ## 架构边界
 
 页面不直接依赖飞书字段。当前页面 → `src/clientApi.ts` → HTTP `/api` → `server/repository.mjs` → 飞书多维表；未配置 `VITE_API_BASE_URL` 时保留本地演示模式。
 
-当前页面实际依赖的业务数据只有 Customers、Appointments、ServiceRecords（代码中的 `sessions`）、Staff、简单 Products，以及画像和画像变更历史；旧扩展字段保留用于兼容，但不参与首页待办判断。
+当前页面实际依赖的业务数据只有 Customers、Appointments、ServiceRecords（代码中的 `sessions`）、Staff、简单 Products，以及 Customer 内嵌档案字段和画像变更历史；旧画像表不再参与读取、写入或查询。
 
 服务端职责：
 
-- `server/repository.mjs`：读取/更新画像表、画像历史和服务记录，并在服务端执行仅 ADMIN 可用的权限校验
+- `server/repository.mjs`：读取/更新 Customer 完整档案、画像历史和服务记录，并在服务端执行仅 ADMIN 可用的权限校验
 - `server/deepseek.mjs`：接待前 Brief、跟进后总结、当前状态、下一步建议和画像草稿提取
 - `server/index.mjs`：HTTP API 与动作状态迁移
 
@@ -88,19 +90,19 @@ VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 查询链路已升级为：`自然语言 → QueryPlanner → EntityResolver / DateRangeResolver → 权限校验 → Repository Query → Aggregator → ResultValidator → AnswerGenerator`。
 
 - 客户姓名支持空格、全半角、昵称后缀、手机号和一字符近似匹配；多个候选会明确要求确认
-- 支持客户详情跨 Customers、画像、预约、服务记录、报名和课程表聚合
+- 支持客户详情从 Customers 当前完整档案直接读取，并聚合预约、服务记录、报名和课程表
 - 支持时间范围：今天、昨天、本周、上周、本月、上个月、今年、去年、最近 N 天 / N 个月
 - “上个月客户数据”会进入 `CUSTOMER_SUMMARY`，不再当作客户姓名搜索
 - 只统计 `payment_status = PAID` 的报名金额；报名表未配置、字段缺失、结果重复或关联异常会返回数据源错误，不伪装成“没有数据”
 - 每次查询返回 QueryPlan 和 QueryExecutionContext；服务端管理员可通过 `/api/ai/query-logs` 查看最近 100 条调试记录
 
-真实飞书环境如需报名、付费和营收查询，请配置 `FEISHU_ENROLLMENTS_TABLE_ID`，最小字段为 `enrollment_id`、`customer_id`、`product_id` / `product_name`、`amount`、`payment_status`、`paid_at`、`status`。未配置时，相关问题会明确提示 EnrollmentRepository 不可用。
+真实飞书环境的手动新增客户会从 `ASVA 产品` 读取有效课程，并把选择写入 `ASVA 报名记录` 的结构化关系。当前解忧小屋 Base 已配置 `FEISHU_ENROLLMENTS_TABLE_ID`；字段显示名使用中文，代码仍通过内部英文 key 映射。报名关系按 `客户ID + 产品ID` 去重，已报名课程与客户的意向课程分开保存。
 
 ## V1.0 自然语言全业务数据引擎
 
 V1 保留 V0.7 的本地演示和 HTTP 查询入口，但将查询能力收敛到同一套共享语义引擎 `shared/semantic-engine.mjs`：
 
-- `SCHEMA_REGISTRY`：Customers、CustomerProfile、Appointments、ServiceRecords、Staff、Products、Enrollments 的字段、数据类型、时间字段、搜索 / 筛选 / 分组和敏感字段元数据
+- `SCHEMA_REGISTRY`：Customers（含完整结构化客户档案字段）、Appointments、ServiceRecords、Staff、Products、Enrollments 的字段、数据类型、时间字段、搜索 / 筛选 / 分组和敏感字段元数据
 - `ENTITY_REGISTRY` 与 `RELATIONSHIP_GRAPH`：客户、导师、课程、预约、服务记录、报名记录及其关联关系
 - `BUSINESS_GLOSSARY`、`METRIC_REGISTRY`、`DIMENSION_REGISTRY`：业务术语、固定指标公式和可分组维度；指标计算不交给模型
 - QueryDSL：`ENTITY_DETAIL`、`ENTITY_LIST`、`COUNT`、`AGGREGATE`、`GROUP_AGGREGATE`、`SUMMARY`、`RANK`、`TREND`、`COMPARE`
@@ -121,11 +123,12 @@ src/
   api.ts           页面使用的 API 边界
   clientApi.ts     本地 API / HTTP API 统一客户端
   repositories.ts  数据 Repository 边界与本地实现
-  profile.ts       客户画像字段、自然语言本地兜底和展示分组
+  profile.ts       Customer 内嵌档案字段、自然语言本地兜底和展示分组
   styles.css       移动优先界面样式
 server/
   index.mjs        ASVA HTTP 服务
   repository.mjs   飞书数据 Repository 与权限裁剪
+  field-mapping.mjs 飞书中文显示名与内部英文 key 的统一映射
   deepseek.mjs     DeepSeek 服务端调用
   feishu.mjs       飞书 token 和多维表 API 客户端
 shared/
