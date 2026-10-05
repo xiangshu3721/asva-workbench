@@ -14,6 +14,8 @@ const normalizePhone = (value) => {
 }
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
+// The server calls Feishu's REST API directly; datetime cells require Unix milliseconds.
+const feishuDate = () => Date.now()
 const get = (table, recordFields, key) => readField(table, recordFields, key)
 const PROFILE_FIELD_KEYS = new Set('gender age birth_year city hometown marital_status education living_status children_summary occupation industry position work_years job_status income_range career_stage career_satisfaction career_problem career_goal entrepreneurship_experience family_summary parents_relationship father_summary mother_summary relationship_with_father relationship_with_mother siblings family_events family_support_level relationship_status partner_summary marriage_years relationship_satisfaction relationship_conflicts communication_pattern conflict_pattern relationship_goal children_detail parent_child_relationship parenting_problem parenting_values hobbies sports reading travel art_preferences social_preference sleep diet routine life_satisfaction self_description personality_traits communication_style decision_style emotion_expression stress_response conflict_style action_style strengths common_blocks core_values family_values career_values money_values relationship_values success_definition happiness_definition freedom_definition growth_attitude current_core_issue secondary_issues current_stressors current_goal current_expectation current_resources support_system current_barriers energy_state recent_major_changes ai_customer_summary'.split(' '))
 const IMPORTANT_PROFILE_FIELDS = new Set(['age', 'city', 'occupation', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'mentor_id', 'grade', 'paid', 'intended_course'])
@@ -371,7 +373,7 @@ export class FeishuRepository {
     const duplicate = database.staff.find((item) => normalizePhone(item.phone) === phone)
     if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
     if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请编辑原导师记录，不要重复创建'), { status: 409 })
-    const createdAt = now()
+    const createdAt = feishuDate()
     let staffId = `M${Date.now()}`
     while (database.staff.some((item) => item.id === staffId)) staffId = `M${Date.now()}${Math.floor(Math.random() * 10)}`
     try {
@@ -402,7 +404,7 @@ export class FeishuRepository {
     if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
     if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请使用未占用的手机号'), { status: 409 })
     try {
-      await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, updated_at: now(), display_role: '导师' }))
+      await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, updated_at: feishuDate(), display_role: '导师' }))
     } catch (error) {
       this.audit('UPDATE_MENTOR', mentorId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
       throw error
@@ -427,7 +429,7 @@ export class FeishuRepository {
       const cases = database.appointments.filter((item) => item.assignedMentorId === mentorId && ['WAIT_FOLLOW_UP', 'WAIT_FEEDBACK'].includes(item.status)).map((item) => ({ id: item.id, customerId: item.customerId, status: item.status }))
       throw Object.assign(new Error(`该导师还有未完成客户，请先重新分配后再注销。待跟进 ${following}，待反馈 ${waitFeedback}`), { status: 409, details: { following, waitFeedback, cases } })
     }
-    const deactivatedAt = now()
+    const deactivatedAt = feishuDate()
     try {
       await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { status: 'INACTIVE', login_enabled: false, display_status: '停用', updated_at: deactivatedAt, deactivated_at: deactivatedAt }))
     } catch (error) {
