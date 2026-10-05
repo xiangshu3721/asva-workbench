@@ -202,6 +202,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   customerRecord.profileFieldMeta = { ...(customerRecord.profileFieldMeta || {}) }
   const changed = []
   const updatedAt = now()
+  const changedAt = feishuDate()
   for (const update of updates) {
     const oldValue = customerRecord.profileFields[update.field] ?? null
     customerRecord.profileFields[update.field] = update.value
@@ -219,7 +220,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   customerRecord.profileSchemaVersion = 'v0.5'
   await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
   for (const change of changed.filter((item) => IMPORTANT_PROFILE_FIELDS.has(item.field))) {
-    await createRecord(config.feishu.tables.profileChanges, mapFields('profileChanges', { customer_id: customerId, field: change.field, field_key: change.field, field_name: change.field, old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: updatedAt, changed_at: updatedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '' }))
+    await createRecord(config.feishu.tables.profileChanges, mapFields('profileChanges', { customer_id: customerId, field: change.field, field_key: change.field, field_name: change.field, old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '' }))
   }
   return customerRecord
 }
