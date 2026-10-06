@@ -222,3 +222,29 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
   .history-event { grid-template-columns: 68px 10px minmax(0, 1fr); gap: 8px; }.history-event-title { align-items: flex-start; flex-direction: column; gap: 4px; }.history-event p { white-space: normal; }
   .supplement-actions { display: grid; grid-template-columns: 1fr 1fr; }.supplement-actions button { width: 100%; }.profile-draft-row { grid-template-columns: 72px minmax(0, 1fr); }
 }
+
+/* Shared mentor and admin entry point for the ASVA psychology assessment. */
+.mindtest-banner { position: relative; display: block; min-height: 166px; margin: 22px 0 16px; overflow: hidden; border: 1px solid #dce6ff; border-radius: var(--radius); color: var(--ink); background: #eef4ff; box-shadow: 0 8px 22px rgba(47, 75, 129, .06); isolation: isolate; transition: transform .16s ease, box-shadow .16s ease; }
+.mindtest-banner:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(47, 75, 129, .1); }
+.mindtest-banner:active { transform: translateY(1px); }
+.mindtest-banner::after { position: absolute; inset: 0; z-index: -1; content: ''; background: linear-gradient(90deg, rgba(246, 249, 255, .98) 0%, rgba(246, 249, 255, .9) 33%, rgba(246, 249, 255, .18) 67%, rgba(246, 249, 255, 0) 100%); pointer-events: none; }
+.mindtest-banner-art { position: absolute; inset: 0; z-index: -2; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.mindtest-banner-content { position: relative; display: grid; align-content: center; justify-items: start; gap: 8px; width: min(52%, 390px); min-height: 166px; padding: 23px 25px; }
+.mindtest-banner-content small { color: var(--blue-dark); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.mindtest-banner-content strong { color: var(--ink); font-size: 22px; letter-spacing: -.04em; }
+.mindtest-banner-content > span { color: #60739f; font-size: 11px; line-height: 1.6; }
+.mindtest-banner-content b { display: inline-flex; align-items: center; gap: 8px; margin-top: 3px; color: var(--blue-dark); font-size: 11px; }
+.mindtest-banner-content i { font-size: 16px; font-style: normal; line-height: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mindtest-banner { transition: none; }
+  .mindtest-banner:hover, .mindtest-banner:active { transform: none; }
+}
+
+@media (max-width: 780px) {
+  .mindtest-banner { min-height: 178px; margin: 17px 0 13px; }
+  .mindtest-banner-content { width: 72%; min-height: 178px; padding: 20px 18px; }
+  .mindtest-banner-content strong { font-size: 19px; }
+  .mindtest-banner-content > span { max-width: 210px; font-size: 10px; }
+  .mindtest-banner::after { background: linear-gradient(90deg, rgba(246, 249, 255, .98) 0%, rgba(246, 249, 255, .84) 56%, rgba(246, 249, 255, .16) 100%); }
+}
