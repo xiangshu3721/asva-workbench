@@ -116,8 +116,57 @@ export async function createServiceSummary(input) {
 
 export async function createBrief(input) {
   const raw = await callDeepSeek([
-    { role: 'system', content: '你是 ASVA 接待前信息整理助手。只根据提供的预约内容生成简洁 Brief：先说已知情况，再列出接待时应确认的 1-3 个问题。不要诊断，不推荐课程。' },
-    { role: 'user', content: `昵称：${input.name}\n当前困扰：${input.need}\n希望获得帮助：${input.expectation}` },
+    { role: 'system', content: '你是 ASVA 接待前信息整理助手。只根据提供的客户上下文工作，不做心理诊断，不把推测写成事实，不以 SABC、付费或课程作为服务主导。严格返回 JSON：{"confirmed":["本次最需要记住的事实，3-5条"],"to_confirm":["会影响下一步服务的高价值缺口，最多4条"],"entry_points":["具体、自然的服务切入策略，2-3条"],"suggested_questions":["针对当前客户的备选开放式问题，最多4条"],"interaction_guidance":{"tone":"语气","pace":"节奏","avoid":["避免事项"],"care_cues":["自然的人文关怀入口"]},"lede":"一句话说明本次服务状态"}。资料不足时明确输出待澄清，不要补写人物画像。' },
+    { role: 'user', content: JSON.stringify(input.context || input) },
   ])
-  return raw
+  const parsed = parseJson(raw)
+  return briefText(cleanBrief(parsed, raw))
+}
+
+function list(value, limit) { return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()).slice(0, limit) : [] }
+function briefText(brief) { return [brief.lede, `建议先从：${brief.entry_points.join('；')}`, `备选提问：${brief.suggested_questions.join('；')}`].filter(Boolean).join('\n') }
+function cleanBrief(parsed, fallback = '') {
+  if (!parsed || typeof parsed !== 'object') return { confirmed: ['当前资料不足，尚不能形成稳定判断。'], to_confirm: ['最近最希望解决的具体事情'], entry_points: ['先建立基本理解，不急于分析和给建议。'], suggested_questions: ['你愿意的话，可以先和我说说最近最让你困扰的一件事。'], interaction_guidance: { tone: '温和、开放', pace: '少分析，多听和确认', avoid: ['把推测当成事实'], care_cues: [] }, lede: fallback || '当前资料不足，本次以澄清需求为主。' }
+  const confirmed = list(parsed.confirmed, 5)
+  const toConfirm = list(parsed.to_confirm, 4)
+  const entryPoints = list(parsed.entry_points, 3)
+  const questions = list(parsed.suggested_questions, 4)
+  return {
+    confirmed: confirmed.length ? confirmed : ['当前资料不足，尚不能形成稳定判断。'],
+    to_confirm: toConfirm.length ? toConfirm : ['最近最希望解决的具体事情'],
+    entry_points: entryPoints.length ? entryPoints : ['先建立基本理解，不急于分析和给建议。'],
+    suggested_questions: questions.length ? questions : ['你愿意的话，可以先和我说说最近最让你困扰的一件事。'],
+    interaction_guidance: {
+      tone: typeof parsed.interaction_guidance?.tone === 'string' ? parsed.interaction_guidance.tone : '温和、具体',
+      pace: typeof parsed.interaction_guidance?.pace === 'string' ? parsed.interaction_guidance.pace : '先听后问',
+      avoid: list(parsed.interaction_guidance?.avoid, 4),
+      care_cues: list(parsed.interaction_guidance?.care_cues, 3),
+    },
+    lede: typeof parsed.lede === 'string' && parsed.lede.trim() ? parsed.lede.trim() : '本次以建立理解和确认重点为主。',
+  }
+}
+
+export async function createCustomerIntelligence(input) {
+  const raw = await callDeepSeek([
+    { role: 'system', content: '你是 ASVA 客户理解引擎。你的任务不是复述字段，而是帮助导师理解客户当前处境，并准备下一次服务。请先完成事实→归纳→关联→主次判断，再返回严格 JSON：{"summary":{"overview":"120-250字以内的当前人生/生活阶段与核心矛盾，不把推测写成事实","core_issues":["最多3项"],"priority_topics":["最多3项"],"current_goals":["明确表达的目标；没有就写待确认"],"resources":["已有资源；没有就写尚待确认"],"service_focus":"当前服务重点","risk":{"level":"LOW|MEDIUM|HIGH|UNASSESSED","reason":"风险理由"},"confidence":"LOW|MEDIUM|HIGH","missing_key_information":["最多4项"]},"brief":{"confirmed":["3-5条"],"to_confirm":["最多4条高价值缺口"],"entry_points":["2-3条服务策略"],"suggested_questions":["最多4条客户特异性问题"],"interaction_guidance":{"tone":"语气","pace":"节奏","avoid":["避免事项"],"care_cues":["自然关怀入口"]},"lede":"一句话"}}。信息只有无意义短句时，summary.overview 必须说明信息不足，core_issues 写尚待澄清，risk.level 写 UNASSESSED；不得编造创伤、人格、诊断或课程销售话术。' },
+    { role: 'user', content: JSON.stringify(input.context || input) },
+  ])
+  const parsed = parseJson(raw)
+  const summary = parsed?.summary && typeof parsed.summary === 'object' ? parsed.summary : {}
+  const riskLevels = new Set(['LOW', 'MEDIUM', 'HIGH', 'UNASSESSED'])
+  const confidenceLevels = new Set(['LOW', 'MEDIUM', 'HIGH'])
+  return {
+    summary: {
+      overview: typeof summary.overview === 'string' ? summary.overview : '当前资料不足，暂不能形成稳定判断。',
+      core_issues: list(summary.core_issues, 3).length ? list(summary.core_issues, 3) : ['尚待澄清'],
+      priority_topics: list(summary.priority_topics, 3).length ? list(summary.priority_topics, 3) : ['建立基本理解'],
+      current_goals: list(summary.current_goals, 3).length ? list(summary.current_goals, 3) : ['待确认'],
+      resources: list(summary.resources, 3).length ? list(summary.resources, 3) : ['尚待确认'],
+      service_focus: typeof summary.service_focus === 'string' ? summary.service_focus : '先建立基本理解，再确认客户当前最需要支持的一件事。',
+      risk: { level: riskLevels.has(summary.risk?.level) ? summary.risk.level : 'UNASSESSED', reason: typeof summary.risk?.reason === 'string' ? summary.risk.reason : '尚未完成安全风险评估。' },
+      confidence: confidenceLevels.has(summary.confidence) ? summary.confidence : 'LOW',
+      missing_key_information: list(summary.missing_key_information, 4).length ? list(summary.missing_key_information, 4) : ['最近最困扰的具体场景', '当前支持系统'],
+    },
+    brief: cleanBrief(parsed?.brief),
+  }
 }

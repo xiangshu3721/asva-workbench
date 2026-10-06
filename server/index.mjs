@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { config, configurationStatus } from './config.mjs'
-import { createBrief, createServiceSummary, DeepSeekUnavailableError } from './deepseek.mjs'
+import { createBrief, createCustomerIntelligence, createServiceSummary, DeepSeekUnavailableError } from './deepseek.mjs'
 import { FeishuRepository } from './repository.mjs'
 import { FeishuUnavailableError } from './feishu.mjs'
 
@@ -54,6 +54,7 @@ async function handle(request, response) {
   if (request.method === 'GET' && url.pathname === '/api/ai/query-logs') return send(response, 200, await repository.assistantQueryLogs(guard(request)))
   if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(response, 200, await createServiceSummary(await readBody(request))) }
   if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(response, 200, { brief: await createBrief(await readBody(request)) }) }
+  if (request.method === 'POST' && url.pathname === '/api/ai/customer-intelligence') { await guardAdmin(request); return send(response, 200, await createCustomerIntelligence(await readBody(request))) }
   const feedback = url.pathname.match(/^\/api\/appointments\/([^/]+)\/feedback$/)
   if (request.method === 'POST' && feedback) { const body = await readBody(request); return send(response, 200, await repository.saveFeedback(guard(request), { ...body, appointmentId: decodeURIComponent(feedback[1]) })) }
   if (request.method === 'POST' && url.pathname === '/api/appointments') return send(response, 200, await repository.createAppointment(await readBody(request)))
