@@ -110,11 +110,11 @@ function HomePage({ staff, database, canSeeAll, api, onCustomer, onAssign, onCom
 
 function ResourceBanners() {
   const banners = [
-    { className: 'resource-banner-site', eyebrow: 'ASVA 官网', title: '认识 ASVA', description: '了解品牌、服务与成长支持。', href: 'https://xiangshu3721.github.io/asva-official/index.html', label: '打开官网' },
-    { className: 'resource-banner-mindtest', eyebrow: 'ASVA 常用心理测试', title: '接待前，先快速了解客户', description: '打开常用测评，为沟通准备一份更清晰的参考。', href: 'https://xiangshu3721.github.io/mindtest-web/', label: '打开心理测试' },
-    { className: 'resource-banner-practice', eyebrow: 'ASVA 导师修炼包', title: '持续练习，成为更好的导师', description: '把每一次服务，沉淀成自己的专业能力。', href: 'https://xiangshu3721.github.io/asva-official/explore.html', label: '打开修炼包' },
+    { className: 'resource-banner-site', src: 'assets/asva-official-banner.png', href: 'https://xiangshu3721.github.io/asva-official/index.html', label: '打开 ASVA 官网' },
+    { className: 'resource-banner-mindtest', src: 'assets/asva-mindtest-banner.png', href: 'https://xiangshu3721.github.io/mindtest-web/', label: '打开 ASVA 常用心理测试' },
+    { className: 'resource-banner-practice', src: 'assets/asva-practice-banner.png', href: 'https://xiangshu3721.github.io/asva-official/explore.html', label: '打开 ASVA 导师修炼包' },
   ]
-  return <section className="resource-banners" aria-label="ASVA 资源入口">{banners.map((banner) => <a className={`resource-banner ${banner.className}`} href={banner.href} target="_blank" rel="noreferrer" aria-label={banner.label} key={banner.title}><span className="resource-banner-content"><small>{banner.eyebrow}</small><strong>{banner.title}</strong><span>{banner.description}</span><b>{banner.label}<i>→</i></b></span>{banner.className === 'resource-banner-mindtest' && <img className="resource-banner-art" src={`${import.meta.env.BASE_URL}assets/asva-mindtest-banner.png`} alt="" />}</a>)}</section>
+  return <section className="resource-banners" aria-label="ASVA 资源入口">{banners.map((banner) => <a className={`resource-banner ${banner.className}`} href={banner.href} target="_blank" rel="noreferrer" aria-label={banner.label} key={banner.src}><img className="resource-banner-image" src={`${import.meta.env.BASE_URL}${banner.src}`} alt={banner.label} /></a>)}</section>
 }
 
 function StateCount({ label, value, tone, hidden = false }: { label: string; value: number; tone: string; hidden?: boolean }) { if (hidden) return null; return <div className={`state-count state-${tone}`}><span>{label}</span><strong>{value}</strong></div> }
