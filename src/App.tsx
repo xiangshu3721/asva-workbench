@@ -109,12 +109,20 @@ function HomePage({ staff, database, canSeeAll, api, onCustomer, onAssign, onCom
 }
 
 function ResourceBanners() {
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [isPaused, setIsPaused] = useState(false)
   const banners = [
     { className: 'resource-banner-site', src: 'assets/asva-official-banner.png', href: 'https://xiangshu3721.github.io/asva-official/index.html', label: '打开 ASVA 官网' },
     { className: 'resource-banner-mindtest', src: 'assets/asva-mindtest-banner.png', href: 'https://xiangshu3721.github.io/mindtest-web/', label: '打开 ASVA 常用心理测试' },
     { className: 'resource-banner-practice', src: 'assets/asva-practice-banner.png', href: 'https://xiangshu3721.github.io/asva-official/explore.html', label: '打开 ASVA 导师修炼包' },
   ]
-  return <section className="resource-banners" aria-label="ASVA 资源入口">{banners.map((banner) => <a className={`resource-banner ${banner.className}`} href={banner.href} target="_blank" rel="noreferrer" aria-label={banner.label} key={banner.src}><img className="resource-banner-image" src={`${import.meta.env.BASE_URL}${banner.src}`} alt={banner.label} /></a>)}</section>
+  useEffect(() => {
+    if (isPaused) return undefined
+    const timer = window.setInterval(() => setActiveIndex((current) => (current + 1) % banners.length), 6000)
+    return () => window.clearInterval(timer)
+  }, [isPaused, banners.length])
+  const moveTo = (index: number) => setActiveIndex((index + banners.length) % banners.length)
+  return <section className="resource-banners" aria-label="ASVA 资源入口" onMouseEnter={() => setIsPaused(true)} onMouseLeave={() => setIsPaused(false)}>{banners.map((banner, index) => <a className={`resource-banner ${banner.className} ${index === activeIndex ? 'active' : ''}`} href={banner.href} target="_blank" rel="noreferrer" aria-label={banner.label} aria-hidden={index !== activeIndex} tabIndex={index === activeIndex ? 0 : -1} key={banner.src}><img className="resource-banner-image" src={`${import.meta.env.BASE_URL}${banner.src}`} alt={banner.label} /></a>)}<button className="resource-carousel-control previous" type="button" aria-label="上一张 Banner" onClick={() => moveTo(activeIndex - 1)}>‹</button><button className="resource-carousel-control next" type="button" aria-label="下一张 Banner" onClick={() => moveTo(activeIndex + 1)}>›</button><div className="resource-carousel-dots" role="tablist" aria-label="选择 Banner">{banners.map((banner, index) => <button className={index === activeIndex ? 'active' : ''} type="button" role="tab" aria-selected={index === activeIndex} aria-label={`第 ${index + 1} 张：${banner.label}`} onClick={() => moveTo(index)} key={banner.src} />)}</div></section>
 }
 
 function StateCount({ label, value, tone, hidden = false }: { label: string; value: number; tone: string; hidden?: boolean }) { if (hidden) return null; return <div className={`state-count state-${tone}`}><span>{label}</span><strong>{value}</strong></div> }
