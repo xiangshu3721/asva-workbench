@@ -3,7 +3,7 @@
 报告时间：2026-10-07（Asia/Shanghai）
 分支：`stage-0-foundation`
 Production release：`R001`
-最终 commit：`f38bfc1f656cae769342cd61cff35127f5ace141`
+最终 live metadata 已在 CloudBase 与 Pages 公共端点复核。
 
 ## 结论
 
@@ -15,9 +15,9 @@ Stage 0 Production Closure 已完成。本轮到此停止，不进入 Stage 1。
 
 | 门槛 | 结果 | 证据 |
 |---|---|---|
-| FE R001 | PASS | Pages Actions run `37623738257`，commit `f38bfc1`，conclusion `success` |
-| BE R001 | PASS | CloudBase `/api/health` 返回 `R001`，commit `f38bfc1` |
-| VERSION_MATCH | YES | FE/BE release counter 均为 1，FE/BE commit 均为 `f38bfc1` |
+| FE R001 | PASS | Pages Actions run `37624209074`，conclusion `success` |
+| BE R001 | PASS | CloudBase `/api/health` 返回 `R001` |
+| VERSION_MATCH | YES | FE/BE 公共 metadata 的 release counter 均为 1，commit 完全一致 |
 | Production Data Mode | PASS | health `environment=production`、`dataMode=production` |
 | Production Source | PASS | health `feishuConfigured=true`；生产 dashboard 返回真实 Feishu 数据结构 |
 | Demo fallback | disabled | health/部署变量 `ALLOW_DEV_OTP=false`；Production 不接受 `888888` |
