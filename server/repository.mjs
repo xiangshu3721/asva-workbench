@@ -2,20 +2,23 @@ import { config } from './config.mjs'
 import { createRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
 import { createProfileDraft } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
-import { fields as mapFields, read as readField } from './field-mapping.mjs'
+import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
+import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs'
+import crypto from 'node:crypto'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 const boolean = (value) => value === true || value === 'true' || value === '是'
-const date = (value) => typeof value === 'number' ? new Date(value).toISOString() : text(value)
+const date = (value) => parseDateFromFeishu(value)
 const normalizePhone = (value) => {
   const digits = text(value).replace(/\D/g, '')
   return digits.startsWith('86') && digits.length === 13 ? digits.slice(2) : digits
 }
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
+const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
 // The server calls Feishu's REST API directly; datetime cells require Unix milliseconds.
-const feishuDate = () => Date.now()
+const feishuDate = () => serializeDateForFeishu(now())
 const get = (table, recordFields, key) => readField(table, recordFields, key)
 const PROFILE_FIELD_KEYS = new Set('gender age birth_year city hometown marital_status education living_status children_summary occupation industry position work_years job_status income_range career_stage career_satisfaction career_problem career_goal entrepreneurship_experience family_summary parents_relationship father_summary mother_summary relationship_with_father relationship_with_mother siblings family_events family_support_level relationship_status partner_summary marriage_years relationship_satisfaction relationship_conflicts communication_pattern conflict_pattern relationship_goal children_detail parent_child_relationship parenting_problem parenting_values hobbies sports reading travel art_preferences social_preference sleep diet routine life_satisfaction self_description personality_traits communication_style decision_style emotion_expression stress_response conflict_style action_style strengths common_blocks core_values family_values career_values money_values relationship_values success_definition happiness_definition freedom_definition growth_attitude current_core_issue secondary_issues current_stressors current_goal current_expectation current_resources support_system current_barriers energy_state recent_major_changes ai_customer_summary'.split(' '))
 const IMPORTANT_PROFILE_FIELDS = new Set(['age', 'city', 'occupation', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'mentor_id', 'grade', 'paid', 'intended_course'])
@@ -171,7 +174,7 @@ function validateEnrollmentDrafts(database, drafts) {
   }
 }
 
-async function mergeEnrollments(database, customerId, drafts, operatorId) {
+async function mergeEnrollments(database, customerId, drafts, operatorId, operationId) {
   if (!drafts?.length) return
   if (!config.feishu.tables.enrollments) throw new Error('报名记录表尚未配置，暂时不能保存已报名课程')
   validateEnrollmentDrafts(database, drafts)
@@ -190,7 +193,7 @@ async function mergeEnrollments(database, customerId, drafts, operatorId) {
       continue
     }
     const enrolledAt = draft.enrolledAt || now()
-    await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', { enrollment_id: `E-${Date.now()}-${Math.floor(Math.random() * 1000)}`, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: now(), status: 'ACTIVE' }))
+    await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', { enrollment_id: operationId ? stableOperationId(`${operationId}:${product.id}`, 'ENR') : `E-${Date.now()}-${Math.floor(Math.random() * 1000)}`, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: now(), status: 'ACTIVE' }))
   }
 }
 
@@ -220,7 +223,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   customerRecord.profileSchemaVersion = 'v0.5'
   await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
   for (const change of changed.filter((item) => IMPORTANT_PROFILE_FIELDS.has(item.field))) {
-    await createRecord(config.feishu.tables.profileChanges, mapFields('profileChanges', { customer_id: customerId, field: change.field, field_key: change.field, field_name: change.field, old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '' }))
+    await createRecord(config.feishu.tables.profileChanges, mapFields('profileChanges', { customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '' }))
   }
   return customerRecord
 }
@@ -228,7 +231,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
 export class FeishuRepository {
   constructor() { this.queryLogs = []; this.auditLogs = [] }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
-    const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error: error || undefined, timestamp: now() }
+    const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
     if (this.auditLogs.length > 200) this.auditLogs.length = 200
     console.info('[ASVA_AUDIT]', JSON.stringify(entry))
@@ -269,6 +272,9 @@ export class FeishuRepository {
     return record
   }
   async authenticate(phone, code) {
+    if (config.dataMode === 'production' && !(config.allowDevOtp && config.environment !== 'production')) {
+      throw Object.assign(new Error('生产环境未配置真实验证码服务，拒绝使用固定验证码'), { code: 'AUTH_OTP_NOT_CONFIGURED', status: 503 })
+    }
     if (code !== '888888') throw new Error('手机号或验证码错误')
     const database = await this.load()
     const normalized = normalizePhone(phone)
@@ -300,7 +306,12 @@ export class FeishuRepository {
     const duplicates = duplicateMatches(database, input)
     if (duplicates.length && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { status: 409, code: 'CUSTOMER_DUPLICATE', matches: duplicates })
     validateEnrollmentDrafts(database, input.enrollments)
-    const customerId = `CUS-${Date.now()}`
+    const operationId = text(input?.operationId).trim()
+    if (operationId) {
+      const existing = database.customers.find((item) => item.id === stableOperationId(operationId, 'CUS'))
+      if (existing) return this.dashboard(actorId)
+    }
+    const customerId = operationId ? stableOperationId(operationId, 'CUS') : `CUS-${Date.now()}`
     const createdAt = now()
     await createRecord(config.feishu.tables.customers, mapFields('customers', { customer_id: customerId, nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_schema_version: 'v0.5', profile_updated_at: createdAt }))
     let current = await this.load()
@@ -308,7 +319,7 @@ export class FeishuRepository {
       await persistCustomerProfile(current, customerId, normalizeProfileUpdates(input.profileUpdates, current.customers.find((item) => item.id === customerId), true), undefined, actorId)
       current = await this.load()
     }
-    await mergeEnrollments(current, customerId, input.enrollments, actorId)
+    await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
     if (input.needsFollowup) {
       let assignedMentorId = ''
       if (input.mentorId) {
@@ -330,11 +341,11 @@ export class FeishuRepository {
     if (!current || !row) throw new Error('客户不存在')
     validateEnrollmentDrafts(database, input.enrollments)
     const normalized = validateManualCustomer({ ...input, nickname: input.nickname || current.name, phone: input.phone || current.phone, wechat: input.wechat || current.wechat })
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, notes: normalized.situation || current.notes }))
+    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: input.source || current.source, notes: normalized.situation || current.notes }))
     let latest = await this.load()
     if (input.profileUpdates?.length) await persistCustomerProfile(latest, customerId, normalizeProfileUpdates(input.profileUpdates, latest.customers.find((item) => item.id === customerId), true), undefined, actorId)
     latest = await this.load()
-    await mergeEnrollments(latest, customerId, input.enrollments, actorId)
+    await mergeEnrollments(latest, customerId, input.enrollments, actorId, text(input?.operationId).trim())
     if (input.needsFollowup && !latest.appointments.some((item) => item.customerId === customerId && item.status !== 'COMPLETED')) {
       let assignedMentorId = ''
       if (input.mentorId) {
@@ -498,11 +509,16 @@ export class FeishuRepository {
     if (!appointment) throw new Error('预约不存在')
     if (appointment.status !== 'WAIT_FEEDBACK') throw new Error('当前预约还不能提交反馈')
     const now = new Date().toISOString()
-    const serviceRecordId = `SR-${appointment.id}-${Date.now()}`
+    const operationId = text(input?.operationId).trim()
+    const serviceRecordId = operationId ? stableOperationId(operationId, 'SR') : `SR-${appointment.id}-${Date.now()}`
+    if (database.sessions.some((item) => item.id === serviceRecordId)) return scope(database, actorId)
     const customer = database.customers.find((item) => item.id === appointment.customerId)
     if (!customer) throw new Error('客户不存在')
     const profileUpdates = normalizeProfileUpdates(input.profileUpdates, customer, Boolean(input.profileUpdates?.length))
-    await createRecord(config.feishu.tables.serviceRecords, mapFields('serviceRecords', { service_record_id: serviceRecordId, customer_id: appointment.customerId, appointment_id: appointment.id, mentor_id: appointment.assignedMentorId || actorId, operator_id: actorId, topic: input.topic, result: input.result, current_core_need: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, profile_text: input.profileText || '', profile_updates_json: JSON.stringify(profileUpdates), profile_update_confirmed: profileUpdates.length > 0, ai_summary: input.aiSummary || '', ai_status: input.aiStatus || '', ai_next_step: input.aiNextStep || '', mentor_confirmed: true, created_at: now }))
+    let serviceRecordCreated = false
+    try {
+      await createRecord(config.feishu.tables.serviceRecords, mapFields('serviceRecords', { service_record_id: serviceRecordId, customer_id: appointment.customerId, appointment_id: appointment.id, mentor_id: appointment.assignedMentorId || actorId, operator_id: actorId, topic: input.topic, result: input.result, current_core_need: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, profile_text: input.profileText || '', profile_updates_json: JSON.stringify(profileUpdates), profile_update_confirmed: profileUpdates.length > 0, ai_summary: input.aiSummary || '', ai_status: input.aiStatus || '', ai_next_step: input.aiNextStep || '', mentor_confirmed: true, created_at: now }))
+      serviceRecordCreated = true
     const directUpdates = [
       input.coreNeed && input.coreNeed !== customer.need ? { field: 'current_core_issue', value: input.coreNeed, source: 'MENTOR_CONFIRMED', confidence: 1, confirmed: true } : null,
       input.paid !== customer.paid ? { field: 'paid', value: input.paid, source: 'MENTOR_CONFIRMED', confidence: 1, confirmed: true } : null,
@@ -513,7 +529,11 @@ export class FeishuRepository {
     await updateRecord(config.feishu.tables.appointments, appointment._recordId, mapFields('appointments', { followup_info_completed: true, status: 'COMPLETED', completed_at: now }))
     const customerRow = database._rows.customers.find((row) => text(get('customers', row.fields, 'customer_id')) === appointment.customerId)
     if (customerRow) await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { current_issue: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, current_core_issue: input.coreNeed }))
-    return scope(await this.load(), actorId)
+      return scope(await this.load(), actorId)
+    } catch (error) {
+      if (serviceRecordCreated) Object.assign(error, { code: 'PARTIAL_WRITE', status: 500 })
+      throw error
+    }
   }
 
   async createAppointment(input) {

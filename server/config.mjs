@@ -25,6 +25,13 @@ export const config = {
   port: Number(value('PORT', '8788')),
   host: value('HOST', '127.0.0.1'),
   authSecret: value('ASVA_AUTH_SECRET'),
+  environment: value('ASVA_ENVIRONMENT', value('NODE_ENV', 'local')),
+  dataMode: value('DATA_MODE', value('ASVA_ENVIRONMENT', value('NODE_ENV', 'local')) === 'production' ? 'production' : 'demo'),
+  allowDevOtp: value('ALLOW_DEV_OTP', 'false') === 'true',
+  frontendOrigin: value('ASVA_FRONTEND_ORIGIN', 'https://xiangshu3721.github.io'),
+  features: {
+    externalAppointment: value('FEATURE_EXTERNAL_APPOINTMENT', 'false') === 'true',
+  },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),
     model: value('DEEPSEEK_MODEL', 'deepseek-chat'),
@@ -52,5 +59,8 @@ export function configurationStatus() {
     deepseekConfigured: Boolean(config.deepseek.apiKey),
     feishuConfigured: Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.baseToken),
     authConfigured: Boolean(config.authSecret),
+    environment: config.environment,
+    dataMode: config.dataMode,
+    featureFlags: config.features,
   }
 }

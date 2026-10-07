@@ -17,7 +17,9 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error
 
   render() {
     if (this.state.error) {
-      return <main style={{ padding: 32, fontFamily: 'sans-serif', color: '#172033' }}><h1>工作台暂时无法打开</h1><p>{this.state.error.message}</p></main>
+      const errorCode = this.state.error.name || 'RENDER_ERROR'
+      const debugText = JSON.stringify({ error_code: errorCode, message: this.state.error.message, release: 'UNKNOWN', page: window.location.pathname, time: new Date().toISOString() }, null, 2)
+      return <main style={{ padding: 32, fontFamily: 'sans-serif', color: '#172033', maxWidth: 720, margin: '0 auto' }}><h1>工作台暂时无法打开</h1><p>页面遇到一个可恢复的错误。可以先刷新；如果仍然存在，请把下面的调试信息交给管理员。</p><p><strong>错误代码：</strong>{errorCode}</p><p><strong>版本：</strong>UNKNOWN（构建元数据未加载）</p><button type="button" onClick={() => window.location.reload()}>刷新页面</button>{navigator.clipboard && <button type="button" style={{ marginLeft: 8 }} onClick={() => void navigator.clipboard.writeText(debugText)}>复制安全调试信息</button>}<pre style={{ whiteSpace: 'pre-wrap', background: '#f6f7f9', padding: 16, marginTop: 20 }}>{debugText}</pre></main>
     }
     return this.props.children
   }

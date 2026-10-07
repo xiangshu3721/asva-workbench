@@ -1,6 +1,8 @@
 // Internal field keys stay stable in code. These names are the visible labels
 // used by Feishu Base operators. All Repository reads and writes go through
 // this map so a display-label change cannot silently break the data layer.
+import { serializeDateForFeishu } from './date-contract.mjs'
+
 export const FIELD_MAPPING = {
   appointments: {
     appointment_id: '预约ID',
@@ -110,7 +112,7 @@ export function field(table, key) {
 }
 
 export function fields(table, values) {
-  return Object.fromEntries(Object.entries(values).map(([key, value]) => [field(table, key), value]))
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [field(table, key), DATE_FIELDS[table]?.has(key) ? serializeDateForFeishu(value) : value]))
 }
 
 export function read(table, recordFields, key) {
@@ -118,4 +120,13 @@ export function read(table, recordFields, key) {
   if (recordFields?.[canonical] !== undefined) return recordFields[canonical]
   const legacy = LEGACY_FIELD_NAMES[table]?.[key] || key
   return recordFields?.[legacy]
+}
+
+const DATE_FIELDS = {
+  appointments: new Set(['created_at', 'completed_at']),
+  customers: new Set(['created_at']),
+  serviceRecords: new Set(['created_at']),
+  staff: new Set(['created_at', 'updated_at', 'deactivated_at']),
+  enrollments: new Set(['enrolled_at', 'paid_at', 'created_at']),
+  profileChanges: new Set(['changed_at', 'updated_at']),
 }

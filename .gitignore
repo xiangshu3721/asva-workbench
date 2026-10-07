@@ -5,3 +5,7 @@ dist
 !.env.example
 cloudbase/functions/asva-api/index.js
 .DS_Store
+stage0-backup/
+build-meta.json
+public/build-meta.json
+cloudbase/functions/asva-api/build-meta.json

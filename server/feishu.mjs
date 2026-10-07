@@ -48,6 +48,23 @@ export async function listRecords(tableId) {
   return rows
 }
 
+export async function listFields(tableId) {
+  const rows = []
+  let pageToken = ''
+  do {
+    const query = new URLSearchParams({ page_size: '500' })
+    if (pageToken) query.set('page_token', pageToken)
+    const data = await request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/fields?${query}`)
+    rows.push(...(data.items || []))
+    pageToken = data.has_more ? data.page_token || '' : ''
+  } while (pageToken)
+  return rows
+}
+
+export function createField(tableId, fieldName, type = 1) {
+  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/fields`, { method: 'POST', body: JSON.stringify({ field_name: fieldName, type }) })
+}
+
 export function createRecord(tableId, fields) {
   return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records`, { method: 'POST', body: JSON.stringify({ fields }) })
 }

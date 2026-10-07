@@ -7,6 +7,7 @@ export interface AiDraft { summary: string; currentStatus: string; nextStep: str
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface TeamSnapshot { mentor: Staff; customerCount: number; waitFollowUp: number; waitFeedback: number; completed: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
+export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -26,6 +27,7 @@ export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummar
 
 export interface WorkbenchApi {
   login(phone: string, code: string): Promise<Staff>
+  health(): Promise<HealthMetadata>
   dashboard(staffId: string): Promise<Database>
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
@@ -51,11 +53,24 @@ export interface WorkbenchApi {
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
 }
 
+export interface ApiRequestTrace { time: string; method: string; path: string; status: number | null; duration: number; request_id?: string; result: 'SUCCESS' | 'ERROR' }
+export interface ApiErrorInfo { code: string; message: string; request_id?: string }
+export class ApiError extends Error {
+  code: string
+  request_id?: string
+  constructor(info: ApiErrorInfo) { super(info.message); this.name = 'ApiError'; this.code = info.code; this.request_id = info.request_id }
+}
+
+const requestTraces: ApiRequestTrace[] = []
+export function getApiRequestTraces() { return [...requestTraces] }
+export function clearApiRequestTraces() { requestTraces.splice(0, requestTraces.length) }
+
 type LocalApi = ReturnType<typeof createLocalApi>
 
 export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
   return {
     login: async (phone, code) => api.login(phone, code),
+    health: async () => ({ ok: true, service: 'asva-api', environment: 'local', dataMode: 'demo', featureFlags: { externalAppointment: false } }),
     dashboard: async (staffId) => api.dashboard(staffId),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
@@ -85,16 +100,30 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
 export function createHttpApi(baseUrl: string): WorkbenchApi {
   const base = baseUrl.replace(/\/$/, '')
   async function request<T>(path: string, staffId: string | undefined, init?: RequestInit): Promise<T> {
+    const startedAt = performance.now()
+    const method = init?.method || 'GET'
     const headers = new Headers(init?.headers)
     headers.set('Content-Type', 'application/json')
-    if (staffId) headers.set('X-Staff-Id', staffId)
-    const response = await fetch(`${base}${path}`, { ...init, headers })
+    const token = window.sessionStorage.getItem('asva_session_token')
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    else if (staffId) headers.set('X-Staff-Id', staffId)
+    let response: Response
+    try { response = await fetch(`${base}${path}`, { ...init, headers }) } catch (error) {
+      requestTraces.unshift({ time: new Date().toISOString(), method, path, status: null, duration: Math.round(performance.now() - startedAt), result: 'ERROR' })
+      requestTraces.splice(20)
+      throw new ApiError({ code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试。' })
+    }
     const payload = await response.json().catch(() => null)
-    if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`)
+    const requestId = response.headers.get('X-Request-Id') || payload?.request_id || undefined
+    requestTraces.unshift({ time: new Date().toISOString(), method, path, status: response.status, duration: Math.round(performance.now() - startedAt), request_id: requestId, result: response.ok ? 'SUCCESS' : 'ERROR' })
+    requestTraces.splice(20)
+    if (!response.ok) throw new ApiError({ code: payload?.code || `HTTP_${response.status}`, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId })
+    if (path === '/api/auth/login' && payload?.token) window.sessionStorage.setItem('asva_session_token', payload.token)
     return payload as T
   }
   return {
     login: (phone, code) => request<Staff>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, code }) }),
+    health: () => request<HealthMetadata>('/api/health', undefined),
     dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
