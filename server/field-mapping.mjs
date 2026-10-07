@@ -42,7 +42,7 @@ export const FIELD_MAPPING = {
     help_expectation: '希望获得帮助',
     current_goal: '当前目标',
     notes: '备注',
-    mentor_id: '当前导师ID',
+    current_mentor_id: '当前导师ID',
     profile_updated_at: '档案更新时间',
     profile_field_meta_json: '档案字段元数据',
     profile_schema_version: '档案版本',
@@ -108,6 +108,7 @@ const LEGACY_FIELD_NAMES = {
 }
 
 export function field(table, key) {
+  if (table === 'customers' && key === 'mentor_id') return FIELD_MAPPING.customers.current_mentor_id
   return FIELD_MAPPING[table]?.[key] || key
 }
 
@@ -116,6 +117,7 @@ export function fields(table, values) {
 }
 
 export function read(table, recordFields, key) {
+  if (table === 'customers' && key === 'mentor_id') key = 'current_mentor_id'
   const canonical = field(table, key)
   if (recordFields?.[canonical] !== undefined) return recordFields[canonical]
   const legacy = LEGACY_FIELD_NAMES[table]?.[key] || key

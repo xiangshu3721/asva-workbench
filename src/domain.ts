@@ -2,7 +2,7 @@ export type Role = 'ADMIN' | 'MENTOR'
 export type PermissionRole = 'ADMIN' | 'MENTOR'
 export type StaffStatus = 'ACTIVE' | 'INACTIVE'
 export type AppointmentWorkflowStatus = 'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED'
-export type ProfileSource = 'USER_EXPLICIT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_INFERENCE'
+export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIRMED' | 'MENTOR_FACTUAL_INPUT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_EXTRACTED_CONFIRMED' | 'AI_INFERENCE' | 'IMPORTED_HISTORY' | 'LEGACY_MIGRATION'
 export type ProfileValue = string | number | boolean | string[] | null
 
 export type AppointmentStatus =
@@ -78,6 +78,7 @@ export interface Customer {
   profileFieldMeta?: Record<string, ProfileFieldMeta>
   profileUpdatedAt?: string | null
   profileSchemaVersion?: string
+  profileVersion?: number
 }
 
 export interface ProfileFieldMeta {
@@ -288,4 +289,5 @@ export interface CustomerDuplicateMatch {
 export interface CustomerDraftPreview {
   duplicates: CustomerDuplicateMatch[]
   updates: ProfileUpdate[]
+  identity?: { result: 'EXACT_MATCH' | 'POSSIBLE_MATCH' | 'CONFLICT' | 'NEW_CUSTOMER'; matched_customer_id: string | null; match_reasons: string[]; confidence: number }
 }

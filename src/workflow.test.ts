@@ -74,18 +74,18 @@ describe('V0.3 appointment workflow and permissions', () => {
     const customer = created.customers.find((item) => item.name === '顾清弦')
     expect(customer?.source).toBe('管理员手动录入')
     expect(customer?.profileFields?.current_core_issue).toBe('职业方向选择')
-    expect(created.appointments.some((item) => item.customerId === customer?.id && item.status === 'WAIT_FOLLOW_UP' && item.caseSource === 'ADMIN_MANUAL')).toBe(true)
+    expect(created.appointments.some((item) => item.customerId === customer?.id)).toBe(false)
     const archiveOnly = api.createCustomer('staff-admin', { nickname: '闻溪月', phone: '13900001234', situation: '先存档，暂时不安排跟进。', needsFollowup: false })
     const archiveCustomer = archiveOnly.customers.find((item) => item.name === '闻溪月')
     expect(archiveOnly.appointments.some((item) => item.customerId === archiveCustomer?.id)).toBe(false)
   })
 
-  it('creates manual follow-up cases directly in WAIT_FOLLOW_UP without WAIT_ASSIGN', () => {
+  it('keeps Customer creation separate from Appointment in Stage 1', () => {
     const api = createLocalApi(createLocalRepository())
     const created = api.createCustomer('staff-admin', { nickname: '沈知远', phone: '13900001235', situation: '需要尽快安排一次跟进。', needsFollowup: true })
     const customer = created.customers.find((item) => item.name === '沈知远')
     const manualCase = created.appointments.find((item) => item.customerId === customer?.id)
-    expect(manualCase).toMatchObject({ status: 'WAIT_FOLLOW_UP', assignedMentorId: null, caseSource: 'ADMIN_MANUAL' })
+    expect(manualCase).toBeUndefined()
   })
 
   it('stores manual enrolled courses as deduplicated structured relations', () => {

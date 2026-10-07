@@ -38,6 +38,7 @@ function fieldDefinition(internalKey, feishuName, overrides = {}) {
 
 export const SCHEMA_CONTRACT = Object.fromEntries(Object.entries(FIELD_MAPPING).map(([table, mapping]) => [table, Object.entries(mapping).map(([internalKey, feishuName]) => fieldDefinition(internalKey, feishuName, { type: typeFor(internalKey, table) }))]))
 
+SCHEMA_CONTRACT.customers = SCHEMA_CONTRACT.customers.map((field) => field.internal_key === 'current_mentor_id' ? fieldDefinition(field.internal_key, field.feishu_name, { writable: true }) : field)
 SCHEMA_CONTRACT.appointments = SCHEMA_CONTRACT.appointments.map((field) => fieldDefinition(field.internal_key, field.feishu_name, { writable: field.internal_key !== 'appointment_id' }))
 SCHEMA_CONTRACT.customers.push(fieldDefinition('mentor_id_legacy', '导师ID', { readable: true, writable: false, deprecated: true }))
 SCHEMA_CONTRACT.profileChanges = SCHEMA_CONTRACT.profileChanges.map((field) => field.internal_key === 'field_name' ? fieldDefinition('field_name', '字段名称', { type: 'Text', enum: ['婚姻状态'], required: false }) : field)

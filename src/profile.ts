@@ -49,7 +49,7 @@ export function profileUpdateLabel(update: ProfileUpdate) {
 }
 
 export function profileSourceLabel(source: ProfileSource) {
-  return source === 'AI_INFERENCE' ? 'AI 推测' : source === 'MENTOR_OBSERVATION' ? '导师观察' : source === 'MENTOR_CONFIRMED' ? '导师确认' : '客户明确表达'
+  return source === 'AI_INFERENCE' ? 'AI 推测' : source === 'AI_EXTRACTED_CONFIRMED' ? 'AI提取 · 人工确认' : source === 'MENTOR_OBSERVATION' ? '导师观察' : source === 'MENTOR_FACTUAL_INPUT' || source === 'MENTOR_CONFIRMED' ? '导师事实输入' : source === 'ADMIN_CONFIRMED' ? '管理员确认' : source === 'STRUCTURED_INPUT' ? '结构化录入' : source === 'IMPORTED_HISTORY' || source === 'LEGACY_MIGRATION' ? '历史导入' : '客户明确表达'
 }
 
 export function extractLocalProfile(text: string, existing: CustomerProfileState): { updates: ProfileUpdate[] } {

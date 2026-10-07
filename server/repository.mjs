@@ -6,15 +6,13 @@ import { field as mapField, fields as mapFields, read as readField } from './fie
 import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs'
 import crypto from 'node:crypto'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
+import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 const boolean = (value) => value === true || value === 'true' || value === '是'
 const date = (value) => parseDateFromFeishu(value)
-const normalizePhone = (value) => {
-  const digits = text(value).replace(/\D/g, '')
-  return digits.startsWith('86') && digits.length === 13 ? digits.slice(2) : digits
-}
+const normalizePhone = foundationNormalizePhone
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
@@ -28,8 +26,8 @@ const safeEqual = (left, right) => {
 // The server calls Feishu's REST API directly; datetime cells require Unix milliseconds.
 const feishuDate = () => serializeDateForFeishu(now())
 const get = (table, recordFields, key) => readField(table, recordFields, key)
-const PROFILE_FIELD_KEYS = new Set('gender age birth_year city hometown marital_status education living_status children_summary occupation industry position work_years job_status income_range career_stage career_satisfaction career_problem career_goal entrepreneurship_experience family_summary parents_relationship father_summary mother_summary relationship_with_father relationship_with_mother siblings family_events family_support_level relationship_status partner_summary marriage_years relationship_satisfaction relationship_conflicts communication_pattern conflict_pattern relationship_goal children_detail parent_child_relationship parenting_problem parenting_values hobbies sports reading travel art_preferences social_preference sleep diet routine life_satisfaction self_description personality_traits communication_style decision_style emotion_expression stress_response conflict_style action_style strengths common_blocks core_values family_values career_values money_values relationship_values success_definition happiness_definition freedom_definition growth_attitude current_core_issue secondary_issues current_stressors current_goal current_expectation current_resources support_system current_barriers energy_state recent_major_changes ai_customer_summary'.split(' '))
-const IMPORTANT_PROFILE_FIELDS = new Set(['age', 'city', 'occupation', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'mentor_id', 'grade', 'paid', 'intended_course'])
+const PROFILE_FIELD_KEYS = new Set('phone wechat gender birth_date age birth_year city hometown marital_status education living_status children_summary occupation industry position work_years job_status income_range career_stage career_satisfaction career_problem career_goal entrepreneurship_experience family_summary parents_relationship father_summary mother_summary relationship_with_father relationship_with_mother siblings family_events family_support_level relationship_status partner_summary marriage_years relationship_satisfaction relationship_conflicts communication_pattern conflict_pattern relationship_goal children_detail parent_child_relationship parenting_problem parenting_values hobbies sports reading travel art_preferences social_preference sleep diet routine life_satisfaction self_description personality_traits communication_style decision_style emotion_expression stress_response conflict_style action_style strengths common_blocks core_values family_values career_values money_values relationship_values success_definition happiness_definition freedom_definition growth_attitude current_core_issue secondary_issues current_stressors current_goal current_expectation current_resources support_system current_barriers energy_state recent_major_changes ai_customer_summary'.split(' '))
+const IMPORTANT_PROFILE_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'age', 'city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id', 'mentor_id', 'grade', 'paid', 'intended_course'])
 
 function appointment(row) {
   const f = row.fields || {}
@@ -43,7 +41,12 @@ function customer(row) {
   const f = row.fields || {}
   const name = text(get('customers', f, 'nickname')) || '未命名客户'
   let profileFieldMeta = {}
-  try { profileFieldMeta = JSON.parse(text(get('customers', f, 'profile_field_meta_json')) || '{}') } catch { profileFieldMeta = {} }
+  let profileVersion = 0
+  try {
+    const storedMeta = JSON.parse(text(get('customers', f, 'profile_field_meta_json')) || '{}')
+    profileVersion = Number(storedMeta._profile_version || 0)
+    profileFieldMeta = storedMeta._fields || Object.fromEntries(Object.entries(storedMeta).filter(([key]) => !key.startsWith('_')))
+  } catch { profileFieldMeta = {} }
   const profileFields = {}
   for (const key of PROFILE_FIELD_KEYS) {
     const value = get('customers', f, key)
@@ -52,10 +55,13 @@ function customer(row) {
   profileFields.current_core_issue ||= text(get('customers', f, 'current_issue')) || null
   profileFields.current_expectation ||= text(get('customers', f, 'help_expectation')) || null
   profileFields.current_goal ||= text(get('customers', f, 'current_goal')) || null
+  profileFields.phone ||= normalizePhone(get('customers', f, 'phone')) || null
+  profileFields.wechat ||= text(get('customers', f, 'wechat')) || null
   profileFields.grade = text(get('customers', f, 'sabc')) || 'C'
   profileFields.paid = boolean(get('customers', f, 'is_paid'))
-  profileFields.mentor_id = text(get('customers', f, 'mentor_id')) || null
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), name, initials: name.slice(0, 1), phone: text(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'mentor_id')) || null, referrerName: text(get('customers', f, 'referrer_name')), need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || 'v0.5', _recordId: row.record_id }
+  profileFields.current_mentor_id = profileFields.current_mentor_id ?? profileFields.mentor_id ?? (text(get('customers', f, 'current_mentor_id')) || null)
+  profileFields.mentor_id = profileFields.current_mentor_id
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName: text(get('customers', f, 'referrer_name')), need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || 'v0.5', profileVersion, _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -114,7 +120,7 @@ function profileChange(row) {
   let newValue = null
   try { oldValue = JSON.parse(text(get('profileChanges', f, 'old_value')) || 'null') } catch { oldValue = text(get('profileChanges', f, 'old_value')) || null }
   try { newValue = JSON.parse(text(get('profileChanges', f, 'new_value')) || 'null') } catch { newValue = text(get('profileChanges', f, 'new_value')) || null }
-  const source = ['USER_EXPLICIT', 'MENTOR_CONFIRMED', 'MENTOR_OBSERVATION', 'AI_INFERENCE'].includes(text(get('profileChanges', f, 'source'))) ? text(get('profileChanges', f, 'source')) : 'MENTOR_OBSERVATION'
+  const source = ['STRUCTURED_INPUT', 'USER_EXPLICIT', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'MENTOR_CONFIRMED', 'MENTOR_OBSERVATION', 'AI_EXTRACTED_CONFIRMED', 'AI_INFERENCE', 'IMPORTED_HISTORY', 'LEGACY_MIGRATION'].includes(text(get('profileChanges', f, 'source'))) ? text(get('profileChanges', f, 'source')) : 'MENTOR_OBSERVATION'
   return { id: text(get('profileChanges', f, 'change_id')) || row.record_id, customerId: text(get('profileChanges', f, 'customer_id')), field: text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), fieldName: text(get('profileChanges', f, 'field_name')) || text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), oldValue, newValue, source, confidence: Number(get('profileChanges', f, 'confidence') ?? 0.9), confirmed: boolean(get('profileChanges', f, 'confirmed')), updatedAt: date(get('profileChanges', f, 'changed_at')) || date(get('profileChanges', f, 'updated_at')), operatorId: text(get('profileChanges', f, 'operator_id')) || undefined, serviceRecordId: text(get('profileChanges', f, 'service_record_id')) || undefined, _recordId: row.record_id }
 }
 
@@ -129,17 +135,18 @@ function scope(database, actorId) {
 function sameProfileValue(a, b) { return JSON.stringify(a ?? null) === JSON.stringify(b ?? null) }
 function normalizeProfileUpdates(updates, profileRecord, confirmed = false) {
   if (!Array.isArray(updates)) return []
-  return updates.filter((item) => item && typeof item.field === 'string' && (PROFILE_FIELD_KEYS.has(item.field) || ['grade', 'paid', 'mentor_id', 'intended_course'].includes(item.field))).map((item) => {
+  return updates.filter((item) => item && typeof item.field === 'string' && (PROFILE_FIELD_KEYS.has(item.field) || ['grade', 'paid', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(item.field))).map((item) => {
+    const field = item.field === 'mentor_id' ? 'current_mentor_id' : item.field
     const previousValue = profileRecord?.profileFields?.[item.field] ?? null
-    const source = confirmed ? 'MENTOR_CONFIRMED' : item.source === 'AI_INFERENCE' ? 'AI_INFERENCE' : 'MENTOR_OBSERVATION'
-    return { field: item.field, value: jsonValue(item.value), previousValue, source, confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.9))), confirmed: confirmed && source === 'MENTOR_CONFIRMED', conflict: previousValue !== null && !sameProfileValue(previousValue, item.value) }
+    const source = confirmed ? provenance(item.source || 'MENTOR_OBSERVATION', true) : item.source === 'AI_INFERENCE' ? 'AI_INFERENCE' : item.source || 'MENTOR_OBSERVATION'
+    return { field, value: jsonValue(item.value), previousValue, source, confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.9))), confirmed: confirmed && source !== 'AI_INFERENCE', conflict: previousValue !== null && !sameProfileValue(previousValue, item.value) }
   }).filter((item) => item.value !== null)
 }
 
 function profileFieldsForWrite(customerRecord, updates) {
-  const values = { profile_field_meta_json: JSON.stringify(customerRecord.profileFieldMeta || {}), profile_schema_version: customerRecord.profileSchemaVersion || 'v0.5', profile_updated_at: customerRecord.profileUpdatedAt || now() }
+  const values = { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {} }), profile_schema_version: customerRecord.profileSchemaVersion || 'v0.5', profile_updated_at: customerRecord.profileUpdatedAt || now() }
   for (const update of updates) {
-    if (['paid', 'grade', 'mentor_id', 'intended_course'].includes(update.field)) continue
+    if (['paid', 'grade', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(update.field)) continue
     values[update.field] = Array.isArray(update.value) ? JSON.stringify(update.value) : typeof update.value === 'number' || typeof update.value === 'boolean' ? String(update.value) : update.value ?? ''
   }
   if (customerRecord.need !== undefined) values.current_issue = customerRecord.need
@@ -148,7 +155,7 @@ function profileFieldsForWrite(customerRecord, updates) {
   values.sabc = customerRecord.grade
   values.is_paid = customerRecord.paid
   values.intended_course = customerRecord.intendedCourse || ''
-  values.mentor_id = customerRecord.mentorId || ''
+  values.current_mentor_id = customerRecord.mentorId || ''
   return mapFields('customers', values)
 }
 
@@ -157,18 +164,15 @@ function validateManualCustomer(input) {
   const phone = normalizePhone(input?.phone)
   const wechat = text(input?.wechat).trim()
   if (!nickname) throw new Error('客户昵称不能为空')
-  if (phone && !validPhone(phone)) throw new Error('请输入有效手机号')
-  if (!phone && !wechat) throw new Error('手机号或微信号至少填写一个')
+  if (phone && !/^1\d{10}$/.test(phone) && !phone.startsWith('+')) throw new Error('请输入有效手机号')
+  if (!contactRequired({ phone, wechat })) throw Object.assign(new Error('手机号或微信号至少填写一个'), { code: 'CUSTOMER_CONTACT_REQUIRED', status: 400 })
   return { nickname, phone, wechat, situation: text(input?.situation).trim() }
 }
 
 function duplicateMatches(database, input) {
   const { nickname, phone, wechat } = validateManualCustomer(input)
-  const normalizedName = nickname.toLowerCase()
-  return database.customers.flatMap((item) => {
-    const matchedBy = phone && item.phone && normalizePhone(item.phone) === phone ? 'phone' : wechat && item.wechat && item.wechat.trim() === wechat ? 'wechat' : item.name.trim() === nickname ? 'nickname_exact' : item.name.toLowerCase().includes(normalizedName) || normalizedName.includes(item.name.toLowerCase()) ? 'nickname_fuzzy' : null
-    return matchedBy ? [{ customer: item, matchedBy }] : []
-  })
+  const identity = resolveCustomerIdentity(database.customers, { nickname, phone, wechat })
+  return identity.matches.map((item) => ({ customer: item, matchedBy: identity.match_reasons.includes('PHONE_EXACT') ? 'phone' : identity.match_reasons.includes('WECHAT_EXACT') ? 'wechat' : identity.match_reasons.includes('NICKNAME_EXACT') ? 'nickname_exact' : 'nickname_fuzzy' }))
 }
 
 function activeProduct(database, productId) {
@@ -211,22 +215,25 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   if (!customerRecord || !row) throw new Error('客户不存在')
   customerRecord.profileFields = { ...(customerRecord.profileFields || {}) }
   customerRecord.profileFieldMeta = { ...(customerRecord.profileFieldMeta || {}) }
+  customerRecord.profileVersion = Number(customerRecord.profileVersion || 0)
   const changed = []
   const updatedAt = now()
   const changedAt = feishuDate()
   for (const update of updates) {
-    const oldValue = customerRecord.profileFields[update.field] ?? null
-    customerRecord.profileFields[update.field] = update.value
-    customerRecord.profileFieldMeta[update.field] = { source: update.source, confidence: update.confidence, confirmed: update.confirmed, updatedAt }
-    if (update.field === 'current_core_issue' && typeof update.value === 'string') customerRecord.need = update.value
-    if (update.field === 'current_expectation' && typeof update.value === 'string') customerRecord.helpExpectation = update.value
-    if (update.field === 'current_goal' && typeof update.value === 'string') customerRecord.goal = update.value
-    if (update.field === 'intended_course') customerRecord.intendedCourse = typeof update.value === 'string' ? update.value : null
-    if (update.field === 'paid' && typeof update.value === 'boolean') customerRecord.paid = update.value
-    if (update.field === 'grade' && typeof update.value === 'string') customerRecord.grade = update.value
-    if (update.field === 'mentor_id' && typeof update.value === 'string') customerRecord.mentorId = update.value
-    if (!sameProfileValue(oldValue, update.value)) changed.push({ ...update, oldValue, updatedAt })
+    const field = update.field === 'mentor_id' ? 'current_mentor_id' : update.field
+    const oldValue = customerRecord.profileFields[field] ?? null
+    customerRecord.profileFields[field] = update.value
+    customerRecord.profileFieldMeta[field] = { source: update.source, confidence: update.confidence, confirmed: update.confirmed, updatedAt }
+    if (field === 'current_core_issue' && typeof update.value === 'string') customerRecord.need = update.value
+    if (field === 'current_expectation' && typeof update.value === 'string') customerRecord.helpExpectation = update.value
+    if (field === 'current_goal' && typeof update.value === 'string') customerRecord.goal = update.value
+    if (field === 'intended_course') customerRecord.intendedCourse = typeof update.value === 'string' ? update.value : null
+    if (field === 'paid' && typeof update.value === 'boolean') customerRecord.paid = update.value
+    if (field === 'grade' && typeof update.value === 'string') customerRecord.grade = update.value
+    if (field === 'current_mentor_id' && typeof update.value === 'string') customerRecord.mentorId = update.value
+    if (!sameProfileValue(oldValue, update.value)) changed.push({ ...update, field, oldValue, updatedAt })
   }
+  if (changed.length) customerRecord.profileVersion += 1
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = 'v0.5'
   await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
@@ -307,15 +314,19 @@ export class FeishuRepository {
     const database = await this.load()
     scope(database, actorId)
     const normalized = validateManualCustomer(input)
+    const identity = resolveCustomerIdentity(database.customers, normalized)
     const updates = normalized.situation ? (await createProfileDraft({ text: normalized.situation, existing: {} })).updates : []
-    return { duplicates: duplicateMatches(database, input), updates }
+    return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates }
   }
   async createCustomer(actorId, input) {
     const database = await this.load()
     scope(database, actorId)
     const normalized = validateManualCustomer(input)
+    const identity = resolveCustomerIdentity(database.customers, normalized)
     const duplicates = duplicateMatches(database, input)
-    if (duplicates.length && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { status: 409, code: 'CUSTOMER_DUPLICATE', matches: duplicates })
+    if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT', matches: duplicates })
+    if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已匹配到现有客户，请打开原档案更新。'), { status: 409, code: 'CUSTOMER_DUPLICATE', matches: duplicates })
+    if (identity.result === 'POSSIBLE_MATCH' && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { status: 409, code: 'CUSTOMER_POSSIBLE_MATCH', matches: duplicates })
     validateEnrollmentDrafts(database, input.enrollments)
     const operationId = text(input?.operationId).trim()
     if (operationId) {
@@ -324,24 +335,15 @@ export class FeishuRepository {
     }
     const customerId = operationId ? stableOperationId(operationId, 'CUS') : `CUS-${Date.now()}`
     const createdAt = now()
-    await createRecord(config.feishu.tables.customers, mapFields('customers', { customer_id: customerId, nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_schema_version: 'v0.5', profile_updated_at: createdAt }))
+    const initialFields = { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(normalized.wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }
+    await createRecord(config.feishu.tables.customers, mapFields('customers', { customer_id: customerId, nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: 'v0.5', profile_updated_at: createdAt }))
     let current = await this.load()
     if (input.profileUpdates?.length) {
       await persistCustomerProfile(current, customerId, normalizeProfileUpdates(input.profileUpdates, current.customers.find((item) => item.id === customerId), true), undefined, actorId)
       current = await this.load()
     }
     await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
-    if (input.needsFollowup) {
-      let assignedMentorId = ''
-      if (input.mentorId) {
-        const mentor = current.staff.find((item) => item.id === input.mentorId && item.permissionRole === 'MENTOR')
-        if (!mentor || mentor.status !== 'ACTIVE') throw new Error('只能选择 ACTIVE 导师')
-        assignedMentorId = mentor.id
-        const customerRow = current._rows.customers.find((row) => text(get('customers', row.fields, 'customer_id')) === customerId)
-        if (customerRow) await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { mentor_id: assignedMentorId }))
-      }
-      await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: `A-${Date.now()}`, customer_id: customerId, current_issue_description: normalized.situation, expectation: current.customers.find((item) => item.id === customerId)?.helpExpectation || '', submitted_at: createdAt, status: 'WAIT_FOLLOW_UP', assigned_mentor_id: assignedMentorId, followup_handled: false, followup_info_completed: false, created_at: createdAt, case_source: input.caseSource || 'ADMIN_MANUAL' }))
-    }
+    // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
     return this.dashboard(actorId)
   }
   async updateCustomer(actorId, customerId, input) {
@@ -352,20 +354,19 @@ export class FeishuRepository {
     if (!current || !row) throw new Error('客户不存在')
     validateEnrollmentDrafts(database, input.enrollments)
     const normalized = validateManualCustomer({ ...input, nickname: input.nickname || current.name, phone: input.phone || current.phone, wechat: input.wechat || current.wechat })
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: input.source || current.source, notes: normalized.situation || current.notes }))
+    const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), normalized)
+    if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT' })
+    if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已绑定其他客户，不能覆盖。'), { status: 409, code: 'CUSTOMER_DUPLICATE' })
+    const identityUpdates = []
+    if (normalizePhone(current.phone) !== normalized.phone) identityUpdates.push({ field: 'phone', value: normalized.phone, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
+    if (normalizeWechat(current.wechat) !== normalizeWechat(normalized.wechat)) identityUpdates.push({ field: 'wechat', value: normalized.wechat, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
+    if (identityUpdates.length) await persistCustomerProfile(database, customerId, normalizeProfileUpdates(identityUpdates, current, true), undefined, actorId)
+    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { nickname: normalized.nickname, source: input.source || current.source, notes: normalized.situation || current.notes }))
     let latest = await this.load()
     if (input.profileUpdates?.length) await persistCustomerProfile(latest, customerId, normalizeProfileUpdates(input.profileUpdates, latest.customers.find((item) => item.id === customerId), true), undefined, actorId)
     latest = await this.load()
     await mergeEnrollments(latest, customerId, input.enrollments, actorId, text(input?.operationId).trim())
-    if (input.needsFollowup && !latest.appointments.some((item) => item.customerId === customerId && item.status !== 'COMPLETED')) {
-      let assignedMentorId = ''
-      if (input.mentorId) {
-        const mentor = latest.staff.find((item) => item.id === input.mentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')
-        if (!mentor) throw new Error('只能选择 ACTIVE 导师')
-        assignedMentorId = mentor.id
-      }
-      await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: `A-${Date.now()}`, customer_id: customerId, current_issue_description: normalized.situation, expectation: latest.customers.find((item) => item.id === customerId)?.helpExpectation || '', submitted_at: now(), status: 'WAIT_FOLLOW_UP', assigned_mentor_id: assignedMentorId, followup_handled: false, followup_info_completed: false, created_at: now(), case_source: input.caseSource || 'ADMIN_MANUAL' }))
-    }
+    // Customer updates do not create or mutate Appointment in Stage 1.
     return this.dashboard(actorId)
   }
   async confirmProfile(actorId, customerId, updates) {
