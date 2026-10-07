@@ -109,7 +109,7 @@ function HomePage({ staff, database, canSeeAll, api, onCustomer, onAssign, onCom
 }
 
 function MindtestBanner() {
-  return <a className="mindtest-banner" href="https://xiangshu3721.github.io/mindtest-web/" target="_blank" rel="noreferrer" aria-label="打开 ASVA 常用心理测试"><img className="mindtest-banner-art" src={`${import.meta.env.BASE_URL}assets/asva-mindtest-banner.png`} alt="" /><span className="mindtest-banner-content"><small>ASVA 常用心理测试</small><strong>接待前，先快速了解客户</strong><span>打开常用测评，为沟通准备一份更清晰的参考。</span><b>打开心理测试 <i aria-hidden="true">→</i></b></span></a>
+  return <a className="mindtest-banner" href="https://xiangshu3721.github.io/mindtest-web/" target="_blank" rel="noreferrer" aria-label="打开 ASVA 常用心理测试"><img className="mindtest-banner-art" src={`${import.meta.env.BASE_URL}assets/asva-mindtest-banner.png`} alt="" /><span className="mindtest-banner-content"><strong>ASVA 常用心理测试</strong></span></a>
 }
 
 function StateCount({ label, value, tone, hidden = false }: { label: string; value: number; tone: string; hidden?: boolean }) { if (hidden) return null; return <div className={`state-count state-${tone}`}><span>{label}</span><strong>{value}</strong></div> }
