@@ -57,6 +57,12 @@ function guard(request) {
   return id
 }
 
+function clientIp(request) {
+  const forwarded = request.headers['x-forwarded-for']
+  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
+  return request.socket.remoteAddress || 'unknown'
+}
+
 function status(error) {
   if (error?.status) return error.status
   if (error instanceof AuthError) return 401
@@ -88,7 +94,7 @@ async function handle(request, response, requestId) {
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readBody(request)
-    const account = await repository.authenticate(body.phone, body.code)
+    const account = await repository.authenticate(body.phone, body.code, clientIp(request))
     const token = config.authSecret ? issueSession(account.id) : ''
     return send(request, response, 200, { ...account, token: token || undefined }, requestId)
   }
@@ -145,6 +151,7 @@ http.createServer((request, response) => {
     const statusCode = status(error)
     const operatorId = (() => { try { return actorId(request) } catch { return '' } })()
     console.error('[ASVA_API_ERROR]', JSON.stringify({ timestamp: new Date().toISOString(), request_id: requestId, operator_id: operatorId || undefined, operation: `${request.method} ${request.url}`, entity: 'api', status: statusCode, duration: Date.now() - startedAt, error_code: code }))
-    send(request, response, statusCode, { success: false, code, message: error instanceof Error ? error.message : '请求未完成，请稍后重试。', request_id: requestId }, requestId)
+    const message = code === 'AUTH_INVALID' ? '登录信息验证失败' : code === 'AUTH_RATE_LIMITED' ? '登录尝试过于频繁，请稍后再试' : error instanceof Error ? error.message : '请求未完成，请稍后重试。'
+    send(request, response, statusCode, { success: false, code, message, request_id: requestId }, requestId)
   })
 }).listen(config.port, config.host, () => console.log(`ASVA API listening on http://${config.host}:${config.port}`))

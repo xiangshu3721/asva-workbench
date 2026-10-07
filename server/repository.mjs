@@ -5,6 +5,7 @@ import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
 import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs'
 import crypto from 'node:crypto'
+import { LoginRateLimiter } from './login-rate-limit.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -17,6 +18,13 @@ const normalizePhone = (value) => {
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
+const loginRateLimiter = new LoginRateLimiter()
+const invalidLogin = () => Object.assign(new Error('登录信息验证失败'), { code: 'AUTH_INVALID', status: 401 })
+const safeEqual = (left, right) => {
+  const a = Buffer.from(String(left || ''))
+  const b = Buffer.from(String(right || ''))
+  return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b)
+}
 // The server calls Feishu's REST API directly; datetime cells require Unix milliseconds.
 const feishuDate = () => serializeDateForFeishu(now())
 const get = (table, recordFields, key) => readField(table, recordFields, key)
@@ -271,18 +279,21 @@ export class FeishuRepository {
     if (record.permissionRole !== 'ADMIN' || record.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
     return record
   }
-  async authenticate(phone, code) {
-    if (config.dataMode === 'production' && !(config.allowDevOtp && config.environment !== 'production')) {
-      throw Object.assign(new Error('生产环境未配置真实验证码服务，拒绝使用固定验证码'), { code: 'AUTH_OTP_NOT_CONFIGURED', status: 503 })
-    }
-    if (code !== '888888') throw new Error('手机号或验证码错误')
+  async authenticate(phone, code, ip = 'unknown') {
+    if (loginRateLimiter.isBlocked(phone, ip)) throw Object.assign(new Error('登录尝试过于频繁，请稍后再试'), { code: 'AUTH_RATE_LIMITED', status: 429 })
+    if (config.dataMode === 'production' && !config.adminLoginCode) throw Object.assign(new Error('生产认证未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
+    const controlledProductionCode = config.dataMode === 'production' && config.authMode === 'ADMIN_CODE' && safeEqual(code, config.adminLoginCode)
+    const controlledDemoCode = config.dataMode !== 'production' && config.allowDevOtp && safeEqual(code, '888888')
     const database = await this.load()
     const normalized = normalizePhone(phone)
     const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
-    if (account?.status === 'INACTIVE') throw new Error('该账户已停用，请联系管理员。')
-    if (account?.permissionRole === 'MENTOR') throw new Error('导师端暂未开放，请联系管理员。')
-    if (account?.status === 'ACTIVE' && account.loginEnabled === true) return account
-    throw new Error('手机号或验证码错误')
+    const validStaff = account?.permissionRole === 'ADMIN' && account.status === 'ACTIVE' && account.loginEnabled === true
+    if ((!controlledProductionCode && !controlledDemoCode) || !validStaff) {
+      loginRateLimiter.recordFailure(phone, ip)
+      throw invalidLogin()
+    }
+    loginRateLimiter.clear(phone, ip)
+    return account
   }
   async customer(actorId, customerId) { return (await this.dashboard(actorId)).customers.find((item) => item.id === customerId) }
   async profileDraft(actorId, customerId, textInput) {
