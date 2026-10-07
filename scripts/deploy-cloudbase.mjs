@@ -46,6 +46,7 @@ function runCapture(command, args, cwd) {
 
 const envPath = path.join(root, '.env.local')
 const values = parseEnv(await readFile(envPath, 'utf8'))
+const buildMetadata = JSON.parse(await readFile(path.join(root, 'build-meta.json'), 'utf8'))
 const requiredKeys = ['DEEPSEEK_API_KEY', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN', 'ASVA_AUTH_SECRET']
 const missing = requiredKeys.filter((key) => !values[key])
 if (missing.length) throw new Error(`.env.local 缺少 ASVA CloudBase 生产变量：${missing.join(', ')}`)
@@ -71,6 +72,10 @@ const envVariables = {
   ALLOW_DEV_OTP: 'false',
   FEATURE_EXTERNAL_APPOINTMENT: 'false',
   ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
+  ASVA_RELEASE_COUNTER: String(buildMetadata.releaseCounter),
+  ASVA_GIT_COMMIT: buildMetadata.gitCommit,
+  ASVA_GIT_BRANCH: buildMetadata.gitBranch,
+  ASVA_BUILD_TIME: buildMetadata.buildTime,
   HOST: '0.0.0.0',
   PORT: '9000',
 }

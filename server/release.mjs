@@ -11,7 +11,7 @@ function git(command) {
   try { return execFileSync('git', command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { return 'UNKNOWN' }
 }
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const root = path.resolve(process.env.ASVA_APP_ROOT || process.cwd())
 const release = readJson(path.join(root, 'release.json'))
 const built = readJson(path.join(root, 'build-meta.json'))
 const counter = Number(process.env.ASVA_RELEASE_COUNTER || built.releaseCounter || release.releaseCounter || 0)

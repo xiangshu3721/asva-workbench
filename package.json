@@ -13,7 +13,7 @@
     "stage0:write-test": "node scripts/stage0-write-test.mjs",
     "build": "npm run build:meta && tsc -p tsconfig.json --noEmit && vite build",
     "build:cloudbase": "node scripts/build-cloudbase-function.mjs",
-    "deploy:cloudbase": "npm run build:cloudbase && node scripts/deploy-cloudbase.mjs",
+    "deploy:cloudbase": "npm run build:meta && npm run build:cloudbase && node scripts/deploy-cloudbase.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
