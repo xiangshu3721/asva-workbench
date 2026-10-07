@@ -1,59 +1,61 @@
-# ASVA Stage 0 完成报告
+# ASVA Stage 0 Completion Report
 
 报告时间：2026-10-07（Asia/Shanghai）
 分支：`stage-0-foundation`
-范围：生产底座、调试体系、版本治理、数据/认证/Schema 契约；未进入 Stage 1 业务扩展。
+Production release：`R001`
+最终 commit：`f38bfc1f656cae769342cd61cff35127f5ace141`
 
 ## 结论
 
-`STAGE0_READY_FOR_STAGE1 = NO`
+`STAGE0_READY_FOR_STAGE1 = YES`
 
-代码底座和真实 Feishu 测试数据写入已完成，但生产发布门槛尚未全部满足：`.env.local` 尚未配置 `ASVA_AUTH_SECRET`，因此部署脚本会主动阻止生产发布；公开 Pages/CloudBase 仍是 Stage 0 开始前版本，尚未进行本分支发布后的 FE/BE release match 验收。
+Stage 0 Production Closure 已完成。本轮到此停止，不进入 Stage 1。
 
-## Before / After
+## R001 发布闭环
 
-| 领域 | Before | After |
+| 门槛 | 结果 | 证据 |
 |---|---|---|
-| Git | `github-pages-clean2`，无 Stage 0 分支 | `stage-0-foundation`，起点 `314d39c` |
-| Release | 无统一计数/health metadata | `release.json`、`release:prepare`、build metadata、R000 health |
-| API health | service 为 `asva-workbench`，无版本 | `service=asva-api`，包含 appVersion/release/git/build/environment |
-| 错误 | 不统一，缺 request id | 非 2xx + `success/code/message/request_id`，响应 `X-Request-Id` |
-| 身份 | 可伪造 `X-Staff-Id` | production 只接受 HMAC Bearer Session；demo 保留兼容 |
-| CORS | `*` | 只允许 `ASVA_FRONTEND_ORIGIN` |
-| 数据模式 | 本地回退边界不明确 | `production/demo` 明确隔离，production 不读本地回退 |
-| Schema | 映射存在但无 contract/check | contract + `npm run schema:check`，deprecated/真实类型显式输出 |
-| 日期 | 业务和 Feishu 转换分散 | `date-contract.mjs` + mapping adapter 统一处理 |
-| 调试 | 无安全面板 | 默认关闭、5 次点击/`?debug=1`、ADMIN-only、内存 20 条请求记录 |
+| FE R001 | PASS | Pages Actions run `37623738257`，commit `f38bfc1`，conclusion `success` |
+| BE R001 | PASS | CloudBase `/api/health` 返回 `R001`，commit `f38bfc1` |
+| VERSION_MATCH | YES | FE/BE release counter 均为 1，FE/BE commit 均为 `f38bfc1` |
+| Production Data Mode | PASS | health `environment=production`、`dataMode=production` |
+| Production Source | PASS | health `feishuConfigured=true`；生产 dashboard 返回真实 Feishu 数据结构 |
+| Demo fallback | disabled | health/部署变量 `ALLOW_DEV_OTP=false`；Production 不接受 `888888` |
+| External appointment | PASS | Production 返回 403 `FEATURE_DISABLED` |
+| Public frontend | PASS | Pages HTTP 200，title `ASVA 工作台`，引用 hashed JS asset 可读取 |
 
-## 已改动与明确未改动
+## Production Auth
 
-已改动：版本、health、认证/CORS、错误/request-id、Debug、Error Boundary、DATA_MODE、Schema/date adapter、外部预约 feature flag、幂等 operation id、部分写入错误码、Stage 0 文档和 gated integration script。
+当前模式：`AUTH_MODE=ADMIN_CODE`，标记为 `TEMPORARY_INTERNAL_AUTH`，只用于 Stage 0 / 内测，不是长期正式认证。
 
-未做：12 层 Life OS、临床风险、心理学/新 SABC、BI、今日关怀 AI、Lens、多主体、八字、新 CRM/营销、新预约业务、全量 Repository 重写、Appointment 新表/状态迁移。
+- `ASVA_AUTH_SECRET`：CloudBase Production 已配置；服务端签发 8 小时 HMAC Session。
+- `ASVA_ADMIN_LOGIN_CODE`：CloudBase Production 已配置；只在服务端校验，不进入 Git、源码、bundle、日志、API 响应或 Debug Panel。
+- 登录成功：必须同时满足手机号存在、`ADMIN`、`ACTIVE`、`login_enabled=true`、管理员码正确；实测返回 200 和 signed Session。
+- 登录失败统一返回 `401 / AUTH_INVALID / 登录信息验证失败`；不存在账号、MENTOR、错误管理员码均不泄露具体原因。
+- `X-Staff-Id` 单独请求、非法 token、无 token 均返回 401。
+- 登出由前端清除 `sessionStorage` token；生产 staff UI 状态也不再写入 localStorage。
+- 防暴力破解：服务端按 `phone + IP` 内存限流，15 分钟最多 5 次；同一测试键实测 `[401,401,401,401,401,429]`。这是正式外部使用前的技术债。
+- Debug Panel 仅 ADMIN 可见，显示 `Auth Mode: ADMIN_CODE`、`Auth State: AUTHENTICATED`、`Role: ADMIN`，不显示实际 Login Code。
+- MENTOR 当前仍禁止登录。
+
+正式 OTP / 企业身份认证替换条件：在第一批真实客户数据进入系统、导师端正式开放、外部公开使用或解忧小屋正式上线任一条件发生前，必须替换当前 `TEMPORARY_INTERNAL_AUTH`；未来接口预留 `AUTH_MODE=SMS_OTP`。
+
+## 自动检查与回归
+
+- `npm test`：111/111 PASS（原 Stage 0 基线测试 + 登录限流回归）。
+- `npm run typecheck`：PASS。
+- `npm run build`：PASS。
+- `npm run schema:check`：PASS；Missing/Extra/TypeMismatch 均为零，`导师ID` 仍按 deprecated 管理。
+- Production health、管理员登录、Session、固定码拒绝、MENTOR 拒绝、伪造身份拒绝、401 错误、限流、feature flag：PASS。
+- Production Feishu 与既有 AI 生产回归证据保留；本轮未重复触发会向外部 AI 服务发送生产数据的调用。
+- 真实写入测试使用 `STAGE0_TEST_`，已完成写入前快照、request_id、刷新读回；写入内容未进入 Git。
 
 ## 真实数据写入结果
 
 - 写入前快照：`stage0-backup/feishu-snapshot-2026-10-07T11-22-54-712Z.json`，目录已加入 `.gitignore`。
-- 已复核现场存在 6 个 `STAGE0_TEST_` 客户、2 名 `STAGE0_TEST_` 测试导师且均已停用、2 个报名、2 条 ServiceRecord（A/B）、AI summary、城市南京→杭州、职业更新、5 条 ProfileChanges。
-- 自动脚本在最终全量刷新处超时，未把它标成全绿；独立只读复核返回 `ok=true`。这是“写入链路通过、脚本最终汇总超时”，不是完整 E2E 全通过。
+- 已复核 6 个 `STAGE0_TEST_` 客户、2 名已停用测试导师、2 个报名、2 条 ServiceRecord（A/B）、AI summary、城市南京→杭州、职业更新、5 条 ProfileChanges。
+- 自动脚本在最终全量刷新处超时；独立只读复核返回 `ok=true`，因此记录为“写入链路通过、自动汇总超时”，不冒充完整 E2E 全绿。
 
-## 自动检查
+## Stage 0 未进入范围
 
-- `npm run typecheck`：通过。
-- `npm test`：109/109 通过（原有 106 项保持通过，新增 Stage 0 contract 3 项）。
-- `npm run build`：通过。
-- `npm run schema:check`：现场 Missing/Extra/TypeMismatch 已校准为零；`导师ID` 作为 deprecated 输出。
-- 本地 `/api/health`：R000、`service=asva-api`、metadata 完整。
-- 本地错误接口：HTTP 404、标准 JSON、`X-Request-Id` 已验证。
-
-## P0 / P1 / P2
-
-- P0：配置高强度 `ASVA_AUTH_SECRET`，再部署 production；当前部署脚本会拒绝缺失密钥。
-- P1：配置生产真实 OTP 服务；production 不再接受固定 `888888`。
-- P1：按同一 release counter 构建并发布 Pages + CloudBase，完成公开 health、Pages assets、FE/BE match 验收。
-- P1：将真实写入脚本的 Feishu 慢请求拆分/增加超时与重试状态，避免最终全量刷新阻塞报告。
-- P2：补充浏览器点击级 Debug drawer、production/demo 页面可视验收；静态 build 不代替浏览器验收。
-
-## 发布边界
-
-本轮没有 push、没有部署、没有修改公开 Pages/CloudBase。当前结果是可审计的 Stage 0 本地分支与现场测试数据证据，待 P0 配置和外部发布授权后再进入 release 验收。
+未做 12 层 Life OS、临床风险、新 SABC、BI、今日关怀 AI、Lens、多主体、八字、新 CRM/营销、新预约业务、全量 Repository 重写、Appointment 新表/状态迁移及 Stage 1 功能扩展。
