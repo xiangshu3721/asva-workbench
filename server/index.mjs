@@ -123,7 +123,7 @@ async function handle(request, response, requestId) {
   const profileConfirm = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile\/confirm$/)
   if (request.method === 'POST' && profileConfirm) { const body = await readBody(request); return send(request, response, 200, await repository.confirmProfile(await guard(request), decodeURIComponent(profileConfirm[1]), body.updates), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guardAdmin(request), await readBody(request)), requestId)
-  if (request.method === 'POST' && url.pathname === '/api/customers') return send(request, response, 201, await repository.createCustomer(await guardAdmin(request), await readBody(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/customers') return send(request, response, 201, await repository.createCustomer(await guardAdmin(request), await readBody(request), requestId), requestId)
   const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
   if (request.method === 'PATCH' && customerEdit) return send(request, response, 200, await repository.updateCustomer(await guardAdmin(request), decodeURIComponent(customerEdit[1]), await readBody(request)), requestId)
   const customerEnrollments = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments$/)
@@ -141,6 +141,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && complete) return send(request, response, 200, await repository.markFollowupDone(await guard(request), decodeURIComponent(complete[1])), requestId)
   if (request.method === 'POST' && url.pathname === '/api/ai/query') { const body = await readBody(request); return send(request, response, 200, await repository.assistantQuery(await guardAdmin(request), body.question, body.context), requestId) }
   if (request.method === 'GET' && url.pathname === '/api/ai/query-logs') return send(request, response, 200, await repository.assistantQueryLogs(await guardAdmin(request)), requestId)
+  if (request.method === 'GET' && url.pathname === '/api/debug/save-traces') return send(request, response, 200, await repository.savePerformanceTraces(await guardAdmin(request)), requestId)
   if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(request, response, 200, await createServiceSummary(await readBody(request)), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(request, response, 200, { brief: await createBrief(await readBody(request)) }, requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/customer-intelligence') { await guardAdmin(request); return send(request, response, 200, await createCustomerIntelligence(await readBody(request)), requestId) }

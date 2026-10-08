@@ -83,6 +83,26 @@ describe('ASVA Authentication V1', () => {
     expect(verifySession(oldToken).auth_version).toBe(0)
   })
 
+  it('rejects reusing the current password without changing the credential', async () => {
+    config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
+    const passwordHash = await hashPassword('a-strong-personal-password')
+    const authRepository = new MemoryAuthCredentialRepository([{ staffId: admin.id, loginPhone: admin.phone, passwordHash, authVersion: 0, mustChangePassword: true }])
+    const repository = testRepository(authRepository)
+    await expect(repository.changePassword(admin.id, '', 'a-strong-personal-password')).rejects.toMatchObject({ code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
+    expect((await authRepository.findByStaffId(admin.id)).passwordHash).toBe(passwordHash)
+    expect((await authRepository.findByStaffId(admin.id)).authVersion).toBe(0)
+    await expect(repository.changePassword(admin.id, 'a-strong-personal-password', 'a-strong-personal-password')).rejects.toMatchObject({ code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
+  })
+
+  it('rejects reusing an admin-reset password on the required first change', async () => {
+    config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
+    const authRepository = new MemoryAuthCredentialRepository([{ staffId: admin.id, loginPhone: admin.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 }])
+    const repository = testRepository(authRepository)
+    await repository.resetPassword(admin.id, admin.id, 'reset-strong-password')
+    await expect(repository.changePassword(admin.id, '', 'reset-strong-password')).rejects.toMatchObject({ code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
+    expect((await authRepository.findByStaffId(admin.id)).mustChangePassword).toBe(true)
+  })
+
   it('resets a password with must_change_password and increments the version', async () => {
     config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
     const authRepository = new MemoryAuthCredentialRepository([{ staffId: admin.id, loginPhone: admin.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 }])

@@ -18,6 +18,8 @@ const normalizePhone = foundationNormalizePhone
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
+export const customerIdForOperation = (operationId) => stableOperationId(operationId, 'CUS')
+export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
 const loginRateLimiter = new LoginRateLimiter()
 const invalidLogin = () => Object.assign(new Error('登录信息验证失败'), { code: 'AUTH_INVALID', status: 401 })
 const safeEqual = (left, right) => {
@@ -303,7 +305,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository() } = {}) { this.queryLogs = []; this.auditLogs = []; this.authRepository = authRepository }
+  constructor({ authRepository = new FeishuAuthCredentialRepository() } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.authRepository = authRepository }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -367,6 +369,7 @@ export class FeishuRepository {
     }
   }
   async assistantQueryLogs(actorId) { await this.dashboard(actorId); return this.queryLogs }
+  async savePerformanceTraces(actorId) { await this.dashboard(actorId); return [...this.saveTraces] }
   async staff(staffId) {
     const record = (await this.load()).staff.find((item) => item.id === staffId)
     if (!record) throw new Error('账号不存在')
@@ -428,9 +431,12 @@ export class FeishuRepository {
   async changePassword(staffId, currentPassword, nextPassword) {
     const account = await this.staff(staffId)
     const credential = await this.authRepository.findByStaffId(staffId)
+    const hasCurrentPassword = typeof currentPassword === 'string' && currentPassword.length > 0
     const currentMatches = await verifyPassword(currentPassword, credential?.passwordHash || dummyPasswordHash)
-    if (!credential || !currentMatches) throw Object.assign(new Error('当前密码不正确'), { code: 'PASSWORD_INVALID', status: 401 })
+    const firstChangeGuard = credential?.mustChangePassword === true && !hasCurrentPassword
+    if (!credential || (!currentMatches && !firstChangeGuard)) throw Object.assign(new Error('当前密码不正确'), { code: 'PASSWORD_INVALID', status: 401 })
     validatePassword(nextPassword, { phone: account.phone })
+    if (await verifyPassword(nextPassword, credential.passwordHash)) throw Object.assign(new Error('新密码不能与当前密码相同'), { code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
     const timestamp = now()
     await this.authRepository.updatePassword(credential, await hashPassword(nextPassword), { password_algorithm: 'scrypt', must_change_password: false, password_changed_at: timestamp, auth_version: Number(credential.authVersion || 0) + 1, credential_status: 'ACTIVE', updated_at: timestamp })
     return { ok: true, mustChangePassword: false, authVersion: Number(credential.authVersion || 0) + 1 }
@@ -466,39 +472,66 @@ export class FeishuRepository {
     scope(database, actorId)
     const normalized = validateManualCustomer(input)
     const identity = resolveCustomerIdentity(database.customers, normalized)
-    const updates = normalized.situation ? (await createProfileDraft({ text: normalized.situation, existing: {} })).updates : []
-    return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates }
+    // Preview only resolves identity and duplicates. AI extraction must stay outside the customer save critical path.
+    return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates: [] }
   }
-  async createCustomer(actorId, input) {
-    const database = await this.load()
-    scope(database, actorId)
-    const normalized = validateManualCustomer(input)
+  async createCustomer(actorId, input, requestId = '') {
+    const startedAt = Date.now()
+    const timings = { identity_resolution_ms: 0, customer_write_ms: 0, enrollment_write_ms: 0, profile_change_ms: 0, ai_ms: 0 }
     const operationId = text(input?.operationId).trim()
-    if (operationId) {
-      const existing = database.customers.find((item) => item.id === stableOperationId(operationId, 'CUS'))
-      if (existing) return this.dashboard(actorId)
+    const traceOperationId = operationId || `customer-save-${crypto.randomUUID()}`
+    let result = 'ERROR'
+    try {
+      const identityStartedAt = Date.now()
+      const database = await this.load()
+      scope(database, actorId)
+      const normalized = validateManualCustomer(input)
+      const existingId = operationId ? customerIdForOperation(operationId) : ''
+      const existing = existingId ? database.customers.find((item) => item.id === existingId) : null
+      if (!existing) {
+        const identity = resolveCustomerIdentity(database.customers, normalized)
+        const duplicates = duplicateMatches(database, input)
+        if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT', matches: duplicates })
+        if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已匹配到现有客户，请打开原档案更新。'), { status: 409, code: 'CUSTOMER_DUPLICATE', matches: duplicates })
+        if (identity.result === 'POSSIBLE_MATCH' && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { status: 409, code: 'CUSTOMER_POSSIBLE_MATCH', matches: duplicates })
+      }
+      validateEnrollmentDrafts(database, input.enrollments)
+      timings.identity_resolution_ms = Date.now() - identityStartedAt
+      const customerId = existing?.id || existingId || `CUS-${Date.now()}`
+      let current = database
+      if (!existing) {
+        const customerWriteStartedAt = Date.now()
+        const createdAt = now()
+        const initialFields = { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(normalized.wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }
+        const writeValues = { customer_id: customerId, nickname: normalized.nickname, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+        if (normalized.phone) writeValues.phone = normalized.phone
+        if (normalized.wechat) writeValues.wechat = normalized.wechat
+        const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues))
+        current = await this.loadAfterWrite(writeResult, customerId)
+        timings.customer_write_ms = Date.now() - customerWriteStartedAt
+      }
+      if (input.profileUpdates?.length) {
+        const profileStartedAt = Date.now()
+        await persistCustomerProfile(current, customerId, normalizeProfileUpdates(input.profileUpdates, current.customers.find((item) => item.id === customerId), true), undefined, actorId)
+        current = await this.loadAfterWrite(undefined, customerId)
+        timings.profile_change_ms = Date.now() - profileStartedAt
+      }
+      const enrollmentStartedAt = Date.now()
+      try {
+        await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
+      } catch (error) {
+        throw Object.assign(new Error(partialEnrollmentFailureMessage()), { code: 'CUSTOMER_ENROLLMENT_PARTIAL_FAILURE', status: 502, cause: error })
+      }
+      timings.enrollment_write_ms = Date.now() - enrollmentStartedAt
+      result = 'SUCCESS'
+      // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
+      return scope(await this.loadAfterWrite(undefined, customerId), actorId)
+    } finally {
+      const total = Date.now() - startedAt
+      const measured = timings.identity_resolution_ms + timings.customer_write_ms + timings.enrollment_write_ms + timings.profile_change_ms + timings.ai_ms
+      this.saveTraces.unshift({ request_id: requestId || undefined, operation_id: traceOperationId, result, customer_save_total_ms: total, ...timings, other_ms: Math.max(0, total - measured) })
+      this.saveTraces = this.saveTraces.slice(0, 50)
     }
-    const identity = resolveCustomerIdentity(database.customers, normalized)
-    const duplicates = duplicateMatches(database, input)
-    if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT', matches: duplicates })
-    if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已匹配到现有客户，请打开原档案更新。'), { status: 409, code: 'CUSTOMER_DUPLICATE', matches: duplicates })
-    if (identity.result === 'POSSIBLE_MATCH' && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { status: 409, code: 'CUSTOMER_POSSIBLE_MATCH', matches: duplicates })
-    validateEnrollmentDrafts(database, input.enrollments)
-    const customerId = operationId ? stableOperationId(operationId, 'CUS') : `CUS-${Date.now()}`
-    const createdAt = now()
-    const initialFields = { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(normalized.wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }
-    const writeValues = { customer_id: customerId, nickname: normalized.nickname, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
-    if (normalized.phone) writeValues.phone = normalized.phone
-    if (normalized.wechat) writeValues.wechat = normalized.wechat
-    const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues))
-    let current = await this.loadAfterWrite(writeResult, customerId)
-    if (input.profileUpdates?.length) {
-      await persistCustomerProfile(current, customerId, normalizeProfileUpdates(input.profileUpdates, current.customers.find((item) => item.id === customerId), true), undefined, actorId)
-      current = await this.loadAfterWrite(undefined, customerId)
-    }
-    await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
-    // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
-    return scope(await this.loadAfterWrite(undefined, customerId), actorId)
   }
   async updateCustomer(actorId, customerId, input) {
     const database = await this.load()
