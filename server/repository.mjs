@@ -717,7 +717,7 @@ export class FeishuRepository {
     const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
     if (!force && source.processingStatus === 'COMPLETED' && existingEvidence.length) return this.sourceDetail(actorId, sourceId)
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
-    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED'].includes(source.processingStatus)
+    const resumeExistingEvidence = existingEvidence.length > 0 && ['PROCESSING', 'FAILED'].includes(source.processingStatus)
     const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}`)
     const processingStartedAt = now()
     const processingVersion = Number(source.processingVersion || 1) + 1
