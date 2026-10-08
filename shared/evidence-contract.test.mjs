@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CHANGE_TYPES, EVIDENCE_TYPES, SEMANTIC_KINDS, classifyEvidenceChange, chunkText, contentHash, dedupeEvidence, normalizeEvidenceCandidate } from './evidence-contract.mjs'
+import { CHANGE_TYPES, EVIDENCE_TYPES, SEMANTIC_KINDS, classifyEvidenceChange, chunkText, contentHash, dedupeEvidence, normalizeEvidenceCandidate, sourcePerspectiveFromRole } from './evidence-contract.mjs'
 
 describe('Stage 2 evidence contract', () => {
   it('keeps the strict evidence enums and stable content hash', () => {
@@ -28,5 +28,11 @@ describe('Stage 2 evidence contract', () => {
     expect(classifyEvidenceChange({ fieldKey: 'hobbies', semanticKind: 'PREFERENCE', evidenceType: 'FACT' }, '瑜伽').action).toBe('APPEND')
     expect(classifyEvidenceChange({ fieldKey: 'self_description', semanticKind: 'PROFILE_FIELD', evidenceType: 'SELF_MEANING' }, '旧描述').changeType).toBe('SUBJECTIVE_DIFFERENCE')
     expect(CHANGE_TYPES.has('NO_CHANGE')).toBe(true)
+  })
+
+  it('maps the simplified source perspective without changing legacy roles', () => {
+    expect(sourcePerspectiveFromRole('ADMIN')).toBe('STAFF_REPORTED')
+    expect(sourcePerspectiveFromRole('CUSTOMER')).toBe('CUSTOMER_FIRST_PARTY')
+    expect(sourcePerspectiveFromRole('MENTOR')).toBe('MENTOR_OBSERVATION')
   })
 })

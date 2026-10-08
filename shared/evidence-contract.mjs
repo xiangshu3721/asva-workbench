@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 
-export const SOURCE_TYPES = new Set(['TEXT_INPUT', 'VOICE_TRANSCRIPT', 'PASTED_TRANSCRIPT', 'SERVICE_TRANSCRIPT', 'IMPORTED_TEXT'])
+export const SOURCE_TYPES = new Set(['TEXT_INPUT', 'VOICE_TRANSCRIPT', 'PASTED_TRANSCRIPT', 'FILE_UPLOAD', 'SERVICE_TRANSCRIPT', 'IMPORTED_TEXT'])
 export const RESERVED_SOURCE_TYPES = new Set(['AUDIO_FILE', 'PDF', 'DOCX', 'CHAT_EXPORT'])
 export const SOURCE_STATUSES = new Set(['UPLOADED', 'PROCESSING', 'REVIEW_REQUIRED', 'COMPLETED', 'FAILED'])
 export const EVIDENCE_TYPES = new Set(['FACT', 'SELF_MEANING', 'OBSERVATION', 'HYPOTHESIS'])
@@ -103,6 +103,12 @@ export function classifyEvidenceChange(evidence, currentValue) {
   if (SUBJECTIVE_FIELDS.has(evidence.fieldKey) || evidence.evidenceType === 'SELF_MEANING' || evidence.evidenceType === 'OBSERVATION') return { action: 'REVIEW_REQUIRED', changeType: 'SUBJECTIVE_DIFFERENCE', conflictType: 'SUBJECTIVE_DIFFERENCE' }
   if (evidence.semanticKind === 'CURRENT_STATE' || ['city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_goal'].includes(evidence.fieldKey)) return { action: 'UPDATE', changeType: 'STATE_CHANGE', conflictType: 'POSSIBLE_STATE_CHANGE' }
   return { action: 'REVIEW_REQUIRED', changeType: 'SOURCE_DISAGREEMENT', conflictType: 'SOURCE_DISAGREEMENT' }
+}
+
+export function sourcePerspectiveFromRole(sourceRole) {
+  if (sourceRole === 'MENTOR') return 'MENTOR_OBSERVATION'
+  if (sourceRole === 'CUSTOMER') return 'CUSTOMER_FIRST_PARTY'
+  return 'STAFF_REPORTED'
 }
 
 export function proposalId(evidenceId, fieldKey) { return stableId('PRP', `${evidenceId}:${fieldKey || ''}`) }

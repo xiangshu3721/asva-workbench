@@ -47,16 +47,12 @@ try {
   const workspace = await repository.sourceWorkspace(adminId, customerId)
   assert(workspace.sources.length === 2 && workspace.evidenceItems.length === processed.evidenceItems.length, 'workspace readback mismatch')
   for (const evidenceType of ['FACT', 'SELF_MEANING', 'HYPOTHESIS']) assert(processed.evidenceItems.some((item) => item.evidenceType === evidenceType), `evidence type missing: ${evidenceType}`)
-  for (const action of ['ADD', 'UPDATE', 'REVIEW_REQUIRED']) assert(workspace.proposals.some((item) => item.action === action), `proposal action missing: ${action}`)
-  assert(workspace.conflicts.some((item) => item.conflictType === 'POSSIBLE_STATE_CHANGE'), 'possible state change conflict missing')
-  const confirmable = workspace.proposals.find((item) => item.reviewStatus === 'PENDING_REVIEW' && item.action !== 'REVIEW_REQUIRED')
-  if (confirmable) {
-    await repository.reviewProposal(adminId, confirmable.id, 'CONFIRM')
-    const afterConfirm = await repository.load()
-    assert(afterConfirm.profileChanges.some((item) => item.customerId === customerId && item.sourceRecordId === source.id && item.evidenceId === confirmable.evidenceId), 'ProfileChanges provenance links missing')
-  }
-  const stateConflict = (await repository.sourceWorkspace(adminId, customerId)).conflicts.find((item) => item.conflictType === 'POSSIBLE_STATE_CHANGE' && item.status === 'OPEN')
-  if (stateConflict) await repository.resolveConflict(adminId, stateConflict.id, 'USE_NEW')
+  assert(workspace.proposals.some((item) => ['ADD', 'UPDATE', 'APPEND'].includes(item.action)), 'ordinary mutable proposal missing')
+  assert(!workspace.conflicts.some((item) => item.conflictType === 'POSSIBLE_STATE_CHANGE' && item.status === 'OPEN'), 'ordinary state change interrupted the workflow')
+  const autoApplied = workspace.proposals.find((item) => item.reviewStatus === 'CONFIRMED' && item.action !== 'REVIEW_REQUIRED')
+  assert(autoApplied, 'ordinary mutable update was not auto-applied')
+  const afterAutoApply = await repository.load()
+  assert(afterAutoApply.profileChanges.some((item) => item.customerId === customerId && item.sourceRecordId === source.id && item.evidenceId === autoApplied.evidenceId), 'ProfileChanges provenance links missing')
   const factSource = await repository.createSource(adminId, { customerId, sourceType: 'PASTED_TRANSCRIPT', title: `${prefix} stable fact note`, sourceRole: 'CUSTOMER', rawText: '客户明确补充：我的出生日期是 1991-01-01，这个日期是确定的。' })
   const factProcessed = await repository.processSource(adminId, factSource.id)
   const factConflict = (await repository.sourceWorkspace(adminId, customerId)).conflicts.find((item) => item.newEvidenceId && factProcessed.evidenceItems.some((evidence) => evidence.id === item.newEvidenceId) && item.conflictType === 'FACT_CONTRADICTION' && item.status === 'OPEN')
@@ -71,7 +67,7 @@ try {
   let finalWorkspace = await repository.sourceWorkspace(adminId, customerId)
   for (const conflict of finalWorkspace.conflicts.filter((item) => item.status === 'OPEN')) await repository.resolveConflict(adminId, conflict.id, conflict.conflictType === 'FACT_CONTRADICTION' ? 'KEEP_CURRENT' : 'KEEP_BOTH')
   finalWorkspace = await repository.sourceWorkspace(adminId, customerId)
-  const result = { ok: true, prefix, sourceCreated: true, voiceSourceCreated: true, duplicateRejected, evidenceCount: processed.evidenceItems.length, proposalCount: workspace.proposals.length, possibleStateChangeResolved: Boolean(stateConflict), factContradictionResolved: true, factEvidenceCount: factProcessed.evidenceItems.length, mentorEvidenceCount: mentorProcessed.evidenceItems.length, customerUpdateConfirmed: Boolean(confirmable), unresolvedConflicts: finalWorkspace.conflicts.filter((item) => item.status === 'OPEN').length }
+  const result = { ok: true, prefix, sourceCreated: true, voiceSourceCreated: true, duplicateRejected, evidenceCount: processed.evidenceItems.length, proposalCount: workspace.proposals.length, ordinaryStateChangeAutoApplied: true, factContradictionResolved: true, factEvidenceCount: factProcessed.evidenceItems.length, mentorEvidenceCount: mentorProcessed.evidenceItems.length, customerUpdateConfirmed: true, unresolvedConflicts: finalWorkspace.conflicts.filter((item) => item.status === 'OPEN').length }
   console.log(JSON.stringify(result))
 } catch (error) {
   const context = error?.integrationContext ? { ...error.integrationContext, table_id: maskId(error.integrationContext.table_id) } : undefined
