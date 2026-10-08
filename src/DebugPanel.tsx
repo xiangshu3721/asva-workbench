@@ -60,6 +60,7 @@ export function DebugPanel({ api, staff, dataMode }: { api: WorkbenchApi; staff?
   const [frontend, setFrontend] = useState<Record<string, unknown> | null>(null)
   const [traces, setTraces] = useState(getApiRequestTraces())
   const [saveTraces, setSaveTraces] = useState<Awaited<ReturnType<WorkbenchApi['savePerformanceTraces']>>>([])
+  const [evidenceTraces, setEvidenceTraces] = useState<Awaited<ReturnType<WorkbenchApi['evidenceDebug']>>>([])
 
   useEffect(() => {
     const update = () => { const next = isDebugRequested(); setEnabled(next); if (next) setOpen(true) }
@@ -71,6 +72,7 @@ export function DebugPanel({ api, staff, dataMode }: { api: WorkbenchApi; staff?
     let cancelled = false
     void api.health().then((value) => { if (!cancelled) setHealth(value) }).catch(() => undefined)
     void api.savePerformanceTraces().then((value) => { if (!cancelled) setSaveTraces(value) }).catch(() => undefined)
+    void api.evidenceDebug().then((value) => { if (!cancelled) setEvidenceTraces(value) }).catch(() => undefined)
     void fetch(frontendMetaUrl).then((response) => response.json()).then((value) => { if (!cancelled) setFrontend(value) }).catch(() => undefined)
     const timer = window.setInterval(() => setTraces(getApiRequestTraces()), 1000)
     return () => { cancelled = true; window.clearInterval(timer) }
@@ -85,6 +87,7 @@ export function DebugPanel({ api, staff, dataMode }: { api: WorkbenchApi; staff?
     <section style={{ marginTop: 12 }}><Row label="版本比对">{match === null ? 'UNKNOWN' : match ? 'VERSION_MATCH' : 'VERSION_MISMATCH'}</Row><Row label="前端版本">{String(frontend?.release || 'UNKNOWN')} · R{String(feCounter || 0).padStart(3, '0')}</Row><Row label="后端版本">{health?.release || 'UNKNOWN'} · R{String(beCounter || 0).padStart(3, '0')}</Row><Row label="环境">{health?.environment || dataMode}</Row><Row label="数据源">{health?.dataMode === 'demo' || dataMode === 'demo' ? 'DEMO_LOCAL' : 'FEISHU'}</Row><Row label="认证">Auth Mode: {health?.authMode || 'UNKNOWN'} · Auth State: AUTHENTICATED · Role: {staff.permissionRole} · token {window.sessionStorage.getItem('asva_session_token') ? 'present' : 'absent'}</Row><Row label="功能开关">{Object.entries(health?.featureFlags || {}).map(([key, value]) => `${key}=${value}`).join('，') || 'none'}</Row></section>
     <section style={{ marginTop: 16 }}><strong>最近 API 请求（内存 20 条）</strong>{traces.length ? traces.map((trace, index) => <div key={`${trace.time}-${index}`} style={{ padding: '7px 0', borderBottom: '1px solid #eef0f4', fontSize: 12 }}><div>{trace.result} · {trace.status ?? 'NETWORK'} · {trace.duration}ms · {trace.method} {trace.path}</div><span style={{ color: '#667085' }}>{trace.request_id || 'no request id'} · {trace.time}</span></div>) : <p style={{ color: '#667085' }}>暂无请求记录</p>}</section>
     <section style={{ marginTop: 16 }}><strong>客户保存性能（最近 10 条）</strong>{saveTraces.length ? saveTraces.slice(0, 10).map((trace, index) => <div key={`${trace.operation_id || 'save'}-${index}`} style={{ padding: '7px 0', borderBottom: '1px solid #eef0f4', fontSize: 12 }}><div>{trace.result} · total {trace.customer_save_total_ms}ms · customer {trace.customer_write_ms}ms · enrollment {trace.enrollment_write_ms}ms</div><span style={{ color: '#667085' }}>{trace.request_id || 'no request id'} · {trace.operation_id || 'no operation id'} · identity {trace.identity_resolution_ms}ms · profile {trace.profile_change_ms}ms · AI {trace.ai_ms}ms · other {trace.other_ms}ms</span></div>) : <p style={{ color: '#667085' }}>暂无保存记录</p>}</section>
+    <section style={{ marginTop: 16 }}><strong>Evidence 处理（最近 10 条）</strong>{evidenceTraces.length ? evidenceTraces.slice(0, 10).map((trace, index) => <div key={`${trace.source_id}-${index}`} style={{ padding: '7px 0', borderBottom: '1px solid #eef0f4', fontSize: 12 }}><div>{trace.processing_status} · {trace.evidence_count} Evidence · {trace.proposal_count} Proposal · {trace.conflict_count} Conflict · {trace.duration_ms}ms</div><span style={{ color: '#667085' }}>{trace.source_id} · {trace.extraction_batch} · {trace.model} · {trace.prompt_version}</span></div>) : <p style={{ color: '#667085' }}>暂无资料处理记录</p>}</section>
     <p style={{ marginBottom: 0, color: '#667085', fontSize: 12 }}>调试信息不包含密钥、JWT、完整手机号、聊天正文或 OTP。</p>
   </aside>
 }

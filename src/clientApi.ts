@@ -9,6 +9,12 @@ export interface TeamSnapshot { mentor: Staff; customerCount: number; waitFollow
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
 export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
 export interface SavePerformanceTrace { request_id?: string; operation_id?: string; result: 'SUCCESS' | 'ERROR'; customer_save_total_ms: number; identity_resolution_ms: number; customer_write_ms: number; enrollment_write_ms: number; profile_change_ms: number; ai_ms: number; other_ms: number }
+export interface EvidenceDebugTrace { source_id: string; processing_status: string; extraction_batch: string; evidence_count: number; proposal_count: number; conflict_count: number; model: string; prompt_version: string; duration_ms: number }
+export interface SourceRecord { id: string; subjectType: string; subjectId: string; customerId: string; sourceType: string; title: string; rawText?: string; occurredAt?: string | null; uploadedAt?: string | null; uploadedBy?: string; sourceRole?: string; contentHash?: string; processingStatus: string; processingVersion?: number; sensitivityLevel?: string; sourceVersion?: number; lastBatchId?: string }
+export interface EvidenceItem { id: string; sourceId: string; customerId: string; evidenceType: 'FACT' | 'SELF_MEANING' | 'OBSERVATION' | 'HYPOTHESIS'; semanticKind: string; fieldKey?: string; standardValue: unknown; displayText: string; sourceExcerpt: string; locator?: Record<string, unknown>; occurredAt?: string | null; confidence: number; reviewStatus: string; extractionBatchId?: string }
+export interface ProfileUpdateProposal { id: string; customerId: string; evidenceId: string; sourceId: string; fieldKey: string; fieldName: string; currentValue: unknown; proposedValue: unknown; action: string; changeType: string; reviewStatus: string; reason: string; confidence: number }
+export interface EvidenceConflict { id: string; customerId: string; fieldKey: string; conflictType: string; currentValue: unknown; newValue: unknown; currentEvidenceId?: string; newEvidenceId: string; status: string; resolution?: string }
+export interface SourceWorkspace { sources: SourceRecord[]; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -32,6 +38,7 @@ export interface WorkbenchApi {
   resetPassword(actorId: string, staffId: string, password: string): Promise<{ ok: boolean; staffId: string; mustChangePassword: boolean }>
   health(): Promise<HealthMetadata>
   savePerformanceTraces(): Promise<SavePerformanceTrace[]>
+  evidenceDebug(): Promise<EvidenceDebugTrace[]>
   dashboard(staffId: string): Promise<Database>
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
@@ -56,6 +63,11 @@ export interface WorkbenchApi {
   serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
   brief(actorId: string, input: { name: string; need: string; expectation: string }): Promise<string>
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
+  sourceWorkspace(actorId: string, customerId: string): Promise<SourceWorkspace>
+  createSource(actorId: string, input: { customerId: string; sourceType: string; title?: string; rawText: string; occurredAt?: string; sourceRole?: string; notes?: string }): Promise<SourceRecord>
+  processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
+  reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
+  resolveConflict(actorId: string, conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN'): Promise<SourceWorkspace>
 }
 
 export interface ApiRequestTrace { time: string; method: string; path: string; status: number | null; duration: number; request_id?: string; result: 'SUCCESS' | 'ERROR' }
@@ -79,6 +91,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     resetPassword: async () => { throw new Error('本地 Demo 不支持密码重置') },
     health: async () => ({ ok: true, service: 'asva-api', environment: 'local', dataMode: 'demo', featureFlags: { externalAppointment: false } }),
     savePerformanceTraces: async () => [],
+    evidenceDebug: async () => [],
     dashboard: async (staffId) => api.dashboard(staffId),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
@@ -103,6 +116,11 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
     brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
+    sourceWorkspace: async () => ({ sources: [], evidenceItems: [], proposals: [], conflicts: [] }),
+    createSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
+    processSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
+    reviewProposal: async () => { throw new Error('本地 Demo 不支持资料分析') },
+    resolveConflict: async () => { throw new Error('本地 Demo 不支持资料分析') },
   }
 }
 
@@ -136,6 +154,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     resetPassword: (actorId, staffId, password) => request<{ ok: boolean; staffId: string; mustChangePassword: boolean }>(`/api/staff/${encodeURIComponent(staffId)}/reset-password`, actorId, { method: 'POST', body: JSON.stringify({ password }) }),
     health: () => request<HealthMetadata>('/api/health', undefined),
     savePerformanceTraces: () => request<SavePerformanceTrace[]>('/api/debug/save-traces', undefined),
+    evidenceDebug: () => request<EvidenceDebugTrace[]>('/api/debug/evidence', undefined),
     dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
@@ -160,5 +179,10 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),
     brief: async (actorId, input) => (await request<{ brief: string }>('/api/ai/brief', actorId, { method: 'POST', body: JSON.stringify(input) })).brief,
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),
+    sourceWorkspace: (actorId, customerId) => request<SourceWorkspace>(`/api/customers/${encodeURIComponent(customerId)}/sources`, actorId),
+    createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    processSource: (actorId, sourceId, force = false) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/process`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
+    reviewProposal: (actorId, proposalId, decision) => request<SourceWorkspace>(`/api/profile-proposals/${encodeURIComponent(proposalId)}/review`, actorId, { method: 'POST', body: JSON.stringify({ decision }) }),
+    resolveConflict: (actorId, conflictId, resolution) => request<SourceWorkspace>(`/api/evidence-conflicts/${encodeURIComponent(conflictId)}/resolve`, actorId, { method: 'POST', body: JSON.stringify({ resolution }) }),
   }
 }

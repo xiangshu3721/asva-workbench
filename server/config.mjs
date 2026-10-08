@@ -53,6 +53,10 @@ export const config = {
       enrollments: value('FEISHU_ENROLLMENTS_TABLE_ID'),
       profileChanges: value('FEISHU_PROFILE_CHANGES_TABLE_ID', 'tblTH3OmBuzUsBVu'),
       authCredentials: value('FEISHU_AUTH_CREDENTIALS_TABLE_ID'),
+      sourceRecords: value('FEISHU_SOURCE_RECORDS_TABLE_ID'),
+      evidenceItems: value('FEISHU_EVIDENCE_ITEMS_TABLE_ID'),
+      profileUpdateProposals: value('FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID'),
+      evidenceConflicts: value('FEISHU_EVIDENCE_CONFLICTS_TABLE_ID'),
     },
   },
 }

@@ -8,6 +8,7 @@ const SINGLE_SELECT_KEYS = new Set(['status', 'display_status', 'role', 'permiss
 const TEXT_DATE_KEYS = new Set(['submitted_at', 'profile_updated_at'])
 
 function typeFor(key, table) {
+  if (['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'].includes(table)) return 'Text'
   if (table === 'customers' && key === 'paid') return 'Text'
   if (table === 'enrollments' && key === 'paid') return 'Checkbox'
   if (table === 'profileChanges' && key === 'source') return 'SingleSelect'

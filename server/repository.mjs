@@ -1,6 +1,6 @@
 import { config } from './config.mjs'
 import { createRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError, isRetryableFeishuError } from './feishu.mjs'
-import { createProfileDraft } from './deepseek.mjs'
+import { createEvidenceCandidates, createProfileDraft } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
 import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs'
@@ -9,6 +9,7 @@ import { LoginRateLimiter } from './login-rate-limit.mjs'
 import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
 import { customerHistoryPolicy } from './schema-contract.mjs'
 import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, dummyPasswordHash, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
+import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText } from '../shared/evidence-contract.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -143,7 +144,25 @@ function profileChange(row) {
   try { oldValue = JSON.parse(text(get('profileChanges', f, 'old_value')) || 'null') } catch { oldValue = text(get('profileChanges', f, 'old_value')) || null }
   try { newValue = JSON.parse(text(get('profileChanges', f, 'new_value')) || 'null') } catch { newValue = text(get('profileChanges', f, 'new_value')) || null }
   const source = ['STRUCTURED_INPUT', 'USER_EXPLICIT', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'MENTOR_CONFIRMED', 'MENTOR_OBSERVATION', 'AI_EXTRACTED_CONFIRMED', 'AI_INFERENCE', 'IMPORTED_HISTORY', 'LEGACY_MIGRATION'].includes(text(get('profileChanges', f, 'source'))) ? text(get('profileChanges', f, 'source')) : 'MENTOR_OBSERVATION'
-  return { id: text(get('profileChanges', f, 'change_id')) || row.record_id, customerId: text(get('profileChanges', f, 'customer_id')), field: text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), fieldName: text(get('profileChanges', f, 'field_name')) || text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), oldValue, newValue, source, confidence: Number(get('profileChanges', f, 'confidence') ?? 0.9), confirmed: boolean(get('profileChanges', f, 'confirmed')), updatedAt: date(get('profileChanges', f, 'changed_at')) || date(get('profileChanges', f, 'updated_at')), operatorId: text(get('profileChanges', f, 'operator_id')) || undefined, serviceRecordId: text(get('profileChanges', f, 'service_record_id')) || undefined, _recordId: row.record_id }
+  return { id: text(get('profileChanges', f, 'change_id')) || row.record_id, customerId: text(get('profileChanges', f, 'customer_id')), field: text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), fieldName: text(get('profileChanges', f, 'field_name')) || text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), oldValue, newValue, source, confidence: Number(get('profileChanges', f, 'confidence') ?? 0.9), confirmed: boolean(get('profileChanges', f, 'confirmed')), updatedAt: date(get('profileChanges', f, 'changed_at')) || date(get('profileChanges', f, 'updated_at')), operatorId: text(get('profileChanges', f, 'operator_id')) || undefined, serviceRecordId: text(get('profileChanges', f, 'service_record_id')) || undefined, sourceRecordId: text(get('profileChanges', f, 'source_record_id')) || undefined, evidenceId: text(get('profileChanges', f, 'evidence_id')) || undefined, updateBatchId: text(get('profileChanges', f, 'update_batch_id')) || undefined, _recordId: row.record_id }
+}
+
+function parsedJson(value, fallback = null) { try { return JSON.parse(text(value) || '') } catch { return fallback } }
+function sourceRecord(row) {
+  const f = row.fields || {}
+  return { id: text(get('sourceRecords', f, 'source_id')) || row.record_id, subjectType: text(get('sourceRecords', f, 'subject_type')) || 'PERSON', subjectId: text(get('sourceRecords', f, 'subject_id')), customerId: text(get('sourceRecords', f, 'customer_id')), sourceType: text(get('sourceRecords', f, 'source_type')), title: text(get('sourceRecords', f, 'title')), rawText: text(get('sourceRecords', f, 'raw_text')), fileRef: text(get('sourceRecords', f, 'file_ref')), occurredAt: date(get('sourceRecords', f, 'occurred_at')) || null, uploadedAt: date(get('sourceRecords', f, 'uploaded_at')) || null, uploadedBy: text(get('sourceRecords', f, 'uploaded_by')), sourceRole: text(get('sourceRecords', f, 'source_role')) || 'CUSTOMER', serviceRecordId: text(get('sourceRecords', f, 'service_record_id')), contentHash: text(get('sourceRecords', f, 'content_hash')), processingStatus: text(get('sourceRecords', f, 'processing_status')) || 'UPLOADED', processingVersion: Number(get('sourceRecords', f, 'processing_version') || 1), sensitivityLevel: text(get('sourceRecords', f, 'sensitivity_level')) || 'HIGH', notes: text(get('sourceRecords', f, 'notes')), sourceVersion: Number(get('sourceRecords', f, 'source_version') || 1), extractorVersion: text(get('sourceRecords', f, 'extractor_version')), lastBatchId: text(get('sourceRecords', f, 'last_batch_id')), createdAt: date(get('sourceRecords', f, 'created_at')) || null, updatedAt: date(get('sourceRecords', f, 'updated_at')) || null, _recordId: row.record_id }
+}
+function evidenceItem(row) {
+  const f = row.fields || {}
+  return { id: text(get('evidenceItems', f, 'evidence_id')) || row.record_id, subjectType: text(get('evidenceItems', f, 'subject_type')) || 'PERSON', subjectId: text(get('evidenceItems', f, 'subject_id')), customerId: text(get('evidenceItems', f, 'customer_id')), sourceId: text(get('evidenceItems', f, 'source_id')), evidenceType: text(get('evidenceItems', f, 'evidence_type')), semanticKind: text(get('evidenceItems', f, 'semantic_kind')), fieldKey: text(get('evidenceItems', f, 'field_key')), standardValue: parsedJson(get('evidenceItems', f, 'standard_value'), text(get('evidenceItems', f, 'standard_value'))), displayText: text(get('evidenceItems', f, 'display_text')), sourceExcerpt: text(get('evidenceItems', f, 'source_excerpt')), locator: parsedJson(get('evidenceItems', f, 'locator_json'), {}), occurredAt: date(get('evidenceItems', f, 'occurred_at')) || null, sourceRole: text(get('evidenceItems', f, 'source_role')), confidence: Number(get('evidenceItems', f, 'confidence') || 0), reviewStatus: text(get('evidenceItems', f, 'review_status')) || 'PENDING_REVIEW', extractionBatchId: text(get('evidenceItems', f, 'extraction_batch_id')), provider: text(get('evidenceItems', f, 'provider')) || 'DEEPSEEK', model: text(get('evidenceItems', f, 'model')), modelVersion: text(get('evidenceItems', f, 'model_version')), promptVersion: text(get('evidenceItems', f, 'prompt_version')), createdAt: date(get('evidenceItems', f, 'created_at')) || null, updatedAt: date(get('evidenceItems', f, 'updated_at')) || null, _recordId: row.record_id }
+}
+function proposalRecord(row) {
+  const f = row.fields || {}
+  return { id: text(get('profileUpdateProposals', f, 'proposal_id')) || row.record_id, customerId: text(get('profileUpdateProposals', f, 'customer_id')), subjectId: text(get('profileUpdateProposals', f, 'subject_id')), evidenceId: text(get('profileUpdateProposals', f, 'evidence_id')), sourceId: text(get('profileUpdateProposals', f, 'source_id')), fieldKey: text(get('profileUpdateProposals', f, 'field_key')), fieldName: text(get('profileUpdateProposals', f, 'field_name')), currentValue: parsedJson(get('profileUpdateProposals', f, 'current_value'), text(get('profileUpdateProposals', f, 'current_value'))), proposedValue: parsedJson(get('profileUpdateProposals', f, 'proposed_value'), text(get('profileUpdateProposals', f, 'proposed_value'))), action: text(get('profileUpdateProposals', f, 'action')), changeType: text(get('profileUpdateProposals', f, 'change_type')), reviewStatus: text(get('profileUpdateProposals', f, 'review_status')) || 'PENDING_REVIEW', reason: text(get('profileUpdateProposals', f, 'reason')), confidence: Number(get('profileUpdateProposals', f, 'confidence') || 0), extractionBatchId: text(get('profileUpdateProposals', f, 'extraction_batch_id')), reviewerId: text(get('profileUpdateProposals', f, 'reviewer_id')), reviewedAt: date(get('profileUpdateProposals', f, 'reviewed_at')) || null, createdAt: date(get('profileUpdateProposals', f, 'created_at')) || null, updatedAt: date(get('profileUpdateProposals', f, 'updated_at')) || null, _recordId: row.record_id }
+}
+function conflictRecord(row) {
+  const f = row.fields || {}
+  return { id: text(get('evidenceConflicts', f, 'conflict_id')) || row.record_id, subjectId: text(get('evidenceConflicts', f, 'subject_id')), customerId: text(get('evidenceConflicts', f, 'customer_id')), fieldKey: text(get('evidenceConflicts', f, 'field_key')), conflictType: text(get('evidenceConflicts', f, 'conflict_type')), currentValue: parsedJson(get('evidenceConflicts', f, 'current_value'), text(get('evidenceConflicts', f, 'current_value'))), newValue: parsedJson(get('evidenceConflicts', f, 'new_value'), text(get('evidenceConflicts', f, 'new_value'))), currentEvidenceId: text(get('evidenceConflicts', f, 'current_evidence_id')), newEvidenceId: text(get('evidenceConflicts', f, 'new_evidence_id')), status: text(get('evidenceConflicts', f, 'status')) || 'OPEN', suggestedResolution: text(get('evidenceConflicts', f, 'suggested_resolution')), resolution: text(get('evidenceConflicts', f, 'resolution')), reviewerId: text(get('evidenceConflicts', f, 'reviewer_id')), resolvedAt: date(get('evidenceConflicts', f, 'resolved_at')) || null, createdAt: date(get('evidenceConflicts', f, 'created_at')) || null, updatedAt: date(get('evidenceConflicts', f, 'updated_at')) || null, _recordId: row.record_id }
 }
 
 function scope(database, actorId) {
@@ -263,7 +282,7 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
   }
 }
 
-async function persistCustomerProfile(database, customerId, updates, serviceRecordId, operatorId) {
+async function persistCustomerProfile(database, customerId, updates, serviceRecordId, operatorId, provenanceContext = {}) {
   const customerRecord = database.customers.find((item) => item.id === customerId)
   const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
   if (!customerRecord || !row) throw new Error('客户不存在')
@@ -277,7 +296,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
     const field = update.field === 'mentor_id' ? 'current_mentor_id' : update.field
     const oldValue = customerRecord.profileFields[field] ?? null
     customerRecord.profileFields[field] = update.value
-    customerRecord.profileFieldMeta[field] = { source: update.source, confidence: update.confidence, confirmed: update.confirmed, updatedAt }
+    customerRecord.profileFieldMeta[field] = { source: update.source, confidence: update.confidence, confirmed: update.confirmed, updatedAt, ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}), ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}), ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}) }
     if (field === 'current_core_issue' && typeof update.value === 'string') customerRecord.need = update.value
     if (field === 'current_expectation' && typeof update.value === 'string') customerRecord.helpExpectation = update.value
     if (field === 'current_goal' && typeof update.value === 'string') customerRecord.goal = update.value
@@ -299,13 +318,66 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
   await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
   for (const change of changed.filter((item) => customerHistoryPolicy(item.field) === 'TRACK' || (item.field === 'age' && !customerRecord.profileFields.birth_date))) {
-    await createRecord(config.feishu.tables.profileChanges, mapFields('profileChanges', { customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '' }))
+    await createMappedRecord('profileChanges', 'profile-change.provenance', { customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '', source_record_id: provenanceContext.sourceRecordId || '', evidence_id: provenanceContext.evidenceId || '', update_batch_id: provenanceContext.updateBatchId || '' })
   }
   return customerRecord
 }
 
+const stage2Table = (name) => config.feishu.tables[name]
+const stage2RequiredTables = ['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']
+function requireStage2Tables() { const missing = stage2RequiredTables.filter((name) => !stage2Table(name)); if (missing.length) throw Object.assign(new Error('Stage 2 资料表尚未配置'), { code: 'STAGE2_TABLES_NOT_CONFIGURED', status: 503, missing }) }
+function stage2Json(value) { return JSON.stringify(value ?? null) }
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+async function waitForSourceVisibility(sourceId) {
+  for (const delay of [0, 1000, 2500]) {
+    if (delay) await wait(delay)
+    const rows = await listRecords(stage2Table('sourceRecords'))
+    const row = rows.find((item) => text(get('sourceRecords', item.fields, 'source_id')) === sourceId)
+    if (row) return sourceRecord(row)
+  }
+  return null
+}
+function attachFeishuWriteContext(error, tableKey, operation, values) {
+  error.integrationContext = {
+    operation,
+    table_key: tableKey,
+    table_id: stage2Table(tableKey) || config.feishu.tables[tableKey] || '',
+    internal_keys: Object.keys(values),
+    feishu_field_names: Object.keys(values).map((key) => mapField(tableKey, key)),
+  }
+  return error
+}
+async function createMappedRecord(tableKey, operation, values) {
+  const mapped = mapFields(tableKey, values)
+  try {
+    return await createRecord(config.feishu.tables[tableKey], mapped)
+  } catch (error) {
+    throw attachFeishuWriteContext(error, tableKey, operation, values)
+  }
+}
+async function updateMappedRecord(tableKey, operation, recordId, values) {
+  const mapped = mapFields(tableKey, values)
+  try {
+    return await updateRecord(config.feishu.tables[tableKey], recordId, mapped)
+  } catch (error) {
+    throw attachFeishuWriteContext(error, tableKey, operation, values)
+  }
+}
+function sourceInput(input, actorId) {
+  const sourceType = String(input?.sourceType || '').trim().toUpperCase()
+  const rawText = normalizeText(input?.rawText, 500_000)
+  if (!SOURCE_TYPES.has(sourceType)) throw Object.assign(new Error('不支持的资料类型'), { code: 'INVALID_SOURCE_TYPE', status: 400 })
+  if (!rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
+  const customerId = text(input?.customerId).trim()
+  if (!customerId) throw Object.assign(new Error('客户ID不能为空'), { code: 'SOURCE_CUSTOMER_REQUIRED', status: 400 })
+  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: input?.occurredAt || null, sourceRole: text(input?.sourceRole) || 'CUSTOMER', serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, contentHash: contentHash(rawText) }
+}
+function evidenceWriteFields(item, source, sourceId) {
+  return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
+}
+
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository() } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.authRepository = authRepository }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -313,14 +385,14 @@ export class FeishuRepository {
     console.info('[ASVA_AUDIT]', JSON.stringify(entry))
   }
   async load() {
-    const entries = [['appointments', config.feishu.tables.appointments], ['customers', config.feishu.tables.customers], ['serviceRecords', config.feishu.tables.serviceRecords], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['profileChanges', config.feishu.tables.profileChanges]]
+    const entries = [['appointments', config.feishu.tables.appointments], ['customers', config.feishu.tables.customers], ['serviceRecords', config.feishu.tables.serviceRecords], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['profileChanges', config.feishu.tables.profileChanges], ['sourceRecords', config.feishu.tables.sourceRecords], ['evidenceItems', config.feishu.tables.evidenceItems], ['profileUpdateProposals', config.feishu.tables.profileUpdateProposals], ['evidenceConflicts', config.feishu.tables.evidenceConflicts]]
     const rows = await Promise.all(entries.map(([, tableId]) => tableId ? listRecords(tableId) : Promise.resolve([])))
-    const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileChangeRows] = rows
+    const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileChangeRows, sourceRows, evidenceRows, proposalRows, conflictRows] = rows
     const customers = customerRows.map(customer)
     return {
-      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange),
+      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange), sourceRecords: sourceRows.map(sourceRecord), evidenceItems: evidenceRows.map(evidenceItem), profileUpdateProposals: proposalRows.map(proposalRecord), evidenceConflicts: conflictRows.map(conflictRecord),
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
-      _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows },
+      _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows, sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
     }
   }
 
@@ -370,6 +442,7 @@ export class FeishuRepository {
   }
   async assistantQueryLogs(actorId) { await this.dashboard(actorId); return this.queryLogs }
   async savePerformanceTraces(actorId) { await this.dashboard(actorId); return [...this.saveTraces] }
+  async evidenceDebug(actorId) { await this.staff(actorId); return [...this.evidenceTraces] }
   async staff(staffId) {
     const record = (await this.load()).staff.find((item) => item.id === staffId)
     if (!record) throw new Error('账号不存在')
@@ -571,6 +644,150 @@ export class FeishuRepository {
     if (!current) throw new Error('客户不存在')
     await persistCustomerProfile(database, customerId, normalizeProfileUpdates(updates, current, true), undefined, actorId)
     return (await this.load()).customers.find((item) => item.id === customerId)
+  }
+  async createSource(actorId, input) {
+    requireStage2Tables()
+    const database = await this.load()
+    await this.staff(actorId)
+    const normalized = sourceInput(input, actorId)
+    if (!database.customers.some((item) => item.id === normalized.customerId)) throw new Error('客户不存在')
+    const duplicate = database.sourceRecords.find((item) => item.customerId === normalized.customerId && item.contentHash === normalized.contentHash)
+    if (duplicate) throw Object.assign(new Error('发现相同资料，未重复导入。'), { code: 'SOURCE_DUPLICATE', status: 409, sourceId: duplicate.id })
+    const sourceId = text(input?.sourceId) || stableId('SRC', `${normalized.customerId}:${normalized.contentHash}:${Date.now()}`)
+    const timestamp = now()
+    await createMappedRecord('sourceRecords', 'source.create', { source_id: sourceId, subject_type: normalized.subjectType, subject_id: normalized.subjectId, customer_id: normalized.customerId, source_type: normalized.sourceType, title: normalized.title, raw_text: normalized.rawText, file_ref: input?.fileRef || '', occurred_at: normalized.occurredAt || '', uploaded_at: timestamp, uploaded_by: normalized.uploadedBy, source_role: normalized.sourceRole, service_record_id: normalized.serviceRecordId, content_hash: normalized.contentHash, processing_status: 'UPLOADED', processing_version: 1, sensitivity_level: 'HIGH', notes: normalized.notes, source_version: 1, extractor_version: 'evidence-v1', last_batch_id: '', created_at: timestamp, updated_at: timestamp })
+    return (await waitForSourceVisibility(sourceId)) || { ...normalized, id: sourceId, processingStatus: 'UPLOADED', sensitivityLevel: 'HIGH', sourceVersion: 1 }
+  }
+  async sourceWorkspace(actorId, customerId) {
+    requireStage2Tables()
+    const database = await this.load()
+    await this.staff(actorId)
+    if (!database.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
+    return { sources: database.sourceRecords.filter((item) => item.customerId === customerId).map(({ rawText: _rawText, ...safe }) => safe), evidenceItems: database.evidenceItems.filter((item) => item.customerId === customerId), proposals: database.profileUpdateProposals.filter((item) => item.customerId === customerId), conflicts: database.evidenceConflicts.filter((item) => item.customerId === customerId) }
+  }
+  async sourceDetail(actorId, sourceId) {
+    requireStage2Tables()
+    const database = await this.load()
+    await this.staff(actorId)
+    const source = database.sourceRecords.find((item) => item.id === sourceId)
+    if (!source) throw new Error('资料不存在')
+    return { source, evidenceItems: database.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: database.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: database.evidenceConflicts.filter((item) => item.newEvidenceId && database.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId) }
+  }
+  async processSource(actorId, sourceId, { force = false } = {}) {
+    requireStage2Tables()
+    const startedAt = Date.now()
+    const database = await this.load()
+    await this.staff(actorId)
+    const source = database.sourceRecords.find((item) => item.id === sourceId)
+    const sourceRow = database._rows.sourceRecords.find((item) => item.record_id === source?._recordId)
+    if (!source || !sourceRow) throw new Error('资料不存在')
+    const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
+    if (!force && source.processingStatus === 'COMPLETED' && existingEvidence.length) return this.sourceDetail(actorId, sourceId)
+    const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}`)
+    await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: Number(source.processingVersion || 1) + 1, last_batch_id: batchId, updated_at: now() })
+    try {
+      const chunks = chunkText(source.rawText)
+      const candidates = []
+      for (const chunk of chunks) {
+        const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {} })
+        for (const rawItem of rawItems) {
+          if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
+          const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
+          if (normalized) candidates.push(normalized)
+        }
+      }
+      const unique = dedupeEvidence(candidates)
+      const customer = database.customers.find((item) => item.id === source.customerId)
+      const createdEvidence = []
+      for (const item of unique) {
+        const id = stableId('EVD', `${sourceId}:${batchId}:${item.evidenceType}:${item.fieldKey}:${JSON.stringify(item.standardValue)}:${item.sourceExcerpt}`)
+        const evidence = { ...item, id }
+        if (!database.evidenceItems.some((existing) => existing.id === id)) { await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, created_at: now(), updated_at: now() }); createdEvidence.push(evidence) }
+      }
+      const refreshed = await this.load()
+      const allEvidence = refreshed.evidenceItems.filter((item) => item.sourceId === sourceId)
+      for (const evidence of allEvidence) {
+        if (!evidence.fieldKey || !customer) continue
+        const change = classifyEvidenceChange(evidence, customer.profileFields?.[evidence.fieldKey] ?? null)
+        const existingProposal = refreshed.profileUpdateProposals.find((item) => item.evidenceId === evidence.id)
+        if (!existingProposal) {
+          const proposal = { id: proposalId(evidence.id, evidence.fieldKey), customerId: source.customerId, subjectId: source.subjectId, evidenceId: evidence.id, sourceId, fieldKey: evidence.fieldKey, fieldName: mapField('customers', evidence.fieldKey), currentValue: customer.profileFields?.[evidence.fieldKey] ?? null, proposedValue: evidence.standardValue, action: PROPOSAL_ACTIONS.has(change.action) ? change.action : 'REVIEW_REQUIRED', changeType: change.changeType, reviewStatus: 'PENDING_REVIEW', reason: evidence.displayText, confidence: evidence.confidence, extractionBatchId: evidence.extractionBatchId, reviewerId: '', reviewedAt: null, createdAt: now(), updatedAt: now() }
+          await createMappedRecord('profileUpdateProposals', 'proposal.create', { proposal_id: proposal.id, customer_id: proposal.customerId, subject_id: proposal.subjectId, evidence_id: proposal.evidenceId, source_id: proposal.sourceId, field_key: proposal.fieldKey, field_name: proposal.fieldName, current_value: stage2Json(proposal.currentValue), proposed_value: stage2Json(proposal.proposedValue), action: proposal.action, change_type: proposal.changeType, review_status: proposal.reviewStatus, reason: proposal.reason, confidence: proposal.confidence, extraction_batch_id: proposal.extractionBatchId, reviewer_id: '', reviewed_at: '', created_at: proposal.createdAt, updated_at: proposal.updatedAt })
+          if (change.conflictType) {
+            const conflict = { id: conflictId(evidence.fieldKey, '', evidence.id), subjectId: source.subjectId, customerId: source.customerId, fieldKey: evidence.fieldKey, conflictType: change.conflictType, currentValue: customer.profileFields?.[evidence.fieldKey] ?? null, newValue: evidence.standardValue, currentEvidenceId: '', newEvidenceId: evidence.id, status: 'OPEN', suggestedResolution: change.conflictType === 'FACT_CONTRADICTION' ? '人工核验稳定事实' : '按时间和来源判断', resolution: '', reviewerId: '', resolvedAt: null, createdAt: now(), updatedAt: now() }
+            if (!refreshed.evidenceConflicts.some((item) => item.id === conflict.id)) await createMappedRecord('evidenceConflicts', 'conflict.create', { conflict_id: conflict.id, subject_id: conflict.subjectId, customer_id: conflict.customerId, field_key: conflict.fieldKey, conflict_type: conflict.conflictType, current_value: stage2Json(conflict.currentValue), new_value: stage2Json(conflict.newValue), current_evidence_id: '', new_evidence_id: conflict.newEvidenceId, status: 'OPEN', suggested_resolution: conflict.suggestedResolution, resolution: '', reviewer_id: '', resolved_at: '', created_at: conflict.createdAt, updated_at: conflict.updatedAt })
+          }
+        }
+      }
+      await updateMappedRecord('sourceRecords', 'source.processing.review-required', sourceRow.record_id, { processing_status: 'REVIEW_REQUIRED', processing_version: Number(source.processingVersion || 1) + 1, last_batch_id: batchId, updated_at: now() })
+      const debugDatabase = await this.load()
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'REVIEW_REQUIRED', extraction_batch: batchId, evidence_count: unique.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', duration_ms: Date.now() - startedAt })
+      this.evidenceTraces = this.evidenceTraces.slice(0, 50)
+      this.audit('PROCESS_SOURCE', sourceId, actorId)
+      return this.sourceDetail(actorId, sourceId)
+    } catch (error) {
+      await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', last_batch_id: batchId, updated_at: now() }).catch(() => {})
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', duration_ms: Date.now() - startedAt })
+      this.evidenceTraces = this.evidenceTraces.slice(0, 50)
+      this.audit('PROCESS_SOURCE', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'EXTRACTION_FAILED')
+      throw error
+    }
+  }
+  async maybeCompleteSource(sourceId) {
+    const database = await this.load()
+    const source = database.sourceRecords.find((item) => item.id === sourceId)
+    if (!source) return
+    const pendingProposal = database.profileUpdateProposals.some((item) => item.sourceId === sourceId && item.reviewStatus === 'PENDING_REVIEW')
+    const openConflict = database.evidenceConflicts.some((item) => item.newEvidenceId && database.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
+    if (!pendingProposal && !openConflict) {
+      const row = database._rows.sourceRecords.find((item) => item.record_id === source._recordId)
+      if (row) await updateRecord(stage2Table('sourceRecords'), row.record_id, mapFields('sourceRecords', { processing_status: 'COMPLETED', updated_at: now() }))
+    }
+  }
+  async reviewProposal(actorId, proposalIdValue, decision) {
+    requireStage2Tables()
+    const database = await this.load()
+    await this.staff(actorId)
+    const proposal = database.profileUpdateProposals.find((item) => item.id === proposalIdValue)
+    if (!proposal) throw new Error('档案更新建议不存在')
+    if (!['CONFIRM', 'REJECT'].includes(decision)) throw Object.assign(new Error('审核动作无效'), { code: 'INVALID_REVIEW_DECISION', status: 400 })
+    const row = database._rows.profileUpdateProposals.find((item) => item.record_id === proposal._recordId)
+    const timestamp = now()
+    if (decision === 'CONFIRM') {
+      const evidence = database.evidenceItems.find((item) => item.id === proposal.evidenceId)
+      if (!evidence || !proposal.fieldKey) throw new Error('建议缺少可追溯证据')
+      const current = database.customers.find((item) => item.id === proposal.customerId)
+      const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'AI_EXTRACTED_CONFIRMED', confidence: proposal.confidence, confirmed: true }
+      if (update.source === 'AI_INFERENCE') throw Object.assign(new Error('AI假设不能写入当前客户档案'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
+      await persistCustomerProfile(database, proposal.customerId, normalizeProfileUpdates([update], current, true), undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+    } else {
+      const evidence = database.evidenceItems.find((item) => item.id === proposal.evidenceId)
+      if (evidence) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'REJECTED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+    }
+    await updateRecord(stage2Table('profileUpdateProposals'), row.record_id, mapFields('profileUpdateProposals', { review_status: decision === 'CONFIRM' ? 'CONFIRMED' : 'REJECTED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+    await this.maybeCompleteSource(proposal.sourceId)
+    return this.sourceWorkspace(actorId, proposal.customerId)
+  }
+  async resolveConflict(actorId, conflictIdValue, resolution) {
+    requireStage2Tables()
+    const database = await this.load()
+    await this.staff(actorId)
+    if (!CONFLICT_RESOLUTIONS.has(resolution)) throw Object.assign(new Error('冲突处理方式无效'), { code: 'INVALID_CONFLICT_RESOLUTION', status: 400 })
+    const conflict = database.evidenceConflicts.find((item) => item.id === conflictIdValue)
+    if (!conflict) throw new Error('冲突不存在')
+    const row = database._rows.evidenceConflicts.find((item) => item.record_id === conflict._recordId)
+    const proposal = database.profileUpdateProposals.find((item) => item.evidenceId === conflict.newEvidenceId)
+    if (resolution === 'USE_NEW' && proposal) await this.reviewProposal(actorId, proposal.id, 'CONFIRM')
+    if (resolution === 'KEEP_CURRENT' || resolution === 'MARK_UNKNOWN' || resolution === 'KEEP_BOTH') {
+      const evidence = database.evidenceItems.find((item) => item.id === conflict.newEvidenceId)
+      if (evidence) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: resolution === 'KEEP_BOTH' ? 'CONFIRMED' : 'REJECTED', reviewer_id: actorId, reviewed_at: now(), updated_at: now() }))
+      if (proposal) { const proposalRow = database._rows.profileUpdateProposals.find((item) => item.record_id === proposal._recordId); await updateRecord(stage2Table('profileUpdateProposals'), proposalRow.record_id, mapFields('profileUpdateProposals', { review_status: resolution === 'KEEP_CURRENT' || resolution === 'MARK_UNKNOWN' ? 'REJECTED' : 'CONFIRMED', reviewer_id: actorId, reviewed_at: now(), updated_at: now() })) }
+    }
+    await updateRecord(stage2Table('evidenceConflicts'), row.record_id, mapFields('evidenceConflicts', { status: resolution === 'MARK_UNKNOWN' ? 'DISMISSED' : 'RESOLVED', resolution, reviewer_id: actorId, resolved_at: now(), updated_at: now() }))
+    const newEvidence = database.evidenceItems.find((item) => item.id === conflict.newEvidenceId)
+    if (newEvidence) await this.maybeCompleteSource(newEvidence.sourceId)
+    return this.sourceWorkspace(actorId, conflict.customerId)
   }
   async saveBrief(actorId, customerId, brief) {
     const database = await this.load()

@@ -38,12 +38,13 @@ function requestId(response, payload) {
 }
 
 function retryableStatus(status) { return status === 429 || status >= 500 }
+function retryableProviderCode(code) { return Number(code) === 99991400 }
 
 export function isRetryableFeishuError(error) {
   return error?.retryable === true || error?.name === 'AbortError' || error?.code === 'ETIMEDOUT' || error?.code === 'ECONNRESET' || error?.code === 'ENOTFOUND'
 }
 
-function retryDelay(attempt) { return [300, 800][attempt] || 1200 }
+function retryDelay(attempt) { return [1000, 2500][attempt] || 4000 }
 
 async function tenantToken() {
   assertConfigured()
@@ -85,7 +86,7 @@ async function request(path, options = {}, { retry = false, operation = options.
     }
     const payload = await response.json().catch(() => null)
     if (!response.ok || payload?.code) {
-      const unavailable = new FeishuUnavailableError('飞书接口请求失败', { providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, retryable: retryableStatus(response.status), operation })
+      const unavailable = new FeishuUnavailableError('飞书接口请求失败', { providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, retryable: retryableStatus(response.status) || retryableProviderCode(payload?.code), operation })
       if (retry && isRetryableFeishuError(unavailable) && attempt < 2) { await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt))); continue }
       if (isWrite) console.error('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, record_id: undefined, request_id: unavailable.providerRequestId, write_status: 'WRITE_FAILED', readback_status: 'NOT_ATTEMPTED', retry_count: attempt, final_result: 'FAIL', provider_code: unavailable.providerCode, provider_http_status: unavailable.httpStatus }))
       throw unavailable
@@ -123,6 +124,23 @@ export async function listFields(tableId) {
   return rows
 }
 
+export async function listTables() {
+  const rows = []
+  let pageToken = ''
+  do {
+    const query = new URLSearchParams({ page_size: '100' })
+    if (pageToken) query.set('page_token', pageToken)
+    const data = await request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables?${query}`, {}, { retry: true, operation: 'list_tables' })
+    rows.push(...(data.items || []))
+    pageToken = data.has_more ? data.page_token || '' : ''
+  } while (pageToken)
+  return rows
+}
+
+export function createTable(name, fields = []) {
+  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables`, { method: 'POST', body: JSON.stringify({ table: { name, default_view_name: '默认视图', fields } }) }, { operation: 'create_table' })
+}
+
 export function createField(tableId, fieldName, type = 1) {
   return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/fields`, { method: 'POST', body: JSON.stringify({ field_name: fieldName, type }) }, { operation: 'create_field' })
 }
@@ -133,4 +151,8 @@ export function createRecord(tableId, fields) {
 
 export function updateRecord(tableId, recordId, fields) {
   return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records/${recordId}`, { method: 'PUT', body: JSON.stringify({ fields }) }, { operation: 'update_record' })
+}
+
+export function deleteRecord(tableId, recordId) {
+  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records/${recordId}`, { method: 'DELETE' }, { operation: 'delete_record' })
 }

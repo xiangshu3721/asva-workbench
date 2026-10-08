@@ -2,7 +2,7 @@
 
 日期：2026-10-07
 分支：`stage-1-customer-foundation`
-版本：`R001`，未执行 release、merge、Pages/CloudBase deploy 或 Stage 2。
+版本：`R003`，Stage 1 已冻结，非阻塞 UX 问题进入 backlog。
 
 ## 1. 操作前快照
 
@@ -44,15 +44,19 @@
 
 ## 5. 浏览器验收
 
-状态：`BLOCKED`。本地 API 与 Vite 前端均已启动并指向 `DATA_MODE=production`；health 显示 `environment=production`、`dataMode=production`、`feishuConfigured=true`、`authConfigured=true`、`authMode=ADMIN_CODE`，真实登录也在集成批次通过。但 CUA 浏览器桥接连续三次初始化状态读取超时，未完成客户列表、详情、Enrollment、ProfileChanges、筛选、Debug、AI Brief、AI Query 的点击级人工验收，因此不把 HTTP/静态检查计为 Browser PASS。
+状态：`PASS_WITH_MINOR_ISSUES`。产品负责人已完成真实使用验收，少量 UX 细节进入 Stage 1 backlog。
 
 ## 6. FAIL / BLOCKED
 
-- BLOCKED：浏览器点击级人工验收，原因是当前 CUA 桥接初始化超时。
+- BLOCKED：无 Stage 1 产品阻塞项。
 - FAIL：无。
 
 ## Final Gate
 
-`STAGE1_READY_FOR_PRODUCTION = NO`
+`MANUAL_PRODUCT_OWNER_ACCEPTANCE = PASS_WITH_MINOR_ISSUES`
 
-原因仅为 Browser Acceptance BLOCKED。保持 R001，不发布、不合并、不部署、不进入 Stage 2，等待后续浏览器验收指令。
+`STAGE1_COMPLETE = YES`
+
+`BASELINE_RELEASE = R003`
+
+Stage 1 已冻结，进入 Stage 2；不因非阻塞 UX 细节继续修改 Stage 1 业务。

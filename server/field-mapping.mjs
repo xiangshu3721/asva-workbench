@@ -89,14 +89,38 @@ export const FIELD_MAPPING = {
   profileChanges: {
     field: '字段', field_key: '字段键', field_name: '字段名称', old_value: '旧值', new_value: '新值',
     source: '变更来源', confidence: '置信度', confirmed: '已确认', customer_id: '客户ID', service_record_id: '服务记录ID',
-    operator_id: '操作人ID', changed_at: '变更时间', updated_at: '更新时间',
+    operator_id: '操作人ID', source_record_id: '资料ID', evidence_id: '证据ID', update_batch_id: '更新批次ID', changed_at: '变更时间', updated_at: '更新时间',
   },
   authCredentials: {
     credential_id: '凭据ID', staff_id: '人员ID', login_phone: '登录手机号', password_hash: '密码哈希',
     password_algorithm: '密码算法', must_change_password: '首次登录需改密', password_changed_at: '密码更新时间',
     auth_version: '认证版本', credential_status: '凭据状态', created_at: '创建时间', updated_at: '更新时间', last_login_at: '最后登录时间',
   },
+  sourceRecords: {
+    source_id: '资料ID', subject_type: '主体类型', subject_id: '主体ID', customer_id: '客户ID', source_type: '资料类型', title: '资料标题',
+    raw_text: '原始文本', file_ref: '文件引用', occurred_at: '资料发生时间', uploaded_at: '上传时间', uploaded_by: '上传人', source_role: '来源角色',
+    service_record_id: '关联服务记录ID', content_hash: '内容Hash', processing_status: '处理状态', processing_version: '处理版本', sensitivity_level: '敏感级别',
+    notes: '备注', created_at: '创建时间', updated_at: '更新时间', source_version: '资料版本', extractor_version: '提取器版本', last_batch_id: '最近提取批次ID',
+  },
+  evidenceItems: {
+    evidence_id: '证据ID', subject_type: '主体类型', subject_id: '主体ID', customer_id: '客户ID', source_id: '资料ID', evidence_type: '证据类型',
+    semantic_kind: '语义类型', field_key: '字段Key', standard_value: '标准值', display_text: '展示文本', source_excerpt: '原文摘录', locator_json: '资料定位',
+    occurred_at: '发生时间', source_role: '来源角色', confidence: '置信度', review_status: '审核状态', reviewer_id: '审核人', reviewed_at: '审核时间', extraction_batch_id: '提取批次ID',
+    provider: '提取模型提供方', model: '模型', model_version: '模型版本', prompt_version: 'Prompt版本', created_at: '创建时间', updated_at: '更新时间',
+  },
+  profileUpdateProposals: {
+    proposal_id: '建议ID', customer_id: '客户ID', subject_id: '主体ID', evidence_id: '证据ID', source_id: '资料ID', field_key: '字段Key', field_name: '字段名称',
+    current_value: '当前值', proposed_value: '建议值', action: '建议动作', change_type: '变化类型', review_status: '审核状态', reason: '生成原因', confidence: '置信度',
+    extraction_batch_id: '批次ID', reviewer_id: '审核人', reviewed_at: '审核时间', created_at: '创建时间', updated_at: '更新时间',
+  },
+  evidenceConflicts: {
+    conflict_id: '冲突ID', subject_id: '主体ID', customer_id: '客户ID', field_key: '字段Key', conflict_type: '冲突类型', current_value: '当前值', new_value: '新值',
+    current_evidence_id: '当前证据ID', new_evidence_id: '新证据ID', status: '状态', suggested_resolution: '建议处理', resolution: '解决结果', reviewer_id: '处理人',
+    resolved_at: '处理时间', created_at: '创建时间', updated_at: '更新时间',
+  },
 }
+
+const TEXT_ONLY_TABLES = new Set(['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'])
 
 // Temporary migration aliases. They are intentionally kept here, rather than
 // scattered through Repository code, so the app remains readable while a
@@ -118,7 +142,10 @@ export function field(table, key) {
 }
 
 export function fields(table, values) {
-  return Object.fromEntries(Object.entries(values).map(([key, value]) => [field(table, key), DATE_FIELDS[table]?.has(key) ? serializeDateForFeishu(value) : value]))
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => {
+    if (TEXT_ONLY_TABLES.has(table)) return [field(table, key), value === null || value === undefined ? '' : typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value)]
+    return [field(table, key), DATE_FIELDS[table]?.has(key) ? serializeDateForFeishu(value) : value]
+  }))
 }
 
 export function read(table, recordFields, key) {
@@ -137,4 +164,8 @@ const DATE_FIELDS = {
   enrollments: new Set(['enrolled_at', 'paid_at', 'created_at']),
   profileChanges: new Set(['changed_at', 'updated_at']),
   authCredentials: new Set(['created_at', 'updated_at', 'password_changed_at', 'last_login_at']),
+  sourceRecords: new Set(['occurred_at', 'uploaded_at', 'created_at', 'updated_at']),
+  evidenceItems: new Set(['occurred_at', 'created_at', 'updated_at']),
+  profileUpdateProposals: new Set(['reviewed_at', 'created_at', 'updated_at']),
+  evidenceConflicts: new Set(['resolved_at', 'created_at', 'updated_at']),
 }

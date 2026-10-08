@@ -86,6 +86,9 @@ export interface ProfileFieldMeta {
   confidence: number
   confirmed: boolean
   updatedAt: string
+  sourceRecordId?: string
+  evidenceId?: string
+  extractionBatchId?: string
 }
 
 export interface CustomerProfileState {
@@ -123,6 +126,9 @@ export interface ProfileChange {
   updatedAt: string
   operatorId?: string
   serviceRecordId?: string
+  sourceRecordId?: string
+  evidenceId?: string
+  updateBatchId?: string
 }
 
 export interface Appointment {

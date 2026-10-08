@@ -122,6 +122,17 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && profileExtract) { const body = await readBody(request); return send(request, response, 200, await repository.profileDraft(await guard(request), decodeURIComponent(profileExtract[1]), body.text), requestId) }
   const profileConfirm = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile\/confirm$/)
   if (request.method === 'POST' && profileConfirm) { const body = await readBody(request); return send(request, response, 200, await repository.confirmProfile(await guard(request), decodeURIComponent(profileConfirm[1]), body.updates), requestId) }
+  const customerSources = url.pathname.match(/^\/api\/customers\/([^/]+)\/sources$/)
+  if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guardAdmin(request), decodeURIComponent(customerSources[1])), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guardAdmin(request), await readBody(request)), requestId)
+  const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
+  if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guardAdmin(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
+  const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
+  if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guardAdmin(request), decodeURIComponent(sourceDetail[1])), requestId)
+  const proposalReview = url.pathname.match(/^\/api\/profile-proposals\/([^/]+)\/review$/)
+  if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guardAdmin(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }
+  const conflictResolve = url.pathname.match(/^\/api\/evidence-conflicts\/([^/]+)\/resolve$/)
+  if (request.method === 'POST' && conflictResolve) { const body = await readBody(request); return send(request, response, 200, await repository.resolveConflict(await guardAdmin(request), decodeURIComponent(conflictResolve[1]), body.resolution), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guardAdmin(request), await readBody(request)), requestId)
   if (request.method === 'POST' && url.pathname === '/api/customers') return send(request, response, 201, await repository.createCustomer(await guardAdmin(request), await readBody(request), requestId), requestId)
   const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
@@ -142,6 +153,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/ai/query') { const body = await readBody(request); return send(request, response, 200, await repository.assistantQuery(await guardAdmin(request), body.question, body.context), requestId) }
   if (request.method === 'GET' && url.pathname === '/api/ai/query-logs') return send(request, response, 200, await repository.assistantQueryLogs(await guardAdmin(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/debug/save-traces') return send(request, response, 200, await repository.savePerformanceTraces(await guardAdmin(request)), requestId)
+  if (request.method === 'GET' && url.pathname === '/api/debug/evidence') return send(request, response, 200, await repository.evidenceDebug(await guardAdmin(request)), requestId)
   if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(request, response, 200, await createServiceSummary(await readBody(request)), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(request, response, 200, { brief: await createBrief(await readBody(request)) }, requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/customer-intelligence') { await guardAdmin(request); return send(request, response, 200, await createCustomerIntelligence(await readBody(request)), requestId) }
