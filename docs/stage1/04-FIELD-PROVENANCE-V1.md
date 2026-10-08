@@ -19,3 +19,5 @@
 正式来源枚举：`STRUCTURED_INPUT`、`USER_EXPLICIT`、`ADMIN_CONFIRMED`、`MENTOR_FACTUAL_INPUT`、`AI_EXTRACTED_CONFIRMED`、`IMPORTED_HISTORY`、`LEGACY_MIGRATION`。兼容读取旧 `MENTOR_CONFIRMED`、`MENTOR_OBSERVATION`、`AI_INFERENCE`，但未确认 AI 推断不能与人工确认事实同等级。
 
 每次重要 Customer 更新：记录 old/new、source、operator、changed_at、confirmed，并将 `_profile_version` 加 1。版本是 Customer 档案版本，不使用 Release Counter。
+
+`birth_date` 是 canonical 事实；存在出生日期时 `age` / `birth_year` 由服务端派生，不伪造完整生日，也不为派生值单独制造历史事实。真实 Feishu 回写与刷新验收仍需完成。

@@ -1,10 +1,10 @@
 import { FIELD_MAPPING } from './field-mapping.mjs'
 
-const DATE_KEYS = new Set(['created_at', 'updated_at', 'deactivated_at', 'completed_at', 'submitted_at', 'profile_updated_at', 'enrolled_at', 'paid_at', 'changed_at'])
-const BOOLEAN_KEYS = new Set(['is_paid', 'followup_info_completed', 'followup_handled', 'login_enabled', 'confirmed', 'profile_update_confirmed', 'mentor_confirmed'])
-const NUMBER_KEYS = new Set(['amount', 'confidence'])
+const DATE_KEYS = new Set(['created_at', 'updated_at', 'deactivated_at', 'completed_at', 'submitted_at', 'profile_updated_at', 'birth_date', 'enrolled_at', 'paid_at', 'changed_at', 'password_changed_at', 'last_login_at'])
+const BOOLEAN_KEYS = new Set(['is_paid', 'followup_info_completed', 'followup_handled', 'login_enabled', 'confirmed', 'profile_update_confirmed', 'mentor_confirmed', 'must_change_password'])
+const NUMBER_KEYS = new Set(['amount', 'confidence', 'auth_version'])
 const PHONE_KEYS = new Set(['phone', 'login_phone'])
-const SINGLE_SELECT_KEYS = new Set(['status', 'display_status', 'role', 'permission_role', 'sabc', 'result', 'payment_status'])
+const SINGLE_SELECT_KEYS = new Set(['status', 'display_status', 'role', 'permission_role', 'sabc', 'result', 'payment_status', 'password_algorithm', 'credential_status'])
 const TEXT_DATE_KEYS = new Set(['submitted_at', 'profile_updated_at'])
 
 function typeFor(key, table) {
@@ -36,7 +36,10 @@ function fieldDefinition(internalKey, feishuName, overrides = {}) {
   }
 }
 
-export const SCHEMA_CONTRACT = Object.fromEntries(Object.entries(FIELD_MAPPING).map(([table, mapping]) => [table, Object.entries(mapping).map(([internalKey, feishuName]) => fieldDefinition(internalKey, feishuName, { type: typeFor(internalKey, table) }))]))
+const TRACK_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'gender', 'city', 'marital_status', 'children_summary', 'family_summary', 'occupation', 'job_status', 'relationship_status', 'support_system', 'current_resources', 'current_barriers', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id'])
+const DERIVED_FIELDS = new Set(['age', 'birth_year'])
+
+export const SCHEMA_CONTRACT = Object.fromEntries(Object.entries(FIELD_MAPPING).map(([table, mapping]) => [table, Object.entries(mapping).map(([internalKey, feishuName]) => fieldDefinition(internalKey, feishuName, { type: typeFor(internalKey, table), history_policy: table === 'customers' ? DERIVED_FIELDS.has(internalKey) ? 'DERIVED' : TRACK_FIELDS.has(internalKey) ? 'TRACK' : 'NO_TRACK' : null }))]))
 
 SCHEMA_CONTRACT.customers = SCHEMA_CONTRACT.customers.map((field) => field.internal_key === 'current_mentor_id' ? fieldDefinition(field.internal_key, field.feishu_name, { writable: true }) : field)
 SCHEMA_CONTRACT.appointments = SCHEMA_CONTRACT.appointments.map((field) => fieldDefinition(field.internal_key, field.feishu_name, { writable: field.internal_key !== 'appointment_id' }))
@@ -49,3 +52,4 @@ export const SCHEMA_GAPS = [
 
 export function contractFields(table) { return SCHEMA_CONTRACT[table] || [] }
 export function contractFieldByName(table, name) { return contractFields(table).find((field) => field.feishu_name === name) }
+export function customerHistoryPolicy(key) { return contractFields('customers').find((field) => field.internal_key === key)?.history_policy || 'NO_TRACK' }

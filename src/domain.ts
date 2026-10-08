@@ -268,6 +268,7 @@ export interface NewAppointmentInput {
 }
 
 export interface ManualCustomerInput {
+  operationId?: string
   nickname: string
   phone?: string
   wechat?: string

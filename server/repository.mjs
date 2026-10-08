@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
+import { createRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError, isRetryableFeishuError } from './feishu.mjs'
 import { createProfileDraft } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -7,6 +7,8 @@ import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs
 import crypto from 'node:crypto'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
 import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
+import { customerHistoryPolicy } from './schema-contract.mjs'
+import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, dummyPasswordHash, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -28,6 +30,7 @@ const feishuDate = () => serializeDateForFeishu(now())
 const get = (table, recordFields, key) => readField(table, recordFields, key)
 const PROFILE_FIELD_KEYS = new Set('phone wechat gender birth_date age birth_year city hometown marital_status education living_status children_summary occupation industry position work_years job_status income_range career_stage career_satisfaction career_problem career_goal entrepreneurship_experience family_summary parents_relationship father_summary mother_summary relationship_with_father relationship_with_mother siblings family_events family_support_level relationship_status partner_summary marriage_years relationship_satisfaction relationship_conflicts communication_pattern conflict_pattern relationship_goal children_detail parent_child_relationship parenting_problem parenting_values hobbies sports reading travel art_preferences social_preference sleep diet routine life_satisfaction self_description personality_traits communication_style decision_style emotion_expression stress_response conflict_style action_style strengths common_blocks core_values family_values career_values money_values relationship_values success_definition happiness_definition freedom_definition growth_attitude current_core_issue secondary_issues current_stressors current_goal current_expectation current_resources support_system current_barriers energy_state recent_major_changes ai_customer_summary'.split(' '))
 const IMPORTANT_PROFILE_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'age', 'city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id', 'mentor_id', 'grade', 'paid', 'intended_course'])
+const CUSTOMER_PROFILE_SCHEMA_VERSION = 'v1.0'
 
 function appointment(row) {
   const f = row.fields || {}
@@ -49,7 +52,8 @@ function customer(row) {
   } catch { profileFieldMeta = {} }
   const profileFields = {}
   for (const key of PROFILE_FIELD_KEYS) {
-    const value = get('customers', f, key)
+    const rawValue = get('customers', f, key)
+    const value = key === 'birth_date' ? date(rawValue) : rawValue
     if (value !== '' && value !== null && value !== undefined) profileFields[key] = profileCell(value)
   }
   profileFields.current_core_issue ||= text(get('customers', f, 'current_issue')) || null
@@ -61,7 +65,22 @@ function customer(row) {
   profileFields.paid = boolean(get('customers', f, 'is_paid'))
   profileFields.current_mentor_id = profileFields.current_mentor_id ?? profileFields.mentor_id ?? (text(get('customers', f, 'current_mentor_id')) || null)
   profileFields.mentor_id = profileFields.current_mentor_id
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName: text(get('customers', f, 'referrer_name')), need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || 'v0.5', profileVersion, _recordId: row.record_id }
+  const birthDate = profileFields.birth_date || null
+  const legacyAge = Number(get('customers', f, 'age'))
+  const legacyBirthYear = Number(get('customers', f, 'birth_year'))
+  if (birthDate) {
+    const birth = new Date(String(birthDate))
+    const today = new Date()
+    let derivedAge = today.getUTCFullYear() - birth.getUTCFullYear()
+    const monthDelta = today.getUTCMonth() - birth.getUTCMonth()
+    if (monthDelta < 0 || (monthDelta === 0 && today.getUTCDate() < birth.getUTCDate())) derivedAge -= 1
+    profileFields.birth_year = birth.getUTCFullYear()
+    profileFields.age = derivedAge
+  } else {
+    if (Number.isFinite(legacyBirthYear) && legacyBirthYear > 0) profileFields.birth_year = legacyBirthYear
+    if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
+  }
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName: text(get('customers', f, 'referrer_name')), need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -90,8 +109,9 @@ function enrollment(row) {
   const paymentStatus = text(get('enrollments', f, 'payment_status'))
   const enrolledAt = date(get('enrollments', f, 'enrolled_at')) || date(get('enrollments', f, 'created_at'))
   const paidAt = date(get('enrollments', f, 'paid_at')) || null
-  const status = text(get('enrollments', f, 'status'))
-  return { id: text(get('enrollments', f, 'enrollment_id')) || row.record_id, customerId: text(get('enrollments', f, 'customer_id')), productId: text(get('enrollments', f, 'product_id')) || text(get('enrollments', f, 'product_name')), paid: paymentStatus === 'PAID' || boolean(get('enrollments', f, 'paid')), amount: Number.isFinite(rawAmount) ? rawAmount : Number.NaN, date: paidAt || enrolledAt, status: status === 'CANCELLED' ? 'CANCELLED' : status || '学习中', paymentStatus: ['PAID', 'UNPAID', 'UNRECORDED'].includes(paymentStatus) ? paymentStatus : boolean(get('enrollments', f, 'paid')) ? 'PAID' : 'UNRECORDED', enrollmentSource: text(get('enrollments', f, 'enrollment_source')), enrolledAt, paidAt, operatorId: text(get('enrollments', f, 'operator_id')), _recordId: row.record_id }
+  const rawStatus = text(get('enrollments', f, 'status'))
+  const status = rawStatus === 'CANCELLED' ? 'CANCELLED' : rawStatus === 'INACTIVE' ? 'CANCELLED' : '学习中'
+  return { id: text(get('enrollments', f, 'enrollment_id')) || row.record_id, customerId: text(get('enrollments', f, 'customer_id')), productId: text(get('enrollments', f, 'product_id')) || text(get('enrollments', f, 'product_name')), paid: paymentStatus === 'PAID' || boolean(get('enrollments', f, 'paid')), amount: Number.isFinite(rawAmount) ? rawAmount : Number.NaN, date: paidAt || enrolledAt, status, paymentStatus: ['PAID', 'UNPAID', 'UNRECORDED'].includes(paymentStatus) ? paymentStatus : boolean(get('enrollments', f, 'paid')) ? 'PAID' : 'UNRECORDED', enrollmentSource: text(get('enrollments', f, 'enrollment_source')), enrolledAt, paidAt, operatorId: text(get('enrollments', f, 'operator_id')), _recordId: row.record_id }
 }
 
 function service(row) {
@@ -133,6 +153,21 @@ function scope(database, actorId) {
 }
 
 function sameProfileValue(a, b) { return JSON.stringify(a ?? null) === JSON.stringify(b ?? null) }
+function derivedAge(birthDate) {
+  if (!birthDate) return null
+  const birth = new Date(String(birthDate))
+  if (Number.isNaN(birth.getTime())) return null
+  const today = new Date()
+  let age = today.getUTCFullYear() - birth.getUTCFullYear()
+  const monthDelta = today.getUTCMonth() - birth.getUTCMonth()
+  if (monthDelta < 0 || (monthDelta === 0 && today.getUTCDate() < birth.getUTCDate())) age -= 1
+  return age >= 0 ? age : null
+}
+function derivedBirthYear(birthDate) {
+  if (!birthDate) return null
+  const year = new Date(String(birthDate)).getUTCFullYear()
+  return Number.isFinite(year) ? year : null
+}
 function normalizeProfileUpdates(updates, profileRecord, confirmed = false) {
   if (!Array.isArray(updates)) return []
   return updates.filter((item) => item && typeof item.field === 'string' && (PROFILE_FIELD_KEYS.has(item.field) || ['grade', 'paid', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(item.field))).map((item) => {
@@ -144,10 +179,16 @@ function normalizeProfileUpdates(updates, profileRecord, confirmed = false) {
 }
 
 function profileFieldsForWrite(customerRecord, updates) {
-  const values = { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {} }), profile_schema_version: customerRecord.profileSchemaVersion || 'v0.5', profile_updated_at: customerRecord.profileUpdatedAt || now() }
+  const values = { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {} }), profile_schema_version: customerRecord.profileSchemaVersion || CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: customerRecord.profileUpdatedAt || now() }
   for (const update of updates) {
     if (['paid', 'grade', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(update.field)) continue
     values[update.field] = Array.isArray(update.value) ? JSON.stringify(update.value) : typeof update.value === 'number' || typeof update.value === 'boolean' ? String(update.value) : update.value ?? ''
+    if (update.field === 'birth_date') {
+      const year = derivedBirthYear(update.value)
+      const age = derivedAge(update.value)
+      if (year !== null) values.birth_year = String(year)
+      if (age !== null) values.age = String(age)
+    }
   }
   if (customerRecord.need !== undefined) values.current_issue = customerRecord.need
   if (customerRecord.helpExpectation !== undefined) values.help_expectation = customerRecord.helpExpectation
@@ -186,8 +227,8 @@ function validateEnrollmentDrafts(database, drafts) {
   }
 }
 
-async function mergeEnrollments(database, customerId, drafts, operatorId, operationId) {
-  if (!drafts?.length) return
+async function mergeEnrollments(database, customerId, drafts, operatorId, operationId, { replace = false } = {}) {
+  if (!Array.isArray(drafts)) return
   if (!config.feishu.tables.enrollments) throw new Error('报名记录表尚未配置，暂时不能保存已报名课程')
   validateEnrollmentDrafts(database, drafts)
   const uniqueDrafts = new Map(drafts.map((draft) => [draft.productId, draft]))
@@ -195,6 +236,7 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
     const product = activeProduct(database, draft.productId)
     if (!product) throw new Error('只能选择 ASVA 产品中的有效课程')
     const existing = database.enrollments.find((item) => item.customerId === customerId && item.productId === product.id && item.status !== 'CANCELLED')
+    const cancelled = database.enrollments.find((item) => item.customerId === customerId && item.productId === product.id && item.status === 'CANCELLED')
     const paymentStatus = draft.paymentStatus || existing?.paymentStatus || 'UNRECORDED'
     const fields = { payment_status: paymentStatus, paid: paymentStatus === 'PAID' }
     if (draft.amount !== undefined && draft.amount !== null) fields.amount = draft.amount
@@ -204,8 +246,18 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
       await updateRecord(config.feishu.tables.enrollments, existing._recordId, mapFields('enrollments', fields))
       continue
     }
+    if (cancelled?._recordId) {
+      await updateRecord(config.feishu.tables.enrollments, cancelled._recordId, mapFields('enrollments', { ...fields, status: 'ACTIVE' }))
+      continue
+    }
     const enrolledAt = draft.enrolledAt || now()
     await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', { enrollment_id: operationId ? stableOperationId(`${operationId}:${product.id}`, 'ENR') : `E-${Date.now()}-${Math.floor(Math.random() * 1000)}`, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: now(), status: 'ACTIVE' }))
+  }
+  if (replace) {
+    const selected = new Set(uniqueDrafts.keys())
+    for (const current of database.enrollments.filter((item) => item.customerId === customerId && item.status !== 'CANCELLED' && !selected.has(item.productId))) {
+      if (current._recordId) await updateRecord(config.feishu.tables.enrollments, current._recordId, mapFields('enrollments', { status: 'CANCELLED' }))
+    }
   }
 }
 
@@ -231,20 +283,27 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
     if (field === 'paid' && typeof update.value === 'boolean') customerRecord.paid = update.value
     if (field === 'grade' && typeof update.value === 'string') customerRecord.grade = update.value
     if (field === 'current_mentor_id' && typeof update.value === 'string') customerRecord.mentorId = update.value
+    if (field === 'birth_date') {
+      const year = derivedBirthYear(update.value)
+      const age = derivedAge(update.value)
+      if (year !== null) customerRecord.profileFields.birth_year = year
+      if (age !== null) customerRecord.profileFields.age = age
+    }
+    if ((field === 'age' || field === 'birth_year') && customerRecord.profileFields.birth_date) continue
     if (!sameProfileValue(oldValue, update.value)) changed.push({ ...update, field, oldValue, updatedAt })
   }
   if (changed.length) customerRecord.profileVersion += 1
   customerRecord.profileUpdatedAt = updatedAt
-  customerRecord.profileSchemaVersion = 'v0.5'
+  customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
   await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
-  for (const change of changed.filter((item) => IMPORTANT_PROFILE_FIELDS.has(item.field))) {
+  for (const change of changed.filter((item) => customerHistoryPolicy(item.field) === 'TRACK' || (item.field === 'age' && !customerRecord.profileFields.birth_date))) {
     await createRecord(config.feishu.tables.profileChanges, mapFields('profileChanges', { customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '' }))
   }
   return customerRecord
 }
 
 export class FeishuRepository {
-  constructor() { this.queryLogs = []; this.auditLogs = [] }
+  constructor({ authRepository = new FeishuAuthCredentialRepository() } = {}) { this.queryLogs = []; this.auditLogs = []; this.authRepository = authRepository }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -261,6 +320,35 @@ export class FeishuRepository {
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
       _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows },
     }
+  }
+
+  async loadAfterWrite(writeResult, targetCustomerId) {
+    const writeRecordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const database = await this.load()
+        if (targetCustomerId && !database.customers.some((item) => item.id === targetCustomerId)) {
+          throw new FeishuUnavailableError('写入后暂未读到目标记录', { retryable: true, operation: 'readback_customer' })
+        }
+        console.info('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_SUCCESS', retry_count: attempt, final_result: 'SUCCESS' }))
+        return database
+      } catch (error) {
+        if (!isRetryableFeishuError(error) || attempt === 2) {
+          console.error('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_FAILED', retry_count: attempt, final_result: 'FAIL', provider_code: error?.providerCode, provider_request_id: error?.providerRequestId }))
+          throw new FeishuWriteConfirmedReadbackError('写入已确认，但回读暂时失败，请保留请求编号后重试。', {
+            writeRecordId,
+            providerCode: error?.providerCode,
+            providerMessage: error?.providerMessage,
+            providerRequestId: error?.providerRequestId,
+            httpStatus: error?.httpStatus,
+            retryable: false,
+            operation: 'readback_after_write',
+          })
+        }
+        await new Promise((resolve) => setTimeout(resolve, [300, 800][attempt]))
+      }
+    }
+    throw new FeishuWriteConfirmedReadbackError('写入已确认，但回读暂时失败，请保留请求编号后重试。', { writeRecordId, operation: 'readback_after_write' })
   }
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
@@ -286,21 +374,84 @@ export class FeishuRepository {
     if (record.permissionRole !== 'ADMIN' || record.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
     return record
   }
-  async authenticate(phone, code, ip = 'unknown') {
+  async validateSession(staffId, authVersion, sessionAuthMode = '') {
+    const account = await this.staff(staffId)
+    let credential = null
+    if (config.authMode === 'PASSWORD') {
+      if (sessionAuthMode !== 'PASSWORD') throw invalidLogin()
+      credential = await this.authRepository.findByStaffId(staffId)
+      if (!credential || credential.credentialStatus === 'DISABLED' || Number(credential.authVersion || 0) !== Number(authVersion || 0)) throw invalidLogin()
+    }
+    return { account, credential }
+  }
+  async authenticate(phone, secret, ip = 'unknown') {
     if (loginRateLimiter.isBlocked(phone, ip)) throw Object.assign(new Error('登录尝试过于频繁，请稍后再试'), { code: 'AUTH_RATE_LIMITED', status: 429 })
-    if (config.dataMode === 'production' && !config.adminLoginCode) throw Object.assign(new Error('生产认证未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
-    const controlledProductionCode = config.dataMode === 'production' && config.authMode === 'ADMIN_CODE' && safeEqual(code, config.adminLoginCode)
-    const controlledDemoCode = config.dataMode !== 'production' && config.allowDevOtp && safeEqual(code, '888888')
     const database = await this.load()
     const normalized = normalizePhone(phone)
     const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
     const validStaff = account?.permissionRole === 'ADMIN' && account.status === 'ACTIVE' && account.loginEnabled === true
-    if ((!controlledProductionCode && !controlledDemoCode) || !validStaff) {
-      loginRateLimiter.recordFailure(phone, ip)
-      throw invalidLogin()
+    if (config.authMode === 'PASSWORD') {
+      if (config.dataMode === 'production' && !config.feishu.tables.authCredentials) throw new AuthCredentialStoreNotConfiguredError('生产密码凭据表尚未配置')
+      const credential = await this.authRepository.findByPhone(normalized)
+      const passwordMatches = await verifyPassword(secret, credential?.passwordHash || dummyPasswordHash)
+      const credentialMatches = Boolean(credential && credential.staffId === account?.id && credential.loginPhone === normalized && credential.credentialStatus !== 'DISABLED')
+      if (!validStaff || !credentialMatches || !passwordMatches) {
+        loginRateLimiter.recordFailure(phone, ip)
+        throw invalidLogin()
+      }
+      loginRateLimiter.clear(phone, ip)
+      await this.authRepository.recordSuccessfulLogin(account.id)
+      return { ...account, authVersion: Number(credential.authVersion || 0), mustChangePassword: credential.mustChangePassword === true, authMode: 'PASSWORD' }
     }
+    if (config.dataMode === 'production' && !config.adminLoginCode) throw Object.assign(new Error('生产认证未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
+    const controlledProductionCode = config.dataMode === 'production' && config.authMode === 'ADMIN_CODE' && safeEqual(secret, config.adminLoginCode)
+    const controlledDemoCode = config.dataMode !== 'production' && config.allowDevOtp && safeEqual(secret, '888888')
+    if ((!controlledProductionCode && !controlledDemoCode) || !validStaff) { loginRateLimiter.recordFailure(phone, ip); throw invalidLogin() }
     loginRateLimiter.clear(phone, ip)
-    return account
+    return { ...account, authVersion: 0, mustChangePassword: false, authMode: config.authMode }
+  }
+  async setInitialPassword(staffId, password, { mustChangePassword = true } = {}) {
+    const account = (await this.load()).staff.find((item) => item.id === staffId)
+    if (!account) throw new Error('账号不存在')
+    if (account.status !== 'ACTIVE' || account.loginEnabled !== true) throw new Error('账号当前不可登录')
+    validatePassword(password, { phone: account.phone })
+    const passwordHash = await hashPassword(password)
+    const current = await this.authRepository.findByStaffId(staffId)
+    const timestamp = now()
+    if (current) {
+      await this.authRepository.updatePassword(current, passwordHash, { password_algorithm: 'scrypt', must_change_password: mustChangePassword, password_changed_at: mustChangePassword ? null : timestamp, auth_version: Number(current.authVersion || 0) + 1, credential_status: 'ACTIVE', updated_at: timestamp })
+    } else {
+      await this.authRepository.createCredential({ staffId, loginPhone: account.phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword, passwordChangedAt: mustChangePassword ? null : timestamp, authVersion: 1, credentialStatus: 'ACTIVE', createdAt: timestamp, updatedAt: timestamp, lastLoginAt: null })
+    }
+    return { staffId, mustChangePassword }
+  }
+  async changePassword(staffId, currentPassword, nextPassword) {
+    const account = await this.staff(staffId)
+    const credential = await this.authRepository.findByStaffId(staffId)
+    const currentMatches = await verifyPassword(currentPassword, credential?.passwordHash || dummyPasswordHash)
+    if (!credential || !currentMatches) throw Object.assign(new Error('当前密码不正确'), { code: 'PASSWORD_INVALID', status: 401 })
+    validatePassword(nextPassword, { phone: account.phone })
+    const timestamp = now()
+    await this.authRepository.updatePassword(credential, await hashPassword(nextPassword), { password_algorithm: 'scrypt', must_change_password: false, password_changed_at: timestamp, auth_version: Number(credential.authVersion || 0) + 1, credential_status: 'ACTIVE', updated_at: timestamp })
+    return { ok: true, mustChangePassword: false, authVersion: Number(credential.authVersion || 0) + 1 }
+  }
+  async resetPassword(actorId, targetStaffId, nextPassword) {
+    const actor = await this.staff(actorId)
+    if (actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以重置密码')
+    const target = (await this.load()).staff.find((item) => item.id === targetStaffId)
+    if (!target) throw new Error('账号不存在')
+    validatePassword(nextPassword, { phone: target.phone })
+    const current = await this.authRepository.findByStaffId(targetStaffId)
+    const timestamp = now()
+    const nextVersion = Number(current?.authVersion || 0) + 1
+    if (current) await this.authRepository.updatePassword(current, await hashPassword(nextPassword), { password_algorithm: 'scrypt', must_change_password: true, password_changed_at: null, auth_version: nextVersion, credential_status: 'ACTIVE', updated_at: timestamp })
+    else await this.authRepository.createCredential({ staffId: targetStaffId, loginPhone: target.phone, passwordHash: await hashPassword(nextPassword), passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: nextVersion, credentialStatus: 'ACTIVE', createdAt: timestamp, updatedAt: timestamp, lastLoginAt: null })
+    this.audit('RESET_PASSWORD', targetStaffId, actorId)
+    return { ok: true, staffId: targetStaffId, mustChangePassword: true, authVersion: nextVersion }
+  }
+  async syncCredentialPhone(staffId, phone) {
+    const credential = await this.authRepository.findByStaffId(staffId)
+    if (credential) await this.authRepository.updateLoginPhone(staffId, normalizePhone(phone))
   }
   async customer(actorId, customerId) { return (await this.dashboard(actorId)).customers.find((item) => item.id === customerId) }
   async profileDraft(actorId, customerId, textInput) {
@@ -322,29 +473,32 @@ export class FeishuRepository {
     const database = await this.load()
     scope(database, actorId)
     const normalized = validateManualCustomer(input)
+    const operationId = text(input?.operationId).trim()
+    if (operationId) {
+      const existing = database.customers.find((item) => item.id === stableOperationId(operationId, 'CUS'))
+      if (existing) return this.dashboard(actorId)
+    }
     const identity = resolveCustomerIdentity(database.customers, normalized)
     const duplicates = duplicateMatches(database, input)
     if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT', matches: duplicates })
     if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已匹配到现有客户，请打开原档案更新。'), { status: 409, code: 'CUSTOMER_DUPLICATE', matches: duplicates })
     if (identity.result === 'POSSIBLE_MATCH' && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { status: 409, code: 'CUSTOMER_POSSIBLE_MATCH', matches: duplicates })
     validateEnrollmentDrafts(database, input.enrollments)
-    const operationId = text(input?.operationId).trim()
-    if (operationId) {
-      const existing = database.customers.find((item) => item.id === stableOperationId(operationId, 'CUS'))
-      if (existing) return this.dashboard(actorId)
-    }
     const customerId = operationId ? stableOperationId(operationId, 'CUS') : `CUS-${Date.now()}`
     const createdAt = now()
     const initialFields = { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(normalized.wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }
-    await createRecord(config.feishu.tables.customers, mapFields('customers', { customer_id: customerId, nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: 'v0.5', profile_updated_at: createdAt }))
-    let current = await this.load()
+    const writeValues = { customer_id: customerId, nickname: normalized.nickname, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+    if (normalized.phone) writeValues.phone = normalized.phone
+    if (normalized.wechat) writeValues.wechat = normalized.wechat
+    const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues))
+    let current = await this.loadAfterWrite(writeResult, customerId)
     if (input.profileUpdates?.length) {
       await persistCustomerProfile(current, customerId, normalizeProfileUpdates(input.profileUpdates, current.customers.find((item) => item.id === customerId), true), undefined, actorId)
-      current = await this.load()
+      current = await this.loadAfterWrite(undefined, customerId)
     }
     await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
     // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
-    return this.dashboard(actorId)
+    return scope(await this.loadAfterWrite(undefined, customerId), actorId)
   }
   async updateCustomer(actorId, customerId, input) {
     const database = await this.load()
@@ -362,12 +516,20 @@ export class FeishuRepository {
     if (normalizeWechat(current.wechat) !== normalizeWechat(normalized.wechat)) identityUpdates.push({ field: 'wechat', value: normalized.wechat, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
     if (identityUpdates.length) await persistCustomerProfile(database, customerId, normalizeProfileUpdates(identityUpdates, current, true), undefined, actorId)
     await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { nickname: normalized.nickname, source: input.source || current.source, notes: normalized.situation || current.notes }))
-    let latest = await this.load()
+    let latest = await this.loadAfterWrite(undefined, customerId)
     if (input.profileUpdates?.length) await persistCustomerProfile(latest, customerId, normalizeProfileUpdates(input.profileUpdates, latest.customers.find((item) => item.id === customerId), true), undefined, actorId)
-    latest = await this.load()
-    await mergeEnrollments(latest, customerId, input.enrollments, actorId, text(input?.operationId).trim())
+    latest = await this.loadAfterWrite(undefined, customerId)
+    await mergeEnrollments(latest, customerId, input.enrollments, actorId, text(input?.operationId).trim(), { replace: Array.isArray(input.enrollments) })
     // Customer updates do not create or mutate Appointment in Stage 1.
-    return this.dashboard(actorId)
+    return scope(await this.loadAfterWrite(undefined, customerId), actorId)
+  }
+
+  async updateCustomerEnrollments(actorId, customerId, drafts, operationId = '') {
+    const database = await this.load()
+    scope(database, actorId)
+    if (!database.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
+    await mergeEnrollments(database, customerId, Array.isArray(drafts) ? drafts : [], actorId, text(operationId).trim(), { replace: true })
+    return scope(await this.loadAfterWrite(undefined, customerId), actorId)
   }
   async confirmProfile(actorId, customerId, updates) {
     const database = await this.load()
@@ -429,6 +591,7 @@ export class FeishuRepository {
     if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请使用未占用的手机号'), { status: 409 })
     try {
       await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, updated_at: feishuDate(), display_role: '导师' }))
+      await this.syncCredentialPhone(mentorId, phone)
     } catch (error) {
       this.audit('UPDATE_MENTOR', mentorId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
       throw error
@@ -456,6 +619,8 @@ export class FeishuRepository {
     const deactivatedAt = feishuDate()
     try {
       await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { status: 'INACTIVE', login_enabled: false, display_status: '停用', updated_at: deactivatedAt, deactivated_at: deactivatedAt }))
+      const credential = await this.authRepository.findByStaffId(mentorId)
+      if (credential) await this.authRepository.disableCredential(mentorId)
     } catch (error) {
       this.audit('DEACTIVATE_MENTOR', mentorId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
       throw error

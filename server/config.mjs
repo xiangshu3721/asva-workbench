@@ -52,6 +52,7 @@ export const config = {
       products: value('FEISHU_PRODUCTS_TABLE_ID', 'tblLG2SFwYpKgiMQ'),
       enrollments: value('FEISHU_ENROLLMENTS_TABLE_ID'),
       profileChanges: value('FEISHU_PROFILE_CHANGES_TABLE_ID', 'tblTH3OmBuzUsBVu'),
+      authCredentials: value('FEISHU_AUTH_CREDENTIALS_TABLE_ID'),
     },
   },
 }
@@ -61,7 +62,8 @@ export function configurationStatus() {
     deepseekConfigured: Boolean(config.deepseek.apiKey),
     feishuConfigured: Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.baseToken),
     authConfigured: Boolean(config.authSecret),
-    adminAuthConfigured: Boolean(config.adminLoginCode),
+    adminAuthConfigured: config.authMode === 'ADMIN_CODE' && Boolean(config.adminLoginCode),
+    authCredentialStoreConfigured: Boolean(config.feishu.tables.authCredentials),
     authMode: config.authMode,
     environment: config.environment,
     dataMode: config.dataMode,

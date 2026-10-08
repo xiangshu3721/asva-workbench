@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
+import type { Customer, CustomerDraftPreview, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -7,7 +7,7 @@ export interface AiDraft { summary: string; currentStatus: string; nextStep: str
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface TeamSnapshot { mentor: Staff; customerCount: number; waitFollowUp: number; waitFeedback: number; completed: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
-export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
+export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -26,7 +26,9 @@ export interface AssistantQueryResult { kind: string; answer: string; customerId
 export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
 
 export interface WorkbenchApi {
-  login(phone: string, code: string): Promise<Staff>
+  login(phone: string, password: string): Promise<Staff & { mustChangePassword?: boolean }>
+  changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean; mustChangePassword: boolean; token?: string }>
+  resetPassword(actorId: string, staffId: string, password: string): Promise<{ ok: boolean; staffId: string; mustChangePassword: boolean }>
   health(): Promise<HealthMetadata>
   dashboard(staffId: string): Promise<Database>
   staff(staffId: string): Promise<Staff | undefined>
@@ -35,6 +37,7 @@ export interface WorkbenchApi {
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<Database>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<Database>
+  updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
   markFollowupDone(actorId: string, appointmentId: string): Promise<Database>
   saveFeedback(actorId: string, feedback: FeedbackInput): Promise<Database>
@@ -69,7 +72,9 @@ type LocalApi = ReturnType<typeof createLocalApi>
 
 export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
   return {
-    login: async (phone, code) => api.login(phone, code),
+    login: async (phone, password) => api.login(phone, password),
+    changePassword: async () => { throw new Error('本地 Demo 不支持密码修改') },
+    resetPassword: async () => { throw new Error('本地 Demo 不支持密码重置') },
     health: async () => ({ ok: true, service: 'asva-api', environment: 'local', dataMode: 'demo', featureFlags: { externalAppointment: false } }),
     dashboard: async (staffId) => api.dashboard(staffId),
     staff: async (staffId) => api.staff(staffId),
@@ -78,6 +83,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     previewCustomer: async (actorId, input) => api.previewCustomer(actorId, input),
     createCustomer: async (actorId, input) => api.createCustomer(actorId, input),
     updateCustomer: async (actorId, customerId, input) => api.updateCustomer(actorId, customerId, input),
+    updateCustomerEnrollments: async (actorId, customerId, enrollments) => api.updateCustomerEnrollments(actorId, customerId, enrollments),
     assignAppointment: async (actorId, appointmentId, mentorId) => api.assignAppointment(actorId, appointmentId, mentorId),
     markFollowupDone: async (actorId, appointmentId) => api.markFollowupDone(actorId, appointmentId),
     saveFeedback: async (actorId, feedback) => api.saveFeedback(actorId, feedback),
@@ -122,7 +128,9 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     return payload as T
   }
   return {
-    login: (phone, code) => request<Staff>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, code }) }),
+    login: (phone, password) => request<Staff & { mustChangePassword?: boolean }>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, password }) }),
+    changePassword: async (currentPassword, newPassword) => { const result = await request<{ ok: boolean; mustChangePassword: boolean; token?: string }>('/api/auth/change-password', undefined, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); if (result.token) window.sessionStorage.setItem('asva_session_token', result.token); return result },
+    resetPassword: (actorId, staffId, password) => request<{ ok: boolean; staffId: string; mustChangePassword: boolean }>(`/api/staff/${encodeURIComponent(staffId)}/reset-password`, actorId, { method: 'POST', body: JSON.stringify({ password }) }),
     health: () => request<HealthMetadata>('/api/health', undefined),
     dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
@@ -130,7 +138,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     createAppointment: (input) => request<Database>('/api/appointments', undefined, { method: 'POST', body: JSON.stringify(input) }),
     previewCustomer: (actorId, input) => request<CustomerDraftPreview>('/api/customers/preview', actorId, { method: 'POST', body: JSON.stringify(input) }),
     createCustomer: (actorId, input) => request<Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input) }),
-    updateCustomer: (actorId, customerId, input) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
+    updateCustomer: (actorId, customerId, input) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers: input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined }),
+    updateCustomerEnrollments: (actorId, customerId, enrollments) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/enrollments`, actorId, { method: 'PUT', body: JSON.stringify({ enrollments, operationId: `enrollments-${customerId}-${Date.now()}` }) }),
     assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
     markFollowupDone: (actorId, appointmentId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/complete-followup`, actorId, { method: 'POST', body: '{}' }),
     saveFeedback: (actorId, feedback) => request<Database>(`/api/appointments/${encodeURIComponent(feedback.appointmentId)}/feedback`, actorId, { method: 'POST', body: JSON.stringify(feedback) }),

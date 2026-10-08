@@ -1,32 +1,31 @@
 # ASVA Stage 1 Completion Report
 
-Stage 1 Customer Data Foundation V1 已完成代码与本地自动化收口，但尚未达到 Production-ready。
+Stage 1 Customer Data Foundation V1 已完成代码、真实 Feishu 验收与清理；浏览器逐项人工验收因当前 CUA 桥接初始化超时仍未完成，因此本报告不宣告 Production-ready。
+
+本阶段不扩大到 Stage 2。Production 内测认证仍标记为 `TEMPORARY_INTERNAL_AUTH`：当前仅允许 ACTIVE ADMIN 使用服务端 `AUTH_MODE=ADMIN_CODE`，正式客户数据、导师端开放、外部公开使用或解忧小屋上线前必须替换为正式 OTP / 企业身份认证。
 
 ## 结果摘要
 
 - Branch：`stage-1-customer-foundation`
 - 基线：Production R001 commit `7fc21190f76e59e5b6017877e58b12292473158a`
-- Customer Schema V1：代码映射与字段分类文档完成；新增字段规则见 `CUSTOMER_SCHEMA_CHANGE_RULES.md`
+- Customer Schema V1：代码映射与字段分类文档完成；Production Customers 已创建 `出生日期` DateTime 字段，Schema Check PASS；`导师ID` 保留为 deprecated 只读兼容字段
 - Identity Resolver：phone / WeChat normalize、exact、possible、conflict、contact required 完成
 - Customer CRUD：本地 create/read/update、Profile Version、Provenance、ProfileChanges 完成并通过自动测试
-- Enrollment：本地 active Product、单/多课程、去重完成并通过自动测试；真实写入未通过
+- Enrollment：本地与真实 Feishu active Product、单/多课程、去重、ADD/KEEP/REMOVE、`CANCELLED` 恢复和刷新回读均通过
 - AI boundary：Draft → 人工确认；未确认 AI 不写入事实
 - Legacy boundary：`current_mentor_id` 新写；`导师ID` 仅兼容读取；Customer create/update 不创建 Appointment
-- 自动测试：119/119 PASS
+- 自动测试：121/121 PASS
 - Typecheck：PASS
 - Build：PASS，未增加 Release Counter，仍为 R001
-- Schema Check：PASS；无 Missing / Extra / TypeMismatch
-- Data Quality：FAIL；当前有 1 条 Customer 缺少手机号和微信号，其余检查项为 0
-- Feishu 集成：BLOCKED；门控脚本先生成 `stage1-backup/` 快照，但 HTTP Customer 写入后回读收到 `FEISHU_UNAVAILABLE`，不能视为 PASS
-- 浏览器人工验收：BLOCKED / 未完成
+- Schema Check：PASS；Customers 103 fields，缺失/类型不匹配为 0，`导师ID` 仅列为 deprecated
+- Data Quality：PASS；14 Customers、8 Staff、4 Products、2 Enrollments、2 ServiceRecords、6 ProfileChanges、14 Appointments；所有质量问题指标为 0
+- Feishu 集成：PASS；批次 `STAGE1_IT_1791385895823_ae0e0e` 真实创建、回读、更新、Enrollment/历史变更和清理完成；失败批次残留也已按精确 ID 清理
+- 浏览器人工验收：BLOCKED；本地服务可用，但 CUA 状态初始化连续超时，未将静态/HTTP 检查冒充点击通过
 - Production merge / deploy：未执行
 
 ## 当前 FAIL / BLOCKED
 
-1. 必须先人工确认并处理既有 1 条无联系方式 Customer，或形成明确例外迁移决策。
-2. 必须定位并重跑真实 Feishu Customer / Enrollment / ProfileChange 集成回读，当前不能把局部写入后的 `FEISHU_UNAVAILABLE` 视为成功。
-3. 必须完成 Customer list/detail、搜索、Enrollment 刷新、Debug Mode、AI Brief 与 Appointment 未创建的浏览器验收。
-4. 本次失败的随机 `STAGE1_TEST_` 记录未自动删除，避免未经确认执行破坏性清理；后续应按快照核对后处理。
+1. 必须在可用的浏览器自动化/设备环境中完成 Customer list/detail、搜索、Enrollment 刷新、Debug Mode、AI Brief、AI Query 与 Appointment 未创建的点击验收。
 
 ## 明确留后续
 

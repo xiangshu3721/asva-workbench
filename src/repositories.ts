@@ -5,7 +5,8 @@ import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeW
 
 const STORAGE_KEY = 'asva-workbench-demo-db-v9'
 const LEGACY_STORAGE_KEY = 'asva-workbench-demo-db-v8'
-const IMPORTANT_PROFILE_FIELDS = new Set(['phone', 'wechat', 'age', 'city', 'occupation', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id', 'mentor_id', 'grade', 'paid', 'intended_course'])
+const TRACK_PROFILE_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'gender', 'age', 'city', 'marital_status', 'children_summary', 'family_summary', 'occupation', 'job_status', 'relationship_status', 'support_system', 'current_resources', 'current_barriers', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id'])
+const CUSTOMER_PROFILE_SCHEMA_VERSION = 'v1.0'
 
 function cloneSeed(): Database {
   return structuredClone(seedDatabase)
@@ -32,7 +33,7 @@ function normalize(database: Database): Database {
     profileFields.mentor_id ??= profileFields.current_mentor_id
     profileFields.phone ??= customer.phone ?? null
     profileFields.wechat ??= customer.wechat ?? null
-    return { ...customer, wechat: customer.wechat ?? '', source: customer.source ?? '历史数据导入', referrerName: customer.referrerName ?? '', createdAt: customer.createdAt ?? '2026-10-01', notes: customer.notes ?? '', lastFollowupAt: customer.lastFollowupAt ?? null, nextFollowupAt: customer.nextFollowupAt ?? null, followupStatus: String((customer as Customer & { followupStatus?: string }).followupStatus) === '跟进中' ? '待跟进' : customer.followupStatus ?? '待跟进', profileFields, profileFieldMeta: { ...(legacy?.fieldMeta ?? {}), ...(customer.profileFieldMeta ?? {}) }, profileUpdatedAt: customer.profileUpdatedAt ?? legacy?.updatedAt ?? null, profileVersion: customer.profileVersion ?? 0, profileSchemaVersion: customer.profileSchemaVersion ?? legacy?.schemaVersion ?? 'v0.5' }
+    return { ...customer, wechat: customer.wechat ?? '', source: customer.source ?? '历史数据导入', referrerName: customer.referrerName ?? '', createdAt: customer.createdAt ?? '2026-10-01', notes: customer.notes ?? '', lastFollowupAt: customer.lastFollowupAt ?? null, nextFollowupAt: customer.nextFollowupAt ?? null, followupStatus: String((customer as Customer & { followupStatus?: string }).followupStatus) === '跟进中' ? '待跟进' : customer.followupStatus ?? '待跟进', profileFields, profileFieldMeta: { ...(legacy?.fieldMeta ?? {}), ...(customer.profileFieldMeta ?? {}) }, profileUpdatedAt: customer.profileUpdatedAt ?? legacy?.updatedAt ?? null, profileVersion: customer.profileVersion ?? 0, profileSchemaVersion: customer.profileSchemaVersion ?? legacy?.schemaVersion ?? CUSTOMER_PROFILE_SCHEMA_VERSION }
   })
   const { profiles: _legacyProfiles, ...withoutLegacyProfiles } = database as Database & { profiles?: CustomerProfileState[] }
   return {
@@ -76,14 +77,14 @@ function customerDuplicates(database: Database, input: ManualCustomerInput): Cus
 }
 
 function emptyProfile(customerId: string): CustomerProfileState {
-  return { customerId, fields: {}, fieldMeta: {}, updatedAt: null, schemaVersion: 'v0.5' }
+  return { customerId, fields: {}, fieldMeta: {}, updatedAt: null, schemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
 }
 
 function createManualCustomer(database: Database, input: ManualCustomerInput, updates: ProfileUpdate[]): Customer {
   const { nickname, phone, wechat } = validateManualCustomer(input)
   const id = `C-${Date.now()}-${Math.floor(Math.random() * 1000)}`
   const createdAt = new Date().toISOString()
-  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: '', need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: 'v0.5' }
+  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: '', need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
   database.customers.unshift(customer)
   if (updates.length) applyProfileUpdates(database, customer.id, normalizedProfileUpdates(updates, emptyProfile(customer.id), true), undefined, 'admin')
   return customer
@@ -109,6 +110,17 @@ function assertAppointmentAccess(staff: Staff, _appointment: Appointment) {
 
 function sameProfileValue(a: unknown, b: unknown) {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+}
+
+function derivedAge(value: unknown) {
+  if (!value) return null
+  const birth = new Date(String(value))
+  if (Number.isNaN(birth.getTime())) return null
+  const today = new Date()
+  let age = today.getUTCFullYear() - birth.getUTCFullYear()
+  const monthDelta = today.getUTCMonth() - birth.getUTCMonth()
+  if (monthDelta < 0 || (monthDelta === 0 && today.getUTCDate() < birth.getUTCDate())) age -= 1
+  return age >= 0 ? age : null
 }
 
 function customerProfileState(customer: Customer): CustomerProfileState {
@@ -146,7 +158,14 @@ function applyProfileUpdates(database: Database, customerId: string, updates: Pr
     if (update.field === 'paid' && typeof update.value === 'boolean') customer.paid = update.value
     if (update.field === 'grade' && typeof update.value === 'string' && ['S', 'A', 'B', 'C'].includes(update.value)) customer.grade = update.value as Customer['grade']
     if (field === 'current_mentor_id' && typeof update.value === 'string') customer.mentorId = update.value
-    if (!sameProfileValue(oldValue, update.value) && IMPORTANT_PROFILE_FIELDS.has(field)) {
+    if (field === 'birth_date') {
+      const age = derivedAge(update.value)
+      if (age !== null) profile.fields.age = age
+      const birthYear = new Date(String(update.value)).getUTCFullYear()
+      if (Number.isFinite(birthYear)) profile.fields.birth_year = birthYear
+    }
+    if ((field === 'age' || field === 'birth_year') && profile.fields.birth_date) continue
+    if (!sameProfileValue(oldValue, update.value) && TRACK_PROFILE_FIELDS.has(field)) {
       const change: ProfileChange = { id: 'PC-' + Date.now() + '-' + database.profileChanges.length, customerId, field, fieldName: profileUpdateLabel({ ...update, field }), oldValue, newValue: update.value, source, confidence: update.confidence ?? 0.9, confirmed: update.confirmed === true, updatedAt, operatorId, serviceRecordId }
       database.profileChanges.unshift(change)
     }
@@ -154,7 +173,7 @@ function applyProfileUpdates(database: Database, customerId: string, updates: Pr
   }
   customer.profileUpdatedAt = updatedAt
   if (changed) customer.profileVersion = (customer.profileVersion ?? 0) + 1
-  customer.profileSchemaVersion = 'v0.5'
+  customer.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
   return customer
 }
 
@@ -174,6 +193,7 @@ function mergeEnrollments(database: Database, customerId: string, drafts: Enroll
     const product = activeProduct(database, draft.productId)
     if (!product) throw new Error('只能选择 ASVA 产品中的有效课程')
     const existing = database.enrollments.find((item) => item.customerId === customerId && item.productId === product.id && item.status !== 'CANCELLED')
+    const cancelled = database.enrollments.find((item) => item.customerId === customerId && item.productId === product.id && item.status === 'CANCELLED')
     if (existing) {
       if (draft.paymentStatus) {
         existing.paymentStatus = draft.paymentStatus
@@ -182,6 +202,12 @@ function mergeEnrollments(database: Database, customerId: string, drafts: Enroll
       if (draft.amount !== undefined && draft.amount !== null) existing.amount = draft.amount
       if (draft.enrolledAt) existing.enrolledAt = draft.enrolledAt
       if (draft.paidAt) existing.paidAt = draft.paidAt
+      continue
+    }
+    if (cancelled) {
+      cancelled.status = '学习中'
+      if (draft.paymentStatus) { cancelled.paymentStatus = draft.paymentStatus; cancelled.paid = draft.paymentStatus === 'PAID' }
+      if (draft.amount !== undefined && draft.amount !== null) cancelled.amount = draft.amount
       continue
     }
     const paymentStatus = draft.paymentStatus ?? 'UNRECORDED'
@@ -199,6 +225,7 @@ export interface AsvaRepository {
   previewCustomer(actorId: string, input: ManualCustomerInput): CustomerDraftPreview
   createCustomer(actorId: string, input: ManualCustomerInput): Database
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Database
+  updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Database
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Database
   markFollowupDone(actorId: string, appointmentId: string): Database
   saveFeedback(actorId: string, feedback: FeedbackInput): Database
@@ -294,6 +321,21 @@ export function createLocalRepository(): AsvaRepository {
       if (input.profileUpdates?.length) applyProfileUpdates(database, customerId, normalizedProfileUpdates(input.profileUpdates, customerProfileState(customer), true), undefined, actorId)
       mergeEnrollments(database, customerId, input.enrollments, actor.id)
       // Stage 1 Customer updates never create or mutate Appointment.
+      writeDatabase(database)
+      return scopedDatabase(database, actor)
+    },
+    updateCustomerEnrollments(actorId, customerId, drafts) {
+      const database = readDatabase()
+      const actor = getStaff(database, actorId)
+      assertActive(actor)
+      assertAdmin(actor)
+      const customer = database.customers.find((item) => item.id === customerId)
+      if (!customer) throw new Error('客户不存在')
+      const selected = new Map(drafts.map((draft) => [draft.productId, draft]))
+      for (const enrollment of database.enrollments.filter((item) => item.customerId === customerId && item.status !== 'CANCELLED')) {
+        if (!selected.has(enrollment.productId)) enrollment.status = 'CANCELLED'
+      }
+      mergeEnrollments(database, customerId, drafts, actor.id)
       writeDatabase(database)
       return scopedDatabase(database, actor)
     },
