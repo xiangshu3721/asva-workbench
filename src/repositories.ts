@@ -80,11 +80,11 @@ function emptyProfile(customerId: string): CustomerProfileState {
   return { customerId, fields: {}, fieldMeta: {}, updatedAt: null, schemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
 }
 
-function createManualCustomer(database: Database, input: ManualCustomerInput, updates: ProfileUpdate[]): Customer {
+function createManualCustomer(database: Database, input: ManualCustomerInput, updates: ProfileUpdate[], actor: Staff): Customer {
   const { nickname, phone, wechat } = validateManualCustomer(input)
   const id = `C-${Date.now()}-${Math.floor(Math.random() * 1000)}`
   const createdAt = new Date().toISOString()
-  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: '', need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
+  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), createdByStaffId: actor.id, createdByName: actor.name, name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: '', need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
   database.customers.unshift(customer)
   if (updates.length) applyProfileUpdates(database, customer.id, normalizedProfileUpdates(updates, emptyProfile(customer.id), true), undefined, 'admin')
   return customer
@@ -178,8 +178,14 @@ function applyProfileUpdates(database: Database, customerId: string, updates: Pr
 }
 
 function scopedDatabase(database: Database, staff: Staff): Database {
-  assertAdmin(staff)
-  return database
+  assertActive(staff)
+  if (staff.permissionRole === 'ADMIN') {
+    assertAdmin(staff)
+    return database
+  }
+  const ids = new Set(database.customers.filter((customer) => customer.createdByStaffId === staff.id).map((customer) => customer.id))
+  const byCustomer = <T extends { customerId: string }>(items: T[]) => items.filter((item) => ids.has(item.customerId))
+  return { ...database, customers: database.customers.filter((customer) => ids.has(customer.id)), appointments: byCustomer(database.appointments), sessions: byCustomer(database.sessions), enrollments: byCustomer(database.enrollments), profileChanges: byCustomer(database.profileChanges) }
 }
 
 function activeProduct(database: Database, productId: string) {
@@ -265,7 +271,7 @@ export function createLocalRepository(): AsvaRepository {
       let customerId = input.customerId
       if (!database.customers.some((item) => item.id === customerId)) {
         if (!input.nickname || (!input.phone && !input.wechat)) throw new Error('客户不存在，且缺少新客户的昵称与联系方式')
-        customerId = createManualCustomer(database, { nickname: input.nickname, phone: input.phone, wechat: input.wechat, situation: input.customerSituation || input.description, needsFollowup: true, source: '解忧小屋' }, []).id
+        customerId = createManualCustomer(database, { nickname: input.nickname, phone: input.phone, wechat: input.wechat, situation: input.customerSituation || input.description, needsFollowup: true, source: '解忧小屋' }, [], database.staff.find((item) => item.permissionRole === 'ADMIN' && item.loginEnabled)!).id
       }
       database.appointments.push({ id: `A-${Date.now()}`, ...input, customerId, status: 'WAIT_ASSIGN', mentorId: null, assignedMentorId: null, followupHandled: false, followupInfoCompleted: false, caseSource: input.caseSource ?? input.source, source: input.caseSource ?? input.source })
       writeDatabase(database)
@@ -292,7 +298,7 @@ export function createLocalRepository(): AsvaRepository {
       const duplicates = customerDuplicates(database, input)
       if (identity.result === 'POSSIBLE_MATCH' && !input.confirmedNotSame) throw Object.assign(new Error('检测到可能重复的客户，请先确认是否为同一人'), { code: 'CUSTOMER_POSSIBLE_MATCH' })
       const updates = input.profileUpdates ?? []
-      const customer = createManualCustomer(database, input, updates)
+      const customer = createManualCustomer(database, input, updates, actor)
       mergeEnrollments(database, customer.id, input.enrollments, actor.id)
       // Stage 1 Customer creation never creates an Appointment.
       writeDatabase(database)
@@ -490,9 +496,8 @@ export function createLocalRepository(): AsvaRepository {
     updateCustomerReferrer(actorId, customerId, referrerName) {
       const database = readDatabase()
       const actor = getStaff(database, actorId)
-      assertActive(actor)
-      assertAdmin(actor)
-      const customer = database.customers.find((item) => item.id === customerId)
+      const visible = scopedDatabase(database, actor)
+      const customer = visible.customers.find((item) => item.id === customerId)
       if (!customer) throw new Error('客户不存在')
       customer.referrerName = referrerName.trim()
       writeDatabase(database)

@@ -32,10 +32,7 @@ export function createLocalApi(repository: AsvaRepository) {
       const all = repository.getDatabase()
       return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!status || item.status === status)).map((mentor) => ({
         mentor,
-        customerCount: all.customers.filter((customer) => customer.mentorId === mentor.id).length,
-        waitFollowUp: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'WAIT_FOLLOW_UP').length,
-        waitFeedback: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'WAIT_FEEDBACK').length,
-        completed: all.appointments.filter((appointment) => appointment.assignedMentorId === mentor.id && appointment.status === 'COMPLETED').length,
+        customerCount: all.customers.filter((customer) => customer.createdByStaffId === mentor.id).length,
       }))
     },
     dashboardSnapshot(actorId: string) {
@@ -43,19 +40,13 @@ export function createLocalApi(repository: AsvaRepository) {
       const actor = database.staff.find((item) => item.id === actorId)
       if (actor?.permissionRole !== 'ADMIN') throw new Error('无权查看数据看板')
       const all = repository.getDatabase()
-      const appointments = all.appointments
       const month = '2026-10'
-      const bars = ['2026-08', '2026-09', '2026-10'].map((monthKey) => ({ label: monthKey.slice(5), value: all.customers.filter((customer) => customer.createdAt.startsWith(monthKey)).length }))
       return {
         customerCount: all.customers.length,
         monthNewCustomers: all.customers.filter((customer) => customer.createdAt.startsWith(month)).length,
-        monthAppointments: appointments.filter((appointment) => appointment.createdAt.startsWith(month)).length,
-        monthCompleted: appointments.filter((appointment) => appointment.completedAt?.startsWith(month)).length,
         paidCustomers: all.customers.filter((customer) => customer.paid).length,
         mentorCount: all.staff.filter((staff) => staff.permissionRole === 'MENTOR').length,
-        statusCounts: { WAIT_ASSIGN: appointments.filter((item) => item.status === 'WAIT_ASSIGN').length, WAIT_FOLLOW_UP: appointments.filter((item) => item.status === 'WAIT_FOLLOW_UP').length, WAIT_FEEDBACK: appointments.filter((item) => item.status === 'WAIT_FEEDBACK').length, COMPLETED: appointments.filter((item) => item.status === 'COMPLETED').length },
-        customerTrend: bars,
-        mentorLoad: all.staff.filter((staff) => staff.permissionRole === 'MENTOR').map((mentor) => ({ name: mentor.name, count: all.customers.filter((customer) => customer.mentorId === mentor.id).length })),
+        recentCustomers: all.customers.slice(0, 5),
       }
     },
   }

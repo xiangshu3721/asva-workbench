@@ -28,7 +28,7 @@ describe('V0.3 appointment workflow and permissions', () => {
   it('starts a new appointment in WAIT_ASSIGN and hides it from a mentor', () => {
     const api = createLocalApi(createLocalRepository())
     expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-01')?.status).toBe('WAIT_ASSIGN')
-    expect(() => api.dashboard('mentor-zhang')).toThrow('导师端暂未开放，请联系管理员。')
+    expect(api.dashboard('mentor-zhang').customers).toHaveLength(0)
   })
 
   it('moves WAIT_ASSIGN to WAIT_FOLLOW_UP only through ADMIN assignment', () => {
@@ -105,27 +105,35 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(() => api.createCustomer('staff-admin', { nickname: '沈知遥', wechat: 'szy-demo', situation: '先记录课程关系。', needsFollowup: false, enrollments: [{ productId: 'P-003' }] })).toThrow('有效课程')
   })
 
-  it('uses the unified ADMIN role and keeps dashboard counts sourced from appointments', () => {
+  it('uses the unified ADMIN role and keeps the home snapshot workflow-free', () => {
     const api = createLocalApi(createLocalRepository())
     expect(api.dashboard('staff-founder').customers).toHaveLength(seedDatabase.customers.length)
     const snapshot = api.dashboardSnapshot('staff-admin')
-    const all = api.dashboard('staff-admin').appointments
-    expect(Object.values(snapshot.statusCounts).reduce((sum, count) => sum + count, 0)).toBe(all.length)
     expect(snapshot.mentorCount).toBe(4)
+    expect(snapshot).not.toHaveProperty('statusCounts')
+    expect(snapshot).not.toHaveProperty('mentorLoad')
   })
 
-  it('enforces customer reads at the API boundary', () => {
+  it('records the creator on manual customer creation', () => {
     const api = createLocalApi(createLocalRepository())
-    expect(() => api.customer('mentor-zhang', 'C00001301')).toThrow('导师端暂未开放，请联系管理员。')
+    const saved = api.createCustomer('staff-admin', { nickname: 'R009创建人测试', phone: '13899990001', situation: '仅用于创建人权限测试。', needsFollowup: false })
+    const customer = saved.customers.find((item) => item.name === 'R009创建人测试')
+    expect(customer?.createdByStaffId).toBe('staff-admin')
+    expect(customer?.createdByName).toBe(api.staff('staff-admin')?.name)
+  })
+
+  it('enforces creator-scoped customer reads at the API boundary', () => {
+    const api = createLocalApi(createLocalRepository())
+    expect(api.customer('mentor-zhang', 'C00001301')).toBeUndefined()
     expect(api.customer('staff-admin', 'C00001276')?.name).toBe('许清和')
   })
 
-  it('allows only ADMIN to update a customer referrer', () => {
+  it('allows an ADMIN to update a customer referrer and blocks an unrelated mentor', () => {
     const api = createLocalApi(createLocalRepository())
     expect(api.customer('staff-admin', 'C00001305')?.referrerName).toBe('')
     api.updateCustomerReferrer('staff-admin', 'C00001305', '李老师')
     expect(api.customer('staff-admin', 'C00001305')?.referrerName).toBe('李老师')
-    expect(() => api.updateCustomerReferrer('mentor-zhang', 'C00001305', '陈某')).toThrow('导师端暂未开放，请联系管理员。')
+    expect(() => api.updateCustomerReferrer('mentor-zhang', 'C00001305', '陈某')).toThrow('客户不存在')
   })
 
   it('lets ADMIN manage active mentor accounts and rejects duplicate phones', () => {
@@ -171,7 +179,7 @@ describe('V0.3 appointment workflow and permissions', () => {
 
   it('blocks mentor profile access while mentor login is disabled', () => {
     const api = createLocalApi(createLocalRepository())
-    expect(() => api.profileDraft('mentor-zhang', 'C00001276', '她喜欢阅读。')).toThrow('导师端暂未开放，请联系管理员。')
+    expect(() => api.profileDraft('mentor-zhang', 'C00001276', '她喜欢阅读。')).toThrow('无权访问该客户')
   })
 
   it('marks a changed existing profile fact as a conflict before confirmation', () => {

@@ -92,6 +92,8 @@ export interface ProfileMaterialization {
 export interface Customer {
   id: string
   createdAt: string
+  createdByStaffId?: string
+  createdByName?: string
   name: string
   initials: string
   phone: string

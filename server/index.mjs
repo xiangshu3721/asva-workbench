@@ -89,7 +89,12 @@ function safeMessage(error, code) {
   return error instanceof Error ? error.message : '请求未完成，请稍后重试。'
 }
 
-async function guardAdmin(request) { const id = await guard(request); await repository.staff(id); return id }
+async function guardAdmin(request) {
+  const id = await guard(request)
+  const account = await repository.staff(id)
+  if (account.permissionRole !== 'ADMIN' || account.loginEnabled !== true) fail('只有 ADMIN 可以执行此操作', 'ADMIN_REQUIRED', 403)
+  return id
+}
 
 async function handle(request, response, requestId) {
   if (request.method === 'OPTIONS') return send(request, response, 204, {}, requestId)
@@ -124,29 +129,29 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && profileConfirm) { const body = await readBody(request); return send(request, response, 200, await repository.confirmProfile(await guard(request), decodeURIComponent(profileConfirm[1]), body.updates), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/documents/extract') { const body = await readBody(request); return send(request, response, 200, await repository.extractDocument(await guardAdmin(request), body.document), requestId) }
   const customerSources = url.pathname.match(/^\/api\/customers\/([^/]+)\/sources$/)
-  if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guardAdmin(request), decodeURIComponent(customerSources[1])), requestId)
-  if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guardAdmin(request), await readBody(request)), requestId)
+  if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guard(request), decodeURIComponent(customerSources[1])), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guard(request), await readBody(request)), requestId)
   const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
-  if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guardAdmin(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
+  if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guard(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
   const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
-  if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guardAdmin(request), decodeURIComponent(sourceDetail[1])), requestId)
+  if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
   const proposalReview = url.pathname.match(/^\/api\/profile-proposals\/([^/]+)\/review$/)
-  if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guardAdmin(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }
+  if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guard(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }
   const conflictResolve = url.pathname.match(/^\/api\/evidence-conflicts\/([^/]+)\/resolve$/)
-  if (request.method === 'POST' && conflictResolve) { const body = await readBody(request); return send(request, response, 200, await repository.resolveConflict(await guardAdmin(request), decodeURIComponent(conflictResolve[1]), body.resolution), requestId) }
-  if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guardAdmin(request), await readBody(request)), requestId)
-  if (request.method === 'POST' && url.pathname === '/api/customers') return send(request, response, 201, await repository.createCustomer(await guardAdmin(request), await readBody(request), requestId), requestId)
+  if (request.method === 'POST' && conflictResolve) { const body = await readBody(request); return send(request, response, 200, await repository.resolveConflict(await guard(request), decodeURIComponent(conflictResolve[1]), body.resolution), requestId) }
+  if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guard(request), await readBody(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/customers') return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId), requestId)
   const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
-  if (request.method === 'PATCH' && customerEdit) return send(request, response, 200, await repository.updateCustomer(await guardAdmin(request), decodeURIComponent(customerEdit[1]), await readBody(request)), requestId)
+  if (request.method === 'PATCH' && customerEdit) return send(request, response, 200, await repository.updateCustomer(await guard(request), decodeURIComponent(customerEdit[1]), await readBody(request)), requestId)
   const customerEnrollments = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments$/)
-  if (request.method === 'PUT' && customerEnrollments) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerEnrollments(await guardAdmin(request), decodeURIComponent(customerEnrollments[1]), body.enrollments, body.operationId), requestId) }
+  if (request.method === 'PUT' && customerEnrollments) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerEnrollments(await guard(request), decodeURIComponent(customerEnrollments[1]), body.enrollments, body.operationId), requestId) }
   if (request.method === 'GET' && url.pathname.startsWith('/api/customers/')) return send(request, response, 200, await repository.customer(await guard(request), decodeURIComponent(url.pathname.slice('/api/customers/'.length))), requestId)
   const briefCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/brief$/)
   if (request.method === 'POST' && briefCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.saveBrief(await guard(request), decodeURIComponent(briefCustomer[1]), body.brief), requestId) }
   const summaryCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/summary\/refresh$/)
   if (request.method === 'POST' && summaryCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.refreshCustomerSummary(await guardAdmin(request), decodeURIComponent(summaryCustomer[1]), { force: body.force === true }), requestId) }
   const referrerCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/referrer$/)
-  if (request.method === 'POST' && referrerCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerReferrer(await guardAdmin(request), decodeURIComponent(referrerCustomer[1]), body.referrerName), requestId) }
+  if (request.method === 'POST' && referrerCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerReferrer(await guard(request), decodeURIComponent(referrerCustomer[1]), body.referrerName), requestId) }
   if (request.method === 'GET' && url.pathname === '/api/team') return send(request, response, 200, await repository.teamSnapshot(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/snapshot') return send(request, response, 200, await repository.dashboardSnapshot(await guard(request)), requestId)
   const assign = url.pathname.match(/^\/api\/(?:appointments|cases)\/([^/]+)\/(?:assign|reassign)$/)

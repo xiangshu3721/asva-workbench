@@ -13,6 +13,7 @@
     "auth:data-check": "node scripts/auth-data-check.mjs",
     "customer:data-check": "node scripts/customer-data-check.mjs",
     "evidence:data-check": "node scripts/evidence-data-check.mjs",
+    "orphan:check": "node scripts/orphan-reference-check.mjs",
     "stage2:provision": "node scripts/stage2-provision.mjs",
     "stage2:integration": "node scripts/stage2-integration-test.mjs",
     "stage1:integration": "node scripts/stage1-integration-test.mjs",

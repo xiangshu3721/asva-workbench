@@ -27,6 +27,8 @@ export const FIELD_MAPPING = {
   customers: {
     customer_id: '客户ID',
     nickname: '客户昵称',
+    created_by_staff_id: '创建人ID',
+    created_by_name: '创建人姓名',
     phone: '手机号',
     wechat: '微信号',
     created_at: '创建时间',
