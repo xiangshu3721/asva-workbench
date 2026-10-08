@@ -1,7 +1,7 @@
 import type { ProfileSource, ProfileValue, CustomerProfileState, ProfileUpdate } from './domain'
 
 export const PROFILE_FIELD_KEYS = [
-  'gender', 'age', 'birth_year', 'city', 'hometown', 'marital_status', 'education', 'living_status', 'children_summary',
+  'gender', 'birth_date', 'age', 'birth_year', 'city', 'hometown', 'marital_status', 'education', 'living_status', 'children_summary',
   'occupation', 'industry', 'position', 'work_years', 'job_status', 'income_range', 'career_stage', 'career_satisfaction', 'career_problem', 'career_goal', 'entrepreneurship_experience',
   'family_summary', 'parents_relationship', 'father_summary', 'mother_summary', 'relationship_with_father', 'relationship_with_mother', 'siblings', 'family_events', 'family_support_level',
   'relationship_status', 'partner_summary', 'marriage_years', 'relationship_satisfaction', 'relationship_conflicts', 'communication_pattern', 'conflict_pattern', 'relationship_goal',
@@ -15,7 +15,7 @@ export const PROFILE_FIELD_KEYS = [
 export type ProfileField = typeof PROFILE_FIELD_KEYS[number]
 
 export const PROFILE_SECTIONS: Array<{ title: string; fields: Array<{ key: ProfileField; label: string }> }> = [
-  { title: 'TA是谁', fields: [{ key: 'age', label: '年龄' }, { key: 'gender', label: '性别' }, { key: 'city', label: '现居' }, { key: 'hometown', label: '家乡' }, { key: 'marital_status', label: '婚姻状态' }, { key: 'children_summary', label: '子女' }] },
+  { title: 'TA是谁', fields: [{ key: 'birth_date', label: '出生日期' }, { key: 'age', label: '年龄' }, { key: 'gender', label: '性别' }, { key: 'city', label: '现居' }, { key: 'hometown', label: '家乡' }, { key: 'marital_status', label: '婚姻状态' }, { key: 'children_summary', label: '子女' }] },
   { title: '工作与事业', fields: [{ key: 'occupation', label: '职业' }, { key: 'industry', label: '行业' }, { key: 'position', label: '职位' }, { key: 'career_stage', label: '阶段' }, { key: 'career_problem', label: '事业困扰' }, { key: 'career_goal', label: '事业目标' }] },
   { title: '家庭与关系', fields: [{ key: 'family_summary', label: '家庭背景' }, { key: 'relationship_status', label: '关系状态' }, { key: 'partner_summary', label: '伴侣情况' }, { key: 'relationship_conflicts', label: '关系冲突' }, { key: 'communication_pattern', label: '沟通模式' }, { key: 'relationship_goal', label: '关系目标' }] },
   { title: '兴趣与生活', fields: [{ key: 'hobbies', label: '兴趣' }, { key: 'sports', label: '运动' }, { key: 'reading', label: '阅读' }, { key: 'travel', label: '旅行' }, { key: 'routine', label: '生活节奏' }, { key: 'life_satisfaction', label: '生活满意度' }] },
@@ -49,7 +49,7 @@ export function profileUpdateLabel(update: ProfileUpdate) {
 }
 
 export function profileSourceLabel(source: ProfileSource) {
-  return source === 'AI_INFERENCE' ? 'AI 推测' : source === 'MENTOR_OBSERVATION' ? '导师观察' : source === 'MENTOR_CONFIRMED' ? '导师确认' : '客户明确表达'
+  return source === 'AI_INFERENCE' ? 'AI 推测' : source === 'AI_EXTRACTED_CONFIRMED' ? 'AI提取 · 人工确认' : source === 'MENTOR_OBSERVATION' ? '导师观察' : source === 'MENTOR_FACTUAL_INPUT' || source === 'MENTOR_CONFIRMED' ? '导师事实输入' : source === 'ADMIN_CONFIRMED' ? '管理员确认' : source === 'STRUCTURED_INPUT' ? '结构化录入' : source === 'IMPORTED_HISTORY' || source === 'LEGACY_MIGRATION' ? '历史导入' : '客户明确表达'
 }
 
 export function extractLocalProfile(text: string, existing: CustomerProfileState): { updates: ProfileUpdate[] } {
@@ -61,6 +61,8 @@ export function extractLocalProfile(text: string, existing: CustomerProfileState
   }
   const age = text.match(/(?:今年|现年|年龄)?\s*(\d{2})\s*岁/)
   if (age) add('age', Number(age[1]))
+  const birthDate = text.match(/(19\d{2}|20\d{2})[年\/-](\d{1,2})[月\/-](\d{1,2})(?:日)?/)
+  if (birthDate) add('birth_date', `${birthDate[1]}-${birthDate[2].padStart(2, '0')}-${birthDate[3].padStart(2, '0')}`)
   const cities = ['杭州', '南京', '上海', '北京', '深圳', '广州', '苏州', '成都', '重庆', '武汉', '西安']
   const city = cities.find((item) => text.includes(item))
   if (city) add('city', city)

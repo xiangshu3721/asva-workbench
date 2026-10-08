@@ -54,6 +54,7 @@ export function buildCustomerAiContext(database, customerId, now = new Date().to
       helpExpectation: customer.helpExpectation || '',
       goal: customer.goal || '',
       intendedCourse: customer.intendedCourse || '',
+      course_interest: customer.intendedCourse || '',
       notes: customer.notes || '',
       paid: Boolean(customer.paid),
       profile,
@@ -67,6 +68,7 @@ export function buildCustomerAiContext(database, customerId, now = new Date().to
       createdAt: currentCase.createdAt,
       source: currentCase.source,
     } : null,
+    commercial_context: { course_interest: customer.intendedCourse || '', enrolled_courses: enrollments.map((item) => item.productName) },
     recentSessions: recentSessions.map((item) => ({
       date: item.date,
       topic: item.topic,

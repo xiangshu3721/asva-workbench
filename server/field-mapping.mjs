@@ -42,11 +42,11 @@ export const FIELD_MAPPING = {
     help_expectation: '希望获得帮助',
     current_goal: '当前目标',
     notes: '备注',
-    mentor_id: '当前导师ID',
+    current_mentor_id: '当前导师ID',
     profile_updated_at: '档案更新时间',
     profile_field_meta_json: '档案字段元数据',
     profile_schema_version: '档案版本',
-    gender: '性别', age: '年龄', birth_year: '出生年份', city: '所在城市', hometown: '家乡',
+    gender: '性别', birth_date: '出生日期', age: '年龄', birth_year: '出生年份', city: '所在城市', hometown: '家乡',
     marital_status: '婚姻状态', education: '教育背景', living_status: '居住状态', children_summary: '子女情况',
     occupation: '当前职业', industry: '所属行业', position: '当前职位', work_years: '工作年限', job_status: '工作状态',
     income_range: '收入范围', career_stage: '职业阶段', career_satisfaction: '职业满意度', career_problem: '职业困扰',
@@ -91,6 +91,11 @@ export const FIELD_MAPPING = {
     source: '变更来源', confidence: '置信度', confirmed: '已确认', customer_id: '客户ID', service_record_id: '服务记录ID',
     operator_id: '操作人ID', changed_at: '变更时间', updated_at: '更新时间',
   },
+  authCredentials: {
+    credential_id: '凭据ID', staff_id: '人员ID', login_phone: '登录手机号', password_hash: '密码哈希',
+    password_algorithm: '密码算法', must_change_password: '首次登录需改密', password_changed_at: '密码更新时间',
+    auth_version: '认证版本', credential_status: '凭据状态', created_at: '创建时间', updated_at: '更新时间', last_login_at: '最后登录时间',
+  },
 }
 
 // Temporary migration aliases. They are intentionally kept here, rather than
@@ -108,6 +113,7 @@ const LEGACY_FIELD_NAMES = {
 }
 
 export function field(table, key) {
+  if (table === 'customers' && key === 'mentor_id') return FIELD_MAPPING.customers.current_mentor_id
   return FIELD_MAPPING[table]?.[key] || key
 }
 
@@ -116,6 +122,7 @@ export function fields(table, values) {
 }
 
 export function read(table, recordFields, key) {
+  if (table === 'customers' && key === 'mentor_id') key = 'current_mentor_id'
   const canonical = field(table, key)
   if (recordFields?.[canonical] !== undefined) return recordFields[canonical]
   const legacy = LEGACY_FIELD_NAMES[table]?.[key] || key
@@ -124,9 +131,10 @@ export function read(table, recordFields, key) {
 
 const DATE_FIELDS = {
   appointments: new Set(['created_at', 'completed_at']),
-  customers: new Set(['created_at']),
+  customers: new Set(['created_at', 'birth_date']),
   serviceRecords: new Set(['created_at']),
   staff: new Set(['created_at', 'updated_at', 'deactivated_at']),
   enrollments: new Set(['enrolled_at', 'paid_at', 'created_at']),
   profileChanges: new Set(['changed_at', 'updated_at']),
+  authCredentials: new Set(['created_at', 'updated_at', 'password_changed_at', 'last_login_at']),
 }

@@ -47,7 +47,8 @@ function runCapture(command, args, cwd) {
 const envPath = path.join(root, '.env.local')
 const values = parseEnv(await readFile(envPath, 'utf8'))
 const buildMetadata = JSON.parse(await readFile(path.join(root, 'build-meta.json'), 'utf8'))
-const requiredKeys = ['DEEPSEEK_API_KEY', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN', 'ASVA_AUTH_SECRET', 'ASVA_ADMIN_LOGIN_CODE']
+const authMode = values.AUTH_MODE || 'ADMIN_CODE'
+const requiredKeys = ['DEEPSEEK_API_KEY', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN', 'ASVA_AUTH_SECRET', ...(authMode === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
 const missing = requiredKeys.filter((key) => !values[key])
 if (missing.length) throw new Error(`.env.local 缺少 ASVA CloudBase 生产变量：${missing.join(', ')}`)
 
@@ -67,8 +68,9 @@ const envVariables = {
   FEISHU_ENROLLMENTS_TABLE_ID: values.FEISHU_ENROLLMENTS_TABLE_ID || '',
   FEISHU_PROFILE_CHANGES_TABLE_ID: values.FEISHU_PROFILE_CHANGES_TABLE_ID || 'tblTH3OmBuzUsBVu',
   ASVA_AUTH_SECRET: values.ASVA_AUTH_SECRET || '',
-  ASVA_ADMIN_LOGIN_CODE: values.ASVA_ADMIN_LOGIN_CODE || '',
-  AUTH_MODE: values.AUTH_MODE || 'ADMIN_CODE',
+  ...(authMode === 'ADMIN_CODE' ? { ASVA_ADMIN_LOGIN_CODE: values.ASVA_ADMIN_LOGIN_CODE || '' } : {}),
+  FEISHU_AUTH_CREDENTIALS_TABLE_ID: values.FEISHU_AUTH_CREDENTIALS_TABLE_ID || '',
+  AUTH_MODE: authMode,
   ASVA_ENVIRONMENT: 'production',
   DATA_MODE: 'production',
   ALLOW_DEV_OTP: 'false',

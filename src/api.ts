@@ -1,4 +1,4 @@
-import type { Customer, Database, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
+import type { Customer, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileUpdate, Staff, StaffStatus } from './domain'
 import type { AsvaRepository } from './repositories'
 
 const requireLiveHttp = (): never => {
@@ -15,6 +15,7 @@ export function createLocalApi(repository: AsvaRepository) {
     previewCustomer(actorId: string, input: ManualCustomerInput) { return repository.previewCustomer(actorId, input) },
     createCustomer(actorId: string, input: ManualCustomerInput): Database { return repository.createCustomer(actorId, input) },
     updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Database { return repository.updateCustomer(actorId, customerId, input) },
+    updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Database { return repository.updateCustomerEnrollments(actorId, customerId, enrollments) },
     assignAppointment(actorId: string, appointmentId: string, mentorId: string): Database { return repository.assignAppointment(actorId, appointmentId, mentorId) },
     markFollowupDone(actorId: string, appointmentId: string): Database { return repository.markFollowupDone(actorId, appointmentId) },
     saveFeedback(actorId: string, feedback: FeedbackInput): Database { return repository.saveFeedback(actorId, feedback) },
