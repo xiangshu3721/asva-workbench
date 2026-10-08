@@ -11,17 +11,6 @@ function isDebugRequested() {
   return new URLSearchParams(window.location.search).get('debug') === '1' || window.localStorage.getItem(DEBUG_KEY) === 'true'
 }
 
-export function VersionStrip({ onOpen }: { onOpen: () => void }) {
-  const [clicks, setClicks] = useState(0)
-  const trigger = () => {
-    const next = clicks + 1
-    setClicks(next >= 5 ? 0 : next)
-    if (next >= 5) { window.localStorage.setItem(DEBUG_KEY, 'true'); window.dispatchEvent(new Event('asva-debug-change')); onOpen() }
-  }
-  const mode = (import.meta.env.VITE_DATA_MODE as string | undefined) || (import.meta.env.VITE_API_BASE_URL ? 'production' : 'demo')
-  return <button type="button" onClick={trigger} title="连续点击 5 次打开调试" style={{ background: 'none', border: 0, color: 'inherit', cursor: 'pointer', font: 'inherit', textAlign: 'left', padding: 0 }}>{mode === 'demo' ? 'DEMO · 本地数据' : 'PRODUCTION · 真实数据'} · ASVA Stage 0</button>
-}
-
 export function ReleaseIndicator({ api, onDebug }: { api: WorkbenchApi; onDebug: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const [frontend, setFrontend] = useState<Record<string, unknown> | null>(null)
