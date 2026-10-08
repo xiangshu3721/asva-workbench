@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { createGuardedLocalApi, createLocalApi } from './api'
-import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, CustomerDraftPreview, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, ProfileDraft, ProfileUpdate, ProfileValue, Product, Staff } from './domain'
+import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, CustomerDraftPreview, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, ProfileValue, Product, Staff } from './domain'
 import { createLocalRepository } from './repositories'
 import { createHttpApi, createLocalAsyncApi, type DocumentExtractionResult, type DocumentUploadInput, type FeedbackDraftInput, type SourceRecord, type SourceWorkspace, type WorkbenchApi } from './clientApi'
 import { assembleCustomerContext, briefToText, createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary } from './customer-ai'
@@ -242,6 +242,18 @@ function customerProfileCompleteness(customer: Customer, courseCount: number) {
   const checks = [customer.name, customer.phone || customer.wechat, fields.age ?? fields.birth_year, fields.city, fields.marital_status ?? fields.relationship_status, fields.children_summary ?? fields.children_detail, fields.family_summary ?? fields.support_system, fields.occupation ?? fields.position, fields.industry, fields.career_stage ?? fields.job_status, fields.hobbies ?? fields.sports ?? fields.reading ?? fields.travel, fields.routine, fields.personality_traits ?? fields.self_description, fields.communication_style ?? fields.decision_style, fields.core_values, customer.need || fields.current_core_issue, customer.goal || fields.current_goal, fields.current_resources ?? fields.support_system, customer.mentorId, courseCount > 0 || customer.intendedCourse]
   return Math.round(checks.filter((item) => item !== null && item !== undefined && item !== '' && !(Array.isArray(item) && item.length === 0)).length / 20 * 100)
 }
+
+function profileRendererSections(customer: Customer): ProfileMaterialization['sections'] {
+  if (customer.profileMaterialization?.sections) return customer.profileMaterialization.sections
+  return detailProfileCards.map((card) => ({ title: card.title, emptyLabel: ['性格特点', '核心价值观', '兴趣偏好'].includes(card.title) ? '待了解' : '待补充', items: card.keys.map((key) => ({ label: card.labels[key as keyof typeof card.labels], text: detailProfileText(customer.profileFields?.[key]), evidenceIds: [], basis: [] })).filter((item) => item.text) }))
+}
+
+function CustomerProfileRenderer({ customer }: { customer: Customer }) {
+  const sections = profileRendererSections(customer)
+  const materialization = customer.profileMaterialization
+  const coverage = materialization?.coverage.percentage ?? 0
+  return <section className="customer-detail-section customer-profile-renderer"><SectionHeading title="当前客户档案" meta={`档案丰富度 ${coverage}%`} icon="●" action={<span className="section-note">只展示可靠资料</span>} /><div className="portrait-grid">{sections.map((section) => <article className="portrait-card" key={section.title}><h3>{section.title}</h3>{section.items.length ? <div className="portrait-facts">{section.items.map((item) => <div className="profile-renderer-fact" key={`${item.label}-${item.text}`}><span>{item.label}</span><strong>{item.text}</strong>{item.basis.length > 0 && <details><summary>查看依据</summary><div className="profile-basis">{item.basis.map((reference) => <p key={reference.evidenceId}>{reference.displayText}<small>{reference.excerpt}</small></p>)}</div></details>}</div>)}</div> : <span className="portrait-pending">{section.emptyLabel}</span>}</article>)}</div>{materialization?.lifeEvents.length ? <div className="profile-life-events"><h3>人生经历与变化</h3>{materialization.lifeEvents.slice(0, 8).map((event) => <article className="profile-life-event" key={event.id}><div><strong>{event.title}</strong>{event.occurredAt && <small>{event.occurredAt}</small>}</div><p>{event.detail}</p><details><summary>查看依据</summary><div className="profile-basis"><p>{event.basis[0]?.displayText}<small>{event.basis[0]?.excerpt}</small></p></div></details></article>)}</div> : null}</section>
+}
 function customerPaymentLabel(customer: Customer, enrollments: Database['enrollments']) {
   if (!enrollments.length) return customer.paid ? '已付费' : '暂未付费'
   const paid = enrollments.filter((item) => item.paymentStatus === 'PAID' || item.paid).length
@@ -271,7 +283,7 @@ function CustomerDetail(props: CustomerDetailProps) {
   useEffect(() => { const nextContext = assembleCustomerContext(database, customer.id); const nextSummary = createLocalCoreSummary(nextContext); setAiSummary(nextSummary); setBrief(createLocalBrief(nextContext, nextSummary)) }, [customer.id, customer.createdAt, customer.need, customer.goal, customer.helpExpectation, customer.profileUpdatedAt, database.sessions.length, database.profileChanges.length])
   const refreshBrief = async () => { setBriefLoading(true); try { const next = await props.onGenerateIntelligence(customer, database); await props.onSaveBrief(customer.id, briefToText(next.brief)); setAiSummary(next.summary); setBrief(next.brief) } finally { setBriefLoading(false) } }
   const recordService = () => { if (!currentCase) return; if (workflowStatus(currentCase) === 'WAIT_FOLLOW_UP') void props.onComplete(currentCase.id); else if (workflowStatus(currentCase) === 'WAIT_FEEDBACK') props.onFeedback(currentCase.id) }
-  const completeness = customerProfileCompleteness(customer, courses.length)
+  const completeness = customer.profileMaterialization?.coverage.percentage ?? customerProfileCompleteness(customer, courses.length)
   const activityCount = sessions.length + appointments.length + enrollments.length
   return <article className="customer-detail-page">
     <header className="customer-detail-header">
@@ -283,7 +295,7 @@ function CustomerDetail(props: CustomerDetailProps) {
     <div className="customer-profile-meta"><span>联系方式：{customer.phone || customer.wechat || '未记录'}{customer.phone && customer.wechat ? ` · ${customer.wechat}` : ''}</span><span>档案版本：v{customer.profileVersion ?? 0}</span></div>
     {latestProfileChange && <div className="recent-update-line">{detailDate(latestProfileChange.updatedAt)} · {latestOperator?.name || '管理员'} 更新了 {latestProfileChange.updateBatchId ? latestProfileChanges.filter((item) => item.updateBatchId === latestProfileChange.updateBatchId).length : 1} 项客户信息</div>}
     <section className="customer-detail-section customer-ai-summary"><SectionHeading title="AI 核心摘要" meta="AI生成 · 仅供参考" icon="✦" /><p className="summary-overview">{aiSummary.overview}</p><ul className="summary-bullets">{aiSummary.core_issues.map((item) => <li key={item}>{item}</li>)}</ul><div className="summary-facts"><SummaryFact title="核心困扰" value={aiSummary.core_issues.join('、')} tone="rose" /><SummaryFact title="优先议题" value={aiSummary.priority_topics.join('、')} tone="amber" /><SummaryFact title="当前目标" value={aiSummary.current_goals.join('、')} tone="green" /><SummaryFact title="服务安全风险" value={riskLabel(aiSummary.risk.level)} tone="blue" note={aiSummary.risk.reason} /></div><p className="summary-resource">已有资源：{aiSummary.resources.join('、')} · 信息把握度：{confidenceLabel(aiSummary.confidence)}</p></section>
-    <section className="customer-detail-section"><SectionHeading title="当前客户档案" meta={`已记录 ${completeness}%`} icon="●" action={<span className="section-note">只显示已有数据</span>} /><div className="portrait-grid">{detailProfileCards.map((card) => { const facts = card.keys.map((key) => ({ key, label: card.labels[key as keyof typeof card.labels], value: customer.profileFields?.[key], meta: customer.profileFieldMeta?.[key] })).filter((item) => detailProfileText(item.value) !== ''); return <article className="portrait-card" key={card.title}><h3>{card.title}</h3>{facts.length ? <div className="portrait-facts">{facts.map((fact) => <div key={fact.key}><span>{fact.label}</span><strong>{detailProfileText(fact.value)}</strong>{fact.meta && <small>{sourceLabel(fact.meta.source)}</small>}</div>)}</div> : <span className="portrait-pending">待补充</span>}</article> })}</div></section>
+    <CustomerProfileRenderer customer={customer} />
     <CustomerBrief brief={brief} loading={briefLoading} onRefresh={refreshBrief} />
     <CustomerCourseOverview courses={courses} sessions={sessions} completedAppointments={appointments.filter((item) => workflowStatus(item) === 'COMPLETED').length} activityCount={activityCount} completeness={completeness} canEdit={props.canSeeAll} onEdit={() => setEditingEnrollments(true)} />
     <CustomerHistory appointments={appointments} sessions={sessions} database={database} />
