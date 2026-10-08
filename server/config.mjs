@@ -30,6 +30,7 @@ export const config = {
   environment: value('ASVA_ENVIRONMENT', value('NODE_ENV', 'local')),
   dataMode: value('DATA_MODE', value('ASVA_ENVIRONMENT', value('NODE_ENV', 'local')) === 'production' ? 'production' : 'demo'),
   allowDevOtp: value('ALLOW_DEV_OTP', 'false') === 'true',
+  maxDocumentSizeMb: Number(value('MAX_DOCUMENT_SIZE_MB', '20')) || 20,
   frontendOrigin: value('ASVA_FRONTEND_ORIGIN', 'https://xiangshu3721.github.io'),
   features: {
     externalAppointment: value('FEATURE_EXTERNAL_APPOINTMENT', 'false') === 'true',

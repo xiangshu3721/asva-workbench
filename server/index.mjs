@@ -34,7 +34,7 @@ async function readBody(request) {
   let raw = ''
   for await (const chunk of request) {
     raw += chunk
-    if (raw.length > 1_000_000) fail('请求体过大', 'REQUEST_TOO_LARGE', 413)
+    if (raw.length > 30_000_000) fail('请求体过大', 'REQUEST_TOO_LARGE', 413)
   }
   try {
     const body = JSON.parse(raw || '{}')
@@ -122,6 +122,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && profileExtract) { const body = await readBody(request); return send(request, response, 200, await repository.profileDraft(await guard(request), decodeURIComponent(profileExtract[1]), body.text), requestId) }
   const profileConfirm = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile\/confirm$/)
   if (request.method === 'POST' && profileConfirm) { const body = await readBody(request); return send(request, response, 200, await repository.confirmProfile(await guard(request), decodeURIComponent(profileConfirm[1]), body.updates), requestId) }
+  if (request.method === 'POST' && url.pathname === '/api/documents/extract') { const body = await readBody(request); return send(request, response, 200, await repository.extractDocument(await guardAdmin(request), body.document), requestId) }
   const customerSources = url.pathname.match(/^\/api\/customers\/([^/]+)\/sources$/)
   if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guardAdmin(request), decodeURIComponent(customerSources[1])), requestId)
   if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guardAdmin(request), await readBody(request)), requestId)
