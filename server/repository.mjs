@@ -717,20 +717,23 @@ export class FeishuRepository {
     const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
     if (!force && source.processingStatus === 'COMPLETED' && existingEvidence.length) return this.sourceDetail(actorId, sourceId)
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
+    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED'].includes(source.processingStatus)
     const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}`)
     const processingStartedAt = now()
     const processingVersion = Number(source.processingVersion || 1) + 1
     await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, last_batch_id: batchId, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
     try {
       if (!source.rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
-      const chunks = chunkText(source.rawText)
       const candidates = []
-      for (const chunk of chunks) {
-        const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {} })
-        for (const rawItem of rawItems) {
-          if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
-          const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
-          if (normalized) candidates.push(normalized)
+      if (!resumeExistingEvidence) {
+        const chunks = chunkText(source.rawText)
+        for (const chunk of chunks) {
+          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {} })
+          for (const rawItem of rawItems) {
+            if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
+            const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
+            if (normalized) candidates.push(normalized)
+          }
         }
       }
       const unique = dedupeEvidence(candidates)
