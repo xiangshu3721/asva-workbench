@@ -1,9 +1,9 @@
 import { config } from '../server/config.mjs'
 import { listRecords } from '../server/feishu.mjs'
-import { EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, PROPOSAL_ACTIONS, CHANGE_TYPES, CONFLICT_STATUSES, CONFLICT_TYPES } from '../shared/evidence-contract.mjs'
+import { EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, PROPOSAL_ACTIONS, CHANGE_TYPES, CONFLICT_STATUSES, CONFLICT_TYPES, evidenceEquivalent } from '../shared/evidence-contract.mjs'
 import { read as readField } from '../server/field-mapping.mjs'
 
-const names = ['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']
+const names = ['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts', 'profileChanges', 'customers']
 if (names.some((name) => !config.feishu.tables[name])) {
   console.log(JSON.stringify({ ok: false, status: 'NOT_CONFIGURED', missingTables: names.filter((name) => !config.feishu.tables[name]) }))
   process.exit(0)
@@ -14,6 +14,8 @@ const sources = rows.sourceRecords
 const evidence = rows.evidenceItems
 const proposals = rows.profileUpdateProposals
 const conflicts = rows.evidenceConflicts
+const profileChanges = rows.profileChanges
+const customers = rows.customers
 const sourceIds = new Set(sources.map((row) => String(value('sourceRecords', row, 'source_id') || row.record_id)))
 const evidenceIds = new Set(evidence.map((row) => String(value('evidenceItems', row, 'evidence_id') || row.record_id)))
 const sourceHashes = new Set()
@@ -48,5 +50,24 @@ for (const row of conflicts) {
   for (const key of ['current_evidence_id', 'new_evidence_id']) { const ref = String(value('evidenceConflicts', row, key) || ''); if (ref && !evidenceIds.has(ref)) issues.push(`CONFLICT_EVIDENCE_NOT_FOUND:${id}:${key}`) }
   if (!CONFLICT_TYPES.has(String(value('evidenceConflicts', row, 'conflict_type') || '')) || !CONFLICT_STATUSES.has(String(value('evidenceConflicts', row, 'status') || ''))) issues.push(`INVALID_CONFLICT_ENUM:${id}`)
 }
-console.log(JSON.stringify({ ok: issues.length === 0, status: 'PASS', counts: Object.fromEntries(names.map((name) => [name, rows[name].length])), issues }))
+const evidenceModels = evidence.map((row) => ({ id: String(value('evidenceItems', row, 'evidence_id') || row.record_id), sourceId: String(value('evidenceItems', row, 'source_id') || ''), evidenceType: String(value('evidenceItems', row, 'evidence_type') || ''), semanticKind: String(value('evidenceItems', row, 'semantic_kind') || ''), fieldKey: String(value('evidenceItems', row, 'field_key') || ''), standardValue: (() => { try { return JSON.parse(String(value('evidenceItems', row, 'standard_value') || 'null')) } catch { return value('evidenceItems', row, 'standard_value') } })(), occurredAt: String(value('evidenceItems', row, 'occurred_at') || ''), locator: (() => { try { return JSON.parse(String(value('evidenceItems', row, 'locator_json') || '{}')) } catch { return {} } })() }))
+for (let index = 0; index < evidenceModels.length; index += 1) {
+  for (let next = index + 1; next < evidenceModels.length; next += 1) {
+    if (evidenceEquivalent(evidenceModels[index], evidenceModels[next])) issues.push(`DUPLICATE_EVIDENCE_KEY:${evidenceModels[index].sourceId}:${evidenceModels[index].id}:${evidenceModels[next].id}`)
+  }
+}
+for (const row of profileChanges) {
+  const id = String(value('profileChanges', row, 'change_id') || row.record_id)
+  const evidenceId = String(value('profileChanges', row, 'evidence_id') || '')
+  if (evidenceId && !evidenceIds.has(evidenceId)) issues.push(`PROFILE_CHANGE_EVIDENCE_NOT_FOUND:${id}`)
+}
+const summaryStatusCounts = { FRESH: 0, STALE: 0, PROCESSING: 0, FAILED: 0, UNKNOWN: 0 }
+for (const row of customers) {
+  let meta = null
+  try { meta = JSON.parse(String(value('customers', row, 'profile_field_meta_json') || '{}'))._ai_summary || null } catch { meta = null }
+  const status = ['FRESH', 'STALE', 'PROCESSING', 'FAILED'].includes(meta?.status) ? meta.status : 'UNKNOWN'
+  summaryStatusCounts[status] += 1
+  if (status === 'PROCESSING' && meta?.updatedAt && Date.now() - new Date(meta.updatedAt).getTime() > 10 * 60 * 1000) issues.push(`SUMMARY_PROCESSING_STALE:${String(value('customers', row, 'customer_id') || row.record_id)}`)
+}
+console.log(JSON.stringify({ ok: issues.length === 0, status: 'PASS', counts: Object.fromEntries(names.map((name) => [name, rows[name].length])), summaryStatusCounts, issues }))
 if (issues.length) process.exitCode = 1

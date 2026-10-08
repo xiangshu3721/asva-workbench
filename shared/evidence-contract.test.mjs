@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CHANGE_TYPES, EVIDENCE_TYPES, SEMANTIC_KINDS, classifyEvidenceChange, chunkText, contentHash, dedupeEvidence, normalizeEvidenceCandidate, sourcePerspectiveFromRole } from './evidence-contract.mjs'
+import { CHANGE_TYPES, EVIDENCE_TYPES, SEMANTIC_KINDS, classifyEvidenceChange, chunkText, contentHash, dedupeEvidence, evidenceEquivalent, normalizeEvidenceCandidate, sourcePerspectiveFromRole } from './evidence-contract.mjs'
 
 describe('Stage 2 evidence contract', () => {
   it('keeps the strict evidence enums and stable content hash', () => {
@@ -37,5 +37,13 @@ describe('Stage 2 evidence contract', () => {
     expect(sourcePerspectiveFromRole('ADMIN')).toBe('STAFF_REPORTED')
     expect(sourcePerspectiveFromRole('CUSTOMER')).toBe('CUSTOMER_FIRST_PARTY')
     expect(sourcePerspectiveFromRole('MENTOR')).toBe('MENTOR_OBSERVATION')
+  })
+
+  it('treats equivalent evidence with model-shifted nearby locators as duplicates', () => {
+    const left = normalizeEvidenceCandidate({ evidence_type: 'FACT', semantic_kind: 'EVENT', value: '房地产销售', display_text: '房地产销售', source_excerpt: '房地产销售', occurred_at: '约20岁', confidence: .9, locator: { char_start: 44, char_end: 70, paragraph_index: 3 } }, { sourceId: 'SRC-1', chunk: { charStart: 0, charEnd: 100, paragraphIndex: 3 }, extractionBatchId: 'EXT1' })
+    const right = normalizeEvidenceCandidate({ evidence_type: 'FACT', semantic_kind: 'EVENT', value: '房地产销售', display_text: '房地产销售', source_excerpt: '房地产销售', occurred_at: '约20岁', confidence: .9, locator: { char_start: 37, char_end: 55, paragraph_index: 3 } }, { sourceId: 'SRC-1', chunk: { charStart: 0, charEnd: 100, paragraphIndex: 3 }, extractionBatchId: 'EXT2' })
+    expect(evidenceEquivalent(left, right)).toBe(true)
+    expect(evidenceEquivalent(left, { ...right, standardValue: '另一个值' })).toBe(false)
+    expect(evidenceEquivalent(left, { ...right, occurredAt: '约21岁' })).toBe(false)
   })
 })

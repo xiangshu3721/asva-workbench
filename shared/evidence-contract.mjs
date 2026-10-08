@@ -88,11 +88,61 @@ export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extract
 export function dedupeEvidence(items) {
   const seen = new Set()
   return items.filter((item) => {
-    const key = [item.evidenceType, item.semanticKind, item.fieldKey, JSON.stringify(item.standardValue), item.sourceExcerpt].join('|')
+    const key = evidenceDedupKey(item)
     if (seen.has(key)) return false
     seen.add(key)
     return true
   })
+}
+
+function normalizedScalar(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') {
+    const trimmed = value.trim().replace(/\s+/g, ' ')
+    if (/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(trimmed)) return trimmed.slice(0, 10)
+    return trimmed
+  }
+  if (Array.isArray(value)) return value.map(normalizedScalar)
+  if (typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, normalizedScalar(item)]))
+  return value
+}
+
+export function normalizeEvidenceValue(value) { return normalizedScalar(value) }
+
+export function normalizeEvidenceEventTime(value) { return normalizedScalar(value) }
+
+export function normalizeEvidenceLocator(locator) {
+  if (!locator || typeof locator !== 'object') return { paragraphIndex: null, charStart: null, charEnd: null }
+  const numberOrNull = (value) => Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null
+  return { paragraphIndex: numberOrNull(locator.paragraphIndex ?? locator.paragraph_index), charStart: numberOrNull(locator.charStart ?? locator.char_start), charEnd: numberOrNull(locator.charEnd ?? locator.char_end) }
+}
+
+function hasRange(locator) { return locator.charStart !== null && locator.charEnd !== null && locator.charEnd >= locator.charStart && locator.charEnd > 0 }
+
+export function evidenceLocatorsEquivalent(left, right) {
+  const a = normalizeEvidenceLocator(left)
+  const b = normalizeEvidenceLocator(right)
+  if (a.paragraphIndex !== null && b.paragraphIndex !== null && a.paragraphIndex !== b.paragraphIndex) return false
+  if (!hasRange(a) || !hasRange(b)) return true
+  const gap = Math.max(a.charStart, b.charStart) - Math.min(a.charEnd, b.charEnd)
+  return gap <= 4
+}
+
+export function evidenceEquivalent(left, right) {
+  if (!left || !right) return false
+  if (String(left.sourceId || '') !== String(right.sourceId || '')) return false
+  if (String(left.evidenceType || '') !== String(right.evidenceType || '')) return false
+  if (String(left.semanticKind || '') !== String(right.semanticKind || '')) return false
+  if (String(left.fieldKey || '') !== String(right.fieldKey || '')) return false
+  if (JSON.stringify(normalizeEvidenceValue(left.standardValue)) !== JSON.stringify(normalizeEvidenceValue(right.standardValue))) return false
+  if (JSON.stringify(normalizeEvidenceEventTime(left.occurredAt)) !== JSON.stringify(normalizeEvidenceEventTime(right.occurredAt))) return false
+  return evidenceLocatorsEquivalent(left.locator, right.locator)
+}
+
+export function evidenceDedupKey(item) {
+  const locator = normalizeEvidenceLocator(item?.locator)
+  const locatorKey = locator.paragraphIndex === null ? 'p:' : `p:${locator.paragraphIndex}`
+  return [item?.sourceId || '', item?.evidenceType || '', item?.semanticKind || '', item?.fieldKey || '', JSON.stringify(normalizeEvidenceValue(item?.standardValue)), JSON.stringify(normalizeEvidenceEventTime(item?.occurredAt)), locatorKey].join('|')
 }
 
 function sameValue(left, right) {

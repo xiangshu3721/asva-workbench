@@ -4,6 +4,19 @@ export type StaffStatus = 'ACTIVE' | 'INACTIVE'
 export type AppointmentWorkflowStatus = 'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED'
 export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIRMED' | 'MENTOR_FACTUAL_INPUT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_EXTRACTED_CONFIRMED' | 'AI_INFERENCE' | 'IMPORTED_HISTORY' | 'LEGACY_MIGRATION'
 export type ProfileValue = string | number | boolean | string[] | null
+export type SummaryStatus = 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'
+
+export interface AiCustomerSummary {
+  overview: string
+  core_issues: string[]
+  priority_topics: string[]
+  current_goals: string[]
+  resources: string[]
+  service_focus: string
+  risk: { level: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNASSESSED'; reason: string }
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH'
+  missing_key_information: string[]
+}
 
 export type AppointmentStatus =
   | '待分配'
@@ -72,7 +85,8 @@ export interface ProfileMaterialization {
   sections: ProfileMaterializationSection[]
   lifeEvents: Array<{ id: string; title: string; detail: string; occurredAt: string | null; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
   coverage: { percentage: number; domains: Array<{ name: string; status: 'KNOWN' | 'PARTIAL' | 'UNKNOWN'; signalCount: number }> }
-  aiSummaryStatus: 'STALE' | 'CURRENT'
+  aiSummaryStatus: SummaryStatus
+  aiSummaryFingerprint?: string
 }
 
 export interface Customer {
@@ -92,6 +106,8 @@ export interface Customer {
   helpExpectation: string
   goal: string
   brief: string
+  aiSummary?: AiCustomerSummary
+  aiSummaryStatus?: SummaryStatus
   intendedCourse: string | null
   confirmedFacts: string[]
   aiQuestions: string[]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence } from './profile-materialization.mjs'
+import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from './profile-materialization.mjs'
 
 const customer = { profileFields: { city: '杭州', birth_date: '1992-03-22', hometown: '安徽阜阳' } }
 
@@ -30,5 +30,13 @@ describe('CustomerProfileRenderer materialization', () => {
   it('only auto-confirms factual event evidence, never hypothesis', () => {
     expect(shouldAutoConfirmEvidence(evidence({ semanticKind: 'EVENT' }))).toBe(true)
     expect(shouldAutoConfirmEvidence(evidence({ semanticKind: 'EVENT', evidenceType: 'HYPOTHESIS' }))).toBe(false)
+  })
+
+  it('moves summary state from stale to fresh only for the matching materialization input', () => {
+    const evidenceItems = [evidence({ id: 'EVD-FRESH' })]
+    const fingerprint = summaryInputFingerprint({ customer, evidenceItems })
+    expect(materializeCustomerProfile({ customer, evidenceItems }).aiSummaryStatus).toBe('STALE')
+    expect(materializeCustomerProfile({ customer, evidenceItems, summaryMeta: { status: 'FRESH', inputFingerprint: fingerprint } }).aiSummaryStatus).toBe('FRESH')
+    expect(materializeCustomerProfile({ customer, evidenceItems, summaryMeta: { status: 'FRESH', inputFingerprint: 'old' } }).aiSummaryStatus).toBe('STALE')
   })
 })

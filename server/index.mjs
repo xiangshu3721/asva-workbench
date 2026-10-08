@@ -143,6 +143,8 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && url.pathname.startsWith('/api/customers/')) return send(request, response, 200, await repository.customer(await guard(request), decodeURIComponent(url.pathname.slice('/api/customers/'.length))), requestId)
   const briefCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/brief$/)
   if (request.method === 'POST' && briefCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.saveBrief(await guard(request), decodeURIComponent(briefCustomer[1]), body.brief), requestId) }
+  const summaryCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/summary\/refresh$/)
+  if (request.method === 'POST' && summaryCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.refreshCustomerSummary(await guardAdmin(request), decodeURIComponent(summaryCustomer[1]), { force: body.force === true }), requestId) }
   const referrerCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/referrer$/)
   if (request.method === 'POST' && referrerCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerReferrer(await guardAdmin(request), decodeURIComponent(referrerCustomer[1]), body.referrerName), requestId) }
   if (request.method === 'GET' && url.pathname === '/api/team') return send(request, response, 200, await repository.teamSnapshot(await guard(request)), requestId)

@@ -24,6 +24,7 @@ const SECTION_DEFINITIONS = [
 
 const CAREER_TERMS = /职业|工作|销售|销冠|互联网|产品|运营|社交|电商|直播|内容|后台|创业|咨询|课程|事业|转型|大学|读书|毕业|房地产|心理成长|艺术疗愈/
 const INTEREST_TERMS = /创作|小说|作词|作曲|写作|音乐|绘画|艺术|阅读|旅行|摄影|运动|表达/
+const SUMMARY_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 
 function present(value) {
   return value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
@@ -68,6 +69,30 @@ function uniqueItems(items) {
 
 function evidenceText(evidence) { return `${evidence.displayText || ''} ${evidence.sourceExcerpt || ''}` }
 
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, stableValue(item)]))
+  return value
+}
+
+function hashText(value) {
+  let hash = 2166136261
+  for (const character of String(value)) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619) }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+export function summaryInputFingerprint({ customer = {}, evidenceItems = [] } = {}) {
+  const confirmedEvidence = evidenceItems.filter(confirmed).map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey, value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((left, right) => left.id.localeCompare(right.id))
+  const input = { need: customer.need || '', helpExpectation: customer.helpExpectation || '', goal: customer.goal || '', profileFields: stableValue(customer.profileFields || {}), confirmedEvidence }
+  return hashText(JSON.stringify(input))
+}
+
+function summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }) {
+  if (summaryMeta?.inputFingerprint === fingerprint && SUMMARY_STATUSES.has(summaryMeta.status)) return summaryMeta.status
+  if (!summaryMeta && !confirmedEvidence.length && !Object.keys(customer?.profileFields || {}).length) return 'FRESH'
+  return 'STALE'
+}
+
 export function isHighConfidenceFact(evidence) {
   return evidence?.evidenceType === 'FACT' && Number(evidence.confidence) >= 0.8
 }
@@ -105,8 +130,9 @@ function coverageFor(customer, evidenceItems) {
   return { percentage: Math.round(weighted / result.length * 100), domains: result }
 }
 
-export function materializeCustomerProfile({ customer, evidenceItems = [] }) {
+export function materializeCustomerProfile({ customer, evidenceItems = [], summaryMeta = null }) {
   const confirmedEvidence = evidenceItems.filter(confirmed)
+  const fingerprint = summaryInputFingerprint({ customer, evidenceItems })
   const fields = customer?.profileFields || {}
   const currentSnapshot = Object.fromEntries(Object.entries(fields).filter(([, value]) => present(value)).map(([field, value]) => {
     const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
@@ -127,5 +153,5 @@ export function materializeCustomerProfile({ customer, evidenceItems = [] }) {
   })
 
   const lifeEvents = confirmedEvidence.filter((item) => item.semanticKind === 'EVENT').map((item) => ({ id: item.id, title: item.displayText, detail: item.sourceExcerpt, occurredAt: item.occurredAt || null, evidenceIds: [item.id], basis: [basis(item)] }))
-  return { schemaVersion: 'profile-materialization-v1', currentSnapshot, sections, lifeEvents, coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: confirmedEvidence.length ? 'STALE' : 'CURRENT' }
+  return { schemaVersion: 'profile-materialization-v1', currentSnapshot, sections, lifeEvents, coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
 }
