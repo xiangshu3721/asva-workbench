@@ -9,6 +9,7 @@ import { LoginRateLimiter } from './login-rate-limit.mjs'
 import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
 import { customerHistoryPolicy } from './schema-contract.mjs'
 import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, dummyPasswordHash, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
+import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
@@ -368,13 +369,13 @@ function sourceInput(input, actorId) {
   const sourceType = String(input?.sourceType || '').trim().toUpperCase()
   const rawText = normalizeText(input?.rawText, 500_000)
   if (!SOURCE_TYPES.has(sourceType)) throw Object.assign(new Error('不支持的资料类型'), { code: 'INVALID_SOURCE_TYPE', status: 400 })
-  if (!rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
+  if (!rawText && sourceType !== 'FILE_UPLOAD') throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
   const customerId = text(input?.customerId).trim()
   if (!customerId) throw Object.assign(new Error('客户ID不能为空'), { code: 'SOURCE_CUSTOMER_REQUIRED', status: 400 })
   const legacyRole = text(input?.sourceRole)
   const sourcePerspective = input?.sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER_FIRST_PARTY' : input?.sourcePerspective === 'STAFF_REPORTED' ? 'STAFF_REPORTED' : legacyRole ? sourcePerspectiveFromRole(legacyRole) : 'STAFF_REPORTED'
   const sourceRole = legacyRole === 'MENTOR' ? 'MENTOR' : sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER' : 'ADMIN'
-  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, contentHash: contentHash(rawText), fileRef: normalizeText(input?.fileRef, 500) }
+  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
 }
 function evidenceWriteFields(item, source, sourceId) {
   return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
@@ -649,12 +650,33 @@ export class FeishuRepository {
     await persistCustomerProfile(database, customerId, normalizeProfileUpdates(updates, current, true), undefined, actorId)
     return (await this.load()).customers.find((item) => item.id === customerId)
   }
+  async extractDocument(actorId, input) {
+    await this.staff(actorId)
+    const document = input?.document || input || {}
+    const buffer = Buffer.from(String(document.base64 || ''), 'base64')
+    const extracted = await extractDocument({ filename: document.filename, mimeType: document.mimeType, extension: document.extension, buffer, maxDocumentSizeMb: config.maxDocumentSizeMb })
+    if (!extracted.extracted_text) throw Object.assign(new Error('资料读取失败，请检查文件后重新上传。'), { code: 'DOCUMENT_TEXT_EMPTY', status: 422 })
+    return extracted
+  }
   async createSource(actorId, input) {
     requireStage2Tables()
     const startedAt = Date.now()
     const database = await this.load()
     await this.staff(actorId)
-    const normalized = sourceInput(input, actorId)
+    const requestedCustomerId = text(input?.customerId).trim()
+    if (!database.customers.some((item) => item.id === requestedCustomerId)) throw new Error('客户不存在')
+    let sourceInputValue = input
+    if (String(input?.sourceType || '').trim().toUpperCase() === 'FILE_UPLOAD') {
+      const document = input?.document || {}
+      const fileHash = text(document.fileHash || document.file_hash)
+      const extractedText = normalizeText(document.extractedText || document.extracted_text, 500_000)
+      if (!fileHash || !extractedText) throw Object.assign(new Error('资料读取失败，请检查文件后重新上传。'), { code: 'DOCUMENT_TEXT_EMPTY', status: 422 })
+      const duplicate = database.sourceRecords.find((item) => item.customerId === requestedCustomerId && parseDocumentFileRef(item.fileRef)?.file_hash === fileHash)
+      if (duplicate) throw Object.assign(new Error('这份资料已经记录过了'), { code: 'SOURCE_DUPLICATE', status: 409, sourceId: duplicate.id })
+      const fileRef = documentFileRef({ filename: document.filename, mimeType: document.mimeType, extension: document.extension, size: document.size, fileHash, charCount: document.charCount || Array.from(extractedText).length })
+      sourceInputValue = { ...input, rawText: extractedText, contentHash: contentHash(extractedText), fileRef }
+    }
+    const normalized = sourceInput(sourceInputValue, actorId)
     if (!database.customers.some((item) => item.id === normalized.customerId)) throw new Error('客户不存在')
     const duplicate = database.sourceRecords.find((item) => item.customerId === normalized.customerId && item.contentHash === normalized.contentHash)
     if (duplicate) throw Object.assign(new Error('这份资料已经记录过了'), { code: 'SOURCE_DUPLICATE', status: 409, sourceId: duplicate.id })
@@ -662,7 +684,8 @@ export class FeishuRepository {
     const timestamp = now()
     await createMappedRecord('sourceRecords', 'source.create', { source_id: sourceId, subject_type: normalized.subjectType, subject_id: normalized.subjectId, customer_id: normalized.customerId, source_type: normalized.sourceType, title: normalized.title, raw_text: normalized.rawText, file_ref: normalized.fileRef, occurred_at: '', uploaded_at: timestamp, uploaded_by: normalized.uploadedBy, source_role: normalized.sourceRole, service_record_id: normalized.serviceRecordId, content_hash: normalized.contentHash, processing_status: 'UPLOADED', processing_version: 1, sensitivity_level: 'HIGH', notes: normalized.notes, source_version: 1, extractor_version: 'evidence-v1', last_batch_id: '', created_at: timestamp, updated_at: timestamp })
     this.sourceSaveTimes.set(sourceId, Date.now() - startedAt)
-    return (await waitForSourceVisibility(sourceId)) || { ...normalized, id: sourceId, processingStatus: 'UPLOADED', sensitivityLevel: 'HIGH', sourceVersion: 1 }
+    const result = (await waitForSourceVisibility(sourceId)) || { ...normalized, id: sourceId, processingStatus: 'UPLOADED', sensitivityLevel: 'HIGH', sourceVersion: 1 }
+    return result
   }
   async sourceWorkspace(actorId, customerId) {
     requireStage2Tables()
@@ -684,7 +707,7 @@ export class FeishuRepository {
     const startedAt = Date.now()
     const database = await this.load()
     await this.staff(actorId)
-    const source = database.sourceRecords.find((item) => item.id === sourceId)
+    let source = database.sourceRecords.find((item) => item.id === sourceId)
     const sourceRow = database._rows.sourceRecords.find((item) => item.record_id === source?._recordId)
     if (!source || !sourceRow) throw new Error('资料不存在')
     const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
@@ -692,6 +715,7 @@ export class FeishuRepository {
     const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}`)
     await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: Number(source.processingVersion || 1) + 1, last_batch_id: batchId, updated_at: now() })
     try {
+      if (!source.rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
       const chunks = chunkText(source.rawText)
       const candidates = []
       for (const chunk of chunks) {
