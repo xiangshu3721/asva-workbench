@@ -46,6 +46,35 @@ export interface MentorAccountInput {
   phone: string
 }
 
+export interface ProfileEvidenceReference {
+  evidenceId: string
+  sourceId: string
+  displayText: string
+  excerpt: string
+}
+
+export interface ProfileMaterializationItem {
+  label: string
+  text: string
+  evidenceIds: string[]
+  basis: ProfileEvidenceReference[]
+}
+
+export interface ProfileMaterializationSection {
+  title: string
+  emptyLabel: string
+  items: ProfileMaterializationItem[]
+}
+
+export interface ProfileMaterialization {
+  schemaVersion: string
+  currentSnapshot: Record<string, { value: ProfileValue; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
+  sections: ProfileMaterializationSection[]
+  lifeEvents: Array<{ id: string; title: string; detail: string; occurredAt: string | null; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
+  coverage: { percentage: number; domains: Array<{ name: string; status: 'KNOWN' | 'PARTIAL' | 'UNKNOWN'; signalCount: number }> }
+  aiSummaryStatus: 'STALE' | 'CURRENT'
+}
+
 export interface Customer {
   id: string
   createdAt: string
@@ -79,6 +108,7 @@ export interface Customer {
   profileUpdatedAt?: string | null
   profileSchemaVersion?: string
   profileVersion?: number
+  profileMaterialization?: ProfileMaterialization
 }
 
 export interface ProfileFieldMeta {

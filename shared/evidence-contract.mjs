@@ -7,12 +7,12 @@ export const EVIDENCE_TYPES = new Set(['FACT', 'SELF_MEANING', 'OBSERVATION', 'H
 export const SEMANTIC_KINDS = new Set(['PROFILE_FIELD', 'CURRENT_STATE', 'EVENT', 'RELATIONSHIP', 'RESOURCE', 'NEED', 'GOAL', 'PREFERENCE', 'OTHER'])
 export const EVIDENCE_REVIEW_STATUSES = new Set(['PENDING_REVIEW', 'CONFIRMED', 'REJECTED', 'SUPERSEDED'])
 export const PROPOSAL_ACTIONS = new Set(['ADD', 'UPDATE', 'APPEND', 'KEEP_CURRENT', 'REVIEW_REQUIRED'])
-export const CHANGE_TYPES = new Set(['NEW_INFORMATION', 'STATE_CHANGE', 'FACT_CONTRADICTION', 'CUMULATIVE_ADDITION', 'SUBJECTIVE_DIFFERENCE', 'NO_CHANGE'])
+export const CHANGE_TYPES = new Set(['NEW_INFORMATION', 'STATE_CHANGE', 'FACT_CONTRADICTION', 'CUMULATIVE_ADDITION', 'SUBJECTIVE_DIFFERENCE', 'SOURCE_DISAGREEMENT', 'NO_CHANGE'])
 export const CONFLICT_TYPES = new Set(['FACT_CONTRADICTION', 'POSSIBLE_STATE_CHANGE', 'SUBJECTIVE_DIFFERENCE', 'SOURCE_DISAGREEMENT'])
 export const CONFLICT_STATUSES = new Set(['OPEN', 'RESOLVED', 'DISMISSED'])
 export const CONFLICT_RESOLUTIONS = new Set(['USE_NEW', 'KEEP_CURRENT', 'KEEP_BOTH', 'MARK_UNKNOWN'])
 
-export const PROFILE_FIELD_ALIASES = { current_city: 'city', current_occupation: 'occupation', current_job_status: 'job_status' }
+export const PROFILE_FIELD_ALIASES = { current_city: 'city', current_occupation: 'occupation', current_job_status: 'job_status', birth_place: 'hometown' }
 export const STABLE_FACT_FIELDS = new Set(['birth_date', 'gender', 'phone', 'wechat'])
 export const CUMULATIVE_FIELDS = new Set(['hobbies', 'sports', 'reading', 'travel', 'art_preferences', 'important_experiences', 'resources'])
 export const SUBJECTIVE_FIELDS = new Set(['self_description', 'personality_traits', 'communication_style', 'decision_style', 'emotion_expression', 'stress_response', 'conflict_style', 'action_style', 'core_values', 'family_values', 'career_values', 'money_values', 'relationship_values', 'success_definition', 'happiness_definition', 'freedom_definition', 'growth_attitude'])
