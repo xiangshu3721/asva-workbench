@@ -183,7 +183,7 @@ http.createServer((request, response) => {
     const statusCode = status(error)
     const operatorId = await (async () => { try { return await actorId(request) } catch { return '' } })()
     console.error('[ASVA_API_ERROR]', JSON.stringify({ timestamp: new Date().toISOString(), request_id: requestId, operator_id: operatorId || undefined, operation: `${request.method} ${request.url}`, provider_operation: error?.operation, entity: 'api', status: statusCode, duration: Date.now() - startedAt, error_code: code, provider_code: error?.providerCode, provider_message: typeof error?.providerMessage === 'string' ? error.providerMessage.slice(0, 160) : undefined, provider_request_id: error?.providerRequestId, provider_http_status: error?.httpStatus, retryable: error?.retryable, write_status: error?.writeStatus, readback_status: error?.readbackStatus }))
-    const message = code === 'AUTH_INVALID' ? '登录信息验证失败' : code === 'AUTH_RATE_LIMITED' ? '登录尝试过于频繁，请稍后再试' : error instanceof Error ? error.message : '请求未完成，请稍后重试。'
+    const message = code === 'AUTH_INVALID' ? '登录信息验证失败' : code === 'AUTH_RATE_LIMITED' ? '登录尝试过于频繁，请稍后再试' : safeMessage(error, code)
     send(request, response, statusCode, { success: false, code, message, request_id: requestId }, requestId)
   })
 }).listen(config.port, config.host, () => console.log(`ASVA API listening on http://${config.host}:${config.port}`))

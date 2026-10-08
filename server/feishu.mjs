@@ -38,7 +38,7 @@ function requestId(response, payload) {
 }
 
 function retryableStatus(status) { return status === 429 || status >= 500 }
-function retryableProviderCode(code) { return Number(code) === 99991400 }
+function retryableProviderCode(code) { return [1254607, 99991400].includes(Number(code)) }
 
 export function isRetryableFeishuError(error) {
   return error?.retryable === true || error?.name === 'AbortError' || error?.code === 'ETIMEDOUT' || error?.code === 'ECONNRESET' || error?.code === 'ENOTFOUND'
@@ -146,11 +146,11 @@ export function createField(tableId, fieldName, type = 1) {
 }
 
 export function createRecord(tableId, fields) {
-  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records`, { method: 'POST', body: JSON.stringify({ fields }) }, { operation: 'create_record' })
+  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records`, { method: 'POST', body: JSON.stringify({ fields }) }, { retry: true, operation: 'create_record' })
 }
 
 export function updateRecord(tableId, recordId, fields) {
-  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records/${recordId}`, { method: 'PUT', body: JSON.stringify({ fields }) }, { operation: 'update_record' })
+  return request(`/open-apis/bitable/v1/apps/${config.feishu.baseToken}/tables/${tableId}/records/${recordId}`, { method: 'PUT', body: JSON.stringify({ fields }) }, { retry: true, operation: 'update_record' })
 }
 
 export function deleteRecord(tableId, recordId) {

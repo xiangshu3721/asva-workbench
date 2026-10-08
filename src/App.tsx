@@ -52,6 +52,7 @@ function sourceFailureMessage(error: unknown) {
   const code = (error as { code?: string })?.code
   if (code === 'UNSUPPORTED_DOCUMENT_FORMAT' || code === 'INVALID_DOCUMENT_MIME') return '当前支持 TXT、Markdown 和 Word（.docx）文件。'
   if (code === 'DOCX_CORRUPT' || code === 'DOCUMENT_TEXT_EMPTY') return '资料读取失败，请检查文件后重新上传。'
+  if (code === 'FEISHU_UNAVAILABLE' || code === 'WRITE_CONFIRMED_READBACK_FAILED') return '飞书数据源暂时繁忙，资料可能已保存，请稍后刷新或重试。'
   return '已保存，AI整理失败，可稍后重试。'
 }
 
@@ -189,9 +190,9 @@ function ResourceBanners() {
   const [activeIndex, setActiveIndex] = useState(0)
   const [isPaused, setIsPaused] = useState(false)
   const banners = [
-    { className: 'resource-banner-site', src: 'assets/asva-official-banner.png', href: 'https://xiangshu3721.github.io/asva-official/index.html', label: '打开 ASVA 官网' },
-    { className: 'resource-banner-mindtest', src: 'assets/asva-mindtest-banner.png', href: 'https://xiangshu3721.github.io/mindtest-web/', label: '打开 ASVA 常用心理测试' },
-    { className: 'resource-banner-practice', src: 'assets/asva-practice-banner.png', href: 'https://xiangshu3721.github.io/asva-official/explore.html', label: '打开 ASVA 导师修炼包' },
+    { className: 'resource-banner-site', src: 'assets/asva-official-banner.jpg', href: 'https://xiangshu3721.github.io/asva-official/index.html', label: '打开 ASVA 官网' },
+    { className: 'resource-banner-mindtest', src: 'assets/asva-mindtest-banner.jpg', href: 'https://xiangshu3721.github.io/mindtest-web/', label: '打开 ASVA 常用心理测试' },
+    { className: 'resource-banner-practice', src: 'assets/asva-practice-banner.jpg', href: 'https://xiangshu3721.github.io/asva-official/explore.html', label: '打开 ASVA 导师修炼包' },
   ]
   useEffect(() => {
     if (isPaused) return undefined
@@ -199,7 +200,7 @@ function ResourceBanners() {
     return () => window.clearInterval(timer)
   }, [isPaused, banners.length])
   const moveTo = (index: number) => setActiveIndex((index + banners.length) % banners.length)
-  return <section className="resource-banners" aria-label="ASVA 资源入口" onMouseEnter={() => setIsPaused(true)} onMouseLeave={() => setIsPaused(false)}>{banners.map((banner, index) => <a className={`resource-banner ${banner.className} ${index === activeIndex ? 'active' : ''}`} href={banner.href} target="_blank" rel="noreferrer" aria-label={banner.label} aria-hidden={index !== activeIndex} tabIndex={index === activeIndex ? 0 : -1} key={banner.src}><img className="resource-banner-image" src={`${import.meta.env.BASE_URL}${banner.src}`} alt={banner.label} /></a>)}<div className="resource-carousel-dots" role="tablist" aria-label="选择 Banner">{banners.map((banner, index) => <button className={index === activeIndex ? 'active' : ''} type="button" role="tab" aria-selected={index === activeIndex} aria-label={`第 ${index + 1} 张：${banner.label}`} onClick={() => moveTo(index)} key={banner.src} />)}</div></section>
+  return <section className="resource-banners" aria-label="ASVA 资源入口" onMouseEnter={() => setIsPaused(true)} onMouseLeave={() => setIsPaused(false)}>{banners.map((banner, index) => <a className={`resource-banner ${banner.className} ${index === activeIndex ? 'active' : ''}`} href={banner.href} target="_blank" rel="noreferrer" aria-label={banner.label} aria-hidden={index !== activeIndex} tabIndex={index === activeIndex ? 0 : -1} key={banner.src}>{index === activeIndex && <img className="resource-banner-image" src={`${import.meta.env.BASE_URL}${banner.src}`} alt={banner.label} loading="eager" decoding="async" />}</a>)}<div className="resource-carousel-dots" role="tablist" aria-label="选择 Banner">{banners.map((banner, index) => <button className={index === activeIndex ? 'active' : ''} type="button" role="tab" aria-selected={index === activeIndex} aria-label={`第 ${index + 1} 张：${banner.label}`} onClick={() => moveTo(index)} key={banner.src} />)}</div></section>
 }
 
 function CustomersPage({ staff, database, canSeeAll, selectedCustomer, onSelect, onGenerateBrief, onGenerateIntelligence, onRefreshCustomerSummary, onSaveBrief, onSaveReferrer, onGenerateProfile, onConfirmProfile, onUpdateEnrollments, onSourceWorkspace, onExtractDocument, onCreateSource, onProcessSource, onReviewProposal, onResolveConflict, onAddCustomer }: { staff: Staff; database: Database; canSeeAll: boolean; selectedCustomer?: Customer; onSelect: (id: string) => void; onGenerateBrief: (input: { name: string; need: string; expectation: string }) => Promise<string>; onGenerateIntelligence: (customer: Customer, database: Database) => Promise<{ summary: AiCoreSummary; brief: AiBrief }>; onRefreshCustomerSummary: (customerId: string) => Promise<Customer | undefined>; onSaveBrief: (customerId: string, brief: string) => Promise<Customer | undefined>; onSaveReferrer: (customerId: string, referrerName: string) => Promise<Customer | undefined>; onGenerateProfile: (customerId: string, text: string) => Promise<ProfileDraft>; onConfirmProfile: (customerId: string, updates: ProfileUpdate[]) => Promise<Customer>; onUpdateEnrollments: (customerId: string, enrollments: EnrollmentDraft[]) => Promise<void>; onSourceWorkspace: (customerId: string) => Promise<SourceWorkspace>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreateSource: (input: SourceCreateInput) => Promise<SourceRecord>; onProcessSource: (sourceId: string) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onReviewProposal: (proposalId: string, decision: 'CONFIRM' | 'REJECT') => Promise<void>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onAddCustomer: () => void }) {
@@ -354,7 +355,7 @@ function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onPr
   const [analysisSummary, setAnalysisSummary] = useState('')
   const processingRef = useRef(new Set<string>())
   const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
-  const load = async () => { try { const next = await onLoad(customer.id); setWorkspace(next); return next } catch (loadError) { setError(loadError instanceof Error ? loadError.message : '资料读取失败'); return null } }
+  const load = async () => { try { const next = await onLoad(customer.id); setWorkspace(next); return next } catch (loadError) { setError(sourceFailureMessage(loadError)); return null } }
   useEffect(() => () => { recognitionRef.current?.stop(); processingRef.current.clear() }, [customer.id])
   useEffect(() => { const open = () => setComposerOpen(true); window.addEventListener('asva-open-source-composer', open); return () => window.removeEventListener('asva-open-source-composer', open) }, [])
   const toggleVoice = () => {
