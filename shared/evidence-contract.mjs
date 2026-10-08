@@ -95,9 +95,19 @@ export function dedupeEvidence(items) {
   })
 }
 
+function sameValue(left, right) {
+  const comparable = (value) => {
+    if (typeof value !== 'string') return value ?? null
+    const trimmed = value.trim()
+    return /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(trimmed) ? trimmed.slice(0, 10) : trimmed
+  }
+  return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right))
+}
+
 export function classifyEvidenceChange(evidence, currentValue) {
   const hasCurrent = currentValue !== null && currentValue !== undefined && String(currentValue) !== ''
   if (!hasCurrent) return { action: 'ADD', changeType: 'NEW_INFORMATION', conflictType: null }
+  if (sameValue(currentValue, evidence.standardValue)) return { action: 'KEEP_CURRENT', changeType: 'NO_CHANGE', conflictType: null }
   if (STABLE_FACT_FIELDS.has(evidence.fieldKey)) return { action: 'REVIEW_REQUIRED', changeType: 'FACT_CONTRADICTION', conflictType: 'FACT_CONTRADICTION' }
   if (CUMULATIVE_FIELDS.has(evidence.fieldKey)) return { action: 'APPEND', changeType: 'CUMULATIVE_ADDITION', conflictType: null }
   if (SUBJECTIVE_FIELDS.has(evidence.fieldKey) || evidence.evidenceType === 'SELF_MEANING' || evidence.evidenceType === 'OBSERVATION') return { action: 'REVIEW_REQUIRED', changeType: 'SUBJECTIVE_DIFFERENCE', conflictType: 'SUBJECTIVE_DIFFERENCE' }

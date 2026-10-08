@@ -25,6 +25,9 @@ describe('Stage 2 evidence contract', () => {
   it('distinguishes state change, stable conflict, cumulative and subjective evidence', () => {
     expect(classifyEvidenceChange({ fieldKey: 'city', semanticKind: 'CURRENT_STATE', evidenceType: 'FACT' }, '南京')).toMatchObject({ changeType: 'STATE_CHANGE', conflictType: 'POSSIBLE_STATE_CHANGE' })
     expect(classifyEvidenceChange({ fieldKey: 'birth_date', semanticKind: 'PROFILE_FIELD', evidenceType: 'FACT' }, '1990-01-01').changeType).toBe('FACT_CONTRADICTION')
+    expect(classifyEvidenceChange({ fieldKey: 'birth_date', standardValue: '1990-01-01', semanticKind: 'PROFILE_FIELD', evidenceType: 'FACT' }, '1990-01-01')).toMatchObject({ action: 'KEEP_CURRENT', changeType: 'NO_CHANGE', conflictType: null })
+    expect(classifyEvidenceChange({ fieldKey: 'birth_date', standardValue: '1990-01-01', semanticKind: 'PROFILE_FIELD', evidenceType: 'FACT' }, '1990-01-01T00:00:00.000Z').changeType).toBe('NO_CHANGE')
+    expect(classifyEvidenceChange({ fieldKey: 'city', standardValue: '南京', semanticKind: 'CURRENT_STATE', evidenceType: 'FACT' }, '南京').changeType).toBe('NO_CHANGE')
     expect(classifyEvidenceChange({ fieldKey: 'hobbies', semanticKind: 'PREFERENCE', evidenceType: 'FACT' }, '瑜伽').action).toBe('APPEND')
     expect(classifyEvidenceChange({ fieldKey: 'self_description', semanticKind: 'PROFILE_FIELD', evidenceType: 'SELF_MEANING' }, '旧描述').changeType).toBe('SUBJECTIVE_DIFFERENCE')
     expect(CHANGE_TYPES.has('NO_CHANGE')).toBe(true)

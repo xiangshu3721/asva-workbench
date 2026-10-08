@@ -101,6 +101,7 @@ export const FIELD_MAPPING = {
     raw_text: '原始文本', file_ref: '文件引用', occurred_at: '资料发生时间', uploaded_at: '上传时间', uploaded_by: '上传人', source_role: '来源角色',
     service_record_id: '关联服务记录ID', content_hash: '内容Hash', processing_status: '处理状态', processing_version: '处理版本', sensitivity_level: '敏感级别',
     notes: '备注', created_at: '创建时间', updated_at: '更新时间', source_version: '资料版本', extractor_version: '提取器版本', last_batch_id: '最近提取批次ID',
+    processing_started_at: '处理开始时间', last_processing_at: '最近处理时间', processing_error: '处理错误',
   },
   evidenceItems: {
     evidence_id: '证据ID', subject_type: '主体类型', subject_id: '主体ID', customer_id: '客户ID', source_id: '资料ID', evidence_type: '证据类型',
