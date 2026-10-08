@@ -7,7 +7,9 @@ import { createHttpApi, createLocalAsyncApi, type FeedbackDraftInput, type Workb
 import { assembleCustomerContext, briefToText, createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary } from './customer-ai'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { GlobalAIAssistant } from './GlobalAIAssistant'
-import { DebugPanel, VersionStrip } from './DebugPanel'
+import { DebugPanel, ReleaseIndicator, VersionStrip } from './DebugPanel'
+import { applySpeechResults, emptySpeechTranscript, joinSpeechText, shouldRecoverSpeech, speechErrorMessage, speechTranscriptText, type SpeechTranscriptState } from './speech'
+import { canStartCustomerSave } from './save-contract'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
 const remoteBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined
@@ -24,7 +26,7 @@ const statusTone: Record<AppointmentWorkflowStatus, 'amber' | 'blue' | 'rose' | 
 const statusRank: Record<AppointmentWorkflowStatus, number> = { WAIT_ASSIGN: 0, WAIT_FOLLOW_UP: 1, WAIT_FEEDBACK: 2, COMPLETED: 3 }
 const PASSWORD_POLICY_HINT = '密码需为 5～64 位，可使用英文字母、数字和常见特殊符号；无需强制混合大小写、数字或符号。请避开明显弱密码和手机号。'
 type BrowserSpeechResult = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
-type BrowserSpeechRecognitionInstance = { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: ((event: { results: ArrayLike<BrowserSpeechResult> }) => void) | null; onerror: ((event?: { error?: string }) => void) | null; onend: (() => void) | null }
+type BrowserSpeechRecognitionInstance = { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: ((event: { results: ArrayLike<BrowserSpeechResult>; resultIndex?: number }) => void) | null; onerror: ((event?: { error?: string }) => void) | null; onend: (() => void) | null }
 type BrowserSpeechRecognition = new () => BrowserSpeechRecognitionInstance
 
 function Avatar({ staff, size = 'md' }: { staff?: Staff; size?: 'sm' | 'md' | 'lg' }) { return <span className={`avatar avatar-${size}`}>{staff?.avatar ?? '客'}</span> }
@@ -46,13 +48,12 @@ function Login({ api, onLogin }: { api: WorkbenchApi; onLogin: (account: Staff &
 }
 
 function ChangePassword({ api, onComplete }: { api: WorkbenchApi; onComplete: () => void }) {
-  const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (newPassword !== confirmPassword) { setError('两次输入的新密码不一致'); return } setLoading(true); setError(''); try { await api.changePassword(currentPassword, newPassword); onComplete() } catch (changeError) { setError(changeError instanceof Error ? changeError.message : '修改密码失败') } finally { setLoading(false) } }
-  return <main className="login-page"><section className="login-card"><div className="eyebrow">FIRST LOGIN</div><h1>请先设置个人密码</h1><p className="modal-lede">这是一次性初始化密码。{PASSWORD_POLICY_HINT}</p><form onSubmit={submit} className="login-form"><label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={loading}>{loading && <ButtonSpinner />}{loading ? '保存中…' : '保存并进入工作台'} <span>→</span></button></form></section></main>
+  const submit = async (event: FormEvent) => { event.preventDefault(); if (newPassword !== confirmPassword) { setError('两次输入的新密码不一致'); return } setLoading(true); setError(''); try { await api.changePassword('', newPassword); onComplete() } catch (changeError) { setError(changeError instanceof Error ? changeError.message : '修改密码失败') } finally { setLoading(false) } }
+  return <main className="login-page"><section className="login-card"><div className="eyebrow">FIRST LOGIN</div><h1>设置新密码</h1><p className="modal-lede">为了账号安全，请设置自己的登录密码。{PASSWORD_POLICY_HINT}</p><form onSubmit={submit} className="login-form"><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={loading}>{loading && <ButtonSpinner />}{loading ? '保存中…' : '确认修改'} <span>→</span></button></form></section></main>
 }
 
 function App() {
@@ -116,7 +117,7 @@ function App() {
   const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput) => { const saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input); setManualCustomerOpen(false); setDatabase(saved); refresh() }
   const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabase(saved); refresh() }
 
-  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav">{([['home', '首页', '今'], ['customers', '客户', '客'], ['me', '我的', '我']] as Array<[View, string, string]>).map(([id, label, marker]) => <button key={id} className={view === id ? 'nav-item active' : 'nav-item'} onClick={() => setView(id)}><span className="nav-marker">{marker}</span>{label}</button>)}</nav><div className="rail-bottom"><button className="profile-chip" onClick={() => setView('me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button><small className="release-strip"><VersionStrip onOpen={() => window.dispatchEvent(new Event('asva-debug-change'))} /></small></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => setView('me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{view === 'home' && <HomePage staff={activeStaff} database={database} canSeeAll={canSeeAll} api={workbenchApi} onCustomer={openCustomer} onAssign={(id) => setAssignAppointmentId(id)} onComplete={completeFollowup} onFeedback={(id) => { setSelectedCustomerId(database.appointments.find((item) => item.id === id)?.customerId ?? null); setFeedbackAppointmentId(id) }} />}{view === 'customers' && <CustomersPage staff={activeStaff} database={database} canSeeAll={canSeeAll} selectedCustomer={selectedCustomer} onSelect={openCustomer} onAssign={(id) => setAssignAppointmentId(id)} onComplete={completeFollowup} onFeedback={(id) => setFeedbackAppointmentId(id)} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onAddCustomer={() => setManualCustomerOpen(true)} />}{view === 'me' && <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); window.sessionStorage.removeItem('asva_session_token'); setLoggedInStaffId(null) }} />}</div></main><nav className="bottom-nav">{([['home', '首页', '今'], ['customers', '客户', '客'], ['me', '我的', '我']] as Array<[View, string, string]>).map(([id, label, marker]) => <button key={id} className={view === id ? 'bottom-item active' : 'bottom-item'} onClick={() => setView(id)}><span>{marker}</span>{label}</button>)}</nav>{assignAppointment && <AssignDialog appointment={assignAppointment} database={database} staffId={activeStaff.id} api={workbenchApi} onClose={() => setAssignAppointmentId(null)} onAssign={assign} />}{feedbackAppointment && <FeedbackForm appointment={feedbackAppointment} customer={database.customers.find((item) => item.id === feedbackAppointment.customerId)!} database={database} onClose={() => setFeedbackAppointmentId(null)} onSubmit={saveFeedback} onGenerateSummary={generateServiceSummary} onGenerateProfile={generateProfile} />}{manualCustomerOpen && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant api={workbenchApi} staffId={activeStaff.id} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
+  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav">{([['home', '首页', '今'], ['customers', '客户', '客'], ['me', '我的', '我']] as Array<[View, string, string]>).map(([id, label, marker]) => <button key={id} className={view === id ? 'nav-item active' : 'nav-item'} onClick={() => setView(id)}><span className="nav-marker">{marker}</span>{label}</button>)}</nav><div className="rail-bottom"><button className="profile-chip" onClick={() => setView('me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button><small className="release-strip"><VersionStrip onOpen={() => window.dispatchEvent(new Event('asva-debug-change'))} /></small></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => setView('me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{view === 'home' && <HomePage staff={activeStaff} database={database} canSeeAll={canSeeAll} api={workbenchApi} onCustomer={openCustomer} onAssign={(id) => setAssignAppointmentId(id)} onComplete={completeFollowup} onFeedback={(id) => { setSelectedCustomerId(database.appointments.find((item) => item.id === id)?.customerId ?? null); setFeedbackAppointmentId(id) }} />}{view === 'customers' && <CustomersPage staff={activeStaff} database={database} canSeeAll={canSeeAll} selectedCustomer={selectedCustomer} onSelect={openCustomer} onAssign={(id) => setAssignAppointmentId(id)} onComplete={completeFollowup} onFeedback={(id) => setFeedbackAppointmentId(id)} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onAddCustomer={() => setManualCustomerOpen(true)} />}{view === 'me' && <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); window.sessionStorage.removeItem('asva_session_token'); setLoggedInStaffId(null) }} />}</div></main><nav className="bottom-nav">{([['home', '首页', '今'], ['customers', '客户', '客'], ['me', '我的', '我']] as Array<[View, string, string]>).map(([id, label, marker]) => <button key={id} className={view === id ? 'bottom-item active' : 'bottom-item'} onClick={() => setView(id)}><span>{marker}</span>{label}</button>)}</nav>{assignAppointment && <AssignDialog appointment={assignAppointment} database={database} staffId={activeStaff.id} api={workbenchApi} onClose={() => setAssignAppointmentId(null)} onAssign={assign} />}{feedbackAppointment && <FeedbackForm appointment={feedbackAppointment} customer={database.customers.find((item) => item.id === feedbackAppointment.customerId)!} database={database} onClose={() => setFeedbackAppointmentId(null)} onSubmit={saveFeedback} onGenerateSummary={generateServiceSummary} onGenerateProfile={generateProfile} />}{manualCustomerOpen && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant api={workbenchApi} staffId={activeStaff.id} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
 }
 
 function HomePage({ staff, database, canSeeAll, api, onCustomer, onAssign, onComplete, onFeedback }: { staff: Staff; database: Database; canSeeAll: boolean; api: WorkbenchApi; onCustomer: (id: string) => void; onAssign: (id: string) => void; onComplete: (id: string) => Promise<void>; onFeedback: (id: string) => void }) {
@@ -358,89 +359,124 @@ function ManualCustomerDialog({ database, onClose, onPreview, onCreate, onUpdate
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [voiceHint, setVoiceHint] = useState('')
+  const [voiceState, setVoiceState] = useState<'IDLE' | 'LISTENING' | 'RECOVERING' | 'ERROR'>('IDLE')
+  const [voiceSupported, setVoiceSupported] = useState<boolean | null>(null)
+  const [voicePermission, setVoicePermission] = useState<'UNKNOWN' | 'REQUESTED' | 'DENIED'>('UNKNOWN')
+  const [voiceLastEvent, setVoiceLastEvent] = useState('none')
+  const [voiceError, setVoiceError] = useState('')
   const operationIdRef = useRef(`customer-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const [isRecording, setIsRecording] = useState(false)
   const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
   const keepRecordingRef = useRef(false)
-  const voiceBaseSituationRef = useRef('')
+  const existingTextRef = useRef('')
   const voiceTextRef = useRef('')
+  const speechStateRef = useRef<SpeechTranscriptState>(emptySpeechTranscript())
+  const restartCountRef = useRef(0)
+  const restartTimerRef = useRef<number | null>(null)
   const input = (): ManualCustomerInput => {
     const enrollments: EnrollmentDraft[] = selectedProductIds.map((productId) => ({ productId }))
     return { operationId: operationIdRef.current, nickname, phone, wechat, situation, needsFollowup: false, mentorId: null, source: '管理员手动录入', caseSource: 'ADMIN_MANUAL', enrollments, confirmedNotSame: step === 'duplicate' && draft.identity?.result === 'POSSIBLE_MATCH' }
   }
   const toggleProduct = (productId: string) => setSelectedProductIds((ids) => ids.includes(productId) ? ids.filter((id) => id !== productId) : [...ids, productId])
   const visibleProducts = products.filter((product) => product.name.toLowerCase().includes(productQuery.trim().toLowerCase()))
-  useEffect(() => () => { keepRecordingRef.current = false; recognitionRef.current?.stop() }, [])
+  useEffect(() => () => { keepRecordingRef.current = false; if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current); recognitionRef.current?.stop() }, [])
   const toggleVoice = () => {
     if (isRecording) {
       keepRecordingRef.current = false
+      setVoiceLastEvent('manual-stop')
       recognitionRef.current?.stop()
       recognitionRef.current = null
       setIsRecording(false)
+      setVoiceState('IDLE')
       setVoiceHint('录音已结束。')
       return
     }
     const speechApi = window as Window & { SpeechRecognition?: BrowserSpeechRecognition; webkitSpeechRecognition?: BrowserSpeechRecognition }
     const SpeechRecognition = speechApi.SpeechRecognition || speechApi.webkitSpeechRecognition
-    if (!SpeechRecognition) { setVoiceHint('当前浏览器不支持语音输入，请直接输入文字。'); return }
+    setVoiceSupported(Boolean(SpeechRecognition))
+    if (!SpeechRecognition) { setVoiceState('ERROR'); setVoiceError('unsupported'); setVoiceLastEvent('unsupported'); setVoiceHint('当前浏览器不支持语音输入，请直接输入文字。'); return }
     const recognition = new SpeechRecognition()
     recognition.lang = 'zh-CN'
     recognition.continuous = true
     recognition.interimResults = true
     recognition.onresult = (event) => {
-      let transcript = ''
-      for (let index = 0; index < event.results.length; index += 1) {
-        const result = event.results[index]
-        const text = result?.[0]?.transcript?.trim()
-        if (text) transcript += `${transcript ? ' ' : ''}${text}`
-      }
-      if (!transcript) return
-      const base = voiceBaseSituationRef.current.trim()
-      const nextSituation = `${base}${base ? ' ' : ''}${transcript}`
+      setVoiceLastEvent('result')
+      const nextSpeechState = applySpeechResults(speechStateRef.current, event.results, event.resultIndex || 0)
+      speechStateRef.current = nextSpeechState
+      const nextSituation = joinSpeechText(existingTextRef.current, speechTranscriptText(nextSpeechState))
       voiceTextRef.current = nextSituation
       setSituation(nextSituation)
       setVoiceHint('正在录音，文字会实时显示，再次点击结束。')
     }
     recognition.onerror = (event) => {
-      if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
+      const error = event?.error || ''
+      setVoiceLastEvent(`error:${error || 'unknown'}`)
+      setVoiceError(error)
+      setVoiceState('ERROR')
+      if (error === 'not-allowed' || error === 'service-not-allowed') {
+        setVoicePermission('DENIED')
         keepRecordingRef.current = false
         setIsRecording(false)
         recognitionRef.current = null
-        setVoiceHint('浏览器没有允许麦克风，请直接输入文字。')
+        setVoiceHint(speechErrorMessage(error))
         return
       }
-      setVoiceHint('没有识别到清晰语音，请继续说或再次点击结束。')
+      setVoiceHint(speechErrorMessage(error))
     }
     recognition.onend = () => {
+      setVoiceLastEvent('end')
       if (keepRecordingRef.current && recognitionRef.current === recognition) {
-        voiceBaseSituationRef.current = voiceTextRef.current
-        window.setTimeout(() => {
+        existingTextRef.current = joinSpeechText(existingTextRef.current, speechTranscriptText(speechStateRef.current, { finalOnly: true }))
+        voiceTextRef.current = existingTextRef.current
+        speechStateRef.current = emptySpeechTranscript()
+        restartCountRef.current += 1
+        if (!shouldRecoverSpeech({ keepListening: keepRecordingRef.current, manualStop: false, permissionDenied: false, restartCount: restartCountRef.current })) {
+          keepRecordingRef.current = false
+          recognitionRef.current = null
+          setIsRecording(false)
+          setVoiceState('ERROR')
+          setVoiceError('restart-limit')
+          setVoiceHint('语音识别多次中断，请再次点击开始或改用文字输入。')
+          return
+        }
+        setVoiceState('RECOVERING')
+        setVoiceHint('语音识别正在恢复，请继续说。')
+        restartTimerRef.current = window.setTimeout(() => {
           if (!keepRecordingRef.current || recognitionRef.current !== recognition) return
-          try { recognition.start() } catch { /* 浏览器仍在切换状态时，等待下一次 end 事件 */ }
-        }, 80)
+          try { recognition.start(); setVoiceState('LISTENING'); setVoiceLastEvent('restart') } catch { setVoiceLastEvent('restart-failed') }
+        }, 250)
         return
       }
       if (recognitionRef.current === recognition) recognitionRef.current = null
       setIsRecording(false)
+      setVoiceState('IDLE')
     }
-    voiceBaseSituationRef.current = situation
+    existingTextRef.current = situation
     voiceTextRef.current = situation
+    speechStateRef.current = emptySpeechTranscript()
+    restartCountRef.current = 0
+    setVoicePermission('REQUESTED')
+    setVoiceError('')
     keepRecordingRef.current = true
     recognitionRef.current = recognition
     setIsRecording(true)
+    setVoiceState('LISTENING')
+    setVoiceLastEvent('start')
     setVoiceHint('正在录音，再次点击结束。')
     try { recognition.start() } catch {
       keepRecordingRef.current = false
       recognitionRef.current = null
       setIsRecording(false)
+      setVoiceState('ERROR')
+      setVoiceError('start-failed')
       setVoiceHint('语音输入启动失败，请直接输入文字。')
     }
   }
-  const preview = async (event: FormEvent) => { event.preventDefault(); setError(''); setSaving(true); const payload = input(); try { const result = await onPreview(payload); setDraft({ duplicates: result.duplicates, identity: result.identity, updates: [] }); if (result.duplicates.length) setStep('duplicate'); else await onCreate(payload) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存客户失败') } finally { setSaving(false) } }
-  const submit = async (payload = input()) => { setSaving(true); setError(''); try { await onCreate(payload) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存客户失败') } finally { setSaving(false) } }
-  const updateExisting = async () => { const match = draft.duplicates[0]; if (!match) return; setSaving(true); setError(''); try { await onUpdate(match.customer.id, input()) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '更新客户失败') } finally { setSaving(false) } }
+  const preview = async (event: FormEvent) => { event.preventDefault(); if (!canStartCustomerSave(saving)) return; setError(''); setSaving(true); const payload = input(); try { const result = await onPreview(payload); setDraft({ duplicates: result.duplicates, identity: result.identity, updates: [] }); if (result.duplicates.length) setStep('duplicate'); else await onCreate(payload) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存客户失败') } finally { setSaving(false) } }
+  const submit = async (payload = input()) => { if (!canStartCustomerSave(saving)) return; setSaving(true); setError(''); try { await onCreate(payload) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存客户失败') } finally { setSaving(false) } }
+  const updateExisting = async () => { const match = draft.duplicates[0]; if (!match || !canStartCustomerSave(saving)) return; setSaving(true); setError(''); try { await onUpdate(match.customer.id, input()) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '更新客户失败') } finally { setSaving(false) } }
   const selectedProductNames = selectedProductIds.map((id) => products.find((product) => product.id === id)?.name).filter(Boolean)
-  return <div className="modal-backdrop"><form className="modal-card form-modal" onSubmit={preview}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button>{step === 'form' && <><div className="eyebrow">NEW CUSTOMER</div><h2>新增客户</h2><p className="modal-lede">先录入客户基础信息，课程报名详情可在客户详情页继续维护；新增客户不会自动创建预约。</p><label>客户昵称 *<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如：林知微" autoFocus /></label><div className="form-two-col contact-row"><label>手机号<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="numeric" /></label><label>微信号<input value={wechat} onChange={(event) => setWechat(event.target.value)} /></label></div><p className="field-hint contact-hint">手机号和微信号至少填写一项，便于后续联系和客户去重。</p><label>目前已报名课程<div className="multi-select"><button type="button" className="multi-select-trigger" aria-expanded={productMenuOpen} onClick={() => setProductMenuOpen((open) => !open)}>{selectedProductNames.length ? <span className="selected-tags">{selectedProductNames.map((name) => <span className="selected-tag" key={name}>{name}</span>)}</span> : <span className="multi-select-placeholder">请选择已报名课程</span>}<span className="multi-select-chevron">⌄</span></button>{productMenuOpen && <div className="multi-select-menu"><input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="搜索课程名称" aria-label="搜索课程名称" autoFocus />{visibleProducts.length ? <div className="multi-select-options">{visibleProducts.map((product) => <label className="multi-select-option" key={product.id}><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProduct(product.id)} /><span>{product.name}</span></label>)}</div> : <span className="inline-empty">没有找到匹配课程。</span>}</div>}</div>{!products.length && <span className="field-hint">暂无启用课程，请先在「ASVA 产品」中启用课程。</span>}</label><label>客户情况<textarea value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="描述客户当前的困扰、目标或背景。" /><button type="button" className={isRecording ? 'voice-button primary-button full-width recording' : 'voice-button primary-button full-width'} onClick={toggleVoice} aria-pressed={isRecording}><span aria-hidden="true">⌕</span> {isRecording ? '结束录音' : '语音转文字'}</button></label>{voiceHint && <p className="ai-form-note">{voiceHint}</p>}{error && <p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? '保存中…' : '保存'}</button></div></>}{step === 'duplicate' && <><div className="eyebrow">POSSIBLE DUPLICATE</div><h2>发现可能重复客户</h2><p className="modal-lede">已选课程：{selectedProductNames.join('、') || '无'}。同名只做可能重复提醒；手机号或微信号命中现有客户时必须打开原档案更新。</p>{draft.duplicates.map((match) => <div className="review-block" key={match.customer.id}><strong>{match.customer.name}</strong><span>{match.matchedBy === 'phone' ? '手机号相同' : match.matchedBy === 'wechat' ? '微信号相同' : match.matchedBy === 'nickname_exact' ? '昵称相同' : '昵称相近'} · {match.customer.need || '暂无当前困扰'}</span><div className="review-actions"><button type="button" className="secondary-button small" onClick={() => onOpenCustomer(match.customer.id)}>查看客户</button><button type="button" className="secondary-button small" onClick={updateExisting}>更新已有客户</button></div></div>)}{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => setStep('form')}>返回修改</button>{draft.identity?.result === 'POSSIBLE_MATCH' && <button type="button" className="primary-button" disabled={saving} onClick={() => submit(input())}>确认不是同一人并保存</button>}</div></>}</form></div>
+  return <div className="modal-backdrop"><form className="modal-card form-modal" onSubmit={preview}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button>{step === 'form' && <><div className="eyebrow">NEW CUSTOMER</div><h2>新增客户</h2><p className="modal-lede">先录入客户基础信息，课程报名详情可在客户详情页继续维护；新增客户不会自动创建预约。</p><label>客户昵称 *<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如：林知微" autoFocus /></label><div className="form-two-col contact-row"><label>手机号<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="numeric" /></label><label>微信号<input value={wechat} onChange={(event) => setWechat(event.target.value)} /></label></div><p className="field-hint contact-hint">手机号和微信号至少填写一项，便于后续联系和客户去重。</p><label>目前已报名课程<div className="multi-select"><button type="button" className="multi-select-trigger" aria-expanded={productMenuOpen} onClick={() => setProductMenuOpen((open) => !open)}>{selectedProductNames.length ? <span className="selected-tags">{selectedProductNames.map((name) => <span className="selected-tag" key={name}>{name}</span>)}</span> : <span className="multi-select-placeholder">请选择已报名课程</span>}<span className="multi-select-chevron">⌄</span></button>{productMenuOpen && <div className="multi-select-menu"><input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="搜索课程名称" aria-label="搜索课程名称" autoFocus />{visibleProducts.length ? <div className="multi-select-options">{visibleProducts.map((product) => <label className="multi-select-option" key={product.id}><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProduct(product.id)} /><span>{product.name}</span></label>)}</div> : <span className="inline-empty">没有找到匹配课程。</span>}</div>}</div>{!products.length && <span className="field-hint">暂无启用课程，请先在「ASVA 产品」中启用课程。</span>}</label><label>客户情况<textarea value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="描述客户当前的困扰、目标或背景。" /><button type="button" className={isRecording ? 'voice-button primary-button full-width recording' : 'voice-button primary-button full-width'} onClick={toggleVoice} aria-pressed={isRecording}><span aria-hidden="true">⌕</span> {isRecording ? '结束录音' : '语音转文字'}</button></label>{voiceHint && <p className="ai-form-note">{voiceHint}</p>}{voiceSupported !== null && <p className="voice-debug" data-testid="voice-debug">语音调试：支持 {voiceSupported ? 'YES' : 'NO'} · 权限 {voicePermission} · 状态 {voiceState} · 最近事件 {voiceLastEvent}{voiceError ? ` · 错误 ${voiceError}` : ''}</p>}{error && <p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving ? '保存中…' : '保存'}</button></div></>}{step === 'duplicate' && <><div className="eyebrow">POSSIBLE DUPLICATE</div><h2>发现可能重复客户</h2><p className="modal-lede">已选课程：{selectedProductNames.join('、') || '无'}。同名只做可能重复提醒；手机号或微信号命中现有客户时必须打开原档案更新。</p>{draft.duplicates.map((match) => <div className="review-block" key={match.customer.id}><strong>{match.customer.name}</strong><span>{match.matchedBy === 'phone' ? '手机号相同' : match.matchedBy === 'wechat' ? '微信号相同' : match.matchedBy === 'nickname_exact' ? '昵称相同' : '昵称相近'} · {match.customer.need || '暂无当前困扰'}</span><div className="review-actions"><button type="button" className="secondary-button small" onClick={() => onOpenCustomer(match.customer.id)}>查看客户</button><button type="button" className="secondary-button small" onClick={updateExisting}>更新已有客户</button></div></div>)}{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => setStep('form')}>返回修改</button>{draft.identity?.result === 'POSSIBLE_MATCH' && <button type="button" className="primary-button" disabled={saving} onClick={() => submit(input())}>确认不是同一人并保存</button>}</div></>}</form></div>
 }
 
 function AssignDialog({ appointment, database, staffId, api, onClose, onAssign }: { appointment: Appointment; database: Database; staffId: string; api: WorkbenchApi; onClose: () => void; onAssign: (appointment: Appointment, mentorId: string) => Promise<void> }) {
@@ -550,7 +586,7 @@ function SelfPasswordDialog({ api, onClose }: { api: WorkbenchApi; onClose: () =
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const submit = async (event: FormEvent) => { event.preventDefault(); if (newPassword !== confirm) { setError('两次输入的新密码不一致'); return } setSaving(true); setError(''); try { await api.changePassword(currentPassword, newPassword); onClose() } catch (changeError) { setError(changeError instanceof Error ? changeError.message : '修改密码失败') } finally { setSaving(false) } }
-  return <div className="modal-backdrop"><form className="modal-card compact-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">CHANGE PASSWORD</div><h2>修改个人密码</h2><p className="modal-lede">{PASSWORD_POLICY_HINT}</p><label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '保存新密码'}</button></div></form></div>
+  return <div className="modal-backdrop"><form className="modal-card compact-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">CHANGE PASSWORD</div><h2>修改密码</h2><p className="modal-lede">{PASSWORD_POLICY_HINT}</p><label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '保存新密码'}</button></div></form></div>
 }
 
 function MentorFormDialog({ mentor, onClose, onSubmit }: { mentor?: Staff; onClose: () => void; onSubmit: (input: { name: string; phone: string }) => Promise<void> }) {

@@ -8,6 +8,7 @@ export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface TeamSnapshot { mentor: Staff; customerCount: number; waitFollowUp: number; waitFeedback: number; completed: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; monthAppointments: number; monthCompleted: number; paidCustomers: number; mentorCount: number; statusCounts: Record<'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED', number>; customerTrend: Array<{ label: string; value: number }>; mentorLoad: Array<{ name: string; count: number }> }
 export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
+export interface SavePerformanceTrace { request_id?: string; operation_id?: string; result: 'SUCCESS' | 'ERROR'; customer_save_total_ms: number; identity_resolution_ms: number; customer_write_ms: number; enrollment_write_ms: number; profile_change_ms: number; ai_ms: number; other_ms: number }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -30,6 +31,7 @@ export interface WorkbenchApi {
   changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean; mustChangePassword: boolean; token?: string }>
   resetPassword(actorId: string, staffId: string, password: string): Promise<{ ok: boolean; staffId: string; mustChangePassword: boolean }>
   health(): Promise<HealthMetadata>
+  savePerformanceTraces(): Promise<SavePerformanceTrace[]>
   dashboard(staffId: string): Promise<Database>
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
@@ -76,6 +78,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     changePassword: async () => { throw new Error('本地 Demo 不支持密码修改') },
     resetPassword: async () => { throw new Error('本地 Demo 不支持密码重置') },
     health: async () => ({ ok: true, service: 'asva-api', environment: 'local', dataMode: 'demo', featureFlags: { externalAppointment: false } }),
+    savePerformanceTraces: async () => [],
     dashboard: async (staffId) => api.dashboard(staffId),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
@@ -132,6 +135,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     changePassword: async (currentPassword, newPassword) => { const result = await request<{ ok: boolean; mustChangePassword: boolean; token?: string }>('/api/auth/change-password', undefined, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); if (result.token) window.sessionStorage.setItem('asva_session_token', result.token); return result },
     resetPassword: (actorId, staffId, password) => request<{ ok: boolean; staffId: string; mustChangePassword: boolean }>(`/api/staff/${encodeURIComponent(staffId)}/reset-password`, actorId, { method: 'POST', body: JSON.stringify({ password }) }),
     health: () => request<HealthMetadata>('/api/health', undefined),
+    savePerformanceTraces: () => request<SavePerformanceTrace[]>('/api/debug/save-traces', undefined),
     dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
