@@ -2,11 +2,17 @@ import type { Customer, CustomerDraftPreview, Database, EnrollmentDraft, Feedbac
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { buildBasicDashboard } from '../shared/basic-dashboard.mjs'
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface TeamSnapshot { mentor: Staff; customerCount: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; paidCustomers: number; mentorCount: number; recentCustomers: Customer[] }
+export interface BasicDashboardCourse { course_id: string; course_name: string; enrollment_count: number; percentage: number }
+export interface BasicDashboardOwner { staff_id: string; staff_name: string; role: string; customer_count: number }
+export interface BasicDashboardInsight { type: string; text: string }
+export interface BasicDashboard { customer_total: number; new_customers_this_week: number; previous_week_new_customers: number; enrolled_customer_total: number; active_enrollment_total: number; profile_pending_total: number; course_enrollment_distribution: BasicDashboardCourse[]; customer_owner_distribution: BasicDashboardOwner[]; management_insights: BasicDashboardInsight[]; generated_at: string }
 export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
 export interface SavePerformanceTrace { request_id?: string; operation_id?: string; result: 'SUCCESS' | 'ERROR'; customer_save_total_ms: number; identity_resolution_ms: number; customer_write_ms: number; enrollment_write_ms: number; profile_change_ms: number; ai_ms: number; other_ms: number }
 export interface EvidenceDebugTrace { source_id: string; processing_status: string; extraction_batch: string; evidence_count: number; proposal_count: number; conflict_count: number; model: string; prompt_version: string; duration_ms: number }
@@ -42,6 +48,7 @@ export interface WorkbenchApi {
   savePerformanceTraces(): Promise<SavePerformanceTrace[]>
   evidenceDebug(): Promise<EvidenceDebugTrace[]>
   dashboard(staffId: string): Promise<Database>
+  basicDashboard(staffId: string): Promise<BasicDashboard>
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
   createAppointment(input: NewAppointmentInput): Promise<Database>
@@ -97,6 +104,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     savePerformanceTraces: async () => [],
     evidenceDebug: async () => [],
     dashboard: async (staffId) => api.dashboard(staffId),
+    basicDashboard: async (staffId) => buildBasicDashboard(api.dashboard(staffId)),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
     createAppointment: async (input) => api.createAppointment(input),
@@ -163,6 +171,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     savePerformanceTraces: () => request<SavePerformanceTrace[]>('/api/debug/save-traces', undefined),
     evidenceDebug: () => request<EvidenceDebugTrace[]>('/api/debug/evidence', undefined),
     dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
+    basicDashboard: (staffId) => request<BasicDashboard>('/api/dashboard/basic', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
     createAppointment: (input) => request<Database>('/api/appointments', undefined, { method: 'POST', body: JSON.stringify(input) }),

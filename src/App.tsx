@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { createGuardedLocalApi, createLocalApi } from './api'
 import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, CustomerDraftPreview, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, ProfileValue, Product, Staff } from './domain'
 import { createLocalRepository } from './repositories'
-import { createHttpApi, createLocalAsyncApi, type DocumentExtractionResult, type DocumentUploadInput, type FeedbackDraftInput, type SourceRecord, type SourceWorkspace, type WorkbenchApi } from './clientApi'
+import { createHttpApi, createLocalAsyncApi, type BasicDashboard, type DocumentExtractionResult, type DocumentUploadInput, type FeedbackDraftInput, type SourceRecord, type SourceWorkspace, type WorkbenchApi } from './clientApi'
 import { assembleCustomerContext, briefToText, createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary } from './customer-ai'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { GlobalAIAssistant } from './GlobalAIAssistant'
@@ -149,27 +149,40 @@ function WorkbenchApp() {
   const resolveConflict = (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => workbenchApi.resolveConflict(activeStaff.id, conflictId, resolution).then(() => { refresh() })
 
   const customerPage = <CustomersPage staff={activeStaff} database={database} canSeeAll={canSeeAll} selectedCustomer={selectedCustomer} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onSourceWorkspace={sourceWorkspace} onExtractDocument={extractDocument} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onAddCustomer={() => setManualCustomerOpen(true)} />
-  const homePage = <HomePage staff={activeStaff} database={database} />
+  const homePage = <HomePage staff={activeStaff} api={workbenchApi} onCustomers={(query = '') => navigate(`/customers${query}`)} />
   const mePage = <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); window.sessionStorage.removeItem('asva_session_token'); setLoggedInStaffId(null) }} />
   return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content"><Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant api={workbenchApi} staffId={activeStaff.id} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
 }
 
-function HomePage({ staff, database }: { staff: Staff; database: Database }) {
-  return <div className="home-page"><div className="welcome-row"><div><div className="eyebrow">ASVA WORKBENCH</div><h1>欢迎回来，{staff.name}<span className="period">。</span></h1><p className="page-lede">这里是客户档案入口，从资料与依据开始。</p></div></div><ResourceBanners /><HomeDataDashboard database={database} /></div>
+function HomePage({ staff, api, onCustomers }: { staff: Staff; api: WorkbenchApi; onCustomers: (query?: string) => void }) {
+  return <div className="home-page"><div className="welcome-row"><div><div className="eyebrow">ASVA WORKBENCH</div><h1>欢迎回来，{staff.name}<span className="period">。</span></h1><p className="page-lede">这里是客户档案入口，从资料与依据开始。</p></div></div><ResourceBanners /><HomeDataDashboard staffId={staff.id} api={api} onCustomers={onCustomers} /></div>
 }
 
-function HomeDataDashboard({ database }: { database: Database }) {
-  const extended = database as Database & { sourceRecords?: unknown[]; evidenceItems?: unknown[] }
-  const profileCustomerCount = database.customers.filter((customer) => Object.keys(customer.profileFields ?? {}).length > 0 || customer.profileMaterialization?.sections.some((section) => section.items.length > 0)).length
-  const profileChangeCount = database.profileChanges.length
-  const sourceAndEvidenceCount = (extended.sourceRecords?.length ?? 0) + (extended.evidenceItems?.length ?? 0)
+function HomeDataDashboard({ staffId, api, onCustomers }: { staffId: string; api: WorkbenchApi; onCustomers: (query?: string) => void }) {
+  const [dashboard, setDashboard] = useState<BasicDashboard | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    api.basicDashboard(staffId).then((next) => { if (!cancelled) setDashboard(next) }).catch((loadError: Error) => { if (!cancelled) setError(loadError.message || '数据暂时加载失败') }).finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [api, staffId])
+  if (loading) return <section className="surface task-surface home-dashboard" aria-busy="true"><SectionTitle title="基础数据看板" /><div className="dashboard-skeleton" aria-label="基础数据看板加载中"><span /><span /><span /><span /></div><div className="dashboard-chart-skeleton"><span /><span /></div></section>
+  if (error || !dashboard) return <section className="surface task-surface home-dashboard"><SectionTitle title="基础数据看板" /><div className="dashboard-error"><p>{error || '数据暂时加载失败'}</p><button className="secondary-button small" type="button" onClick={() => { setDashboard(null); setError(''); setLoading(true); api.basicDashboard(staffId).then(setDashboard).catch((loadError: Error) => setError(loadError.message || '数据暂时加载失败')).finally(() => setLoading(false)) }}>重新加载</button></div></section>
   const metrics = [
-    ['客户总数', database.customers.length],
-    ['已补充档案客户', profileCustomerCount],
-    ['档案记录总数', profileChangeCount],
-    ['资料与依据总数', sourceAndEvidenceCount],
-  ] as const
-  return <section className="surface task-surface home-dashboard"><SectionTitle title="基础数据看板" /><div className="home-summary">{metrics.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></section>
+    { label: '客户总数', value: dashboard.customer_total, onClick: () => onCustomers() },
+    { label: '本周新增客户数', value: dashboard.new_customers_this_week },
+    { label: '已报名客户', value: dashboard.enrolled_customer_total },
+    { label: '待补充档案', value: dashboard.profile_pending_total },
+  ]
+  const colors = ['#168d7b', '#23a878', '#67c6a0', '#a4dbc2', '#d1eee0', '#e7f6ee']
+  let cursor = 0
+  const donutStops = dashboard.course_enrollment_distribution.map((item, index) => { const start = cursor; cursor += item.percentage; return `${colors[index % colors.length]} ${start}% ${cursor}%` }).join(', ')
+  const donutStyle = { '--dashboard-donut': donutStops ? `conic-gradient(${donutStops})` : '#e9f3ee' } as React.CSSProperties
+  const maxOwnerCount = Math.max(1, ...dashboard.customer_owner_distribution.map((item) => item.customer_count))
+  return <section className="surface task-surface home-dashboard"><div className="dashboard-heading"><div><SectionTitle title="基础数据看板" /><p>快速掌握客户、课程与客户归属情况</p></div></div><div className="dashboard-metric-grid">{metrics.map((metric, index) => { const content = <><span className="dashboard-metric-mark">0{index + 1}</span><span className="dashboard-metric-label">{metric.label}</span><strong>{metric.value}</strong></>; return metric.onClick ? <button className="dashboard-metric dashboard-metric-action" type="button" onClick={metric.onClick} key={metric.label}>{content}</button> : <div className="dashboard-metric" key={metric.label}>{content}</div> })}</div><div className="dashboard-chart-grid"><section className="dashboard-chart-card"><div className="dashboard-chart-title"><h3>报名课程情况</h3><span>{dashboard.active_enrollment_total ? `${dashboard.active_enrollment_total} 人次` : '暂无数据'}</span></div>{dashboard.active_enrollment_total ? <div className="dashboard-donut-layout"><div className="dashboard-donut" style={donutStyle}><span><strong>{dashboard.active_enrollment_total}</strong><small>报名人次</small></span></div><div className="dashboard-legend">{dashboard.course_enrollment_distribution.map((item, index) => <div className="dashboard-legend-row" key={item.course_id}><i style={{ background: colors[index % colors.length] }} /><span>{item.course_name}</span><strong>{item.enrollment_count}人次</strong><small>{item.percentage}%</small></div>)}</div></div> : <div className="dashboard-empty">暂无报名数据</div>}</section><section className="dashboard-chart-card"><div className="dashboard-chart-title"><h3>客户归属分布</h3><span>按创建人</span></div>{dashboard.customer_owner_distribution.length ? <div className="dashboard-owner-list">{dashboard.customer_owner_distribution.map((item) => <div className="dashboard-owner-row" key={item.staff_id || item.staff_name}><div className="dashboard-owner-label"><span>{item.staff_name}</span><strong>{item.customer_count}</strong></div><div className="dashboard-owner-track"><i style={{ width: `${Math.max(4, item.customer_count / maxOwnerCount * 100)}%` }} /></div></div>)}</div> : <div className="dashboard-empty">暂无客户归属数据</div>}</section></div><section className="dashboard-insights"><h3>管理提示</h3>{dashboard.management_insights.length ? <ul>{dashboard.management_insights.map((item) => <li key={item.type}>{item.text}</li>)}</ul> : <p>暂无需要特别关注的管理提示。</p>}</section></section>
 }
 
 function ResourceBanners() {

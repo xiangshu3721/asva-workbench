@@ -13,6 +13,7 @@ import { documentFileRef, extractDocument, parseDocumentFileRef } from './docume
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
 import { isStaleProcessing, processingErrorCode } from '../shared/processing-contract.mjs'
+import { buildBasicDashboard } from './basic-dashboard.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -442,6 +443,12 @@ export class FeishuRepository {
   }
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
+  async basicDashboard(staffId) {
+    const database = await this.load()
+    const actor = database.staff.find((item) => item.id === staffId)
+    if (!actor || actor.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看数据看板')
+    return buildBasicDashboard(database)
+  }
   async assistantQuery(actorId, question, context) {
     try {
       const database = await this.load()
