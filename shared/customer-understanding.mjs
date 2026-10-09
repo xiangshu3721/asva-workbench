@@ -2,6 +2,7 @@ import { materializeCustomerProfile, summaryInputFingerprint } from './profile-m
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
 export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v1'
+export const CONTEXT_DENSITY_POLICY_VERSION = 'DENSITY_V1'
 export const UNDERSTANDING_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 export const UNDERSTANDING_CONFIDENCE = new Set(['LOW', 'MEDIUM', 'HIGH'])
 export const UNDERSTANDING_TYPES = new Set(['FACT_BASED', 'SELF_MEANING_BASED', 'SYNTHESIS', 'WORKING_HYPOTHESIS'])
@@ -62,7 +63,7 @@ export function classifyUnderstandingContextDensity({ profileCoverage = 0, confi
   const sparseSignals = [profileCoverage < 40, confirmedEvidenceCount < 12, sourceCount <= 1, knownDomainCount <= 3, lifeEventCount <= 2].filter(Boolean).length
   const richSignals = [profileCoverage >= 70, confirmedEvidenceCount >= 24, sourceCount >= 3, knownDomainCount >= 7, lifeEventCount >= 3].filter(Boolean).length
   const classification = sparseSignals >= 2 ? 'SPARSE' : profileCoverage >= 90 && richSignals >= 4 ? 'RICH' : 'MEDIUM'
-  return { classification, profile_coverage: profileCoverage, confirmed_evidence_count: confirmedEvidenceCount, source_count: sourceCount, known_domain_count: knownDomainCount, life_event_count: lifeEventCount, sparse_signal_count: sparseSignals, rich_signal_count: richSignals }
+  return { policy_version: CONTEXT_DENSITY_POLICY_VERSION, classification, profile_coverage: profileCoverage, confirmed_evidence_count: confirmedEvidenceCount, source_count: sourceCount, known_domain_count: knownDomainCount, life_event_count: lifeEventCount, sparse_signal_count: sparseSignals, rich_signal_count: richSignals }
 }
 
 export function applyUnderstandingDensityPolicy(value, density = {}) {

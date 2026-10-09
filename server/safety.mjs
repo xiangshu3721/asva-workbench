@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { scanImmediateSafety, assessSafetyRules, normalizeSafetyAssessment, qualityCheckSafetyAssessment, safetyEvidenceFingerprint, SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION } from '../shared/safety-contract.mjs'
+import { buildCustomerUnderstandingContext, CONTEXT_DENSITY_POLICY_VERSION } from '../shared/customer-understanding.mjs'
 
 const SENSITIVE_FIELDS = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
 const SAFETY_PROFILE_FIELDS = new Set(['current_core_issue', 'current_goal', 'current_expectation', 'current_barriers', 'current_resources', 'support_system', 'sleep', 'routine', 'energy_state', 'job_status', 'relationship_status'])
@@ -52,7 +53,19 @@ function classifySufficiency({ evidence, snapshot }) {
 }
 
 export function buildCustomerSafetyContext({ customer = {}, evidenceItems = [], sourceRecords = [], conflicts = [], stage4 = customer.understanding || {} } = {}) {
+  if (!Array.isArray(evidenceItems) || !Array.isArray(sourceRecords) || !Array.isArray(conflicts)) throw Object.assign(new Error('安全上下文构建失败'), { code: 'CONTEXT_BUILD_FAILED', status: 502, cause: 'INVALID_CONTEXT_INPUT' })
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS')
+  let densityContext
+  try {
+    densityContext = buildCustomerUnderstandingContext({ customer, evidenceItems, sourceRecords, conflicts }).context_density
+  } catch (error) {
+    throw Object.assign(new Error('安全上下文密度计算失败'), { code: 'CONTEXT_BUILD_FAILED', status: 502, cause: error?.code || 'DENSITY_POLICY_FAILED' })
+  }
+  if (!densityContext || !['RICH', 'MEDIUM', 'SPARSE'].includes(densityContext.classification)) throw Object.assign(new Error('安全上下文密度无法确定'), { code: 'CONTEXT_BUILD_FAILED', status: 502 })
+  const persistedDensity = stage4?.meta?.context_density || customer.understandingMeta?.payload?.meta?.context_density || null
+  if (persistedDensity && persistedDensity !== densityContext.classification) {
+    console.warn('[ASVA_AUDIT]', JSON.stringify({ operation: 'CONTEXT_DENSITY_DRIFT', customer_id: customer.id || 'unknown', persisted_density: persistedDensity, computed_density: densityContext.classification, policy_version: CONTEXT_DENSITY_POLICY_VERSION }))
+  }
   const refs = confirmed.slice(0, 28).map((item, index) => {
     const ref = evidenceRef(item, sourceRecords, index)
     return { ...ref, source_title: redact(ref.source_title, customer), display_text: redact(ref.display_text, customer), excerpt: redact(ref.excerpt, customer) }
@@ -66,7 +79,7 @@ export function buildCustomerSafetyContext({ customer = {}, evidenceItems = [], 
   const safeImmediateFlags = immediateFlags.map(({ matched_phrase: _matched, source_excerpt: excerpt, ...safe }) => ({ ...safe, evidence_refs: [refs.find((item) => excerpt && `${item.display_text} ${item.excerpt}`.includes(excerpt))?.evidence_id || refs[0]?.evidence_id].filter(Boolean) }))
   const safetyDataSufficiency = classifySufficiency({ evidence: confirmed, snapshot })
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').slice(0, 8).map((item) => ({ field_key: item.fieldKey, current_value: text(item.currentValue), proposed_value: text(item.newValue) }))
-  const contextDensity = stage4?.meta?.context_density || customer.understandingMeta?.payload?.meta?.context_density || 'SPARSE'
+  const contextDensity = densityContext.classification
   const knowledgeGaps = Array.isArray(stage4?.knowledge_gaps) ? stage4.knowledge_gaps.map((item) => text(item.question || item.text || item, 240)).filter(Boolean).slice(0, 6) : []
   const safetyFingerprint = safetyEvidenceFingerprint({ customer, evidenceItems: confirmed, conflicts, stage4: { current_issues: stage4?.top_issues || [], knowledge_gaps: knowledgeGaps } })
   return {
@@ -79,6 +92,15 @@ export function buildCustomerSafetyContext({ customer = {}, evidenceItems = [], 
     stage4_current_issues: Array.isArray(stage4?.top_issues) ? stage4.top_issues.slice(0, 4).map((item) => redact(text(item.title || item.text || item, 240), customer)).filter(Boolean) : [],
     knowledge_gaps: knowledgeGaps.map((item) => redact(item, customer)),
     context_density: contextDensity,
+    context_density_source: 'DERIVED_BY_POLICY',
+    context_density_policy_version: densityContext.policy_version || CONTEXT_DENSITY_POLICY_VERSION,
+    context_density_metrics: {
+      profile_coverage: densityContext.profile_coverage,
+      confirmed_evidence_count: densityContext.confirmed_evidence_count,
+      source_count: densityContext.source_count,
+      known_domain_count: densityContext.known_domain_count,
+      life_event_count: densityContext.life_event_count,
+    },
     safety_data_sufficiency: safetyDataSufficiency,
     immediate_safety_flags: safeImmediateFlags,
     input_fingerprint: hash({ safetyFingerprint, immediateFlags, snapshot, refs: refs.map(({ evidence_id, evidence_type, semantic_kind, field_key, occurred_at }) => ({ evidence_id, evidence_type, semantic_kind, field_key, occurred_at })) }),

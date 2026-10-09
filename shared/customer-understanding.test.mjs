@@ -46,5 +46,6 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(classifyUnderstandingContextDensity({ profileCoverage: 20, confirmedEvidenceCount: 4, sourceCount: 1, knownDomainCount: 2, lifeEventCount: 0 }).classification).toBe('SPARSE')
     expect(classifyUnderstandingContextDensity({ profileCoverage: 55, confirmedEvidenceCount: 16, sourceCount: 2, knownDomainCount: 5, lifeEventCount: 2 }).classification).toBe('MEDIUM')
     expect(classifyUnderstandingContextDensity({ profileCoverage: 90, confirmedEvidenceCount: 30, sourceCount: 5, knownDomainCount: 9, lifeEventCount: 4 }).classification).toBe('RICH')
+    expect(classifyUnderstandingContextDensity({ profileCoverage: 90, confirmedEvidenceCount: 30, sourceCount: 5, knownDomainCount: 9, lifeEventCount: 4 }).policy_version).toBe('DENSITY_V1')
   })
 })

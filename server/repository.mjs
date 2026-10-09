@@ -661,7 +661,7 @@ export class FeishuRepository {
     const processingAge = currentMeta.updatedAt ? Date.now() - new Date(currentMeta.updatedAt).getTime() : Number.POSITIVE_INFINITY
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerSafetyAssessment(actorId, customerId)
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === SAFETY_PROMPT_VERSION) return this.getCustomerSafetyAssessment(actorId, customerId)
-    const processingMeta = { ...currentMeta, customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status: 'PROCESSING', inputFingerprint, promptVersion: SAFETY_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: currentMeta.payload || null }
+    const processingMeta = { ...currentMeta, customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status: 'PROCESSING', inputFingerprint, promptVersion: SAFETY_PROMPT_VERSION, contextDensity: context.context_density, contextDensitySource: context.context_density_source, contextDensityPolicyVersion: context.context_density_policy_version, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: currentMeta.payload || null }
     const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: customerRecord.aiSummaryMeta || null, _understanding: customerRecord.understandingMeta || null, _safety: meta }) }))
     await writeMeta(processingMeta)
     const startedAt = Date.now()
