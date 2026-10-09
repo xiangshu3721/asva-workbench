@@ -98,7 +98,39 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
 
 const blankInsight = (text = '待进一步确认') => ({ text, evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' })
 const asList = (value, limit) => Array.isArray(value) ? value.filter((item) => item && typeof item === 'object').slice(0, limit) : []
-const cleanInsight = (item, fallback = '待进一步确认') => { const evidenceValues = item?.evidence_ids ?? item?.evidence_refs ?? item?.evidenceIds; return ({ text: safeText(item?.text || item?.title || item?.pattern || item?.need || item?.resource || item?.caution || item?.focus || fallback, 280) || fallback, detail: safeText(item?.detail || item?.description || item?.why_it_matters || item?.why || item?.current_cost || item?.why_now || '', 360), title: safeText(item?.title || '', 180), why_it_matters: safeText(item?.why_it_matters || item?.why || '', 300), pattern: safeText(item?.pattern || '', 220), trigger: safeText(item?.trigger || '', 220), current_cost: safeText(item?.current_cost || '', 220), resource: safeText(item?.resource || '', 220), side_a: safeText(item?.side_a || '', 180), side_b: safeText(item?.side_b || '', 180), description: safeText(item?.description || '', 300), focus: safeText(item?.focus || '', 220), why_now: safeText(item?.why_now || '', 260), suggested_entry: safeText(item?.suggested_entry || item?.prompt || '', 300), caution: safeText(item?.caution || '', 220), avoid: safeText(item?.avoid || '', 220), prefer: safeText(item?.prefer || '', 220), level: ['EXPLICIT', 'INFERRED'].includes(item?.level) ? item.level : undefined, supporting_events: Array.isArray(item?.supporting_events) ? item.supporting_events.map((event) => safeText(event, 180)).filter(Boolean).slice(0, 6) : [], evidence_ids: unique(Array.isArray(evidenceValues) ? evidenceValues.map((entry) => typeof entry === 'object' ? entry.evidence_ref || entry.evidence_id : entry).filter(Boolean).map(String) : []), confidence: UNDERSTANDING_CONFIDENCE.has(item?.confidence) ? item.confidence : 'LOW', type: UNDERSTANDING_TYPES.has(item?.type) ? item.type : 'SYNTHESIS' }) }
+const cleanInsight = (item, fallback = '待进一步确认') => {
+  const evidenceValues = item?.evidence_ids ?? item?.evidence_refs ?? item?.evidenceIds
+  const sideA = safeText(item?.side_a || '', 180)
+  const sideB = safeText(item?.side_b || '', 180)
+  const tensionTitle = [sideA, sideB].filter(Boolean).join(' ↔ ')
+  const rawText = safeText(item?.text || '', 280)
+  const placeholderText = new Set(['待进一步确认', '待确认事项']).has(rawText)
+  const text = tensionTitle && placeholderText ? tensionTitle : rawText || safeText(item?.title || item?.pattern || item?.need || item?.resource || item?.caution || item?.focus || tensionTitle || fallback, 280)
+  return {
+    text: text || fallback,
+    detail: safeText(item?.detail || item?.description || item?.why_it_matters || item?.why || item?.current_cost || item?.why_now || '', 360),
+    title: safeText(item?.title || '', 180),
+    why_it_matters: safeText(item?.why_it_matters || item?.why || '', 300),
+    pattern: safeText(item?.pattern || '', 220),
+    trigger: safeText(item?.trigger || '', 220),
+    current_cost: safeText(item?.current_cost || '', 220),
+    resource: safeText(item?.resource || '', 220),
+    side_a: sideA,
+    side_b: sideB,
+    description: safeText(item?.description || '', 300),
+    focus: safeText(item?.focus || '', 220),
+    why_now: safeText(item?.why_now || '', 260),
+    suggested_entry: safeText(item?.suggested_entry || item?.prompt || '', 300),
+    caution: safeText(item?.caution || '', 220),
+    avoid: safeText(item?.avoid || '', 220),
+    prefer: safeText(item?.prefer || '', 220),
+    level: ['EXPLICIT', 'INFERRED'].includes(item?.level) ? item.level : undefined,
+    supporting_events: Array.isArray(item?.supporting_events) ? item.supporting_events.map((event) => safeText(event, 180)).filter(Boolean).slice(0, 6) : [],
+    evidence_ids: unique(Array.isArray(evidenceValues) ? evidenceValues.map((entry) => typeof entry === 'object' ? entry.evidence_ref || entry.evidence_id : entry).filter(Boolean).map(String) : []),
+    confidence: UNDERSTANDING_CONFIDENCE.has(item?.confidence) ? item.confidence : 'LOW',
+    type: UNDERSTANDING_TYPES.has(item?.type) ? item.type : 'SYNTHESIS',
+  }
+}
 
 export function normalizeCustomerUnderstanding(raw, { evidenceIds = [], now = new Date().toISOString() } = {}) {
   const allowed = new Set(evidenceIds)

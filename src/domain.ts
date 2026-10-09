@@ -12,6 +12,18 @@ export type UnderstandingInsightType = 'FACT_BASED' | 'SELF_MEANING_BASED' | 'SY
 export interface UnderstandingInsight {
   text: string
   detail?: string
+  title?: string
+  why_it_matters?: string
+  pattern?: string
+  trigger?: string
+  current_cost?: string
+  resource?: string
+  side_a?: string
+  side_b?: string
+  description?: string
+  focus?: string
+  why_now?: string
+  suggested_entry?: string
   evidence_ids: string[]
   confidence: UnderstandingConfidence
   type: UnderstandingInsightType

@@ -30,4 +30,15 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(local.knowledge_gaps.length).toBeGreaterThan(0)
     expect(local.one_line_understanding.confidence).toBe('LOW')
   })
+
+  it('uses tension sides as the title and preserves an actionable conversation entry', () => {
+    const normalized = normalizeCustomerUnderstanding({
+      key_tensions: [{ text: '待进一步确认', side_a: '熟悉职业路径', side_b: '探索新方向', evidence_ids: ['EVD-1'], confidence: 'MEDIUM', type: 'SYNTHESIS' }],
+      next_conversation: [{ focus: '还原最近一次争吵的变化过程', why_now: '先找到可观察的触发点', suggested_entry: '她持续说你的时候，你最先发生了什么变化？', evidence_ids: ['EVD-1'], confidence: 'HIGH', type: 'SYNTHESIS' }],
+      knowledge_gaps: [{ question: '伴侣如何理解这次冲突？' }],
+    }, { evidenceIds: ['EVD-1'] })
+    expect(normalized.key_tensions[0].text).toBe('熟悉职业路径 ↔ 探索新方向')
+    expect(normalized.next_conversation[0].focus).toBe('还原最近一次争吵的变化过程')
+    expect(normalized.next_conversation[0].suggested_entry).toContain('你最先发生了什么变化')
+  })
 })

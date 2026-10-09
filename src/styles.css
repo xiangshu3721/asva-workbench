@@ -340,6 +340,8 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .understanding-item > div:first-child { min-width: 0; }
 .understanding-item strong { display: block; color: #294f49; font-size: 12px; line-height: 1.55; }
 .understanding-item p { margin: 4px 0 0; color: #708780; font-size: 11px; line-height: 1.55; }
+.understanding-item-tension strong { font-size: 13px; }
+.understanding-item-conversation .understanding-suggested-entry { margin-top: 8px; padding: 8px 10px; border-left: 2px solid #9ed4be; color: #315f57; background: #f4fbf7; }
 .understanding-confidence { display: inline-block; margin-top: 7px; color: #8b9d97; font-size: 9px; }
 .understanding-type-working_hypothesis { border-style: dashed; background: #fffdf7; }
 .understanding-depth { margin-top: 15px; padding-top: 13px; border-top: 1px solid #dcece6; }
