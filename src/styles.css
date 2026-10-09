@@ -322,6 +322,40 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .customer-detail-avatar { color: #0f655f; background: #e2f5ec; }
 .customer-meta-row span { background: #edf8f3; }
 .customer-ai-summary { background: linear-gradient(120deg, #e8f7f0 0%, #fffefa 67%); }
+.understanding-panel { background: linear-gradient(120deg, #f1faf6 0%, #fffefa 70%); }
+.understanding-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.understanding-heading h2 { margin: 5px 0 4px; color: #174943; font-size: 19px; }
+.understanding-heading p { margin: 0; color: #6d857f; font-size: 11px; }
+.understanding-heading-actions { display: flex; align-items: center; gap: 8px; }
+.understanding-status { padding: 5px 8px; border-radius: 999px; background: #e3f4ec; color: #317d69; font-size: 10px; white-space: nowrap; }
+.understanding-status-stale, .understanding-status-failed { background: #fff4df; color: #9a6b27; }
+.understanding-status-processing { background: #eaf0ff; color: #526ca8; }
+.understanding-hero { margin-top: 17px; padding: 16px 17px; border: 1px solid #c5e6d7; border-radius: 14px; background: #fff; }
+.understanding-hero > p { margin: 0; color: #174943; font-size: 18px; font-weight: 650; line-height: 1.55; }
+.understanding-first-screen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.understanding-block { min-width: 0; }
+.understanding-block h3 { margin: 0 0 7px; color: #48726b; font-size: 11px; font-weight: 650; }
+.understanding-list { display: grid; gap: 8px; }
+.understanding-item { padding: 11px 12px; border: 1px solid #d9ebe4; border-radius: 11px; background: rgba(255,255,255,.86); }
+.understanding-item > div:first-child { min-width: 0; }
+.understanding-item strong { display: block; color: #294f49; font-size: 12px; line-height: 1.55; }
+.understanding-item p { margin: 4px 0 0; color: #708780; font-size: 11px; line-height: 1.55; }
+.understanding-confidence { display: inline-block; margin-top: 7px; color: #8b9d97; font-size: 9px; }
+.understanding-type-working_hypothesis { border-style: dashed; background: #fffdf7; }
+.understanding-depth { margin-top: 15px; padding-top: 13px; border-top: 1px solid #dcece6; }
+.understanding-depth summary { cursor: pointer; color: #176f61; font-size: 11px; font-weight: 650; }
+.understanding-depth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.understanding-evidence { margin-top: 7px; color: #277c6b; font-size: 10px; }
+.understanding-evidence summary { cursor: pointer; list-style: none; }
+.understanding-evidence summary::-webkit-details-marker { display: none; }
+.understanding-evidence > div { display: grid; gap: 6px; margin-top: 7px; }
+.understanding-evidence article { display: grid; gap: 2px; padding: 7px 8px; border-left: 2px solid #b6ddcc; background: #f5fbf8; }
+.understanding-evidence article strong { color: #4d746c; font-size: 10px; }
+.understanding-evidence article span, .understanding-evidence article small { color: #718681; font-size: 10px; line-height: 1.45; }
+.understanding-no-basis { display: inline-block; margin-top: 7px; color: #a5b3ae; font-size: 9px; }
+.understanding-empty { color: #718681; font-size: 12px; }
+.understanding-empty-panel { background: #f7fbf8; }
+.understanding-status-line { margin-top: 12px; color: #9a6b27; font-size: 10px; }
 .summary-bullets { color: #3c746c; background: #e8f7f0; }
 .summary-fact, .summary-fact-rose, .summary-fact-amber, .summary-fact-green, .summary-fact-blue { border-color: #a8dcca; }
 .summary-fact-rose { border-color: #efafbd; }.summary-fact-amber { border-color: #efd08c; }.summary-fact-green { border-color: #8bd5b7; }.summary-fact-blue { border-color: #9bc9e8; }
@@ -345,6 +379,10 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 @media (max-width: 780px) {
   .bottom-nav { background: rgba(255,254,250,.97); }
   .login-form input, .profile-supplement textarea, .ai-input-row textarea { font-size: 16px; }
+  .understanding-heading { display: block; }
+  .understanding-heading-actions { justify-content: space-between; margin-top: 11px; }
+  .understanding-first-screen, .understanding-depth-grid { grid-template-columns: 1fr; }
+  .understanding-hero > p { font-size: 16px; }
 }
 
 /* Shared resource entry points for the ASVA mentor workspace. */

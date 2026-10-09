@@ -1,12 +1,15 @@
-import type { Customer, CustomerDraftPreview, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { buildBasicDashboard } from '../shared/basic-dashboard.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { createLocalCustomerUnderstanding } from '../shared/customer-understanding.mjs'
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
+export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number } }
 export interface TeamSnapshot { mentor: Staff; customerCount: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; paidCustomers: number; mentorCount: number; recentCustomers: Customer[] }
 export interface BasicDashboardCourse { course_id: string; course_name: string; enrollment_count: number; percentage: number }
@@ -70,6 +73,8 @@ export interface WorkbenchApi {
   assistantQuery(actorId: string, question: string, context?: AssistantQueryContext): Promise<AssistantQueryResult>
   customerIntelligence(actorId: string, input: { context: CustomerAiContext }): Promise<CustomerIntelligence>
   refreshCustomerSummary(actorId: string, customerId: string, force?: boolean): Promise<Customer | undefined>
+  getCustomerUnderstanding(actorId: string, customerId: string): Promise<CustomerUnderstandingResponse>
+  refreshCustomerUnderstanding(actorId: string, customerId: string, force?: boolean): Promise<CustomerUnderstandingResponse>
   serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
   brief(actorId: string, input: { name: string; need: string; expectation: string }): Promise<string>
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
@@ -96,6 +101,11 @@ export function clearApiRequestTraces() { requestTraces.splice(0, requestTraces.
 type LocalApi = ReturnType<typeof createLocalApi>
 
 export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
+  const localUnderstanding = async (actorId: string, customerId: string): Promise<CustomerUnderstandingResponse> => {
+    const customer = await api.customer(actorId, customerId)
+    const context = { generated_at: new Date().toISOString(), current_needs: customer?.need ? [{ text: customer.need, evidence_ids: [] }] : [], resources: customer?.profileFields?.current_resources ? [{ text: String(customer.profileFields.current_resources), evidence_ids: [] }] : [], top_life_events: [], coverage_gaps: customer?.profileMaterialization?.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name) || ['当前资料'], evidence_refs: [] }
+    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
+  }
   return {
     login: async (phone, password) => api.login(phone, password),
     changePassword: async () => { throw new Error('本地 Demo 不支持密码修改') },
@@ -126,6 +136,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     assistantQuery: async (actorId, question, context) => queryLocalAssistant(api.dashboard(actorId), question, context, actorId),
     customerIntelligence: async (_actorId, input) => { const summary = createLocalCoreSummary(input.context); return { summary, brief: createLocalBrief(input.context, summary) } },
     refreshCustomerSummary: async (actorId, customerId) => api.customer(actorId, customerId),
+    getCustomerUnderstanding: localUnderstanding,
+    refreshCustomerUnderstanding: localUnderstanding,
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
     brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
@@ -193,6 +205,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     assistantQuery: (actorId, question, context) => request<AssistantQueryResult>('/api/ai/query', actorId, { method: 'POST', body: JSON.stringify({ question, context }) }),
     customerIntelligence: (actorId, input) => request<CustomerIntelligence>('/api/ai/customer-intelligence', actorId, { method: 'POST', body: JSON.stringify(input) }),
     refreshCustomerSummary: (actorId, customerId, force = false) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/summary/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
+    getCustomerUnderstanding: (actorId, customerId) => request<CustomerUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/understanding`, actorId),
+    refreshCustomerUnderstanding: (actorId, customerId, force = false) => request<CustomerUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/understanding/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),
     brief: async (actorId, input) => (await request<{ brief: string }>('/api/ai/brief', actorId, { method: 'POST', body: JSON.stringify(input) })).brief,
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),

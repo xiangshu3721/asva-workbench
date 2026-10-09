@@ -146,6 +146,9 @@ async function handle(request, response, requestId) {
   if (request.method === 'PATCH' && customerEdit) return send(request, response, 200, await repository.updateCustomer(await guard(request), decodeURIComponent(customerEdit[1]), await readBody(request)), requestId)
   const customerEnrollments = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments$/)
   if (request.method === 'PUT' && customerEnrollments) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerEnrollments(await guard(request), decodeURIComponent(customerEnrollments[1]), body.enrollments, body.operationId), requestId) }
+  const understandingCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/understanding(?:\/refresh)?$/)
+  if (understandingCustomer && request.method === 'GET' && url.pathname.endsWith('/understanding')) return send(request, response, 200, await repository.getCustomerUnderstanding(await guard(request), decodeURIComponent(understandingCustomer[1])), requestId)
+  if (understandingCustomer && request.method === 'POST' && url.pathname.endsWith('/understanding/refresh')) { const body = await readBody(request); return send(request, response, 200, await repository.refreshCustomerUnderstanding(await guard(request), decodeURIComponent(understandingCustomer[1]), { force: body.force === true }), requestId) }
   if (request.method === 'GET' && url.pathname.startsWith('/api/customers/')) return send(request, response, 200, await repository.customer(await guard(request), decodeURIComponent(url.pathname.slice('/api/customers/'.length))), requestId)
   const briefCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/brief$/)
   if (request.method === 'POST' && briefCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.saveBrief(await guard(request), decodeURIComponent(briefCustomer[1]), body.brief), requestId) }

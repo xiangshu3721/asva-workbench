@@ -16,6 +16,8 @@
     "orphan:check": "node scripts/orphan-reference-check.mjs",
     "stage2:provision": "node scripts/stage2-provision.mjs",
     "stage2:integration": "node scripts/stage2-integration-test.mjs",
+    "stage4:integration": "node scripts/stage4-integration-test.mjs",
+    "stage4:golden": "ASVA_ENVIRONMENT=production DATA_MODE=production node scripts/stage4-golden-integration.mjs",
     "stage1:integration": "node scripts/stage1-integration-test.mjs",
     "stage0:write-test": "node scripts/stage0-write-test.mjs",
     "build": "npm run build:meta && tsc -p tsconfig.json --noEmit && vite build",

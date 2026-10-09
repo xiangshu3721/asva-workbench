@@ -6,6 +6,56 @@ export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIR
 export type ProfileValue = string | number | boolean | string[] | null
 export type SummaryStatus = 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'
 
+export type UnderstandingConfidence = 'LOW' | 'MEDIUM' | 'HIGH'
+export type UnderstandingInsightType = 'FACT_BASED' | 'SELF_MEANING_BASED' | 'SYNTHESIS' | 'WORKING_HYPOTHESIS'
+
+export interface UnderstandingInsight {
+  text: string
+  detail?: string
+  evidence_ids: string[]
+  confidence: UnderstandingConfidence
+  type: UnderstandingInsightType
+}
+
+export interface UnderstandingGap {
+  text: string
+  detail?: string
+  priority: 'HIGH' | 'MEDIUM' | 'LOW'
+  evidence_ids: string[]
+}
+
+export interface CustomerUnderstandingV1 {
+  schema_version: string
+  generated_at: string
+  one_line_understanding: UnderstandingInsight
+  top_issues: UnderstandingInsight[]
+  current_life_phase: UnderstandingInsight | null
+  current_needs: UnderstandingInsight[]
+  core_blocks: UnderstandingInsight[]
+  resources_and_strengths: UnderstandingInsight[]
+  key_tensions: UnderstandingInsight[]
+  knowledge_gaps: UnderstandingGap[]
+  next_conversation: Array<UnderstandingInsight & { prompt?: string }>
+  service_cautions: Array<UnderstandingInsight & { avoid?: string; prefer?: string }>
+  working_hypotheses: UnderstandingInsight[]
+  meta: { overall_confidence: UnderstandingConfidence; evidence_count: number }
+}
+
+export interface CustomerUnderstandingMeta {
+  status: SummaryStatus
+  inputFingerprint?: string
+  profileVersion?: number
+  promptVersion?: string
+  provider?: string
+  model?: string
+  generatedAt?: string
+  updatedAt?: string
+  durationMs?: number
+  evidenceCount?: number
+  quality?: { ungroundedClaimRate: number; unsupportedDiagnosis: boolean; unknownHandling: boolean; contradictionHandling: boolean }
+  errorCode?: string
+}
+
 export interface AiCustomerSummary {
   overview: string
   core_issues: string[]
@@ -111,6 +161,9 @@ export interface Customer {
   aiSummary?: AiCustomerSummary
   aiSummaryStatus?: SummaryStatus
   intendedCourse: string | null
+  understanding?: CustomerUnderstandingV1
+  understandingStatus?: SummaryStatus
+  understandingMeta?: CustomerUnderstandingMeta
   confirmedFacts: string[]
   aiQuestions: string[]
   paid: boolean

@@ -1,5 +1,6 @@
 import { config } from './config.mjs'
 import { BUSINESS_GLOSSARY, DIMENSION_REGISTRY, ENTITY_REGISTRY, METRIC_REGISTRY } from '../shared/semantic-engine.mjs'
+import { CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
 
 export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
@@ -30,7 +31,10 @@ async function callDeepSeek(messages, temperature = 0.2) {
 }
 
 function parseJson(content) {
-  try { return JSON.parse(content) } catch { return null }
+  try { return JSON.parse(content) } catch {
+    const fenced = String(content || '').match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+    try { return fenced ? JSON.parse(fenced[1]) : null } catch { return null }
+  }
 }
 
 const QUERY_OPERATIONS = new Set(['ENTITY_DETAIL', 'ENTITY_LIST', 'COUNT', 'AGGREGATE', 'GROUP_AGGREGATE', 'SUMMARY', 'RANK', 'TREND', 'COMPARE'])
@@ -193,4 +197,36 @@ export async function createCustomerIntelligence(input) {
     },
     brief: cleanBrief(parsed?.brief),
   }
+}
+
+export async function createCustomerUnderstanding(input) {
+  const context = input?.context || input || {}
+  const evidenceRefs = Array.isArray(context.evidence_refs) ? context.evidence_refs : []
+  const aliasToId = new Map(evidenceRefs.map((item, index) => [`E${index + 1}`, item.evidence_id]))
+  const idToAlias = new Map([...aliasToId].map(([alias, id]) => [id, alias]))
+  const replaceEvidenceIds = (value) => {
+    if (Array.isArray(value)) return value.map(replaceEvidenceIds)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => idToAlias.get(id)).filter(Boolean) : key === 'evidence_id' ? undefined : replaceEvidenceIds(item)]).filter(([, item]) => item !== undefined))
+  }
+  const redactValues = [...new Set((input?.redactValues || []).filter((value) => value !== null && value !== undefined && String(value) !== '').map(String))]
+  const redactDirectIdentifiers = (value) => {
+    if (Array.isArray(value)) return value.map(redactDirectIdentifiers)
+    if (typeof value === 'string') return redactValues.reduce((text, identifier) => text.split(identifier).join('[REDACTED]'), value)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactDirectIdentifiers(item)]))
+  }
+  const llmContext = redactDirectIdentifiers(replaceEvidenceIds({ ...context, evidence_refs: evidenceRefs.map((item, index) => ({ evidence_ref: `E${index + 1}`, display_text: item.display_text, excerpt: item.excerpt, occurred_at: item.occurred_at, evidence_type: item.evidence_type, source_perspective: item.source_perspective })) }))
+  const system = '你是 ASVA 的 CustomerUnderstandingV1 结构化整理引擎，prompt_version=' + CUSTOMER_UNDERSTANDING_PROMPT_VERSION + '。只根据提供的结构化客户快照、已确认 Evidence 摘要和匿名 evidence_ref 工作，不读取或要求原始全文。禁止输出姓名、手机号、微信号、诊断、人格类型、疾病判断、销售结论。current_snapshot 是当前信息，top_life_events 是历史经历，不能把历史当当前。open_conflicts 中的值必须作为未决不确定性处理，不能选一边写成确定事实。资料不足必须写入 knowledge_gaps。必须严格返回一个 JSON 对象，不能包裹其它字段、不能 Markdown。严格字段与数组项结构如下：one_line_understanding={text,detail,evidence_ids,confidence,type}；top_issues=[{title,why_it_matters,evidence_ids,confidence,type}]最多3项；current_life_phase={title,description,supporting_events,evidence_ids,confidence,type}或null；current_needs=[{need,level:"EXPLICIT"|"INFERRED",evidence_ids,confidence,type}]最多5项；core_blocks=[{pattern,trigger,current_cost,evidence_ids,confidence,type}]；resources_and_strengths=[{resource,why_it_matters,evidence_ids,confidence,type}]；key_tensions=[{side_a,side_b,description,evidence_ids,confidence,type}]；knowledge_gaps=[{question,why_it_matters,related_issue,priority,evidence_ids}]至少1项只要存在合理未知；next_conversation=[{focus,why_now,suggested_entry,evidence_ids,confidence,type}]最多3项；service_cautions=[{caution,why,avoid,prefer,evidence_ids,confidence,type}]；working_hypotheses=[{text,evidence_ids,confidence:"LOW",type:"WORKING_HYPOTHESIS"}]；meta={overall_confidence,evidence_count}。所有引用只填写 evidence_ref（例如 E1），不要猜测其它引用；没有依据时 confidence 必须为 LOW。' + (input?.repair === true ? '这是一次修复调用：上一版未通过证据或安全门禁，请重新生成完整 JSON，删除所有无法由 evidence_ref 支持的强结论和诊断词，并保留至少一个具体 knowledge_gaps。' : '')
+  const raw = await callDeepSeek([
+    { role: 'system', content: system },
+    { role: 'user', content: JSON.stringify(llmContext) },
+  ], 0.15)
+  const normalized = normalizeCustomerUnderstanding(parseJson(raw), { evidenceIds: [...aliasToId.keys()], now: new Date().toISOString() })
+  const restoreEvidenceIds = (value) => {
+    if (Array.isArray(value)) return value.map(restoreEvidenceIds)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
+  }
+  return restoreEvidenceIds(normalized)
 }
