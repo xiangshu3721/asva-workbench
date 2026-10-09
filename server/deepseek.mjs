@@ -1,6 +1,7 @@
 import { config } from './config.mjs'
 import { BUSINESS_GLOSSARY, DIMENSION_REGISTRY, ENTITY_REGISTRY, METRIC_REGISTRY } from '../shared/semantic-engine.mjs'
 import { applyUnderstandingDensityPolicy, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+import { SAFETY_EXPLICITNESS, SAFETY_POLARITIES, SAFETY_RECENCY, SAFETY_SCOPES, SAFETY_SIGNAL_TYPES, normalizeSafetySignal } from '../shared/safety-contract.mjs'
 
 export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
@@ -231,4 +232,42 @@ export async function createCustomerUnderstanding(input) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
   }
   return applyUnderstandingDensityPolicy(restoreEvidenceIds(normalized), context.context_density)
+}
+
+export async function createSafetySignalCandidates(input) {
+  const context = input?.context || input || {}
+  const refs = Array.isArray(context.evidence_refs) ? context.evidence_refs : []
+  const llmContext = {
+    current_snapshot: context.current_snapshot || {},
+    evidence_refs: refs.map((item, index) => ({ evidence_ref: `E${index + 1}`, display_text: item.display_text, excerpt: item.excerpt, occurred_at: item.occurred_at, evidence_type: item.evidence_type, source_perspective: item.source_perspective })),
+    open_conflicts: context.open_conflicts || [],
+    stage4_current_issues: context.stage4_current_issues || [],
+    knowledge_gaps: context.knowledge_gaps || [],
+    safety_data_sufficiency: context.safety_data_sufficiency || 'INSUFFICIENT',
+  }
+  const system = '你是 ASVA Safety Signal Extractor。只从已确认的结构化客户快照和匿名证据摘要中提取可能需要安全确认的信号，不做诊断、不分配风险等级、不决定服务门禁、不决定商业阻断。必须区分 subject_scope=SELF/OTHER/UNKNOWN、polarity=PRESENT/NEGATED/UNCERTAIN、explicitness=EXPLICIT/IMPLICIT、recency=CURRENT/RECENT/HISTORICAL/UNKNOWN。每个信号必须引用一个或多个 evidence_ref（例如 E1），没有依据就不要输出。严格返回 JSON：{"signals":[{"signal_type":"SELF_HARM_IDEATION|SUICIDAL_INTENT_OR_PLAN|RECENT_SELF_HARM_BEHAVIOR|HARM_TO_OTHERS_IDEATION|VIOLENCE_OR_COERCION|SEVERE_FUNCTIONAL_IMPAIRMENT|SEVERE_SLEEP_DEPRIVATION_OR_ACTIVATION|REALITY_TESTING_CONCERN|SUBSTANCE_RELATED_SAFETY|ABUSE_OR_EXPLOITATION|ACUTE_TRAUMA_OR_BEREAVEMENT|BASIC_SELF_CARE_FAILURE|OTHER_SAFETY_CONCERN","subject_scope":"SELF|OTHER|UNKNOWN","polarity":"PRESENT|NEGATED|UNCERTAIN","explicitness":"EXPLICIT|IMPLICIT","recency":"CURRENT|RECENT|HISTORICAL|UNKNOWN","severity":"LOW|MEDIUM|HIGH","confidence":"LOW|MEDIUM|HIGH","evidence_refs":["E1"],"short_description":"不超过60字","current_status":"不超过100字","details":"不超过200字"}],"critical_unknowns":["最多5条需要确认的问题"],"context_summary":"不超过120字"}。资料不足时 signals 为空，critical_unknowns 明确写出需要确认的安全信息。禁止输出 risk_level、service_gate、commercial_block、requires_human_review 或任何诊断词。'
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(llmContext) }]
+  const valid = (parsed) => Boolean(parsed && typeof parsed === 'object' && Array.isArray(parsed.signals) && parsed.signals.every((item) => item && SAFETY_SIGNAL_TYPES.has(item.signal_type) && SAFETY_SCOPES.has(item.subject_scope) && SAFETY_POLARITIES.has(item.polarity) && SAFETY_EXPLICITNESS.has(item.explicitness) && SAFETY_RECENCY.has(item.recency) && Array.isArray(item.evidence_refs) && item.evidence_refs.length > 0) && Array.isArray(parsed.critical_unknowns) && typeof parsed.context_summary === 'string')
+  const normalize = (parsed) => ({ signals: parsed.signals.map(normalizeSafetySignal), critical_unknowns: list(parsed.critical_unknowns, 5), context_summary: parsed.context_summary.slice(0, 120) })
+  const repairShape = (parsed) => {
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.signals)) return parsed
+    return { ...parsed, signals: parsed.signals.map((item) => {
+      if (SAFETY_RECENCY.has(item?.polarity) && SAFETY_POLARITIES.has(item?.recency)) return { ...item, polarity: item.recency, recency: item.polarity }
+      if (!SAFETY_POLARITIES.has(item?.polarity) && SAFETY_RECENCY.has(item?.recency)) return { ...item, polarity: ['CURRENT', 'RECENT'].includes(item.recency) ? 'PRESENT' : 'UNCERTAIN' }
+      return item
+    }) }
+  }
+  let initialJsonValid = false
+  let repairUsed = false
+  let raw = await callDeepSeek(messages, 0)
+  let parsed = parseJson(raw)
+  initialJsonValid = valid(parsed)
+  if (!initialJsonValid) {
+    repairUsed = true
+    raw = await callDeepSeek([{ role: 'system', content: system }, { role: 'system', content: '上一轮输出未通过 JSON 结构门禁。只返回符合指定字段、枚举和 evidence_ref 要求的完整 JSON，不要解释。' }, { role: 'user', content: JSON.stringify(llmContext) }], 0)
+    parsed = repairShape(parseJson(raw))
+  }
+  const finalJsonValid = valid(parsed)
+  if (!finalJsonValid) throw Object.assign(new Error('安全信号 JSON 结构校验失败'), { code: 'SAFETY_JSON_INVALID', status: 502, initialJsonValid, repairUsed, finalJsonValid, parsedKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed).slice(0, 12) : [], signalCount: Array.isArray(parsed?.signals) ? parsed.signals.length : -1, signalShapes: Array.isArray(parsed?.signals) ? parsed.signals.slice(0, 3).map((item) => ({ keys: item && typeof item === 'object' ? Object.keys(item).slice(0, 12) : [], polarity_value: typeof item?.polarity === 'string' ? item.polarity.slice(0, 40) : null, recency_value: typeof item?.recency === 'string' ? item.recency.slice(0, 40) : null, signal_type: SAFETY_SIGNAL_TYPES.has(item?.signal_type), subject_scope: SAFETY_SCOPES.has(item?.subject_scope), polarity: SAFETY_POLARITIES.has(item?.polarity), explicitness: SAFETY_EXPLICITNESS.has(item?.explicitness), recency: SAFETY_RECENCY.has(item?.recency), evidence_refs: Array.isArray(item?.evidence_refs) && item.evidence_refs.length > 0 })) : [], criticalUnknownsType: Array.isArray(parsed?.critical_unknowns) ? 'array' : typeof parsed?.critical_unknowns, contextSummaryType: typeof parsed?.context_summary })
+  return { ...normalize(parsed), initial_json_valid: initialJsonValid, repair_used: repairUsed, final_json_valid: finalJsonValid }
 }

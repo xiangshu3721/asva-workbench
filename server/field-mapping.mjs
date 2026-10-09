@@ -121,6 +121,10 @@ export const FIELD_MAPPING = {
     current_evidence_id: '当前证据ID', new_evidence_id: '新证据ID', status: '状态', suggested_resolution: '建议处理', resolution: '解决结果', reviewer_id: '处理人',
     resolved_at: '处理时间', created_at: '创建时间', updated_at: '更新时间',
   },
+  safetyAssessments: {
+    assessment_id: '评估ID', customer_id: '客户ID', status: '评估状态', assessment_version: '评估版本', input_fingerprint: '输入指纹',
+    payload_json: '安全评估内容', generated_at: '生成时间', updated_at: '更新时间', created_at: '创建时间',
+  },
 }
 
 const TEXT_ONLY_TABLES = new Set(['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'])
@@ -171,4 +175,5 @@ const DATE_FIELDS = {
   evidenceItems: new Set(['occurred_at', 'created_at', 'updated_at']),
   profileUpdateProposals: new Set(['reviewed_at', 'created_at', 'updated_at']),
   evidenceConflicts: new Set(['resolved_at', 'created_at', 'updated_at']),
+  safetyAssessments: new Set(['generated_at', 'updated_at', 'created_at']),
 }

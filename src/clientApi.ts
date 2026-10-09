@@ -10,6 +10,7 @@ import { createLocalCustomerUnderstanding } from '../shared/customer-understandi
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number } }
+export interface SafetyAssessmentResponse { customerId: string; status: 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'; assessment: { risk_level: string; risk_confidence: string; service_gate: string; commercial_block: string; requires_human_review: boolean; requires_safety_check: boolean; recommended_escalation: string; critical_unknowns: string[]; service_cautions: string[]; next_action: string; safety_signals: Array<{ signal_type: string; subject_scope: string; polarity: string; recency: string; short_description: string }>; } | null; meta: Record<string, unknown>; context_summary: { density: string; safety_data_sufficiency: string; critical_unknowns: string[]; evidence_count: number }; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }> }
 export interface TeamSnapshot { mentor: Staff; customerCount: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; paidCustomers: number; mentorCount: number; recentCustomers: Customer[] }
 export interface BasicDashboardCourse { course_id: string; course_name: string; enrollment_count: number; percentage: number }
@@ -75,6 +76,8 @@ export interface WorkbenchApi {
   refreshCustomerSummary(actorId: string, customerId: string, force?: boolean): Promise<Customer | undefined>
   getCustomerUnderstanding(actorId: string, customerId: string): Promise<CustomerUnderstandingResponse>
   refreshCustomerUnderstanding(actorId: string, customerId: string, force?: boolean): Promise<CustomerUnderstandingResponse>
+  getCustomerSafetyAssessment(actorId: string, customerId: string): Promise<SafetyAssessmentResponse>
+  refreshCustomerSafetyAssessment(actorId: string, customerId: string, force?: boolean): Promise<SafetyAssessmentResponse>
   serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
   brief(actorId: string, input: { name: string; need: string; expectation: string }): Promise<string>
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
@@ -138,6 +141,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     refreshCustomerSummary: async (actorId, customerId) => api.customer(actorId, customerId),
     getCustomerUnderstanding: localUnderstanding,
     refreshCustomerUnderstanding: localUnderstanding,
+    getCustomerSafetyAssessment: async (actorId: string, customerId: string) => ({ customerId, status: 'STALE', assessment: null, meta: {}, context_summary: { density: 'SPARSE', safety_data_sufficiency: 'INSUFFICIENT', critical_unknowns: ['当前本地 Demo 不执行安全评估'], evidence_count: 0 }, evidence_refs: [] }),
+    refreshCustomerSafetyAssessment: async (actorId: string, customerId: string) => ({ customerId, status: 'STALE', assessment: null, meta: {}, context_summary: { density: 'SPARSE', safety_data_sufficiency: 'INSUFFICIENT', critical_unknowns: ['本地 Demo 不执行安全评估'], evidence_count: 0 }, evidence_refs: [] }),
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
     brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
@@ -207,6 +212,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     refreshCustomerSummary: (actorId, customerId, force = false) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/summary/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     getCustomerUnderstanding: (actorId, customerId) => request<CustomerUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/understanding`, actorId),
     refreshCustomerUnderstanding: (actorId, customerId, force = false) => request<CustomerUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/understanding/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
+    getCustomerSafetyAssessment: (actorId, customerId) => request<SafetyAssessmentResponse>(`/api/customers/${encodeURIComponent(customerId)}/safety-assessment`, actorId),
+    refreshCustomerSafetyAssessment: (actorId, customerId, force = false) => request<SafetyAssessmentResponse>(`/api/customers/${encodeURIComponent(customerId)}/safety-assessment/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),
     brief: async (actorId, input) => (await request<{ brief: string }>('/api/ai/brief', actorId, { method: 'POST', body: JSON.stringify(input) })).brief,
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),

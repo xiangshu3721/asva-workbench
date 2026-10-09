@@ -358,6 +358,13 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .understanding-empty { color: #718681; font-size: 12px; }
 .understanding-empty-panel { background: #f7fbf8; }
 .understanding-status-line { margin-top: 12px; color: #9a6b27; font-size: 10px; }
+.safety-panel { background: linear-gradient(120deg, #fffaf0 0%, #fffefa 72%); border-color: #eadfbe; }
+.safety-status { padding: 5px 8px; border-radius: 999px; background: #fff1d3; color: #8b682d; font-size: 10px; white-space: nowrap; }
+.safety-content { display: grid; gap: 10px; margin-top: 15px; }
+.safety-next-action { margin: 0; padding: 12px 14px; border-left: 3px solid #d5ae5f; border-radius: 9px; color: #5b4a2b; background: #fffdf7; line-height: 1.6; }
+.safety-cautions, .safety-unknowns { display: grid; gap: 5px; color: #6c5b3c; font-size: 11px; line-height: 1.55; }
+.safety-cautions strong, .safety-unknowns strong { color: #8b682d; font-size: 11px; }
+.safety-empty { margin: 15px 0 0; color: #806e4d; font-size: 12px; line-height: 1.6; }
 .summary-bullets { color: #3c746c; background: #e8f7f0; }
 .summary-fact, .summary-fact-rose, .summary-fact-amber, .summary-fact-green, .summary-fact-blue { border-color: #a8dcca; }
 .summary-fact-rose { border-color: #efafbd; }.summary-fact-amber { border-color: #efd08c; }.summary-fact-green { border-color: #8bd5b7; }.summary-fact-blue { border-color: #9bc9e8; }

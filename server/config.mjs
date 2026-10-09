@@ -58,6 +58,7 @@ export const config = {
       evidenceItems: value('FEISHU_EVIDENCE_ITEMS_TABLE_ID'),
       profileUpdateProposals: value('FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID'),
       evidenceConflicts: value('FEISHU_EVIDENCE_CONFLICTS_TABLE_ID'),
+      safetyAssessments: value('FEISHU_SAFETY_ASSESSMENTS_TABLE_ID'),
     },
   },
 }
