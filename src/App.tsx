@@ -306,9 +306,9 @@ function CustomerDetail(props: CustomerDetailProps) {
     </header>
     <div className="customer-profile-meta"><span>联系方式：{customer.phone || customer.wechat || '未记录'}{customer.phone && customer.wechat ? ` · ${customer.wechat}` : ''}</span><span>档案版本：v{customer.profileVersion ?? 0}</span></div>
     {latestProfileChange && <div className="recent-update-line">{detailDate(latestProfileChange.updatedAt)} · {latestOperator?.name || '管理员'} 更新了 {latestProfileChange.updateBatchId ? latestProfileChanges.filter((item) => item.updateBatchId === latestProfileChange.updateBatchId).length : 1} 项客户信息</div>}
-    <CustomerProfileRenderer customer={customer} />
-    <CustomerBrief brief={brief} loading={briefLoading} onRefresh={refreshBrief} />
     <CustomerUnderstandingPanel response={understandingResponse} fallback={customer.understanding} status={understandingResponse?.status || customer.understandingStatus || 'STALE'} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} />
+    <CustomerBrief brief={brief} loading={briefLoading} onRefresh={refreshBrief} />
+    <CustomerProfileRenderer customer={customer} />
     <CustomerCourseOverview courses={courses} sessions={sessions} activityCount={activityCount} completeness={completeness} canEdit={props.canSeeAll} onEdit={() => setEditingEnrollments(true)} />
     <CustomerHistory appointments={appointments} sessions={sessions} database={database} />
     <ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} />
