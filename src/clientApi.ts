@@ -80,7 +80,7 @@ export interface WorkbenchApi {
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
   extractDocument(actorId: string, input: DocumentUploadInput): Promise<DocumentExtractionResult>
   sourceWorkspace(actorId: string, customerId: string): Promise<SourceWorkspace>
-  createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
+  createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
   reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
   resolveConflict(actorId: string, conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN'): Promise<SourceWorkspace>

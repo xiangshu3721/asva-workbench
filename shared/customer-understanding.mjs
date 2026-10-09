@@ -58,6 +58,29 @@ function profileDomains(customer) {
     .map(([key, value]) => [key, valueText(value).slice(0, 300)]))
 }
 
+export function classifyUnderstandingContextDensity({ profileCoverage = 0, confirmedEvidenceCount = 0, sourceCount = 0, knownDomainCount = 0, lifeEventCount = 0 } = {}) {
+  const sparseSignals = [profileCoverage < 40, confirmedEvidenceCount < 12, sourceCount <= 1, knownDomainCount <= 3, lifeEventCount <= 2].filter(Boolean).length
+  const richSignals = [profileCoverage >= 70, confirmedEvidenceCount >= 24, sourceCount >= 3, knownDomainCount >= 7, lifeEventCount >= 3].filter(Boolean).length
+  const classification = sparseSignals >= 2 ? 'SPARSE' : profileCoverage >= 90 && richSignals >= 4 ? 'RICH' : 'MEDIUM'
+  return { classification, profile_coverage: profileCoverage, confirmed_evidence_count: confirmedEvidenceCount, source_count: sourceCount, known_domain_count: knownDomainCount, life_event_count: lifeEventCount, sparse_signal_count: sparseSignals, rich_signal_count: richSignals }
+}
+
+export function applyUnderstandingDensityPolicy(value, density = {}) {
+  if (density.classification !== 'SPARSE') return value
+  return {
+    ...value,
+    top_issues: (value.top_issues || []).slice(0, 2),
+    current_needs: (value.current_needs || []).slice(0, 3),
+    core_blocks: (value.core_blocks || []).slice(0, 1),
+    resources_and_strengths: (value.resources_and_strengths || []).slice(0, 2),
+    key_tensions: [],
+    knowledge_gaps: (value.knowledge_gaps || []).slice(0, 5),
+    next_conversation: (value.next_conversation || []).slice(0, 2),
+    working_hypotheses: (value.working_hypotheses || []).slice(0, 1),
+    meta: { ...(value.meta || {}), context_density: 'SPARSE' },
+  }
+}
+
 export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [] } = {}) {
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS').map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey || '', value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((a, b) => a.id.localeCompare(b.id))
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
@@ -74,6 +97,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
   const selfMeanings = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'SELF_MEANING')).slice(0, 8)
   const observations = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'OBSERVATION')).slice(0, 8)
   const resources = sortedEvidence(confirmed.filter((item) => item.semanticKind === 'RESOURCE' || ['strengths', 'current_resources', 'support_system'].includes(item.fieldKey)), { current: true }).slice(0, 8)
+  const density = classifyUnderstandingContextDensity({ profileCoverage: renderer.coverage.percentage, confirmedEvidenceCount: confirmed.length, sourceCount: sourceRecords.filter((item) => item.customerId === customer.id).length, knownDomainCount: renderer.coverage.domains.filter((item) => item.status === 'KNOWN').length, lifeEventCount: events.length })
   const evidenceRefs = [...currentEvidence, ...events, ...needs, ...selfMeanings, ...observations, ...resources, ...hypotheses.slice(0, 5)].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).map((item) => evidenceRef(item, sourceRecords))
   const knownIds = new Set(confirmed.map((item) => item.id))
   const openConflictRefs = conflicts.filter((item) => item.status === 'OPEN').slice(0, 8).map((item) => ({ field_key: item.fieldKey, current_value: valueText(item.currentValue), proposed_value: valueText(item.newValue), evidence_ids: unique([item.currentEvidenceId, item.newEvidenceId]).filter((id) => knownIds.has(id)) }))
@@ -92,6 +116,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     coverage_gaps: renderer.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name),
     evidence_refs: evidenceRefs,
     working_hypotheses: hypotheses.filter((item) => item.evidenceType === 'HYPOTHESIS').slice(0, 5).map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
+    context_density: density,
     input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts }),
   }
 }

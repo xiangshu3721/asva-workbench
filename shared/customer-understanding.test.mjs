@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, normalizeCustomerUnderstanding, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from './customer-understanding.mjs'
+import { buildCustomerUnderstandingContext, classifyUnderstandingContextDensity, createLocalCustomerUnderstanding, normalizeCustomerUnderstanding, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from './customer-understanding.mjs'
 
 const customer = { id: 'CUS-1', profileVersion: 2, need: '最近工作节奏很乱', helpExpectation: '先找到能执行的一步', profileFields: { city: '杭州', occupation: '自由职业', current_goal: '稳定作息', phone: '15000000000' } }
 const fact = (overrides = {}) => ({ id: 'EVD-1', sourceId: 'SRC-1', customerId: 'CUS-1', evidenceType: 'FACT', semanticKind: 'CURRENT_STATE', fieldKey: 'current_goal', standardValue: '稳定作息', displayText: '目前希望稳定作息', sourceExcerpt: '我希望先稳定作息', confidence: 0.9, reviewStatus: 'CONFIRMED', ...overrides })
@@ -40,5 +40,11 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(normalized.key_tensions[0].text).toBe('熟悉职业路径 ↔ 探索新方向')
     expect(normalized.next_conversation[0].focus).toBe('还原最近一次争吵的变化过程')
     expect(normalized.next_conversation[0].suggested_entry).toContain('你最先发生了什么变化')
+  })
+
+  it('classifies sparse context only when at least two sparse signals are present', () => {
+    expect(classifyUnderstandingContextDensity({ profileCoverage: 20, confirmedEvidenceCount: 4, sourceCount: 1, knownDomainCount: 2, lifeEventCount: 0 }).classification).toBe('SPARSE')
+    expect(classifyUnderstandingContextDensity({ profileCoverage: 55, confirmedEvidenceCount: 16, sourceCount: 2, knownDomainCount: 5, lifeEventCount: 2 }).classification).toBe('MEDIUM')
+    expect(classifyUnderstandingContextDensity({ profileCoverage: 90, confirmedEvidenceCount: 30, sourceCount: 5, knownDomainCount: 9, lifeEventCount: 4 }).classification).toBe('RICH')
   })
 })

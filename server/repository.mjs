@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError, isRetryableFeishuError } from './feishu.mjs'
+import { createRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError } from './feishu.mjs'
 import { createCustomerIntelligence, createCustomerUnderstanding, createEvidenceCandidates, createProfileDraft } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -15,6 +15,7 @@ import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEviden
 import { buildCustomerUnderstandingContext, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
 import { isStaleProcessing, processingErrorCode } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
+import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -344,15 +345,13 @@ const stage2Table = (name) => config.feishu.tables[name]
 const stage2RequiredTables = ['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']
 function requireStage2Tables() { const missing = stage2RequiredTables.filter((name) => !stage2Table(name)); if (missing.length) throw Object.assign(new Error('Stage 2 资料表尚未配置'), { code: 'STAGE2_TABLES_NOT_CONFIGURED', status: 503, missing }) }
 function stage2Json(value) { return JSON.stringify(value ?? null) }
-const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 async function waitForSourceVisibility(sourceId) {
-  for (const delay of [0, 1000, 2500]) {
-    if (delay) await wait(delay)
+  const result = await boundedReadAfterWrite(async () => {
     const rows = await listRecords(stage2Table('sourceRecords'))
     const row = rows.find((item) => text(get('sourceRecords', item.fields, 'source_id')) === sourceId)
-    if (row) return sourceRecord(row)
-  }
-  return null
+    return row ? sourceRecord(row) : null
+  })
+  return result.value
 }
 function attachFeishuWriteContext(error, tableKey, operation, values) {
   error.integrationContext = {
@@ -390,14 +389,14 @@ function sourceInput(input, actorId) {
   const legacyRole = text(input?.sourceRole)
   const sourcePerspective = input?.sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER_FIRST_PARTY' : input?.sourcePerspective === 'STAFF_REPORTED' ? 'STAFF_REPORTED' : legacyRole ? sourcePerspectiveFromRole(legacyRole) : 'STAFF_REPORTED'
   const sourceRole = legacyRole === 'MENTOR' ? 'MENTOR' : sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER' : 'ADMIN'
-  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
+  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, operationId: text(input?.operationId), contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
 }
 function evidenceWriteFields(item, source, sourceId) {
   return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map() }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map() }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -423,33 +422,23 @@ export class FeishuRepository {
     }
   }
 
-  async loadAfterWrite(writeResult, targetCustomerId) {
+  async loadAfterWrite(writeResult, targetCustomerId, { allowMissingCustomerRetry = Boolean(writeResult && targetCustomerId) } = {}) {
     const writeRecordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const database = await this.load()
-        if (targetCustomerId && !database.customers.some((item) => item.id === targetCustomerId)) {
-          throw new FeishuUnavailableError('写入后暂未读到目标记录', { retryable: true, operation: 'readback_customer' })
-        }
-        console.info('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_SUCCESS', retry_count: attempt, final_result: 'SUCCESS' }))
-        return database
-      } catch (error) {
-        if (!isRetryableFeishuError(error) || attempt === 2) {
-          console.error('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_FAILED', retry_count: attempt, final_result: 'FAIL', provider_code: error?.providerCode, provider_request_id: error?.providerRequestId }))
-          throw new FeishuWriteConfirmedReadbackError('写入已确认，但回读暂时失败，请保留请求编号后重试。', {
-            writeRecordId,
-            providerCode: error?.providerCode,
-            providerMessage: error?.providerMessage,
-            providerRequestId: error?.providerRequestId,
-            httpStatus: error?.httpStatus,
-            retryable: false,
-            operation: 'readback_after_write',
-          })
-        }
-        await new Promise((resolve) => setTimeout(resolve, [300, 800][attempt]))
+    const result = await boundedReadAfterWrite(async () => {
+      const database = await this.load()
+      if (targetCustomerId && !database.customers.some((item) => item.id === targetCustomerId)) {
+        if (!allowMissingCustomerRetry) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+        throw new FeishuUnavailableError('写入后暂未读到目标记录', { retryable: true, operation: 'readback_customer' })
       }
+      return database
+    }, { delays: READ_AFTER_WRITE_DELAYS_MS })
+    if (result.value) {
+      console.info('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_SUCCESS', retry_count: result.attempts - 1, final_result: 'SUCCESS' }))
+      return result.value
     }
-    throw new FeishuWriteConfirmedReadbackError('写入已确认，但回读暂时失败，请保留请求编号后重试。', { writeRecordId, operation: 'readback_after_write' })
+    const error = result.lastError
+    console.error('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_FAILED', retry_count: result.attempts - 1, final_result: 'FAIL', provider_code: error?.providerCode, provider_request_id: error?.providerRequestId }))
+    throw new FeishuWriteConfirmedReadbackError('写入已确认，但回读暂时失败，请稍后刷新或重试。', { writeRecordId, providerCode: error?.providerCode, providerMessage: error?.providerMessage, providerRequestId: error?.providerRequestId, httpStatus: error?.httpStatus, retryable: false, operation: 'readback_after_write' })
   }
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
@@ -578,7 +567,7 @@ export class FeishuRepository {
     const storedMeta = customerRecord.understandingMeta || {}
     const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
     const status = fresh ? 'FRESH' : storedMeta.status === 'PROCESSING' ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
-    return { customerId, status, understanding: customerRecord.understanding || null, meta: { ...storedMeta, understandingId: storedMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || fingerprint, evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION }, evidence_refs: context.evidence_refs, context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length } }
+    return { customerId, status, understanding: customerRecord.understanding || null, meta: { ...storedMeta, understandingId: storedMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || fingerprint, evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION }, evidence_refs: context.evidence_refs, context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density } }
   }
 
   scheduleCustomerUnderstandingRefresh(actorId, customerId) {
@@ -696,7 +685,9 @@ export class FeishuRepository {
       timings.enrollment_write_ms = Date.now() - enrollmentStartedAt
       result = 'SUCCESS'
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
-      return scope(await this.loadAfterWrite(undefined, customerId), actorId)
+      const latest = await this.loadAfterWrite(undefined, customerId)
+      if (!existing) this.recentCustomerWrites.set(customerId, Date.now())
+      return scope(latest, actorId)
     } finally {
       const total = Date.now() - startedAt
       const measured = timings.identity_resolution_ms + timings.customer_write_ms + timings.enrollment_write_ms + timings.profile_change_ms + timings.ai_ms
@@ -754,10 +745,18 @@ export class FeishuRepository {
   async createSource(actorId, input) {
     requireStage2Tables()
     const startedAt = Date.now()
-    const database = await this.load()
-    const visibleDatabase = scope(database, actorId)
     const requestedCustomerId = text(input?.customerId).trim()
-    if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) throw new Error('客户不存在')
+    let database = await this.load()
+    let visibleDatabase = scope(database, actorId)
+    if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) {
+      const recentWriteAt = this.recentCustomerWrites.get(requestedCustomerId) || 0
+      if (!recentWriteAt || Date.now() - recentWriteAt > RECENT_WRITE_WINDOW_MS) {
+        this.recentCustomerWrites.delete(requestedCustomerId)
+        throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+      }
+      database = await this.loadAfterWrite(undefined, requestedCustomerId, { allowMissingCustomerRetry: true })
+      visibleDatabase = scope(database, actorId)
+    }
     let sourceInputValue = input
     if (String(input?.sourceType || '').trim().toUpperCase() === 'FILE_UPLOAD') {
       const document = input?.document || {}
@@ -773,11 +772,19 @@ export class FeishuRepository {
     if (!visibleDatabase.customers.some((item) => item.id === normalized.customerId)) throw new Error('客户不存在')
     const duplicate = database.sourceRecords.find((item) => item.customerId === normalized.customerId && item.contentHash === normalized.contentHash)
     if (duplicate) throw Object.assign(new Error('这份资料已经记录过了'), { code: 'SOURCE_DUPLICATE', status: 409, sourceId: duplicate.id })
-    const sourceId = text(input?.sourceId) || stableId('SRC', `${normalized.customerId}:${normalized.contentHash}:${Date.now()}`)
+    const sourceId = text(input?.sourceId) || (normalized.operationId ? stableId('SRC', `${normalized.customerId}:${normalized.operationId}`) : stableId('SRC', `${normalized.customerId}:${normalized.contentHash}`))
+    const recentSourceWriteAt = this.recentSourceWrites.get(sourceId) || 0
+    if (recentSourceWriteAt && Date.now() - recentSourceWriteAt <= RECENT_WRITE_WINDOW_MS) {
+      const existingRecentSource = await waitForSourceVisibility(sourceId)
+      if (existingRecentSource) return existingRecentSource
+      throw new FeishuWriteConfirmedReadbackError('资料已提交，正在同步，请稍后刷新或重试。', { operation: 'readback_after_source_write', retryable: false })
+    }
     const timestamp = now()
-    await createMappedRecord('sourceRecords', 'source.create', { source_id: sourceId, subject_type: normalized.subjectType, subject_id: normalized.subjectId, customer_id: normalized.customerId, source_type: normalized.sourceType, title: normalized.title, raw_text: normalized.rawText, file_ref: normalized.fileRef, occurred_at: '', uploaded_at: timestamp, uploaded_by: normalized.uploadedBy, source_role: normalized.sourceRole, service_record_id: normalized.serviceRecordId, content_hash: normalized.contentHash, processing_status: 'UPLOADED', processing_version: 1, sensitivity_level: 'HIGH', notes: normalized.notes, source_version: 1, extractor_version: 'evidence-v1', last_batch_id: '', processing_started_at: '', last_processing_at: '', processing_error: '', created_at: timestamp, updated_at: timestamp })
+    const sourceWriteResult = await createMappedRecord('sourceRecords', 'source.create', { source_id: sourceId, subject_type: normalized.subjectType, subject_id: normalized.subjectId, customer_id: normalized.customerId, source_type: normalized.sourceType, title: normalized.title, raw_text: normalized.rawText, file_ref: normalized.fileRef, occurred_at: '', uploaded_at: timestamp, uploaded_by: normalized.uploadedBy, source_role: normalized.sourceRole, service_record_id: normalized.serviceRecordId, content_hash: normalized.contentHash, processing_status: 'UPLOADED', processing_version: 1, sensitivity_level: 'HIGH', notes: normalized.notes, source_version: 1, extractor_version: 'evidence-v1', last_batch_id: '', processing_started_at: '', last_processing_at: '', processing_error: '', created_at: timestamp, updated_at: timestamp })
+    this.recentSourceWrites.set(sourceId, Date.now())
     this.sourceSaveTimes.set(sourceId, Date.now() - startedAt)
-    const result = (await waitForSourceVisibility(sourceId)) || { ...normalized, id: sourceId, processingStatus: 'UPLOADED', sensitivityLevel: 'HIGH', sourceVersion: 1 }
+    const result = await waitForSourceVisibility(sourceId)
+    if (!result) throw new FeishuWriteConfirmedReadbackError('资料已提交，正在同步，请稍后刷新或重试。', { writeRecordId: sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, operation: 'readback_after_source_write', retryable: false })
     return result
   }
   async sourceWorkspace(actorId, customerId) {

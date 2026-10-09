@@ -31,7 +31,7 @@ const MAX_DOCUMENT_SIZE_MB = Number(import.meta.env.VITE_MAX_DOCUMENT_SIZE_MB ||
 type BrowserSpeechResult = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
 type BrowserSpeechRecognitionInstance = { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: ((event: { results: ArrayLike<BrowserSpeechResult>; resultIndex?: number }) => void) | null; onerror: ((event?: { error?: string }) => void) | null; onend: (() => void) | null }
 type BrowserSpeechRecognition = new () => BrowserSpeechRecognitionInstance
-type SourceCreateInput = { customerId: string; sourceType: string; rawText: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }
+type SourceCreateInput = { customerId: string; sourceType: string; rawText: string; operationId?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }
 
 async function fileToBase64(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer())
@@ -438,11 +438,11 @@ function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onPr
     const saveStartedAt = performance.now()
     try {
       const document = attachedFile && attachedDocument ? { filename: attachedFile.name, mimeType: attachedFile.type, extension: `.${attachedFile.name.toLowerCase().split('.').pop() || ''}`, size: attachedFile.size, fileHash: attachedDocument.file_hash, charCount: attachedDocument.char_count, extractedText: attachedDocument.extracted_text } : undefined
-      const source = await onCreate({ customerId: customer.id, sourceType: attachedFile ? 'FILE_UPLOAD' : 'TEXT_INPUT', rawText: attachedFile ? attachedDocument?.extracted_text || '' : rawText.trim(), sourcePerspective, notes: attachedFile ? rawText.trim() : undefined, document })
+      const source = await onCreate({ operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: attachedFile ? 'FILE_UPLOAD' : 'TEXT_INPUT', rawText: attachedFile ? attachedDocument?.extracted_text || '' : rawText.trim(), sourcePerspective, notes: attachedFile ? rawText.trim() : undefined, document })
       const sourceSaveMs = Math.round(performance.now() - saveStartedAt)
       setSaving(false); setRawText(''); setAttachedFile(null); setAttachedDocument(null); setComposerOpen(false); setMessage(`已保存，正在整理 · ${sourceSaveMs}ms`); setAnalysisSummary('')
       void onProcess(source.id).then(mergeProcessed).then(() => setMessage('已整理完成')).catch(async (processError) => { await load(); setMessage(sourceFailureMessage(processError)) })
-    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : '资料保存失败'); setSaving(false) }
+    } catch (saveError) { setError(sourceFailureMessage(saveError)); setSaving(false) }
   }
   const resolve = async (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => { setSaving(true); try { await onResolveConflict(conflictId, resolution); await load() } catch (resolveError) { setError(resolveError instanceof Error ? resolveError.message : '冲突处理失败') } finally { setSaving(false) } }
   const grouped = (type: string) => workspace.evidenceItems.filter((item) => item.evidenceType === type)
