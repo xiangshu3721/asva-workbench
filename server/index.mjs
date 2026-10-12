@@ -5,6 +5,7 @@ import { createBrief, createCustomerIntelligence, createServiceSummary, DeepSeek
 import { FeishuRepository } from './repository.mjs'
 import { FeishuUnavailableError } from './feishu.mjs'
 import { AuthError, bearerToken, issueSession, verifySession } from './auth.mjs'
+import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
 
 const repository = new FeishuRepository()
@@ -49,7 +50,8 @@ async function actorId(request) {
   if (token) {
     const claims = verifySession(token)
     const session = await repository.validateSession(String(claims.sub), claims.auth_version, claims.amr)
-    if (session.credential?.mustChangePassword && request.url?.split('?')[0] !== '/api/auth/change-password') throw Object.assign(new Error('请先修改密码后继续使用'), { code: 'PASSWORD_CHANGE_REQUIRED', status: 403 })
+    const path = request.url?.split('?')[0]
+    if ((claims.purpose === 'PASSWORD_CHANGE' || session.credential?.mustChangePassword) && path !== '/api/auth/change-password') throw Object.assign(new Error('请先修改密码后继续使用'), { code: 'PASSWORD_CHANGE_REQUIRED', status: 403 })
     return String(claims.sub)
   }
   if (config.dataMode !== 'production' && typeof request.headers['x-staff-id'] === 'string') return request.headers['x-staff-id']
@@ -105,12 +107,18 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readBody(request)
     const account = await repository.authenticate(body.phone, config.authMode === 'PASSWORD' ? body.password : body.code, clientIp(request))
-    const token = config.authSecret ? issueSession(account.id, account.authVersion, account.authMode) : ''
+    const token = config.authSecret ? issueSession(account.id, account.authVersion, account.authMode, account.mustChangePassword ? 'PASSWORD_CHANGE' : 'SESSION') : ''
     return send(request, response, 200, { ...account, token: token || undefined }, requestId)
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/change-password') { const body = await readBody(request); const id = await guard(request); const changed = await repository.changePassword(id, body.currentPassword, body.newPassword); return send(request, response, 200, { ...changed, token: config.authSecret ? issueSession(id, changed.authVersion, 'PASSWORD') : undefined }, requestId) }
   const passwordReset = url.pathname.match(/^\/api\/staff\/([^/]+)\/reset-password$/)
-  if (request.method === 'POST' && passwordReset) { const body = await readBody(request); return send(request, response, 200, await repository.resetPassword(await guardAdmin(request), decodeURIComponent(passwordReset[1]), body.password), requestId) }
+  if (request.method === 'POST' && passwordReset) { await readBody(request); return send(request, response, 200, await repository.resetPassword(await guardAdmin(request), decodeURIComponent(passwordReset[1])), requestId) }
+  if (request.method === 'POST' && url.pathname === '/api/staff/mentor-initial-password') {
+    await guardAdmin(request)
+    const body = await readBody(request)
+    const phone = String(body.phone || '').replace(/[\s-]/g, '')
+    return send(request, response, 200, { initial_password: generateInitialPassword({ phone }) }, requestId)
+  }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guardAdmin(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/me') return send(request, response, 200, await repository.staff(await guard(request)), requestId)

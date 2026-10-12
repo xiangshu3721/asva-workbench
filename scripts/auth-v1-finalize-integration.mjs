@@ -44,8 +44,7 @@ database = await repository.load()
 const mentor = database.staff.find((item) => item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')
 assert(mentor, 'No active MENTOR available for rejection test')
 const mentorOriginal = { name: mentor.name, phone: mentor.phone }
-const mentorPassword = randomPassword()
-await repository.resetPassword(admin.id, mentor.id, mentorPassword)
+const mentorPassword = (await repository.resetPassword(admin.id, mentor.id)).initialPassword
 checks.push({ label: 'mentor_login_disabled', result: await rejected(() => repository.authenticate(mentor.phone, mentorPassword, 'auth-v1-final-mentor')) ? 'PASS' : 'FAIL' })
 
 const syncPhone = `139${String(Date.now()).slice(-8)}`
@@ -58,8 +57,7 @@ checks.push({ label: 'mentor_credential_disabled', result: (await repository.aut
 
 const inactive = database.staff.find((item) => item.status === 'INACTIVE')
 if (inactive) {
-  const inactivePassword = randomPassword()
-  await repository.resetPassword(admin.id, inactive.id, inactivePassword)
+  const inactivePassword = (await repository.resetPassword(admin.id, inactive.id)).initialPassword
   checks.push({ label: 'inactive_staff', result: await rejected(() => repository.authenticate(inactive.phone, inactivePassword, 'auth-v1-final-inactive')) ? 'PASS' : 'FAIL' })
   await repository.authRepository.disableCredential(inactive.id)
 } else checks.push({ label: 'inactive_staff', result: 'BLOCKED_NO_INACTIVE_FIXTURE' })
@@ -73,8 +71,7 @@ checks.push({ label: 'old_password_after_change', result: await rejected(() => r
 checks.push({ label: 'new_password_after_change', result: (await repository.authenticate(TARGET_PHONE, changedPassword, 'auth-v1-final-new')).id === admin.id ? 'PASS' : 'FAIL' })
 try { await repository.validateSession(admin.id, initialVersion, 'PASSWORD'); checks.push({ label: 'old_session_after_change', result: 'FAIL' }) } catch { checks.push({ label: 'old_session_after_change', result: oldSession ? 'PASS' : 'FAIL' }) }
 
-const resetPassword = randomPassword()
-await repository.resetPassword(admin.id, admin.id, resetPassword)
+const resetPassword = (await repository.resetPassword(admin.id, admin.id)).initialPassword
 adminCredential = await repository.authRepository.findByStaffId(admin.id)
 checks.push({ label: 'admin_reset_state', result: adminCredential.mustChangePassword === true && adminCredential.credentialStatus === 'ACTIVE' ? 'PASS' : 'FAIL' })
 checks.push({ label: 'password_before_admin_reset', result: await rejected(() => repository.authenticate(TARGET_PHONE, changedPassword, 'auth-v1-final-before-reset')) ? 'PASS' : 'FAIL' })

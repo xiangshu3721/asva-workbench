@@ -3,10 +3,10 @@ import { config } from './config.mjs'
 import { issueSession, verifySession } from './auth.mjs'
 import { FeishuRepository } from './repository.mjs'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
-import { MemoryAuthCredentialRepository, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
+import { MemoryAuthCredentialRepository, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
 
 const admin = { id: 'staff-admin-owner-001', name: '管理员', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true, phone: '15021512537' }
-const mentor = { id: 'mentor-1', name: '导师', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, phone: '15021512539' }
+const mentor = { id: 'mentor-1', name: '导师', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true, phone: '15021512539' }
 const inactive = { id: 'staff-inactive', name: '停用', role: 'ADMIN', permissionRole: 'ADMIN', status: 'INACTIVE', loginEnabled: true, phone: '15021512538' }
 
 function testRepository(authRepository) {
@@ -38,6 +38,17 @@ describe('ASVA Authentication V1', () => {
     expect(validatePassword('a-better-personal-password')).toBe(true)
   })
 
+  it('generates a cryptographically random initial password that passes policy', () => {
+    const first = generateInitialPassword({ phone: mentor.phone })
+    const second = generateInitialPassword({ phone: mentor.phone })
+    expect(first).toHaveLength(12)
+    expect(first).not.toBe(second)
+    expect(first).toMatch(/[A-Z]/)
+    expect(first).toMatch(/[a-z]/)
+    expect(first).toMatch(/[0-9]/)
+    expect(() => validatePassword(first, { phone: mentor.phone })).not.toThrow()
+  })
+
   it('authenticates an active admin from an independent credential repository', async () => {
     config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.adminLoginCode = '888888'; config.feishu.tables.authCredentials = 'memory'
     const authRepository = new MemoryAuthCredentialRepository([{ staffId: admin.id, loginPhone: admin.phone, passwordHash: await hashPassword('a-strong-personal-password'), passwordAlgorithm: 'scrypt', mustChangePassword: true, authVersion: 0 }])
@@ -48,7 +59,7 @@ describe('ASVA Authentication V1', () => {
     await expect(testRepository(authRepository).authenticate(admin.phone, '888888', 'ip-no-code-fallback')).rejects.toMatchObject({ code: 'AUTH_INVALID', status: 401 })
   })
 
-  it('uses one generic failure for unknown, inactive, mentor and wrong-password attempts', async () => {
+  it('uses one generic failure for unknown, inactive and wrong-password attempts', async () => {
     config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
     const authRepository = new MemoryAuthCredentialRepository([
       { staffId: admin.id, loginPhone: admin.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 },
@@ -56,7 +67,14 @@ describe('ASVA Authentication V1', () => {
       { staffId: inactive.id, loginPhone: inactive.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 },
     ])
     const repository = testRepository(authRepository)
-    for (const [phone, password] of [[admin.phone, 'wrong-password'], ['15021512000', 'wrong-password'], [mentor.phone, 'a-strong-personal-password'], [inactive.phone, 'a-strong-personal-password']]) await expect(repository.authenticate(phone, password, `ip-${phone}`)).rejects.toMatchObject({ code: 'AUTH_INVALID', status: 401 })
+    for (const [phone, password] of [[admin.phone, 'wrong-password'], ['15021512000', 'wrong-password'], [inactive.phone, 'a-strong-personal-password']]) await expect(repository.authenticate(phone, password, `ip-${phone}`)).rejects.toMatchObject({ code: 'AUTH_INVALID', status: 401 })
+  })
+
+  it('allows an active mentor with login enabled to use password auth', async () => {
+    config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
+    const authRepository = new MemoryAuthCredentialRepository([{ staffId: mentor.id, loginPhone: mentor.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 }])
+    const account = await testRepository(authRepository).authenticate(mentor.phone, 'a-strong-personal-password', 'ip-mentor')
+    expect(account).toMatchObject({ id: mentor.id, permissionRole: 'MENTOR', mustChangePassword: false })
   })
 
   it('blocks after five failures per phone and IP', () => {
@@ -98,16 +116,18 @@ describe('ASVA Authentication V1', () => {
     config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
     const authRepository = new MemoryAuthCredentialRepository([{ staffId: admin.id, loginPhone: admin.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 }])
     const repository = testRepository(authRepository)
-    await repository.resetPassword(admin.id, admin.id, 'reset-strong-password')
-    await expect(repository.changePassword(admin.id, '', 'reset-strong-password')).rejects.toMatchObject({ code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
+    const reset = await repository.resetPassword(admin.id, admin.id)
+    expect(reset.initialPassword).toHaveLength(12)
+    await expect(repository.changePassword(admin.id, '', reset.initialPassword)).rejects.toMatchObject({ code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
     expect((await authRepository.findByStaffId(admin.id)).mustChangePassword).toBe(true)
   })
 
   it('resets a password with must_change_password and increments the version', async () => {
     config.authMode = 'PASSWORD'; config.dataMode = 'demo'; config.feishu.tables.authCredentials = 'memory'
     const authRepository = new MemoryAuthCredentialRepository([{ staffId: admin.id, loginPhone: admin.phone, passwordHash: await hashPassword('a-strong-personal-password'), authVersion: 0 }])
-    const result = await testRepository(authRepository).resetPassword(admin.id, admin.id, 'reset-strong-password')
+    const result = await testRepository(authRepository).resetPassword(admin.id, admin.id)
     expect(result).toMatchObject({ ok: true, mustChangePassword: true, authVersion: 1 })
+    expect(result.initialPassword).toHaveLength(12)
     expect((await authRepository.findByStaffId(admin.id)).mustChangePassword).toBe(true)
   })
 })

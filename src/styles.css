@@ -239,6 +239,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
   .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }.overview-metrics .detail-metric { min-height: 62px; }.enrollment-row { align-items: flex-start; padding: 10px; }
   .history-event { grid-template-columns: 68px 10px minmax(0, 1fr); gap: 8px; }.history-event-title { align-items: flex-start; flex-direction: column; gap: 4px; }.history-event p { white-space: normal; }
   .supplement-actions { display: grid; grid-template-columns: 1fr 1fr; }.supplement-actions button { width: 100%; }.profile-draft-row { grid-template-columns: 72px minmax(0, 1fr); }
+  .initial-password-row { grid-template-columns: minmax(0, 1fr) auto; }.initial-password-row button:last-child { grid-column: 1 / -1; width: 100%; }.initial-password-result { align-items: stretch; flex-direction: column; }
 }
 
 /* ASVA living color system: teal growth, flower-bright accents and warm light. */
@@ -316,6 +317,13 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .multi-select-trigger[aria-expanded='true'] { border-color: #168d7b; box-shadow: 0 0 0 3px rgba(22,141,123,.14); }
 .voice-button, .form-actions .secondary-button { border-color: #b9dfd2; }
 .multi-select-menu { box-shadow: 0 16px 34px rgba(34,137,111,.16); }
+.initial-password-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 7px; align-items: center; }
+.initial-password-row input, .initial-password-result code { letter-spacing: .08em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.initial-password-row input { background: #f2fbf6; color: #174943; }
+.initial-password-result { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px; border: 1px solid #b9dfd2; border-radius: 11px; background: #eaf8f1; }
+.initial-password-result > div { display: grid; gap: 5px; min-width: 0; }
+.initial-password-result small { color: #5f8178; font-size: 10px; }
+.initial-password-result code { overflow-wrap: anywhere; color: #0f655f; font-size: 15px; font-weight: 700; }
 .multi-select-option:hover { background: #ecf8f3; }
 
 .customer-detail-header, .customer-detail-section, .surface, .detail-card, .settings-card, .appointment-card, .chart-card { border-color: #d8ebe4; box-shadow: 0 12px 30px rgba(39,143,111,.065); }

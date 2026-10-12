@@ -119,7 +119,10 @@ export interface Staff {
 export interface MentorAccountInput {
   name: string
   phone: string
+  initialPassword?: string
 }
+
+export type MentorAccountResult = Staff & { initialPassword?: string }
 
 export interface ProfileEvidenceReference {
   evidenceId: string

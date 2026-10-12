@@ -13,6 +13,7 @@ const SALT_BYTES = 16
 const MAXMEM = 64 * 1024 * 1024
 const DUMMY_HASH = 'scrypt$N=32768,r=8,p=1$YXN2YS1kdW1teS1zYWx0$wq1o4n2t2pQdU6t4nLh6Qw6h4QZfPZ0G3Dk3tQG4l7Q'
 const WEAK_PASSWORDS = new Set(['12345', '123456', '1234567890', '12345678901', '88888', '888888', '8888888888', 'abcde', 'abcdefghij', 'qwerty', 'qwertyuiop', 'admin', 'password', 'password123', '1111111111', '0000000000'])
+const INITIAL_PASSWORD_CHARSETS = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%']
 export const PASSWORD_POLICY_MESSAGE = '密码需为 5～64 位'
 
 const text = (value) => typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -38,6 +39,27 @@ export function validatePassword(password, { phone = '' } = {}) {
   const phoneLike = Boolean(normalizedPhone && passwordDigits.length >= 5 && (normalizedPhone.includes(passwordDigits) || passwordDigits.includes(normalizedPhone) || phoneDistance <= 1))
   if (typeof password !== 'string' || password.length < 5 || password.length > 64 || /^(.)(\1)+$/.test(password) || WEAK_PASSWORDS.has(normalizedPassword) || phoneLike) throw new PasswordPolicyError(PASSWORD_POLICY_MESSAGE)
   return true
+}
+
+export function generateInitialPassword({ phone = '', length = 12 } = {}) {
+  const size = Math.max(12, Math.min(64, Number(length) || 12))
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const required = INITIAL_PASSWORD_CHARSETS.map((charset) => charset[crypto.randomInt(charset.length)])
+    const pool = INITIAL_PASSWORD_CHARSETS.join('')
+    while (required.length < size) required.push(pool[crypto.randomInt(pool.length)])
+    for (let index = required.length - 1; index > 0; index -= 1) {
+      const swap = crypto.randomInt(index + 1)
+      const value = required[index]
+      required[index] = required[swap]
+      required[swap] = value
+    }
+    const password = required.join('')
+    try {
+      validatePassword(password, { phone })
+      return password
+    } catch {}
+  }
+  throw new Error('无法生成符合策略的初始密码')
 }
 
 function levenshteinDistance(left, right) {

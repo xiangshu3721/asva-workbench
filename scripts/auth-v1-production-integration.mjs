@@ -37,14 +37,12 @@ checks.push(await expectReject('unknown_phone', () => repository.authenticate('1
 const mentor = database.staff.find((item) => item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')
 assert(mentor, 'No active MENTOR available for auth rejection test')
 const mentorOriginal = { name: mentor.name, phone: mentor.phone }
-const mentorPassword = randomPassword()
-await repository.resetPassword(admin.id, mentor.id, mentorPassword)
+const mentorPassword = (await repository.resetPassword(admin.id, mentor.id)).initialPassword
 checks.push(await expectReject('mentor_login_disabled', () => repository.authenticate(mentor.phone, mentorPassword, 'auth-v1-mentor')))
 
 const inactive = database.staff.find((item) => item.status === 'INACTIVE')
 if (inactive) {
-  const inactivePassword = randomPassword()
-  await repository.resetPassword(admin.id, inactive.id, inactivePassword)
+  const inactivePassword = (await repository.resetPassword(admin.id, inactive.id)).initialPassword
   checks.push(await expectReject('inactive_staff', () => repository.authenticate(inactive.phone, inactivePassword, 'auth-v1-inactive')))
   await repository.authRepository.disableCredential(inactive.id)
 } else checks.push({ label: 'inactive_staff', result: 'BLOCKED_NO_INACTIVE_FIXTURE' })
@@ -69,8 +67,7 @@ await repository.updateMentor(admin.id, mentor.id, mentorOriginal)
 await repository.authRepository.disableCredential(mentor.id)
 checks.push({ label: 'credential_disable', result: (await repository.authRepository.findByStaffId(mentor.id))?.credentialStatus === 'DISABLED' ? 'PASS' : 'FAIL' })
 
-const resetPassword = randomPassword()
-await repository.resetPassword(admin.id, admin.id, resetPassword)
+const resetPassword = (await repository.resetPassword(admin.id, admin.id)).initialPassword
 const reset = await repository.authRepository.findByStaffId(admin.id)
 assert(reset.authVersion === initialVersion + 2 && reset.mustChangePassword === true && reset.credentialStatus === 'ACTIVE', 'Admin reset state mismatch')
 checks.push(await expectReject('password_before_admin_reset', () => repository.authenticate(TARGET_PHONE, nextPassword, 'auth-v1-before-reset')))

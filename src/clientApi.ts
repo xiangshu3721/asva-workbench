@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -47,7 +47,8 @@ export interface DocumentUploadInput { filename: string; mimeType: string; exten
 export interface WorkbenchApi {
   login(phone: string, password: string): Promise<Staff & { mustChangePassword?: boolean }>
   changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean; mustChangePassword: boolean; token?: string }>
-  resetPassword(actorId: string, staffId: string, password: string): Promise<{ ok: boolean; staffId: string; mustChangePassword: boolean }>
+  resetPassword(actorId: string, staffId: string): Promise<{ ok: boolean; staffId: string; mustChangePassword: boolean; initialPassword?: string }>
+  generateMentorInitialPassword(actorId: string, phone: string): Promise<string>
   health(): Promise<HealthMetadata>
   savePerformanceTraces(): Promise<SavePerformanceTrace[]>
   evidenceDebug(): Promise<EvidenceDebugTrace[]>
@@ -66,7 +67,7 @@ export interface WorkbenchApi {
   profileDraft(actorId: string, customerId: string, text: string): Promise<ProfileDraft>
   confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): Promise<Customer>
   updateCustomerReferrer(actorId: string, customerId: string, referrerName: string): Promise<Customer | undefined>
-  createMentor(actorId: string, input: MentorAccountInput): Promise<Staff>
+  createMentor(actorId: string, input: MentorAccountInput): Promise<MentorAccountResult>
   updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Promise<Staff>
   deactivateMentor(actorId: string, mentorId: string): Promise<Staff>
   teamSnapshot(actorId: string, status?: StaffStatus): Promise<TeamSnapshot[]>
@@ -113,6 +114,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     login: async (phone, password) => api.login(phone, password),
     changePassword: async () => { throw new Error('本地 Demo 不支持密码修改') },
     resetPassword: async () => { throw new Error('本地 Demo 不支持密码重置') },
+    generateMentorInitialPassword: async () => { throw new Error('本地 Demo 不支持导师账号创建') },
     health: async () => ({ ok: true, service: 'asva-api', environment: 'local', dataMode: 'demo', featureFlags: { externalAppointment: false } }),
     savePerformanceTraces: async () => [],
     evidenceDebug: async () => [],
@@ -183,7 +185,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
   return {
     login: (phone, password) => request<Staff & { mustChangePassword?: boolean }>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, password }) }),
     changePassword: async (currentPassword, newPassword) => { const result = await request<{ ok: boolean; mustChangePassword: boolean; token?: string }>('/api/auth/change-password', undefined, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); if (result.token) window.sessionStorage.setItem('asva_session_token', result.token); return result },
-    resetPassword: (actorId, staffId, password) => request<{ ok: boolean; staffId: string; mustChangePassword: boolean }>(`/api/staff/${encodeURIComponent(staffId)}/reset-password`, actorId, { method: 'POST', body: JSON.stringify({ password }) }),
+    resetPassword: (actorId, staffId) => request<{ ok: boolean; staffId: string; mustChangePassword: boolean; initialPassword?: string }>(`/api/staff/${encodeURIComponent(staffId)}/reset-password`, actorId, { method: 'POST', body: '{}' }),
+    generateMentorInitialPassword: async (actorId, phone) => (await request<{ initial_password: string }>('/api/staff/mentor-initial-password', actorId, { method: 'POST', body: JSON.stringify({ phone }) })).initial_password,
     health: () => request<HealthMetadata>('/api/health', undefined),
     savePerformanceTraces: () => request<SavePerformanceTrace[]>('/api/debug/save-traces', undefined),
     evidenceDebug: () => request<EvidenceDebugTrace[]>('/api/debug/evidence', undefined),
@@ -202,7 +205,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     profileDraft: (actorId, customerId, text) => request<ProfileDraft>('/api/customers/' + encodeURIComponent(customerId) + '/profile/extract', actorId, { method: 'POST', body: JSON.stringify({ text }) }),
     confirmProfile: (actorId, customerId, updates) => request<Customer>('/api/customers/' + encodeURIComponent(customerId) + '/profile/confirm', actorId, { method: 'POST', body: JSON.stringify({ updates }) }),
     updateCustomerReferrer: (actorId, customerId, referrerName) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/referrer`, actorId, { method: 'POST', body: JSON.stringify({ referrerName }) }),
-    createMentor: (actorId, input) => request<Staff>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    createMentor: (actorId, input) => request<MentorAccountResult>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input) }),
     updateMentor: (actorId, mentorId, input) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
     deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
     teamSnapshot: (actorId, status) => request<TeamSnapshot[]>(`/api/staff/mentors${status ? `?status=${encodeURIComponent(status)}` : ''}`, actorId),

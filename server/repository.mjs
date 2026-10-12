@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError } from './feishu.mjs'
+import { createRecord, deleteRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError } from './feishu.mjs'
 import { createCustomerIntelligence, createCustomerUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -8,7 +8,7 @@ import crypto from 'node:crypto'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
 import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
 import { customerHistoryPolicy } from './schema-contract.mjs'
-import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, dummyPasswordHash, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
+import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, dummyPasswordHash, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
 import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
@@ -111,7 +111,7 @@ function staff(row) {
   const name = text(get('staff', f, 'nickname')) || text(get('staff', f, 'name')) || '未命名人员'
   const phone = normalizePhone(get('staff', f, 'phone') || get('staff', f, 'login_phone'))
   const rawLoginEnabled = get('staff', f, 'login_enabled')
-  const loginEnabled = permissionRole === 'ADMIN' ? rawLoginEnabled === '' || rawLoginEnabled === undefined || rawLoginEnabled === null ? true : boolean(rawLoginEnabled) : false
+  const loginEnabled = permissionRole === 'ADMIN' ? rawLoginEnabled === '' || rawLoginEnabled === undefined || rawLoginEnabled === null ? true : boolean(rawLoginEnabled) : boolean(rawLoginEnabled)
   return { id: text(get('staff', f, 'staff_id')) || row.record_id, name, role: permissionRole, permissionRole, status, loginEnabled, displayRole: permissionRole === 'MENTOR' ? '导师' : '管理员', title: permissionRole === 'MENTOR' ? '导师' : '管理员', phone, specialty: text(get('staff', f, 'specialty')), avatar: name.slice(0, 1), _recordId: row.record_id }
 }
 
@@ -491,7 +491,7 @@ export class FeishuRepository {
     const database = await this.load()
     const normalized = normalizePhone(phone)
     const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
-    const validStaff = account?.permissionRole === 'ADMIN' && account.status === 'ACTIVE' && account.loginEnabled === true
+    const validStaff = ['ADMIN', 'MENTOR'].includes(account?.permissionRole) && account.status === 'ACTIVE' && account.loginEnabled === true
     if (config.authMode === 'PASSWORD') {
       if (config.dataMode === 'production' && !config.feishu.tables.authCredentials) throw new AuthCredentialStoreNotConfiguredError('生产密码凭据表尚未配置')
       const credential = await this.authRepository.findByPhone(normalized)
@@ -535,24 +535,25 @@ export class FeishuRepository {
     const firstChangeGuard = credential?.mustChangePassword === true && !hasCurrentPassword
     if (!credential || (!currentMatches && !firstChangeGuard)) throw Object.assign(new Error('当前密码不正确'), { code: 'PASSWORD_INVALID', status: 401 })
     validatePassword(nextPassword, { phone: account.phone })
-    if (await verifyPassword(nextPassword, credential.passwordHash)) throw Object.assign(new Error('新密码不能与当前密码相同'), { code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
+    if (await verifyPassword(nextPassword, credential.passwordHash)) throw Object.assign(new Error(credential.mustChangePassword ? '新密码不能与初始密码相同' : '新密码不能与当前密码相同'), { code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
     const timestamp = now()
     await this.authRepository.updatePassword(credential, await hashPassword(nextPassword), { password_algorithm: 'scrypt', must_change_password: false, password_changed_at: timestamp, auth_version: Number(credential.authVersion || 0) + 1, credential_status: 'ACTIVE', updated_at: timestamp })
     return { ok: true, mustChangePassword: false, authVersion: Number(credential.authVersion || 0) + 1 }
   }
-  async resetPassword(actorId, targetStaffId, nextPassword) {
+  async resetPassword(actorId, targetStaffId) {
     const actor = await this.staff(actorId)
     if (actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以重置密码')
     const target = (await this.load()).staff.find((item) => item.id === targetStaffId)
     if (!target) throw new Error('账号不存在')
-    validatePassword(nextPassword, { phone: target.phone })
+    const generated = generateInitialPassword({ phone: target.phone })
+    validatePassword(generated, { phone: target.phone })
     const current = await this.authRepository.findByStaffId(targetStaffId)
     const timestamp = now()
     const nextVersion = Number(current?.authVersion || 0) + 1
-    if (current) await this.authRepository.updatePassword(current, await hashPassword(nextPassword), { password_algorithm: 'scrypt', must_change_password: true, password_changed_at: null, auth_version: nextVersion, credential_status: 'ACTIVE', updated_at: timestamp })
-    else await this.authRepository.createCredential({ staffId: targetStaffId, loginPhone: target.phone, passwordHash: await hashPassword(nextPassword), passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: nextVersion, credentialStatus: 'ACTIVE', createdAt: timestamp, updatedAt: timestamp, lastLoginAt: null })
+    if (current) await this.authRepository.updatePassword(current, await hashPassword(generated), { password_algorithm: 'scrypt', must_change_password: true, password_changed_at: null, auth_version: nextVersion, credential_status: 'ACTIVE', updated_at: timestamp })
+    else await this.authRepository.createCredential({ staffId: targetStaffId, loginPhone: target.phone, passwordHash: await hashPassword(generated), passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: nextVersion, credentialStatus: 'ACTIVE', createdAt: timestamp, updatedAt: timestamp, lastLoginAt: null })
     this.audit('RESET_PASSWORD', targetStaffId, actorId)
-    return { ok: true, staffId: targetStaffId, mustChangePassword: true, authVersion: nextVersion }
+    return { ok: true, staffId: targetStaffId, mustChangePassword: true, authVersion: nextVersion, initialPassword: generated }
   }
   async syncCredentialPhone(staffId, phone) {
     const credential = await this.authRepository.findByStaffId(staffId)
@@ -1072,19 +1073,28 @@ export class FeishuRepository {
     const duplicate = database.staff.find((item) => normalizePhone(item.phone) === phone)
     if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
     if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请编辑原导师记录，不要重复创建'), { status: 409 })
+    const initialPassword = typeof input?.initialPassword === 'string' && input.initialPassword ? input.initialPassword : generateInitialPassword({ phone })
+    validatePassword(initialPassword, { phone })
+    const passwordHash = await hashPassword(initialPassword)
     const createdAt = feishuDate()
     let staffId = `M${Date.now()}`
-    while (database.staff.some((item) => item.id === staffId)) staffId = `M${Date.now()}${Math.floor(Math.random() * 10)}`
+    while (database.staff.some((item) => item.id === staffId)) staffId = `M${Date.now()}${crypto.randomInt(10)}`
+    let staffRecordId = ''
     try {
-      await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }))
+      const createdStaff = await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: true, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }))
+      staffRecordId = createdStaff?.record?.record_id || createdStaff?.record_id || ''
+      await this.authRepository.createCredential({ staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
     } catch (error) {
+      if (staffRecordId) {
+        try { await deleteRecord(config.feishu.tables.staff, staffRecordId) } catch (rollbackError) { this.audit('CREATE_MENTOR_ROLLBACK', staffId, actorId, 'FAILED', rollbackError instanceof Error ? rollbackError.message : String(rollbackError)); throw Object.assign(new Error('导师账号创建未完成，系统回滚失败，请联系管理员。'), { code: 'MENTOR_CREATE_ROLLBACK_FAILED', status: 503, cause: error }) }
+      }
       this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
       throw error
     }
     this.audit('CREATE_MENTOR', staffId, actorId)
     const created = (await this.load()).staff.find((item) => item.id === staffId)
     if (!created) throw new FeishuUnavailableError('导师已写入，但刷新后无法读取该人员记录')
-    return created
+    return { ...created, initialPassword }
   }
 
   async updateMentor(actorId, mentorId, input) {
@@ -1103,7 +1113,8 @@ export class FeishuRepository {
     if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
     if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请使用未占用的手机号'), { status: 409 })
     try {
-      await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: false, updated_at: feishuDate(), display_role: '导师' }))
+      const credential = await this.authRepository.findByStaffId(mentorId)
+      await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: Boolean(credential && credential.credentialStatus !== 'DISABLED'), updated_at: feishuDate(), display_role: '导师' }))
       await this.syncCredentialPhone(mentorId, phone)
     } catch (error) {
       this.audit('UPDATE_MENTOR', mentorId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
