@@ -395,7 +395,7 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 }
 
 /* Shared resource entry points for the ASVA mentor workspace. */
-.resource-banners { position: relative; margin: 26px 0 20px; }
+.resource-banners { position: relative; margin: 26px 0 20px; touch-action: pan-y; }
 .resource-banner { position: relative; display: none; aspect-ratio: 3 / 1; overflow: hidden; border-radius: var(--radius); background: #eef4ff; box-shadow: 0 12px 30px rgba(34, 137, 111, .1); transition: transform .16s ease, box-shadow .16s ease; }
 .resource-banner.active { display: block; }
 .resource-banner:hover { transform: translateY(-2px); box-shadow: 0 17px 36px rgba(34, 137, 111, .16); }
