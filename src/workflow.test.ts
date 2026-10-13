@@ -133,7 +133,50 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(api.customer('staff-admin', 'C00001305')?.referrerName).toBe('')
     api.updateCustomerReferrer('staff-admin', 'C00001305', '李老师')
     expect(api.customer('staff-admin', 'C00001305')?.referrerName).toBe('李老师')
-    expect(() => api.updateCustomerReferrer('mentor-zhang', 'C00001305', '陈某')).toThrow('客户不存在')
+    try {
+      api.updateCustomerReferrer('mentor-zhang', 'C00001305', '陈某')
+      throw new Error('expected mentor referrer update to be rejected')
+    } catch (error) {
+      expect(error).toMatchObject({ status: 403, code: 'FORBIDDEN' })
+    }
+  })
+
+  it('lets ADMIN and MENTOR provide introducer only at creation, while ADMIN owns later edits', () => {
+    const api = createLocalApi(createLocalRepository())
+    const adminCreated = api.createCustomer('staff-admin', { nickname: '介绍人管理员客户', phone: '13900003101', introducer: '王老师', situation: '', needsFollowup: false })
+    const adminCustomer = adminCreated.customers.find((item) => item.name === '介绍人管理员客户')!
+    expect(adminCustomer.referrerName).toBe('王老师')
+    expect(adminCustomer.introducer).toBe('王老师')
+    const adminBlank = api.createCustomer('staff-admin', { nickname: '无介绍人管理员客户', phone: '13900003105', situation: '', needsFollowup: false })
+    expect(adminBlank.customers.find((item) => item.name === '无介绍人管理员客户')?.referrerName).toBe('')
+    api.updateCustomer('staff-admin', adminCustomer.id, { nickname: adminCustomer.name, phone: adminCustomer.phone, introducer: '李姐', situation: '', needsFollowup: false })
+    expect(api.customer('staff-admin', adminCustomer.id)?.referrerName).toBe('李姐')
+    expect(api.dashboard('staff-admin').profileChanges.find((item) => item.customerId === adminCustomer.id && item.field === 'introducer')).toMatchObject({ oldValue: '王老师', newValue: '李姐', source: 'MANUAL', operatorId: 'staff-admin' })
+    api.updateCustomer('staff-admin', adminCustomer.id, { nickname: adminCustomer.name, phone: adminCustomer.phone, introducer: '', situation: '', needsFollowup: false })
+    expect(api.customer('staff-admin', adminCustomer.id)?.referrerName).toBe('')
+
+    const mentorCreated = api.createCustomer('mentor-li', { nickname: '介绍人导师客户', phone: '13900003102', introducer: '老客户张先生', situation: '', needsFollowup: false })
+    const mentorCustomer = mentorCreated.customers.find((item) => item.name === '介绍人导师客户')!
+    expect(mentorCustomer.referrerName).toBe('老客户张先生')
+    const mentorBlank = api.createCustomer('mentor-li', { nickname: '无介绍人导师客户', phone: '13900003106', situation: '', needsFollowup: false })
+    expect(mentorBlank.customers.find((item) => item.name === '无介绍人导师客户')?.referrerName).toBe('')
+    try {
+      api.updateCustomer('mentor-li', mentorCustomer.id, { nickname: mentorCustomer.name, phone: mentorCustomer.phone, introducer: '刘老师', situation: '', needsFollowup: false })
+      throw new Error('expected introducer update to be rejected')
+    } catch (error) {
+      expect(error).toMatchObject({ status: 403, code: 'FORBIDDEN' })
+    }
+    api.updateCustomer('mentor-li', mentorCustomer.id, { nickname: mentorCustomer.name, phone: '13900003103', situation: '导师补充允许字段', needsFollowup: false })
+    expect(api.customer('mentor-li', mentorCustomer.id)?.referrerName).toBe('老客户张先生')
+  })
+
+  it('does not let profile or AI-shaped updates write introducer, and supports legacy empty values', () => {
+    const api = createLocalApi(createLocalRepository())
+    const created = api.createCustomer('staff-admin', { nickname: '介绍人AI隔离客户', phone: '13900003104', introducer: '王老师', situation: '', needsFollowup: false })
+    const customer = created.customers.find((item) => item.name === '介绍人AI隔离客户')!
+    api.updateCustomer('staff-admin', customer.id, { nickname: customer.name, phone: customer.phone, situation: '', needsFollowup: false, profileUpdates: [{ field: 'introducer', value: 'AI不应覆盖', source: 'AI_INFERENCE' }] })
+    expect(api.customer('staff-admin', customer.id)?.referrerName).toBe('王老师')
+    expect(api.customer('staff-admin', 'C00001305')?.introducer).toBe('')
   })
 
   it('lets ADMIN manage active mentor accounts and rejects duplicate phones', () => {

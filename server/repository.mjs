@@ -99,7 +99,8 @@ function customer(row) {
     if (Number.isFinite(legacyBirthYear) && legacyBirthYear > 0) profileFields.birth_year = legacyBirthYear
     if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
   }
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName: text(get('customers', f, 'referrer_name')), need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, _recordId: row.record_id }
+  const referrerName = text(get('customers', f, 'referrer_name'))
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -159,7 +160,7 @@ function profileChange(row) {
   let newValue = null
   try { oldValue = JSON.parse(text(get('profileChanges', f, 'old_value')) || 'null') } catch { oldValue = text(get('profileChanges', f, 'old_value')) || null }
   try { newValue = JSON.parse(text(get('profileChanges', f, 'new_value')) || 'null') } catch { newValue = text(get('profileChanges', f, 'new_value')) || null }
-  const source = ['STRUCTURED_INPUT', 'USER_EXPLICIT', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'MENTOR_CONFIRMED', 'MENTOR_OBSERVATION', 'AI_EXTRACTED_CONFIRMED', 'AI_INFERENCE', 'IMPORTED_HISTORY', 'LEGACY_MIGRATION'].includes(text(get('profileChanges', f, 'source'))) ? text(get('profileChanges', f, 'source')) : 'MENTOR_OBSERVATION'
+  const source = ['STRUCTURED_INPUT', 'USER_EXPLICIT', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'MENTOR_CONFIRMED', 'MENTOR_OBSERVATION', 'AI_EXTRACTED_CONFIRMED', 'AI_INFERENCE', 'IMPORTED_HISTORY', 'LEGACY_MIGRATION', 'MANUAL'].includes(text(get('profileChanges', f, 'source'))) ? text(get('profileChanges', f, 'source')) : 'MENTOR_OBSERVATION'
   return { id: text(get('profileChanges', f, 'change_id')) || row.record_id, customerId: text(get('profileChanges', f, 'customer_id')), field: text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), fieldName: text(get('profileChanges', f, 'field_name')) || text(get('profileChanges', f, 'field_key')) || text(get('profileChanges', f, 'field')), oldValue, newValue, source, confidence: Number(get('profileChanges', f, 'confidence') ?? 0.9), confirmed: boolean(get('profileChanges', f, 'confirmed')), updatedAt: date(get('profileChanges', f, 'changed_at')) || date(get('profileChanges', f, 'updated_at')), operatorId: text(get('profileChanges', f, 'operator_id')) || undefined, serviceRecordId: text(get('profileChanges', f, 'service_record_id')) || undefined, sourceRecordId: text(get('profileChanges', f, 'source_record_id')) || undefined, evidenceId: text(get('profileChanges', f, 'evidence_id')) || undefined, updateBatchId: text(get('profileChanges', f, 'update_batch_id')) || undefined, _recordId: row.record_id }
 }
 
@@ -248,7 +249,7 @@ function validateManualCustomer(input) {
   if (!nickname) throw new Error('客户昵称不能为空')
   if (phone && !/^1\d{10}$/.test(phone) && !phone.startsWith('+')) throw new Error('请输入有效手机号')
   if (!contactRequired({ phone, wechat })) throw Object.assign(new Error('手机号或微信号至少填写一个'), { code: 'CUSTOMER_CONTACT_REQUIRED', status: 400 })
-  return { nickname, phone, wechat, situation: text(input?.situation).trim() }
+  return { nickname, phone, wechat, introducer: text(input?.introducer).trim(), situation: text(input?.situation).trim() }
 }
 
 function duplicateMatches(database, input) {
@@ -729,6 +730,7 @@ export class FeishuRepository {
         const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
+        if (normalized.introducer) writeValues.referrer_name = normalized.introducer
         const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues))
         current = await this.loadAfterWrite(writeResult, customerId)
         timings.customer_write_ms = Date.now() - customerWriteStartedAt
@@ -760,8 +762,11 @@ export class FeishuRepository {
   }
   async updateCustomer(actorId, customerId, input) {
     const database = await this.load()
-    scope(database, actorId)
-    const current = database.customers.find((item) => item.id === customerId)
+    const visibleDatabase = scope(database, actorId)
+    const actor = database.staff.find((item) => item.id === actorId)
+    const introducerProvided = Object.prototype.hasOwnProperty.call(input || {}, 'introducer')
+    if (introducerProvided && (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true)) throw Object.assign(new Error('只有 ADMIN 可以修改介绍人'), { code: 'FORBIDDEN', status: 403 })
+    const current = visibleDatabase.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!current || !row) throw new Error('客户不存在')
     validateEnrollmentDrafts(database, input.enrollments)
@@ -773,7 +778,14 @@ export class FeishuRepository {
     if (normalizePhone(current.phone) !== normalized.phone) identityUpdates.push({ field: 'phone', value: normalized.phone, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
     if (normalizeWechat(current.wechat) !== normalizeWechat(normalized.wechat)) identityUpdates.push({ field: 'wechat', value: normalized.wechat, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
     if (identityUpdates.length) await persistCustomerProfile(database, customerId, normalizeProfileUpdates(identityUpdates, current, true), undefined, actorId)
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { nickname: normalized.nickname, source: input.source || current.source, notes: normalized.situation || current.notes }))
+    const customerValues = { nickname: normalized.nickname, source: input.source || current.source, notes: normalized.situation || current.notes }
+    const previousIntroducer = current.referrerName || ''
+    if (introducerProvided) customerValues.referrer_name = normalized.introducer
+    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues))
+    if (introducerProvided && previousIntroducer !== normalized.introducer) {
+      const changedAt = feishuDate()
+      await createMappedRecord('profileChanges', 'profile-change.manual-introducer', { customer_id: customerId, field: 'introducer', field_key: 'introducer', field_name: '介绍人', old_value: JSON.stringify(previousIntroducer || null), new_value: JSON.stringify(normalized.introducer || null), source: 'MANUAL', confidence: 1, confirmed: true, updated_at: changedAt, changed_at: changedAt, operator_id: actorId, service_record_id: '', source_record_id: '', evidence_id: '', update_batch_id: '' })
+    }
     let latest = await this.loadAfterWrite(undefined, customerId)
     if (input.profileUpdates?.length) await persistCustomerProfile(latest, customerId, normalizeProfileUpdates(input.profileUpdates, latest.customers.find((item) => item.id === customerId), true), undefined, actorId)
     latest = await this.loadAfterWrite(undefined, customerId)
@@ -1157,11 +1169,18 @@ export class FeishuRepository {
 
   async updateCustomerReferrer(actorId, customerId, referrerName) {
     const database = await this.load()
+    const actor = database.staff.find((item) => item.id === actorId)
+    if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以修改介绍人'), { code: 'FORBIDDEN', status: 403 })
     const visibleDatabase = scope(database, actorId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!row || !visibleDatabase.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
     const value = typeof referrerName === 'string' ? referrerName.trim() : ''
+    const previous = visibleDatabase.customers.find((item) => item.id === customerId)?.referrerName || ''
     await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { referrer_name: value }))
+    if (previous !== value) {
+      const changedAt = feishuDate()
+      await createMappedRecord('profileChanges', 'profile-change.manual-introducer', { customer_id: customerId, field: 'introducer', field_key: 'introducer', field_name: '介绍人', old_value: JSON.stringify(previous || null), new_value: JSON.stringify(value || null), source: 'MANUAL', confidence: 1, confirmed: true, updated_at: changedAt, changed_at: changedAt, operator_id: actorId, service_record_id: '', source_record_id: '', evidence_id: '', update_batch_id: '' })
+    }
     return (await this.dashboard(actorId)).customers.find((item) => item.id === customerId)
   }
 

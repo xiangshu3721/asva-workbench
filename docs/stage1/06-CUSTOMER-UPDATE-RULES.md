@@ -13,6 +13,8 @@ Customer 创建、编辑、AI 确认、服务反馈涉及的主档案更新，�
 - Mutable Fact（城市、婚姻、职业、工作状态、关系状态）允许更新当前快照，并写 ProfileChanges。
 - 重要字段包括联系方式、城市、职业、婚姻/关系状态、核心需求、目标、当前导师和已有兼容业务字段。
 - 普通格式变化不生成无意义历史。
+- `introducer` 是自由文本业务字段：ADMIN 与 MENTOR 均可在创建时填写；创建后只有 ADMIN 可修改或清空。更新请求缺少该字段时必须保留原值；MENTOR 主动提交该字段由服务端返回 `403 FORBIDDEN`。
+- `introducer` 不属于 AI/Profile 可写字段；ADMIN 创建后修改需记录 `old_value`、`new_value`、操作人和时间，并标记 `source=MANUAL`。
 - `current_mentor_id` 是唯一新写字段；旧 `导师ID` 只读 deprecated。
 - ProfileChanges 由 Customer Schema Contract 的 `history_policy=TRACK` 驱动；normalize 后相同的值不写历史。`birth_date` 变更写历史，存在 `birth_date` 时派生的 `age` / `birth_year` 不单独写历史；仅有 legacy age 时保留兼容变更记录。
 

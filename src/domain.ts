@@ -2,7 +2,7 @@ export type Role = 'ADMIN' | 'MENTOR'
 export type PermissionRole = 'ADMIN' | 'MENTOR'
 export type StaffStatus = 'ACTIVE' | 'INACTIVE'
 export type AppointmentWorkflowStatus = 'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED'
-export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIRMED' | 'MENTOR_FACTUAL_INPUT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_EXTRACTED_CONFIRMED' | 'AI_INFERENCE' | 'IMPORTED_HISTORY' | 'LEGACY_MIGRATION'
+export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIRMED' | 'MENTOR_FACTUAL_INPUT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_EXTRACTED_CONFIRMED' | 'AI_INFERENCE' | 'IMPORTED_HISTORY' | 'LEGACY_MIGRATION' | 'MANUAL'
 export type ProfileValue = string | number | boolean | string[] | null
 export type SummaryStatus = 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'
 
@@ -169,6 +169,8 @@ export interface Customer {
   gradeSource: 'AI建议' | '导师确认'
   mentorId: string | null
   referrerName: string
+  /** Backward-compatible internal alias for the user-facing 介绍人 field. */
+  introducer?: string
   need: string
   helpExpectation: string
   goal: string
@@ -394,6 +396,7 @@ export interface ManualCustomerInput {
   nickname: string
   phone?: string
   wechat?: string
+  introducer?: string
   situation: string
   needsFollowup: boolean
   mentorId?: string | null

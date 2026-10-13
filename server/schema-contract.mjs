@@ -37,7 +37,7 @@ function fieldDefinition(internalKey, feishuName, overrides = {}) {
   }
 }
 
-const TRACK_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'gender', 'city', 'marital_status', 'children_summary', 'family_summary', 'occupation', 'job_status', 'relationship_status', 'support_system', 'current_resources', 'current_barriers', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id'])
+const TRACK_FIELDS = new Set(['phone', 'wechat', 'referrer_name', 'birth_date', 'gender', 'city', 'marital_status', 'children_summary', 'family_summary', 'occupation', 'job_status', 'relationship_status', 'support_system', 'current_resources', 'current_barriers', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id'])
 const DERIVED_FIELDS = new Set(['age', 'birth_year'])
 
 export const SCHEMA_CONTRACT = Object.fromEntries(Object.entries(FIELD_MAPPING).map(([table, mapping]) => [table, Object.entries(mapping).map(([internalKey, feishuName]) => fieldDefinition(internalKey, feishuName, { type: typeFor(internalKey, table), history_policy: table === 'customers' ? DERIVED_FIELDS.has(internalKey) ? 'DERIVED' : TRACK_FIELDS.has(internalKey) ? 'TRACK' : 'NO_TRACK' : null }))]))

@@ -33,7 +33,8 @@ function normalize(database: Database): Database {
     profileFields.mentor_id ??= profileFields.current_mentor_id
     profileFields.phone ??= customer.phone ?? null
     profileFields.wechat ??= customer.wechat ?? null
-    return { ...customer, wechat: customer.wechat ?? '', source: customer.source ?? '历史数据导入', referrerName: customer.referrerName ?? '', createdAt: customer.createdAt ?? '2026-10-01', notes: customer.notes ?? '', lastFollowupAt: customer.lastFollowupAt ?? null, nextFollowupAt: customer.nextFollowupAt ?? null, followupStatus: String((customer as Customer & { followupStatus?: string }).followupStatus) === '跟进中' ? '待跟进' : customer.followupStatus ?? '待跟进', profileFields, profileFieldMeta: { ...(legacy?.fieldMeta ?? {}), ...(customer.profileFieldMeta ?? {}) }, profileUpdatedAt: customer.profileUpdatedAt ?? legacy?.updatedAt ?? null, profileVersion: customer.profileVersion ?? 0, profileSchemaVersion: customer.profileSchemaVersion ?? legacy?.schemaVersion ?? CUSTOMER_PROFILE_SCHEMA_VERSION }
+    const introducer = customer.introducer ?? customer.referrerName ?? ''
+    return { ...customer, wechat: customer.wechat ?? '', source: customer.source ?? '历史数据导入', referrerName: introducer, introducer, createdAt: customer.createdAt ?? '2026-10-01', notes: customer.notes ?? '', lastFollowupAt: customer.lastFollowupAt ?? null, nextFollowupAt: customer.nextFollowupAt ?? null, followupStatus: String((customer as Customer & { followupStatus?: string }).followupStatus) === '跟进中' ? '待跟进' : customer.followupStatus ?? '待跟进', profileFields, profileFieldMeta: { ...(legacy?.fieldMeta ?? {}), ...(customer.profileFieldMeta ?? {}) }, profileUpdatedAt: customer.profileUpdatedAt ?? legacy?.updatedAt ?? null, profileVersion: customer.profileVersion ?? 0, profileSchemaVersion: customer.profileSchemaVersion ?? legacy?.schemaVersion ?? CUSTOMER_PROFILE_SCHEMA_VERSION }
   })
   const { profiles: _legacyProfiles, ...withoutLegacyProfiles } = database as Database & { profiles?: CustomerProfileState[] }
   return {
@@ -67,7 +68,7 @@ function validateManualCustomer(input: ManualCustomerInput) {
   if (!nickname) throw new Error('客户昵称不能为空')
   if (phone && !/^1\d{10}$/.test(phone) && !phone.startsWith('+')) throw new Error('请输入有效手机号')
   if (!contactRequired({ phone, wechat })) throw Object.assign(new Error('手机号或微信号至少填写一个'), { code: 'CUSTOMER_CONTACT_REQUIRED' })
-  return { nickname, phone, wechat }
+  return { nickname, phone, wechat, introducer: input.introducer?.trim() ?? '' }
 }
 
 function customerDuplicates(database: Database, input: ManualCustomerInput): CustomerDuplicateMatch[] {
@@ -81,10 +82,10 @@ function emptyProfile(customerId: string): CustomerProfileState {
 }
 
 function createManualCustomer(database: Database, input: ManualCustomerInput, updates: ProfileUpdate[], actor: Staff): Customer {
-  const { nickname, phone, wechat } = validateManualCustomer(input)
+  const { nickname, phone, wechat, introducer } = validateManualCustomer(input)
   const id = `C-${Date.now()}-${Math.floor(Math.random() * 1000)}`
   const createdAt = new Date().toISOString()
-  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), createdByStaffId: actor.id, createdByName: actor.name, name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: '', need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
+  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), createdByStaffId: actor.id, createdByName: actor.name, name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: introducer, introducer, need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
   database.customers.unshift(customer)
   if (updates.length) applyProfileUpdates(database, customer.id, normalizedProfileUpdates(updates, emptyProfile(customer.id), true), undefined, 'admin')
   return customer
@@ -102,6 +103,25 @@ function assertActive(staff: Staff) {
 
 function assertAdmin(staff: Staff) {
   if (permissionRole(staff) !== 'ADMIN' || staff.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
+}
+
+function assertCustomerManager(staff: Staff) {
+  if (permissionRole(staff) === 'ADMIN') return assertAdmin(staff)
+  if (permissionRole(staff) === 'MENTOR') return
+  throw Object.assign(new Error('没有权限操作客户'), { code: 'FORBIDDEN', status: 403 })
+}
+
+function assertAdminIntroducerEditor(staff: Staff) {
+  if (permissionRole(staff) !== 'ADMIN' || staff.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以修改介绍人'), { code: 'FORBIDDEN', status: 403 })
+}
+
+function applyManualIntroducerChange(database: Database, customer: Customer, actor: Staff, value: string) {
+  const previous = customer.introducer ?? customer.referrerName ?? ''
+  const next = value.trim()
+  customer.referrerName = next
+  customer.introducer = next
+  if (previous === next) return
+  database.profileChanges.unshift({ id: 'PC-' + Date.now() + '-' + database.profileChanges.length, customerId: customer.id, field: 'introducer', fieldName: '介绍人', oldValue: previous || null, newValue: next || null, source: 'MANUAL', confidence: 1, confirmed: true, updatedAt: new Date().toISOString(), operatorId: actor.id })
 }
 
 function assertAppointmentAccess(staff: Staff, _appointment: Appointment) {
@@ -281,7 +301,7 @@ export function createLocalRepository(): AsvaRepository {
       const database = readDatabase()
       const actor = getStaff(database, actorId)
       assertActive(actor)
-      assertAdmin(actor)
+      assertCustomerManager(actor)
       validateManualCustomer(input)
       const draft = input.situation.trim() ? extractLocalProfile(input.situation, emptyProfile('preview')) : { updates: [] }
       const identity = resolveCustomerIdentity(database.customers, input)
@@ -291,7 +311,7 @@ export function createLocalRepository(): AsvaRepository {
       const database = readDatabase()
       const actor = getStaff(database, actorId)
       assertActive(actor)
-      assertAdmin(actor)
+      assertCustomerManager(actor)
       const identity = resolveCustomerIdentity(database.customers, input)
       if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { code: 'IDENTITY_CONFLICT' })
       if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已匹配到现有客户，请打开原档案更新。'), { code: 'CUSTOMER_DUPLICATE' })
@@ -308,9 +328,12 @@ export function createLocalRepository(): AsvaRepository {
       const database = readDatabase()
       const actor = getStaff(database, actorId)
       assertActive(actor)
-      assertAdmin(actor)
-      const customer = database.customers.find((item) => item.id === customerId)
+      assertCustomerManager(actor)
+      const visible = scopedDatabase(database, actor)
+      const customer = visible.customers.find((item) => item.id === customerId)
       if (!customer) throw new Error('客户不存在')
+      const introducerProvided = Object.prototype.hasOwnProperty.call(input, 'introducer')
+      if (introducerProvided) assertAdminIntroducerEditor(actor)
       const { nickname, phone, wechat } = validateManualCustomer({ ...input, nickname: input.nickname || customer.name, phone: input.phone || customer.phone, wechat: input.wechat || customer.wechat })
       const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), { ...input, nickname, phone, wechat })
       if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { code: 'IDENTITY_CONFLICT' })
@@ -325,6 +348,7 @@ export function createLocalRepository(): AsvaRepository {
       if (normalizeWechat(oldWechat) !== normalizeWechat(wechat)) applyProfileUpdates(database, customerId, [{ field: 'wechat', value: wechat, source: 'USER_EXPLICIT', confidence: 1, confirmed: true }], undefined, actor.id)
       if (input.situation.trim()) customer.notes = input.situation.trim()
       if (input.profileUpdates?.length) applyProfileUpdates(database, customerId, normalizedProfileUpdates(input.profileUpdates, customerProfileState(customer), true), undefined, actorId)
+      if (introducerProvided) applyManualIntroducerChange(database, customer, actor, input.introducer ?? '')
       mergeEnrollments(database, customerId, input.enrollments, actor.id)
       // Stage 1 Customer updates never create or mutate Appointment.
       writeDatabase(database)
@@ -496,10 +520,12 @@ export function createLocalRepository(): AsvaRepository {
     updateCustomerReferrer(actorId, customerId, referrerName) {
       const database = readDatabase()
       const actor = getStaff(database, actorId)
+      assertActive(actor)
+      assertAdminIntroducerEditor(actor)
       const visible = scopedDatabase(database, actor)
       const customer = visible.customers.find((item) => item.id === customerId)
       if (!customer) throw new Error('客户不存在')
-      customer.referrerName = referrerName.trim()
+      applyManualIntroducerChange(database, customer, actor, referrerName)
       writeDatabase(database)
       return customer
     },
