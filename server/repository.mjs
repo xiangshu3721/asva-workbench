@@ -8,7 +8,7 @@ import crypto from 'node:crypto'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
 import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
 import { customerHistoryPolicy } from './schema-contract.mjs'
-import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, dummyPasswordHash, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
+import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, PASSWORD_POLICY_CODES, dummyPasswordHash, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
 import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
@@ -536,7 +536,11 @@ export class FeishuRepository {
     const firstChangeGuard = credential?.mustChangePassword === true && !hasCurrentPassword
     if (!credential || (!currentMatches && !firstChangeGuard)) throw Object.assign(new Error('当前密码不正确'), { code: 'PASSWORD_INVALID', status: 401 })
     validatePassword(nextPassword, { phone: account.phone })
-    if (await verifyPassword(nextPassword, credential.passwordHash)) throw Object.assign(new Error(credential.mustChangePassword ? '新密码不能与初始密码相同' : '新密码不能与当前密码相同'), { code: 'PASSWORD_REUSE_NOT_ALLOWED', status: 400 })
+    if (await verifyPassword(nextPassword, credential.passwordHash)) {
+      const code = credential.mustChangePassword ? PASSWORD_POLICY_CODES.SAME_AS_TEMPORARY : 'PASSWORD_REUSE_NOT_ALLOWED'
+      const message = credential.mustChangePassword ? '新密码不能与初始密码相同' : '新密码不能与当前密码相同'
+      throw Object.assign(new Error(message), { code, status: 400 })
+    }
     const timestamp = now()
     await this.authRepository.updatePassword(credential, await hashPassword(nextPassword), { password_algorithm: 'scrypt', must_change_password: false, password_changed_at: timestamp, auth_version: Number(credential.authVersion || 0) + 1, credential_status: 'ACTIVE', updated_at: timestamp })
     return { ok: true, mustChangePassword: false, authVersion: Number(credential.authVersion || 0) + 1 }

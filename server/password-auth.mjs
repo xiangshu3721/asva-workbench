@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import { config } from './config.mjs'
 import { createRecord, listRecords, updateRecord } from './feishu.mjs'
 import { field, fields, read } from './field-mapping.mjs'
+import { PasswordPolicyError, PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 
 const scryptAsync = promisify(crypto.scrypt)
 const SCRYPT_N = 32_768
@@ -12,33 +13,18 @@ const KEY_LENGTH = 32
 const SALT_BYTES = 16
 const MAXMEM = 64 * 1024 * 1024
 const DUMMY_HASH = 'scrypt$N=32768,r=8,p=1$YXN2YS1kdW1teS1zYWx0$wq1o4n2t2pQdU6t4nLh6Qw6h4QZfPZ0G3Dk3tQG4l7Q'
-const WEAK_PASSWORDS = new Set(['12345', '123456', '1234567890', '12345678901', '88888', '888888', '8888888888', 'abcde', 'abcdefghij', 'qwerty', 'qwertyuiop', 'admin', 'password', 'password123', '1111111111', '0000000000'])
 const INITIAL_PASSWORD_CHARSETS = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%']
-export const PASSWORD_POLICY_MESSAGE = '密码需为 5～64 位'
+export { PasswordPolicyError, PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword }
+export const PASSWORD_POLICY_MESSAGE = PASSWORD_POLICY_MESSAGES[PASSWORD_POLICY_CODES.LENGTH_INVALID]
 
 const text = (value) => typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 const bool = (value) => value === true || value === 'true' || value === '是'
 const normalizePhone = (value) => text(value).replace(/[\s-]/g, '')
 const now = () => new Date().toISOString()
 
-export class PasswordPolicyError extends Error {
-  code = 'PASSWORD_POLICY_INVALID'
-  status = 400
-}
-
 export class AuthCredentialStoreNotConfiguredError extends Error {
   code = 'AUTH_CREDENTIAL_STORE_NOT_CONFIGURED'
   status = 503
-}
-
-export function validatePassword(password, { phone = '' } = {}) {
-  const normalizedPhone = normalizePhone(phone)
-  const normalizedPassword = typeof password === 'string' ? password.toLowerCase() : ''
-  const passwordDigits = typeof password === 'string' ? password.replace(/\D/g, '') : ''
-  const phoneDistance = normalizedPhone && passwordDigits.length >= 8 ? levenshteinDistance(passwordDigits, normalizedPhone) : Number.POSITIVE_INFINITY
-  const phoneLike = Boolean(normalizedPhone && passwordDigits.length >= 5 && (normalizedPhone.includes(passwordDigits) || passwordDigits.includes(normalizedPhone) || phoneDistance <= 1))
-  if (typeof password !== 'string' || password.length < 5 || password.length > 64 || /^(.)(\1)+$/.test(password) || WEAK_PASSWORDS.has(normalizedPassword) || phoneLike) throw new PasswordPolicyError(PASSWORD_POLICY_MESSAGE)
-  return true
 }
 
 export function generateInitialPassword({ phone = '', length = 12 } = {}) {
@@ -60,20 +46,6 @@ export function generateInitialPassword({ phone = '', length = 12 } = {}) {
     } catch {}
   }
   throw new Error('无法生成符合策略的初始密码')
-}
-
-function levenshteinDistance(left, right) {
-  const previous = Array.from({ length: right.length + 1 }, (_, index) => index)
-  for (let row = 1; row <= left.length; row += 1) {
-    let diagonal = previous[0]
-    previous[0] = row
-    for (let column = 1; column <= right.length; column += 1) {
-      const above = previous[column]
-      previous[column] = Math.min(previous[column] + 1, previous[column - 1] + 1, diagonal + (left[row - 1] === right[column - 1] ? 0 : 1))
-      diagonal = above
-    }
-  }
-  return previous[right.length]
 }
 
 export async function hashPassword(password) {

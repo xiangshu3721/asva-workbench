@@ -13,6 +13,8 @@ import { applySpeechResults, emptySpeechTranscript, joinSpeechText, shouldRecove
 import { canStartCustomerSave } from './save-contract'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { shouldResumeSource } from './processing-contract'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
 const remoteBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined
@@ -22,6 +24,17 @@ const workbenchApi: WorkbenchApi = remoteBaseUrl ? createHttpApi(remoteBaseUrl) 
 
 type MePanel = 'account' | 'team'
 const PASSWORD_POLICY_HINT = '密码需为 5～64 位，可使用英文字母、数字和常见特殊符号；无需强制混合大小写、数字或符号。请避开明显弱密码和手机号。'
+function passwordErrorMessage(error: unknown) {
+  const code = (error as { code?: string })?.code
+  return (code && PASSWORD_POLICY_MESSAGES[code]) || (error instanceof Error ? error.message : '密码不符合要求')
+}
+function validatePasswordInput(value: string) {
+  try { validatePassword(value); return '' } catch (error) { return passwordErrorMessage(error) }
+}
+function getConfirmPasswordError(newPassword: string, confirmPassword: string) {
+  if (!confirmPassword) return ''
+  return newPassword === confirmPassword ? '' : PASSWORD_POLICY_MESSAGES[PASSWORD_POLICY_CODES.CONFIRM_MISMATCH]
+}
 type CustomerFilter = '待处理' | '待跟进' | '已完成'
 
 const statusLabel: Record<AppointmentWorkflowStatus, string> = { WAIT_ASSIGN: '待分配', WAIT_FOLLOW_UP: '待跟进', WAIT_FEEDBACK: '待反馈', COMPLETED: '已完成' }
@@ -76,10 +89,22 @@ function Login({ api, onLogin }: { api: WorkbenchApi; onLogin: (account: Staff &
 function ChangePassword({ api, onComplete }: { api: WorkbenchApi; onComplete: () => void }) {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [newPasswordError, setNewPasswordError] = useState('')
+  const [confirmPasswordError, setConfirmPasswordError] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (newPassword !== confirmPassword) { setError('两次输入的新密码不一致'); return } setLoading(true); setError(''); try { await api.changePassword('', newPassword); onComplete() } catch (changeError) { setError(changeError instanceof Error ? changeError.message : '修改密码失败') } finally { setLoading(false) } }
-  return <main className="login-page"><section className="login-card"><div className="eyebrow">FIRST LOGIN</div><h1>设置新密码</h1><p className="modal-lede">为了账号安全，请设置自己的登录密码。{PASSWORD_POLICY_HINT}</p><form onSubmit={submit} className="login-form"><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={loading}>{loading && <ButtonSpinner />}{loading ? '保存中…' : '确认修改'} <span>→</span></button></form></section></main>
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const nextError = validatePasswordInput(newPassword)
+    const confirmError = !confirmPassword ? '请再次输入新密码' : getConfirmPasswordError(newPassword, confirmPassword)
+    setNewPasswordError(nextError)
+    setConfirmPasswordError(confirmError)
+    setError('')
+    if (nextError || confirmError) return
+    setLoading(true)
+    try { await api.changePassword('', newPassword); onComplete() } catch (changeError) { setNewPasswordError(passwordErrorMessage(changeError)) } finally { setLoading(false) }
+  }
+  return <main className="login-page"><section className="login-card"><div className="eyebrow">FIRST LOGIN</div><h1>设置新密码</h1><p className="modal-lede">为了账号安全，请设置自己的登录密码。{PASSWORD_POLICY_HINT} 新密码不能与初始密码相同。</p><form onSubmit={submit} className="login-form"><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setNewPasswordError(''); setError(''); setConfirmPasswordError(getConfirmPasswordError(event.target.value, confirmPassword)) }} />{newPasswordError && <span className="form-error">{newPasswordError}</span>}</label><label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); setConfirmPasswordError(getConfirmPasswordError(newPassword, event.target.value)); setError('') }} />{confirmPasswordError && <span className="form-error">{confirmPasswordError}</span>}</label>{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={loading}>{loading && <ButtonSpinner />}{loading ? '保存中…' : '确认修改'} <span>→</span></button></form></section></main>
 }
 
 function WorkbenchApp() {
@@ -793,10 +818,26 @@ function SelfPasswordDialog({ api, onClose }: { api: WorkbenchApi; onClose: () =
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [newPasswordError, setNewPasswordError] = useState('')
+  const [confirmError, setConfirmError] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (newPassword !== confirm) { setError('两次输入的新密码不一致'); return } setSaving(true); setError(''); try { await api.changePassword(currentPassword, newPassword); onClose() } catch (changeError) { setError(changeError instanceof Error ? changeError.message : '修改密码失败') } finally { setSaving(false) } }
-  return <div className="modal-backdrop"><form className="modal-card compact-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">CHANGE PASSWORD</div><h2>修改密码</h2><p className="modal-lede">{PASSWORD_POLICY_HINT}</p><label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '保存新密码'}</button></div></form></div>
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const nextError = validatePasswordInput(newPassword)
+    const nextConfirmError = !confirm ? '请再次输入新密码' : getConfirmPasswordError(newPassword, confirm)
+    setNewPasswordError(nextError)
+    setConfirmError(nextConfirmError)
+    setError('')
+    if (nextError || nextConfirmError) return
+    setSaving(true)
+    try { await api.changePassword(currentPassword, newPassword); onClose() } catch (changeError) {
+      const message = passwordErrorMessage(changeError)
+      if ((changeError as { code?: string })?.code === 'PASSWORD_INVALID') setError(message)
+      else setNewPasswordError(message)
+    } finally { setSaving(false) }
+  }
+  return <div className="modal-backdrop"><form className="modal-card compact-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">CHANGE PASSWORD</div><h2>修改密码</h2><p className="modal-lede">{PASSWORD_POLICY_HINT}</p><label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => { setCurrentPassword(event.target.value); setError('') }} /></label><label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setNewPasswordError(''); setConfirmError(getConfirmPasswordError(event.target.value, confirm)) }} />{newPasswordError && <span className="form-error">{newPasswordError}</span>}</label><label>确认新密码<input type="password" autoComplete="new-password" value={confirm} onChange={(event) => { setConfirm(event.target.value); setConfirmError(getConfirmPasswordError(newPassword, event.target.value)); setError('') }} />{confirmError && <span className="form-error">{confirmError}</span>}</label>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '保存新密码'}</button></div></form></div>
 }
 
 function MentorFormDialog({ mentor, api, actorId, onClose, onSubmit }: { mentor?: Staff; api: WorkbenchApi; actorId: string; onClose: () => void; onSubmit: (input: { name: string; phone: string; initialPassword?: string }) => Promise<MentorAccountResult> }) {
