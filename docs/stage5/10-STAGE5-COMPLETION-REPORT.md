@@ -1,22 +1,20 @@
-# ASVA Stage 5｜Integration Closure Report
+# ASVA Stage 5｜Completion Report
 
 ## 最终状态
 
-- `STAGE5_STATUS = INTEGRATION_VERIFIED`
-- `STAGE5_CODE_READY_FOR_PRODUCTION = YES`
-- `BASELINE_RELEASE = R013`
+- `STAGE5_STATUS = COMPLETE`
+- `STAGE5_PRODUCTION_VERIFIED = YES`
+- `STAGE5_COMPLETE = YES`
+- `BASELINE_RELEASE = R015`
 - `STAGE4_FROZEN = YES`
 - `STAGE6 = NOT_STARTED`
-- `PRODUCTION_CUSTOMER_DEEPSEEK_CALL = NO`
-- `PRODUCTION_DATA_CHANGED = NO`
-- `NEW_RELEASE_CREATED = NO`
-- `DEPLOY_EXECUTED = NO`
+- `MANUAL_PRODUCT_OWNER_SMOKE = PASS`
 
-本轮没有调用阿文、丽丽或小岚的 DeepSeek。受控集成只使用固定虚拟夹具，不写入 Feishu，不改变 Production 客户数据。
+R015 已完成 CloudBase Runtime 恢复后的 Production 验证。Frontend 与 Backend 均为 R015，`VERSION_MATCH = YES`，`/api/health` 返回 2xx，环境为 `production`，`AUTH_MODE = PASSWORD`，`DATA_MODE = production`。
 
-## 自动门禁
+## 自动门禁与数据质量
 
-- `Tests = 187/187 PASS`
+- `Tests = 192/192 PASS`
 - `Typecheck = PASS`
 - `Build = PASS`
 - `Schema = PASS`
@@ -26,38 +24,54 @@
 - `Orphan Check = PASS`
 - `Secret Scan = PASS`
 
-Schema 使用现有 Feishu tenant-token 链路完成只读检查。Stage 5 不需要新增 Production 表或字段，安全元数据复用客户记录 `_safety` 区域；可选 `safetyAssessments` 表未配置，因此跳过且不构成缺口。既有客户表的 `导师ID` 仍是已登记 deprecated 字段，不属于本轮差异。
+Production 数据质量回归通过：3 位客户、1 位 Staff、0 位 Mentor、无重复记录、无悬空引用。Stage 4 原有 Customer、Source、Evidence、Profile 与 Life Events 未被修改。
 
-## 受控 DeepSeek 集成
+## Production Stage 5 验证
+
+本轮只对固定回归样本写入 `_safety` 安全评估元数据；未修改 Customer、Source、Evidence 或 Stage 4 Understanding 内容。三位客户均完成真实 Production 刷新，最终状态为 `FRESH`；第二次刷新均为 `NO_OP`，确认 fingerprint 幂等。
+
+| 客户 | Context Density | Sufficiency | Risk / Confidence | Gate | Commercial Gate | Safety Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| 阿文 | `RICH` | `LIMITED` | `R2 / MEDIUM` | `STABILIZE_FIRST` | `HARD_BLOCK` | `FRESH` |
+| 丽丽 | `MEDIUM` | `LIMITED` | `R2 / MEDIUM` | `STABILIZE_FIRST` | `HARD_BLOCK` | `FRESH` |
+| 小岚 | `SPARSE` | `LIMITED` | `UNKNOWN / LOW` | `ONE_TO_ONE` | `SOFT_BLOCK` | `FRESH` |
+
+Context Density 均由当前上下文指标通过共享 `DENSITY_V1` 策略计算；Production 不使用持久化旧值作为 fallback，也不会把计算失败降级为 `SPARSE`。三位样本保持：阿文 `RICH`、丽丽 `MEDIUM`、小岚 `SPARSE`。
+
+## 安全边界与受控集成
 
 - `Controlled Fixtures = 7/7 PASS`
-- 覆盖：`R2_PASSIVE_DEATH_WISH`、`R3_CURRENT_SELF_HARM`、`R4_IMMINENT`、`NEGATED`、`THIRD_PARTY`、`HISTORICAL`、`SPARSE_UNKNOWN`
-- `R4 = SAFETY_FIRST + HARD_BLOCK`
-- `R3 = SAFETY_FIRST + HARD_BLOCK`
-- `R2 = STABILIZE_FIRST + HARD_BLOCK`
-- `NEGATED / THIRD_PARTY / HISTORICAL` 未错误升级或归因
-- `SPARSE_UNKNOWN = UNKNOWN`，没有降级为 R0 或课程就绪
-- `Grounding = 0`
-- `Negation Guard = 0`
-- `Third-party Attribution Guard = 0`
-- `Historical-as-current Guard = 0`
+- Grounding / Negation / Third-party Attribution / Historical-as-current Guard 均为 `0`
 - `Hard-rule Miss = 0`
 - `Conflict Auto-resolve = 0`
 - `Unsupported Diagnosis = 0`
 - `JSON Schema Final Valid = YES`
-- `JSON Repair = 1 次以内；HISTORICAL 夹具使用 1 次修复后通过`
+- `R4 / R3 = SAFETY_FIRST + HARD_BLOCK`
+- `R2 = STABILIZE_FIRST + HARD_BLOCK`
+- `SPARSE_UNKNOWN = UNKNOWN`，不降级为课程就绪
+- 非法输入、上下文构建失败和刷新失败均 fail-closed
+- Safety API 继续执行登录与 ADMIN 权限校验
 
-模型只输出候选信号、关键未知和上下文摘要；风险等级、服务 Gate、商业阻断和安全动作均由服务端确定性规则生成。
+## 变更与部署纪律
 
-## 持久化与权限
+- `PRODUCTION_CUSTOMER_DEEPSEEK_CALL = YES`（仅阿文、丽丽、小岚固定回归样本）
+- `PRODUCTION_DATA_CHANGED = YES`（仅写入 `_safety` 安全评估元数据）
+- `NEW_RELEASE_CREATED = YES`（R015）
+- `DEPLOY_EXECUTED = YES`
+- `CODE_CHANGED = YES`（R015 密度兼容性修复）
+- 未生成 R016，未进入 Stage 6
 
-- 支持并测试 `FRESH / STALE / PROCESSING / FAILED`
-- 相同输入 fingerprint 幂等，不重复刷新
-- 刷新失败保留既有安全 payload，并写入 `FAILED` 与安全错误码
-- `GET /api/customers/:id/safety-assessment` 需要登录
-- `POST /api/customers/:id/safety-assessment/refresh` 需要 ADMIN
-- 不存在 R0 或课程就绪 fallback 绕过安全状态
+## 非阻塞 Backlog
 
-## 后续边界
+当前 Runtime 尚未持久化 `initial_json_valid`、`repair_used` 等模型输出观测字段；最终 JSON 有效性已由受控集成与 Production 刷新结果验证，不构成 Stage 5 完成阻塞项。后续可在不改变安全决策边界的前提下补充观测字段。
 
-Stage 5 代码已完成本轮集成验证，但本轮不发布、不部署、不生成 R014。Production 客户的真实 DeepSeek 调用仍需后续明确授权和独立验收；Stage 4 保持冻结，Stage 6 未开始。
+## 结论
+
+- `STAGE5_STATUS = COMPLETE`
+- `STAGE5_PRODUCTION_VERIFIED = YES`
+- `STAGE5_COMPLETE = YES`
+- `BASELINE_RELEASE = R015`
+- `STAGE4 = FROZEN`
+- `STAGE6 = NOT_STARTED`
+- `ALL_FAIL = NONE`
+- `ALL_BLOCKED = NONE`
