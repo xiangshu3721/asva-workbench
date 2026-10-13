@@ -11,4 +11,8 @@ describe('Stage 5 route permissions', () => {
   it('keeps safety refresh behind admin access', () => {
     expect(source).toMatch(/safetyCustomer && request\.method === 'POST'.*safety-assessment\/refresh.*await guardAdmin\(request\)/)
   })
+
+  it('keeps mentor management reads behind admin access', () => {
+    expect(source).toMatch(/url\.pathname === '\/api\/staff\/mentors'[\s\S]*repository\.teamSnapshot\(await guardAdmin\(request\)/)
+  })
 })

@@ -125,7 +125,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && url.pathname === '/api/staff/mentors') {
     const filter = url.searchParams.get('status') || ''
     if (filter && !['ACTIVE', 'INACTIVE'].includes(filter)) fail('status 只支持 ACTIVE 或 INACTIVE', 'INVALID_STATUS', 400)
-    return send(request, response, 200, await repository.teamSnapshot(await guard(request), filter), requestId)
+    return send(request, response, 200, await repository.teamSnapshot(await guardAdmin(request), filter), requestId)
   }
   if (request.method === 'POST' && url.pathname === '/api/staff/mentors') return send(request, response, 201, await repository.createMentor(await guardAdmin(request), await readBody(request)), requestId)
   const mentorEdit = url.pathname.match(/^\/api\/staff\/mentors\/([^/]+)$/)

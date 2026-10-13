@@ -15,6 +15,8 @@ import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate 
 import { shouldResumeSource } from './processing-contract'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { accountAvatar, accountPanelFor, accountRoleLabel } from '../shared/account-identity.mjs'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
 const remoteBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined
@@ -69,12 +71,12 @@ function sourceFailureMessage(error: unknown) {
   return '已保存，AI整理失败，可稍后重试。'
 }
 
-function Avatar({ staff, size = 'md' }: { staff?: Staff; size?: 'sm' | 'md' | 'lg' }) { return <span className={`avatar avatar-${size}`}>{staff?.avatar ?? '客'}</span> }
+function Avatar({ staff, size = 'md' }: { staff?: Staff; size?: 'sm' | 'md' | 'lg' }) { return <span className={`avatar avatar-${size}`}>{accountAvatar(staff?.name)}</span> }
 function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'dark' }) { return <span className={`badge badge-${tone}`}>{children}</span> }
 function ButtonSpinner() { return <span className="button-spinner" aria-hidden="true" /> }
 function GradeBadge({ grade }: { grade: CustomerGrade }) { return <span className={`grade grade-${grade}`}>{grade}</span> }
 function SectionTitle({ title, action }: { title: string; action?: ReactNode }) { return <div className="section-title"><h2>{title}</h2>{action}</div> }
-function roleName(staff: Staff) { return staff.permissionRole === 'MENTOR' ? '导师' : '管理员' }
+function roleName(staff: Staff) { return accountRoleLabel(staff.permissionRole) }
 function workflowStatus(appointment: Appointment): AppointmentWorkflowStatus { return appointment.status as AppointmentWorkflowStatus }
 function Login({ api, onLogin }: { api: WorkbenchApi; onLogin: (account: Staff & { mustChangePassword?: boolean }) => void }) {
   const [phone, setPhone] = useState('15021512537')
@@ -110,7 +112,10 @@ function ChangePassword({ api, onComplete }: { api: WorkbenchApi; onComplete: ()
 function WorkbenchApp() {
   const [loggedInStaffId, setLoggedInStaffId] = useState<string | null>(() => staffStorage.getItem('asva-demo-staff-v2'))
   const [mustChangePassword, setMustChangePassword] = useState(() => staffStorage.getItem('asva-password-change-required') === 'true')
-  const [activeStaffId, setActiveStaffId] = useState(() => staffStorage.getItem('asva-demo-staff-v2') ?? 'staff-founder')
+  const isRemoteStaff = Boolean(remoteBaseUrl) || dataMode === 'production'
+  const [currentStaff, setCurrentStaff] = useState<Staff | null>(() => !isRemoteStaff && loggedInStaffId ? api.staff(loggedInStaffId) ?? null : null)
+  const [identityLoading, setIdentityLoading] = useState(Boolean(loggedInStaffId && isRemoteStaff))
+  const [identityError, setIdentityError] = useState('')
   const [mePanel, setMePanel] = useState<MePanel>('account')
   const location = useLocation()
   const navigate = useNavigate()
@@ -121,26 +126,56 @@ function WorkbenchApp() {
   const [revision, setRevision] = useState(0)
   const [database, setDatabase] = useState<Database | null>(() => {
     if (remoteBaseUrl || dataMode === 'production') return null
-    try { return api.dashboard(activeStaffId) } catch { return api.dashboard('staff-founder') }
+    if (!loggedInStaffId) return null
+    try { return api.dashboard(loggedInStaffId) } catch { return null }
   })
   const [loadError, setLoadError] = useState('')
 
-  const activeStaff = database?.staff.find((item) => item.id === activeStaffId) ?? api.staff(activeStaffId) ?? repository.getDatabase().staff[0]
-  const canSeeAll = activeStaff.permissionRole === 'ADMIN'
+  useEffect(() => {
+    if (!loggedInStaffId) {
+      setCurrentStaff(null)
+      setIdentityLoading(false)
+      return
+    }
+    let cancelled = false
+    setIdentityLoading(true)
+    setIdentityError('')
+    const loadCurrentStaff = isRemoteStaff ? workbenchApi.staff(loggedInStaffId) : Promise.resolve(api.staff(loggedInStaffId))
+    loadCurrentStaff.then((profile) => {
+      if (cancelled) return
+      if (!profile) throw new Error('账号不存在')
+      setCurrentStaff(profile)
+      setDatabase(null)
+      setMePanel('account')
+      setIdentityLoading(false)
+    }).catch((error: Error) => {
+      if (cancelled) return
+      setCurrentStaff(null)
+      setIdentityError(error.message || '账号信息暂时无法读取')
+      setIdentityLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [loggedInStaffId])
+
+  const activeStaff = currentStaff
+  const canSeeAll = activeStaff?.permissionRole === 'ADMIN'
 
   useEffect(() => {
-    if (!loggedInStaffId) return
+    if (!loggedInStaffId || !currentStaff) return
     let cancelled = false
     setLoadError('')
-    workbenchApi.dashboard(activeStaffId).then((next) => { if (!cancelled) setDatabase(next) }).catch((error: Error) => { if (!cancelled) setLoadError(error.message) })
+    workbenchApi.dashboard(currentStaff.id).then((next) => { if (!cancelled) setDatabase(next) }).catch((error: Error) => { if (!cancelled) setLoadError(error.message) })
     return () => { cancelled = true }
-  }, [activeStaffId, loggedInStaffId, revision])
+  }, [currentStaff?.id, loggedInStaffId, revision])
 
   useEffect(() => {
     const expire = () => {
       staffStorage.removeItem('asva-demo-staff-v2')
       staffStorage.removeItem('asva-password-change-required')
       window.sessionStorage.removeItem('asva_session_token')
+      setCurrentStaff(null)
+      setDatabase(null)
+      setMePanel('account')
       setLoggedInStaffId(null)
       setMustChangePassword(false)
     }
@@ -148,9 +183,10 @@ function WorkbenchApp() {
     return () => window.removeEventListener('asva-auth-expired', expire)
   }, [])
 
-  const finishLogin = (account: Staff & { mustChangePassword?: boolean }) => { staffStorage.setItem('asva-demo-staff-v2', account.id); if (account.mustChangePassword) { staffStorage.setItem('asva-password-change-required', 'true'); setMustChangePassword(true) } setLoggedInStaffId(account.id); setActiveStaffId(account.id) }
+  const finishLogin = (account: Staff & { mustChangePassword?: boolean }) => { staffStorage.setItem('asva-demo-staff-v2', account.id); if (account.mustChangePassword) { staffStorage.setItem('asva-password-change-required', 'true'); setMustChangePassword(true) } setCurrentStaff(account); setDatabase(null); setMePanel('account'); setLoggedInStaffId(account.id) }
   if (!loggedInStaffId) return <Login api={workbenchApi} onLogin={finishLogin} />
   if (mustChangePassword) return <ChangePassword api={workbenchApi} onComplete={() => { staffStorage.removeItem('asva-password-change-required'); setMustChangePassword(false) }} />
+  if (identityLoading || !activeStaff) return <main className="login-page"><section className="login-card"><div className="eyebrow">MY ACCOUNT</div><h1>正在读取账号信息…</h1><p>{identityError || '正在确认当前登录身份。'}</p>{identityError && <button className="primary-button full-width" onClick={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); window.sessionStorage.removeItem('asva_session_token'); setLoggedInStaffId(null); setMustChangePassword(false) }}>返回登录</button>}</section></main>
   if (activeStaff.status !== 'ACTIVE') return <Login api={workbenchApi} onLogin={finishLogin} />
   if (!database) return <main className="login-page"><section className="login-card"><div className="eyebrow">ASVA API</div><h1>正在连接工作台</h1><p>{loadError || '正在读取飞书预约和客户数据。'}</p>{loadError && <button className="primary-button full-width" onClick={() => setRevision((value) => value + 1)}>重新连接</button>}</section></main>
   const selectedCustomer = database.customers.find((item) => item.id === selectedCustomerId) ?? database.customers[0]
@@ -180,7 +216,7 @@ function WorkbenchApp() {
 
   const customerPage = <CustomersPage staff={activeStaff} database={database} canSeeAll={canSeeAll} selectedCustomer={selectedCustomer} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onSourceWorkspace={sourceWorkspace} onExtractDocument={extractDocument} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onAddCustomer={() => setManualCustomerOpen(true)} />
   const homePage = <HomePage staff={activeStaff} api={workbenchApi} onCustomers={(query = '') => navigate(`/customers${query}`)} />
-  const mePage = <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); window.sessionStorage.removeItem('asva_session_token'); setLoggedInStaffId(null) }} />
+  const mePage = <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); window.sessionStorage.removeItem('asva_session_token'); setCurrentStaff(null); setDatabase(null); setMePanel('account'); setLoggedInStaffId(null) }} />
   return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content"><Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant api={workbenchApi} staffId={activeStaff.id} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
 }
 
@@ -735,7 +771,8 @@ function AssignDialog({ appointment, database, staffId, api, onClose, onAssign }
 
 function MePage({ staff, database, panel, onPanel, api, onLogout }: { staff: Staff; database: Database; panel: MePanel; onPanel: (panel: MePanel) => void; api: WorkbenchApi; onLogout: () => void }) {
   const isAdmin = staff.permissionRole === 'ADMIN'
-  return <div className="me-page"><div className="profile-hero"><Avatar staff={staff} size="lg" /><div><div className="eyebrow">MY ACCOUNT</div><h1>{staff.name}</h1><p>{roleName(staff)} · {staff.specialty}</p></div></div><div className="me-switcher"><button className={panel === 'account' ? 'active' : ''} onClick={() => onPanel('account')}>账号信息</button>{isAdmin && <button className={panel === 'team' ? 'active' : ''} onClick={() => onPanel('team')}>导师管理</button>}</div>{panel === 'account' && <AccountPanel staff={staff} database={database} api={api} />}{panel === 'team' && isAdmin && <TeamPanel staffId={staff.id} database={database} api={api} />}<button className="logout-button" onClick={onLogout}>退出当前账号</button></div>
+  const effectivePanel = accountPanelFor(staff.permissionRole, panel) as MePanel
+  return <div className="me-page"><div className="profile-hero"><Avatar staff={staff} size="lg" /><div><div className="eyebrow">MY ACCOUNT</div><h1>{staff.name}</h1><p>{roleName(staff)}</p></div></div>{isAdmin && <div className="me-switcher"><button className={effectivePanel === 'account' ? 'active' : ''} onClick={() => onPanel('account')}>账号信息</button><button className={effectivePanel === 'team' ? 'active' : ''} onClick={() => onPanel('team')}>导师管理</button></div>}{effectivePanel === 'account' && <AccountPanel staff={staff} database={database} api={api} />}{effectivePanel === 'team' && <TeamPanel staffId={staff.id} database={database} api={api} />}<button className="logout-button" onClick={onLogout}>退出当前账号</button></div>
 }
 
 function AccountPanel({ staff, database, api }: { staff: Staff; database: Database; api: WorkbenchApi }) {
