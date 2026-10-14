@@ -1,6 +1,6 @@
 import { config } from './config.mjs'
 import { createRecord, deleteRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError } from './feishu.mjs'
-import { createCustomerIntelligence, createCustomerUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
+import { createCustomerIntelligence, createCustomerUnderstanding, createCustomerSalesUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
 import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs'
@@ -18,6 +18,7 @@ import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
+import { applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -58,6 +59,7 @@ function customer(row) {
   let profileVersion = 0
   let aiSummaryMeta = null
   let understandingMeta = null
+  let salesUnderstandingMeta = null
   let safetyMeta = null
   try {
     const storedMeta = JSON.parse(text(get('customers', f, 'profile_field_meta_json')) || '{}')
@@ -65,10 +67,12 @@ function customer(row) {
     profileFieldMeta = storedMeta._fields || Object.fromEntries(Object.entries(storedMeta).filter(([key]) => !key.startsWith('_')))
     aiSummaryMeta = storedMeta._ai_summary && typeof storedMeta._ai_summary === 'object' ? storedMeta._ai_summary : null
     understandingMeta = storedMeta._understanding && typeof storedMeta._understanding === 'object' ? storedMeta._understanding : null
+    salesUnderstandingMeta = storedMeta._sales_understanding && typeof storedMeta._sales_understanding === 'object' ? storedMeta._sales_understanding : null
     safetyMeta = storedMeta._safety && typeof storedMeta._safety === 'object' ? storedMeta._safety : null
   } catch { profileFieldMeta = {} }
   const aiSummary = parsedJson(get('customers', f, 'ai_customer_summary'), aiSummaryMeta?.summary || null)
   const understanding = understandingMeta?.payload && typeof understandingMeta.payload === 'object' ? understandingMeta.payload : null
+  const salesUnderstanding = salesUnderstandingMeta?.payload && typeof salesUnderstandingMeta.payload === 'object' ? salesUnderstandingMeta.payload : null
   const profileFields = {}
   for (const key of PROFILE_FIELD_KEYS) {
     const rawValue = get('customers', f, key)
@@ -100,7 +104,7 @@ function customer(row) {
     if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
   }
   const referrerName = text(get('customers', f, 'referrer_name'))
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, _recordId: row.record_id }
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -221,7 +225,7 @@ function normalizeProfileUpdates(updates, profileRecord, confirmed = false) {
 }
 
 function profileFieldsForWrite(customerRecord, updates) {
-  const values = { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: customerRecord.aiSummaryMeta || null, _understanding: customerRecord.understandingMeta || null, _safety: customerRecord.safetyMeta || null }), profile_schema_version: customerRecord.profileSchemaVersion || CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: customerRecord.profileUpdatedAt || now() }
+  const values = { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord), profile_schema_version: customerRecord.profileSchemaVersion || CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: customerRecord.profileUpdatedAt || now() }
   for (const update of updates) {
     if (['paid', 'grade', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(update.field)) continue
     values[update.field] = Array.isArray(update.value) ? JSON.stringify(update.value) : typeof update.value === 'number' || typeof update.value === 'boolean' ? String(update.value) : update.value ?? ''
@@ -240,6 +244,17 @@ function profileFieldsForWrite(customerRecord, updates) {
   values.intended_course = customerRecord.intendedCourse || ''
   values.current_mentor_id = customerRecord.mentorId || ''
   return mapFields('customers', values)
+}
+
+function serializeCustomerDerivedMeta(customerRecord, overrides = {}) {
+  return JSON.stringify({
+    _profile_version: customerRecord.profileVersion || 0,
+    _fields: customerRecord.profileFieldMeta || {},
+    _ai_summary: Object.prototype.hasOwnProperty.call(overrides, 'aiSummary') ? overrides.aiSummary : customerRecord.aiSummaryMeta || null,
+    _understanding: Object.prototype.hasOwnProperty.call(overrides, 'understanding') ? overrides.understanding : customerRecord.understandingMeta || null,
+    _sales_understanding: Object.prototype.hasOwnProperty.call(overrides, 'salesUnderstanding') ? overrides.salesUnderstanding : customerRecord.salesUnderstandingMeta || null,
+    _safety: Object.prototype.hasOwnProperty.call(overrides, 'safety') ? overrides.safety : customerRecord.safetyMeta || null,
+  })
 }
 
 function validateManualCustomer(input) {
@@ -337,6 +352,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   if (changed.length) customerRecord.profileVersion += 1
   if (changed.length) customerRecord.aiSummaryMeta = { ...(customerRecord.aiSummaryMeta || {}), status: 'STALE', inputFingerprint: '', updatedAt }
   if (changed.length) customerRecord.understandingMeta = { ...(customerRecord.understandingMeta || {}), status: 'STALE', inputFingerprint: '', updatedAt }
+  if (changed.length) customerRecord.salesUnderstandingMeta = { ...(customerRecord.salesUnderstandingMeta || {}), status: 'STALE', inputFingerprint: '', updatedAt }
   if (changed.length) customerRecord.safetyMeta = { ...(customerRecord.safetyMeta || {}), status: 'STALE', inputFingerprint: '', updatedAt }
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
@@ -607,7 +623,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerUnderstanding(actorId, customerId)
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) return this.getCustomerUnderstanding(actorId, customerId)
     const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: customerRecord.understanding || null }
-    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: customerRecord.aiSummaryMeta || null, _understanding: meta, _safety: customerRecord.safetyMeta || null }) }))
+    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { understanding: meta }) }))
     await writeMeta(processingMeta)
     const startedAt = Date.now()
     try {
@@ -630,6 +646,64 @@ export class FeishuRepository {
       throw error
     }
   }
+
+  async getCustomerSalesUnderstanding(actorId, customerId) {
+    const database = await this.load()
+    const visible = scope(database, actorId)
+    const customerRecord = visible.customers.find((item) => item.id === customerId)
+    if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const evidenceItems = database.evidenceItems.filter((item) => item.customerId === customerId)
+    const conflicts = database.evidenceConflicts.filter((item) => item.customerId === customerId)
+    const enrollments = database.enrollments.filter((item) => item.customerId === customerId)
+    const products = database.products
+    const sessions = database.sessions.filter((item) => item.customerId === customerId)
+    const appointments = database.appointments.filter((item) => item.customerId === customerId)
+    const context = buildCustomerSalesContext({ customer: customerRecord, evidenceItems, sourceRecords: database.sourceRecords, conflicts, enrollments, products, sessions, safetyAssessment: customerRecord.safety })
+    const storedMeta = customerRecord.salesUnderstandingMeta || {}
+    const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === context.input_fingerprint && storedMeta.promptVersion === CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION
+    const status = fresh ? 'FRESH' : storedMeta.status === 'PROCESSING' ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
+    const salesUnderstanding = customerRecord.salesUnderstanding ? applyWillingnessEvidenceGate(customerRecord.salesUnderstanding, { evidenceItems, enrollments, sessions, appointments }) : null
+    return { customerId, status, salesUnderstanding, meta: { ...storedMeta, salesUnderstandingId: storedMeta.salesUnderstandingId || `SALES-UNDERSTANDING-${customerId}`, customerId, salesUnderstandingVersion: CUSTOMER_SALES_UNDERSTANDING_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || context.input_fingerprint, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION }, historical_enrollments: historicalSalesRecords({ enrollments, products, sessions }).enrollmentHistory, service_history: historicalSalesRecords({ enrollments: [], products, sessions }).serviceHistory, evidence_refs: context.evidence_refs, context_summary: { density: context.customer_snapshot.context_density, evidence_count: context.evidence_refs.length } }
+  }
+
+  async refreshCustomerSalesUnderstanding(actorId, customerId, { force = false } = {}) {
+    const database = await this.load()
+    const visible = scope(database, actorId)
+    const customerRecord = visible.customers.find((item) => item.id === customerId)
+    const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
+    if (!customerRecord || !row) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const evidenceItems = database.evidenceItems.filter((item) => item.customerId === customerId)
+    const conflicts = database.evidenceConflicts.filter((item) => item.customerId === customerId)
+    const enrollments = database.enrollments.filter((item) => item.customerId === customerId)
+    const sessions = database.sessions.filter((item) => item.customerId === customerId)
+    const appointments = database.appointments.filter((item) => item.customerId === customerId)
+    const context = buildCustomerSalesContext({ customer: customerRecord, evidenceItems, sourceRecords: database.sourceRecords, conflicts, enrollments, products: database.products, sessions, safetyAssessment: customerRecord.safety })
+    const inputFingerprint = context.input_fingerprint
+    const currentMeta = customerRecord.salesUnderstandingMeta || {}
+    const processingAge = currentMeta.updatedAt ? Date.now() - new Date(currentMeta.updatedAt).getTime() : Number.POSITIVE_INFINITY
+    if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerSalesUnderstanding(actorId, customerId)
+    if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION) return this.getCustomerSalesUnderstanding(actorId, customerId)
+    const processingMeta = { ...currentMeta, salesUnderstandingId: currentMeta.salesUnderstandingId || `SALES-UNDERSTANDING-${customerId}`, customerId, salesUnderstandingVersion: CUSTOMER_SALES_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: customerRecord.salesUnderstanding || null }
+    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { salesUnderstanding: meta }) }))
+    await writeMeta(processingMeta)
+    const startedAt = Date.now()
+    try {
+      if (!config.deepseek.apiKey) throw Object.assign(new Error('DeepSeek 尚未配置'), { code: 'DEEPSEEK_UNAVAILABLE', status: 503 })
+      const redactValues = [customerRecord.name, customerRecord.phone, customerRecord.wechat]
+      const result = applyWillingnessEvidenceGate(normalizeCustomerSalesUnderstanding(await createCustomerSalesUnderstanding({ context, redactValues }), { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), safetyAssessment: customerRecord.safety, contextDensity: context.customer_snapshot.context_density.classification }), { evidenceItems, enrollments, sessions, appointments })
+      const quality = qualityCheckCustomerSalesUnderstanding(result, { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), hasStrongPaymentSignal: context.financial_evidence.length > 0 || context.paid_history_count > 0 })
+      if (!quality.ok) throw Object.assign(new Error('销售视角质量门禁未通过'), { code: 'SALES_UNDERSTANDING_QUALITY_FAILED', status: 502, quality })
+      const freshMeta = { ...processingMeta, status: 'FRESH', generatedAt: result.generated_at || now(), updatedAt: now(), durationMs: Date.now() - startedAt, evidenceCount: context.evidence_refs.length, quality, payload: result }
+      await writeMeta(freshMeta)
+      this.audit('REFRESH_CUSTOMER_SALES_UNDERSTANDING', customerId, actorId)
+      return this.getCustomerSalesUnderstanding(actorId, customerId)
+    } catch (error) {
+      const failedMeta = { ...processingMeta, status: 'FAILED', updatedAt: now(), durationMs: Date.now() - startedAt, errorCode: error?.code || 'SALES_UNDERSTANDING_REFRESH_FAILED', payload: customerRecord.salesUnderstanding || null }
+      await writeMeta(failedMeta).catch(() => {})
+      throw error
+    }
+  }
+
   async markSafetyStale(customerId) {
     const database = await this.load()
     const customerRecord = database.customers.find((item) => item.id === customerId)
@@ -637,7 +711,7 @@ export class FeishuRepository {
     if (!customerRecord || !row) return
     const updatedAt = now()
     const safetyMeta = { ...(customerRecord.safetyMeta || {}), customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status: 'STALE', inputFingerprint: '', updatedAt }
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: customerRecord.aiSummaryMeta || null, _understanding: customerRecord.understandingMeta || null, _safety: safetyMeta }) }))
+    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { safety: safetyMeta }) }))
   }
 
   async getCustomerSafetyAssessment(actorId, customerId) {
@@ -668,7 +742,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerSafetyAssessment(actorId, customerId)
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === SAFETY_PROMPT_VERSION) return this.getCustomerSafetyAssessment(actorId, customerId)
     const processingMeta = { ...currentMeta, customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status: 'PROCESSING', inputFingerprint, promptVersion: SAFETY_PROMPT_VERSION, contextDensity: context.context_density, contextDensitySource: context.context_density_source, contextDensityPolicyVersion: context.context_density_policy_version, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: currentMeta.payload || null }
-    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: customerRecord.aiSummaryMeta || null, _understanding: customerRecord.understandingMeta || null, _safety: meta }) }))
+    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { safety: meta }) }))
     await writeMeta(processingMeta)
     const startedAt = Date.now()
     try {
@@ -1059,7 +1133,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return customerRecord
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint) return customerRecord
     const processingMeta = { ...currentMeta, status: 'PROCESSING', inputFingerprint, updatedAt: now() }
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: processingMeta, _understanding: customerRecord.understandingMeta || null, _safety: customerRecord.safetyMeta || null }) }))
+    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { aiSummary: processingMeta }) }))
     try {
       const privateProfileFields = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
       const safeProfile = Object.fromEntries(Object.entries(customerRecord.profileFields || {}).filter(([field]) => !privateProfileFields.has(field)))
@@ -1069,11 +1143,11 @@ export class FeishuRepository {
       const context = { now: new Date().toISOString(), customer: { need: safeText(customerRecord.need), helpExpectation: safeText(customerRecord.helpExpectation), goal: safeText(customerRecord.goal), profile: safeProfile }, currentCase: null, recentSessions: [], recentChanges: [], enrollments: [], profileRenderer: safeRenderer, confirmedEvidence: safeEvidence }
       const result = await createCustomerIntelligence({ context })
       const freshMeta = { status: 'FRESH', inputFingerprint, summary: result.summary, updatedAt: now() }
-      await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: freshMeta, _understanding: customerRecord.understandingMeta || null, _safety: customerRecord.safetyMeta || null }), ai_customer_summary: JSON.stringify(result.summary) }))
+      await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { aiSummary: freshMeta }), ai_customer_summary: JSON.stringify(result.summary) }))
       return (await this.load()).customers.find((item) => item.id === customerId)
     } catch (error) {
       const failedMeta = { ...processingMeta, status: 'FAILED', updatedAt: now(), errorCode: 'SUMMARY_REFRESH_FAILED' }
-      await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: JSON.stringify({ _profile_version: customerRecord.profileVersion || 0, _fields: customerRecord.profileFieldMeta || {}, _ai_summary: failedMeta, _understanding: customerRecord.understandingMeta || null, _safety: customerRecord.safetyMeta || null }) })).catch(() => {})
+      await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { aiSummary: failedMeta }) })).catch(() => {})
       throw Object.assign(new Error('客户摘要刷新失败，请稍后重试'), { code: 'SUMMARY_REFRESH_FAILED', status: 503, cause: error })
     }
   }

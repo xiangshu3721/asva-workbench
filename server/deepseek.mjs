@@ -1,6 +1,7 @@
 import { config } from './config.mjs'
 import { BUSINESS_GLOSSARY, DIMENSION_REGISTRY, ENTITY_REGISTRY, METRIC_REGISTRY } from '../shared/semantic-engine.mjs'
 import { applyUnderstandingDensityPolicy, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+import { CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { SAFETY_EXPLICITNESS, SAFETY_POLARITIES, SAFETY_RECENCY, SAFETY_SCOPES, SAFETY_SIGNAL_TYPES, normalizeSafetySignal } from '../shared/safety-contract.mjs'
 
 export class DeepSeekUnavailableError extends Error {
@@ -232,6 +233,49 @@ export async function createCustomerUnderstanding(input) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
   }
   return applyUnderstandingDensityPolicy(restoreEvidenceIds(normalized), context.context_density)
+}
+
+export async function createCustomerSalesUnderstanding(input) {
+  const context = input?.context || input || {}
+  const evidenceRefs = Array.isArray(context.evidence_refs) ? context.evidence_refs : []
+  const aliasToId = new Map(evidenceRefs.map((item, index) => [`E${index + 1}`, item.evidence_id]))
+  const idToAlias = new Map([...aliasToId].map(([alias, id]) => [id, alias]))
+  const replaceEvidenceIds = (value) => {
+    if (Array.isArray(value)) return value.map(replaceEvidenceIds)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => idToAlias.get(id)).filter(Boolean) : replaceEvidenceIds(item)]))
+  }
+  const redactValues = [...new Set((input?.redactValues || []).filter(Boolean).map(String))]
+  const redact = (value) => {
+    if (Array.isArray(value)) return value.map(redact)
+    if (typeof value === 'string') return redactValues.reduce((result, identifier) => result.split(identifier).join('[REDACTED]'), value)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item)]))
+  }
+  const llmContext = redact(replaceEvidenceIds({ ...context, evidence_refs: evidenceRefs.map((item, index) => ({ evidence_ref: `E${index + 1}`, display_text: item.display_text, excerpt: item.excerpt, evidence_type: item.evidence_type, source_perspective: item.source_perspective })) }))
+  const densityInstruction = context.customer_snapshot?.context_density?.classification === 'SPARSE' ? '资料密度为 SPARSE：只输出少量、克制的痛点和愿望；商业意愿与支付能力没有直接证据时必须 UNKNOWN，不要为了完整而推断。' : ''
+  const system = `你是 ASVA CustomerSalesUnderstandingV1 引擎，prompt_version=${CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION}。销售建议必须建立在已确认 Evidence、真实报名/支付事实和 Stage5 安全边界之上。先处理 safety，再处理客户当前状态、现实痛点、明确渴望、准备度、付费意愿、支付能力和历史服务。痛苦程度不等于购买意愿，报名不等于已付款。没有证据就使用 UNKNOWN 或空数组。禁止诊断、人格标签、制造焦虑、逼单或利用脆弱处境。只返回严格 JSON：{strategy:"STABILIZE_BEFORE_SALE|DISCOVER_BEFORE_SALE|EXPERIENCE_NURTURE|COGNITIVE_GROWTH_READY|LONG_TERM_SERVICE_EXPLORABLE",sales_timing:"PAUSE|NURTURE|READY|HIGH_READINESS",summary,follow_up_focus:[],do_not_do:[],pain_points:[{title,explanation,deeper_need_or_fear,severity,frequency,urgency,confidence,evidence_ids}],aspirations:[{title,explanation,gap,clarity,confidence,evidence_ids}],willingness_to_pay:{level:"HIGH|MEDIUM|LOW|UNKNOWN",explanation,positive_signals,negative_signals,unknowns,evidence_ids},ability_to_pay:{level:"HIGH|MEDIUM|LOW|UNKNOWN",explanation,known_financial_signals,unknowns,evidence_ids},meta:{overall_confidence,evidence_count}}。所有 evidence_ids 只填写 evidence_ref（E1 等）。${densityInstruction}`
+  const messages = [{ role: 'system', content: system }, { role: 'system', content: '模块不可互相替代：pain_points 写当前现实损耗，aspirations 写客户想要的未来，willingness_to_pay 写是否愿意投入费用，ability_to_pay 写支付条件；follow_up_focus 必须是下一步可执行探索，不是产品推荐。Stage5 为 SAFETY_FIRST 或 STABILIZE_FIRST 时 strategy 必须先稳后销、sales_timing 必须 PAUSE。' }, { role: 'user', content: JSON.stringify(llmContext) }]
+  let raw = await callDeepSeek(messages, 0.15)
+  let parsed = parseJson(raw)
+  const initialJsonValid = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+  let repairUsed = false
+  if (!initialJsonValid) {
+    repairUsed = true
+    raw = await callDeepSeek([{ role: 'system', content: system }, { role: 'system', content: '上一轮输出未通过 JSON 结构门禁。只返回完整、可解析的 JSON 对象，不要 Markdown、解释或代码围栏。' }, { role: 'user', content: JSON.stringify(llmContext) }], 0)
+    parsed = parseJson(raw)
+  }
+  const finalJsonValid = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+  if (!finalJsonValid) throw Object.assign(new Error('销售视角 JSON 结构校验失败'), { code: 'SALES_JSON_INVALID', initialJsonValid, repairUsed, finalJsonValid })
+  const normalized = normalizeCustomerSalesUnderstanding(parsed, { evidenceIds: [...aliasToId.keys()], safetyAssessment: context.safety, contextDensity: context.customer_snapshot?.context_density?.classification || 'SPARSE', now: new Date().toISOString() })
+  const restoreEvidenceIds = (value) => {
+    if (Array.isArray(value)) return value.map(restoreEvidenceIds)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
+  }
+  const value = restoreEvidenceIds(normalized)
+  if (input?.returnDiagnostics === true) return { value, diagnostics: { initialJsonValid, repairUsed, finalJsonValid } }
+  return value
 }
 
 export async function createSafetySignalCandidates(input) {

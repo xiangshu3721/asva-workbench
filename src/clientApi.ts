@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -6,11 +6,14 @@ import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSumm
 import { buildBasicDashboard } from '../shared/basic-dashboard.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { createLocalCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, historicalSalesRecords } from '../shared/customer-sales-understanding.mjs'
 import { readAccessToken, writeAccessToken } from './auth-storage'
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number } }
+export interface CustomerSalesUnderstandingResponse { customerId: string; status: SummaryStatus; salesUnderstanding: CustomerSalesUnderstandingV1 | null; meta: CustomerSalesUnderstandingMeta; historical_enrollments: Array<{ name: string; type: string; status: string; enrolled_at?: string | null; paid_at?: string | null; payment_status: string; amount_recorded?: number | null }>; service_history: Array<{ name: string; type: string; status: string; occurred_at?: string | null; summary: string }>; evidence_refs: CustomerUnderstandingResponse['evidence_refs']; context_summary: { density: string; evidence_count: number } }
 export interface SafetyAssessmentResponse { customerId: string; status: 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'; assessment: { risk_level: string; risk_confidence: string; service_gate: string; commercial_block: string; requires_human_review: boolean; requires_safety_check: boolean; recommended_escalation: string; critical_unknowns: string[]; service_cautions: string[]; next_action: string; safety_signals: Array<{ signal_type: string; subject_scope: string; polarity: string; recency: string; short_description: string }>; } | null; meta: Record<string, unknown>; context_summary: { density: string; safety_data_sufficiency: string; critical_unknowns: string[]; evidence_count: number }; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }> }
 export interface TeamSnapshot { mentor: Staff; customerCount: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; paidCustomers: number; mentorCount: number; recentCustomers: Customer[] }
@@ -78,6 +81,8 @@ export interface WorkbenchApi {
   refreshCustomerSummary(actorId: string, customerId: string, force?: boolean): Promise<Customer | undefined>
   getCustomerUnderstanding(actorId: string, customerId: string): Promise<CustomerUnderstandingResponse>
   refreshCustomerUnderstanding(actorId: string, customerId: string, force?: boolean): Promise<CustomerUnderstandingResponse>
+  getCustomerSalesUnderstanding(actorId: string, customerId: string): Promise<CustomerSalesUnderstandingResponse>
+  refreshCustomerSalesUnderstanding(actorId: string, customerId: string, force?: boolean): Promise<CustomerSalesUnderstandingResponse>
   getCustomerSafetyAssessment(actorId: string, customerId: string): Promise<SafetyAssessmentResponse>
   refreshCustomerSafetyAssessment(actorId: string, customerId: string, force?: boolean): Promise<SafetyAssessmentResponse>
   serviceSummary(actorId: string, input: FeedbackDraftInput): Promise<AiDraft>
@@ -110,6 +115,13 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     const customer = await api.customer(actorId, customerId)
     const context = { generated_at: new Date().toISOString(), current_needs: customer?.need ? [{ text: customer.need, evidence_ids: [] }] : [], resources: customer?.profileFields?.current_resources ? [{ text: String(customer.profileFields.current_resources), evidence_ids: [] }] : [], top_life_events: [], coverage_gaps: customer?.profileMaterialization?.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name) || ['当前资料'], evidence_refs: [] }
     return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
+  }
+  const localSalesUnderstanding = async (actorId: string, customerId: string): Promise<CustomerSalesUnderstandingResponse> => {
+    const database = await api.dashboard(actorId)
+    const customer = database.customers.find((item) => item.id === customerId)
+    const context = buildCustomerSalesContext({ customer: customer || {}, evidenceItems: [], sourceRecords: [], conflicts: [], enrollments: database.enrollments.filter((item) => item.customerId === customerId), products: database.products, sessions: database.sessions.filter((item) => item.customerId === customerId), safetyAssessment: customer?.safety })
+    const history = historicalSalesRecords({ enrollments: database.enrollments.filter((item) => item.customerId === customerId), products: database.products, sessions: database.sessions.filter((item) => item.customerId === customerId) })
+    return { customerId, status: 'FRESH', salesUnderstanding: customer ? createLocalCustomerSalesUnderstanding(context) as CustomerSalesUnderstandingV1 : null, meta: { status: 'FRESH', promptVersion: 'sales-understanding-v1' }, historical_enrollments: history.enrollmentHistory, service_history: history.serviceHistory, evidence_refs: [], context_summary: { density: context.customer_snapshot?.context_density?.classification || 'SPARSE', evidence_count: 0 } }
   }
   return {
     login: async (phone, password) => api.login(phone, password),
@@ -144,6 +156,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     refreshCustomerSummary: async (actorId, customerId) => api.customer(actorId, customerId),
     getCustomerUnderstanding: localUnderstanding,
     refreshCustomerUnderstanding: localUnderstanding,
+    getCustomerSalesUnderstanding: localSalesUnderstanding,
+    refreshCustomerSalesUnderstanding: localSalesUnderstanding,
     getCustomerSafetyAssessment: async (actorId: string, customerId: string) => ({ customerId, status: 'STALE', assessment: null, meta: {}, context_summary: { density: 'SPARSE', safety_data_sufficiency: 'INSUFFICIENT', critical_unknowns: ['当前本地 Demo 不执行安全评估'], evidence_count: 0 }, evidence_refs: [] }),
     refreshCustomerSafetyAssessment: async (actorId: string, customerId: string) => ({ customerId, status: 'STALE', assessment: null, meta: {}, context_summary: { density: 'SPARSE', safety_data_sufficiency: 'INSUFFICIENT', critical_unknowns: ['本地 Demo 不执行安全评估'], evidence_count: 0 }, evidence_refs: [] }),
     serviceSummary: async (_actorId, input) => ({ summary: `本次围绕“${input.topic || '客户当前困扰'}”完成跟进。建议保留对客户当前需求的持续观察，并根据已确认的信息决定下一步。`, currentStatus: '已完成本次沟通，等待管理员确认记录。', nextStep: input.result === '暂时结束' ? '本次预约完成，保留后续重新预约入口。' : '本次预约已完成，后续如有新预约将重新进入流程。' }),
@@ -216,6 +230,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     refreshCustomerSummary: (actorId, customerId, force = false) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/summary/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     getCustomerUnderstanding: (actorId, customerId) => request<CustomerUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/understanding`, actorId),
     refreshCustomerUnderstanding: (actorId, customerId, force = false) => request<CustomerUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/understanding/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
+    getCustomerSalesUnderstanding: (actorId, customerId) => request<CustomerSalesUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/sales-understanding`, actorId),
+    refreshCustomerSalesUnderstanding: (actorId, customerId, force = false) => request<CustomerSalesUnderstandingResponse>(`/api/customers/${encodeURIComponent(customerId)}/sales-understanding/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     getCustomerSafetyAssessment: (actorId, customerId) => request<SafetyAssessmentResponse>(`/api/customers/${encodeURIComponent(customerId)}/safety-assessment`, actorId),
     refreshCustomerSafetyAssessment: (actorId, customerId, force = false) => request<SafetyAssessmentResponse>(`/api/customers/${encodeURIComponent(customerId)}/safety-assessment/refresh`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     serviceSummary: (actorId, input) => request<AiDraft>('/api/ai/service-summary', actorId, { method: 'POST', body: JSON.stringify(input) }),

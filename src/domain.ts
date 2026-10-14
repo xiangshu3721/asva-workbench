@@ -68,6 +68,47 @@ export interface CustomerUnderstandingMeta {
   errorCode?: string
 }
 
+export type SalesStrategy = 'STABILIZE_BEFORE_SALE' | 'DISCOVER_BEFORE_SALE' | 'EXPERIENCE_NURTURE' | 'COGNITIVE_GROWTH_READY' | 'LONG_TERM_SERVICE_EXPLORABLE'
+export type SalesTiming = 'PAUSE' | 'NURTURE' | 'READY' | 'HIGH_READINESS'
+export type CommercialLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
+
+export interface CustomerSalesEvidenceItem {
+  title: string
+  explanation: string
+  evidence_ids: string[]
+}
+
+export interface CustomerSalesUnderstandingV1 {
+  schema_version: string
+  generated_at: string
+  strategy: SalesStrategy
+  sales_timing: SalesTiming
+  summary: string
+  follow_up_focus: string[]
+  do_not_do: string[]
+  pain_points: Array<CustomerSalesEvidenceItem & { deeper_need_or_fear?: string; severity: string; frequency: string; urgency: string; confidence: UnderstandingConfidence }>
+  aspirations: Array<CustomerSalesEvidenceItem & { gap?: string; clarity: string; confidence: UnderstandingConfidence }>
+  willingness_to_pay: { level: CommercialLevel; explanation: string; positive_signals: string[]; negative_signals: string[]; unknowns: string[]; evidence_ids: string[] }
+  ability_to_pay: { level: CommercialLevel; explanation: string; known_financial_signals: string[]; unknowns: string[]; evidence_ids: string[] }
+  meta: { overall_confidence: UnderstandingConfidence; evidence_count: number; context_density?: string }
+}
+
+export interface CustomerSalesUnderstandingMeta {
+  status: SummaryStatus
+  inputFingerprint?: string
+  profileVersion?: number
+  promptVersion?: string
+  provider?: string
+  model?: string
+  generatedAt?: string
+  updatedAt?: string
+  durationMs?: number
+  evidenceCount?: number
+  quality?: Record<string, unknown>
+  errorCode?: string
+  payload?: CustomerSalesUnderstandingV1 | null
+}
+
 export interface AiCustomerSummary {
   overview: string
   core_issues: string[]
@@ -181,6 +222,12 @@ export interface Customer {
   understanding?: CustomerUnderstandingV1
   understandingStatus?: SummaryStatus
   understandingMeta?: CustomerUnderstandingMeta
+  salesUnderstanding?: CustomerSalesUnderstandingV1
+  salesUnderstandingStatus?: SummaryStatus
+  salesUnderstandingMeta?: CustomerSalesUnderstandingMeta
+  safety?: { risk_level?: string; service_gate?: string; commercial_block?: string; next_action?: string; [key: string]: unknown }
+  safetyStatus?: SummaryStatus
+  safetyMeta?: Record<string, unknown>
   confirmedFacts: string[]
   aiQuestions: string[]
   paid: boolean
