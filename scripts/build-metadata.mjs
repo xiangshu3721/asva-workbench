@@ -11,7 +11,8 @@ const metadata = {
   gitCommit: run(['rev-parse', 'HEAD']),
   gitBranch: run(['branch', '--show-current']),
   buildTime: new Date().toISOString(),
-  environment: process.env.ASVA_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'production' : 'local'),
+  appEnv: process.env.VITE_APP_ENV || process.env.APP_ENV || process.env.ASVA_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'production' : 'development'),
+  environment: process.env.VITE_APP_ENV || process.env.APP_ENV || process.env.ASVA_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'production' : 'development'),
 }
 fs.writeFileSync('build-meta.json', `${JSON.stringify(metadata, null, 2)}\n`)
 fs.mkdirSync('public', { recursive: true })

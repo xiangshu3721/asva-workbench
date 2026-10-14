@@ -15,7 +15,7 @@ const root = path.resolve(process.env.ASVA_APP_ROOT || process.cwd())
 const release = readJson(path.join(root, 'release.json'))
 const built = readJson(path.join(root, 'build-meta.json'))
 const counter = Number(process.env.ASVA_RELEASE_COUNTER || built.releaseCounter || release.releaseCounter || 0)
-const environment = process.env.ASVA_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'production' : 'local')
+const appEnv = process.env.APP_ENV || process.env.ASVA_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'production' : 'development')
 
 export const releaseMetadata = {
   appVersion: packageJson.version,
@@ -24,7 +24,8 @@ export const releaseMetadata = {
   gitCommit: process.env.ASVA_GIT_COMMIT || built.gitCommit || git(['rev-parse', 'HEAD']),
   gitBranch: process.env.ASVA_GIT_BRANCH || built.gitBranch || git(['branch', '--show-current']),
   buildTime: process.env.ASVA_BUILD_TIME || built.buildTime || null,
-  environment,
+  appEnv,
+  environment: process.env.ASVA_ENVIRONMENT || appEnv,
 }
 
 export function featureFlags() {

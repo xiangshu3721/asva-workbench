@@ -20,6 +20,19 @@ loadEnvFile(path.join(rootDir, '.env'))
 loadEnvFile(path.join(rootDir, '.env.local'))
 
 const value = (key, fallback = '') => process.env[key]?.trim() || fallback
+const normalizeAppEnv = (raw) => {
+  if (raw === 'production') return 'production'
+  if (raw === 'mock') return 'mock'
+  if (raw === 'development' || raw === 'local') return 'development'
+  return 'invalid'
+}
+const legacyEnvironment = value('ASVA_ENVIRONMENT', value('NODE_ENV', 'development'))
+const appEnv = normalizeAppEnv(value('APP_ENV', legacyEnvironment))
+const frontendOrigin = value('ASVA_FRONTEND_ORIGIN', 'https://xiangshu3721.github.io')
+const corsAllowedOrigins = (value('CORS_ALLOWED_ORIGINS') || [frontendOrigin, 'https://xiangshu3721.github.io', 'http://localhost:5173', 'http://127.0.0.1:5173'].join(','))
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
 
 export const config = {
   port: Number(value('PORT', '8788')),
@@ -27,11 +40,13 @@ export const config = {
   authSecret: value('ASVA_AUTH_SECRET'),
   adminLoginCode: value('ASVA_ADMIN_LOGIN_CODE'),
   authMode: value('AUTH_MODE', 'ADMIN_CODE'),
-  environment: value('ASVA_ENVIRONMENT', value('NODE_ENV', 'local')),
-  dataMode: value('DATA_MODE', value('ASVA_ENVIRONMENT', value('NODE_ENV', 'local')) === 'production' ? 'production' : 'demo'),
+  appEnv,
+  environment: legacyEnvironment,
+  dataMode: value('DATA_MODE', appEnv === 'mock' ? 'mock' : 'production'),
   allowDevOtp: value('ALLOW_DEV_OTP', 'false') === 'true',
   maxDocumentSizeMb: Number(value('MAX_DOCUMENT_SIZE_MB', '20')) || 20,
-  frontendOrigin: value('ASVA_FRONTEND_ORIGIN', 'https://xiangshu3721.github.io'),
+  frontendOrigin,
+  corsAllowedOrigins,
   features: {
     externalAppointment: value('FEATURE_EXTERNAL_APPOINTMENT', 'false') === 'true',
   },
@@ -71,6 +86,7 @@ export function configurationStatus() {
     adminAuthConfigured: config.authMode === 'ADMIN_CODE' && Boolean(config.adminLoginCode),
     authCredentialStoreConfigured: Boolean(config.feishu.tables.authCredentials),
     authMode: config.authMode,
+    appEnv: config.appEnv,
     environment: config.environment,
     dataMode: config.dataMode,
     featureFlags: config.features,

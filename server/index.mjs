@@ -12,15 +12,15 @@ const repository = new FeishuRepository()
 
 function responseHeaders(request, requestId) {
   const requestedOrigin = request.headers.origin
-  const origin = requestedOrigin && requestedOrigin === config.frontendOrigin ? requestedOrigin : config.frontendOrigin
+  const origin = requestedOrigin && config.corsAllowedOrigins.includes(requestedOrigin) ? requestedOrigin : ''
   return {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': origin,
     Vary: 'Origin',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Staff-Id, X-Operation-Id, X-Idempotency-Key',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
     'X-Request-Id': requestId,
+    ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
   }
 }
 

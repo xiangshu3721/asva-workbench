@@ -21,7 +21,7 @@ export interface BasicDashboardCourse { course_id: string; course_name: string; 
 export interface BasicDashboardOwner { staff_id: string; staff_name: string; role: string; customer_count: number }
 export interface BasicDashboardInsight { type: string; text: string }
 export interface BasicDashboard { customer_total: number; new_customers_this_week: number; previous_week_new_customers: number; enrolled_customer_total: number; active_enrollment_total: number; profile_pending_total: number; course_enrollment_distribution: BasicDashboardCourse[]; customer_owner_distribution: BasicDashboardOwner[]; management_insights: BasicDashboardInsight[]; generated_at: string }
-export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
+export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; appEnv?: string; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
 export interface SavePerformanceTrace { request_id?: string; operation_id?: string; result: 'SUCCESS' | 'ERROR'; customer_save_total_ms: number; identity_resolution_ms: number; customer_write_ms: number; enrollment_write_ms: number; profile_change_ms: number; ai_ms: number; other_ms: number }
 export interface EvidenceDebugTrace { source_id: string; processing_status: string; extraction_batch: string; evidence_count: number; proposal_count: number; conflict_count: number; model: string; prompt_version: string; duration_ms: number }
 export interface SourceRecord { id: string; subjectType: string; subjectId: string; customerId: string; sourceType: string; title: string; rawText?: string; fileRef?: string; fileName?: string; occurredAt?: string | null; uploadedAt?: string | null; uploadedBy?: string; sourceRole?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY' | 'MENTOR_OBSERVATION'; contentHash?: string; processingStatus: string; processingVersion?: number; sensitivityLevel?: string; sourceVersion?: number; lastBatchId?: string; processingStartedAt?: string | null; lastProcessingAt?: string | null; processingError?: string | null }
@@ -97,11 +97,13 @@ export interface WorkbenchApi {
 }
 
 export interface ApiRequestTrace { time: string; method: string; path: string; status: number | null; duration: number; request_id?: string; result: 'SUCCESS' | 'ERROR' }
-export interface ApiErrorInfo { code: string; message: string; request_id?: string }
+export interface ApiErrorInfo { code: string; message: string; request_id?: string; serverCode?: string; httpStatus?: number }
 export class ApiError extends Error {
   code: string
   request_id?: string
-  constructor(info: ApiErrorInfo) { super(info.message); this.name = 'ApiError'; this.code = info.code; this.request_id = info.request_id }
+  serverCode?: string
+  httpStatus?: number
+  constructor(info: ApiErrorInfo) { super(info.message); this.name = 'ApiError'; this.code = info.code; this.request_id = info.request_id; this.serverCode = info.serverCode; this.httpStatus = info.httpStatus }
 }
 
 const requestTraces: ApiRequestTrace[] = []
@@ -128,7 +130,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     changePassword: async () => { throw new Error('本地 Demo 不支持密码修改') },
     resetPassword: async () => { throw new Error('本地 Demo 不支持密码重置') },
     generateMentorInitialPassword: async () => { throw new Error('本地 Demo 不支持导师账号创建') },
-    health: async () => ({ ok: true, service: 'asva-api', environment: 'local', dataMode: 'demo', featureFlags: { externalAppointment: false } }),
+    health: async () => ({ ok: true, service: 'asva-api', appEnv: 'mock', environment: 'mock', dataMode: 'mock', authMode: 'MOCK', featureFlags: { externalAppointment: false } }),
     savePerformanceTraces: async () => [],
     evidenceDebug: async () => [],
     dashboard: async (staffId) => api.dashboard(staffId),
@@ -182,18 +184,27 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     const token = readAccessToken()
     if (token) headers.set('Authorization', `Bearer ${token}`)
     else if (staffId) headers.set('X-Staff-Id', staffId)
+    if (!base) throw new ApiError({ code: 'CONFIGURATION_ERROR', message: '未配置真实 API 地址。请设置 VITE_API_BASE_URL 后重启前端；如需演示，请明确设置 VITE_APP_ENV=mock。' })
     let response: Response
     try { response = await fetch(`${base}${path}`, { ...init, headers }) } catch (error) {
       requestTraces.unshift({ time: new Date().toISOString(), method, path, status: null, duration: Math.round(performance.now() - startedAt), result: 'ERROR' })
       requestTraces.splice(20)
-      throw new ApiError({ code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试。' })
+      const online = typeof navigator === 'undefined' || navigator.onLine !== false
+      const pageOrigin = typeof window === 'undefined' ? '' : window.location.origin
+      const apiOrigin = typeof window === 'undefined' ? '' : new URL(base, window.location.href).origin
+      const code = !online ? 'NETWORK_UNREACHABLE' : pageOrigin && apiOrigin !== pageOrigin ? 'CORS_ERROR' : 'NETWORK_UNREACHABLE'
+      const message = code === 'CORS_ERROR'
+        ? 'CORS_ERROR：浏览器拒绝访问 API，请检查 CORS_ALLOWED_ORIGINS 是否包含当前前端地址。'
+        : 'NETWORK_UNREACHABLE：无法连接开发 API，请确认 asva-api 已启动且地址可访问。'
+      throw new ApiError({ code, message })
     }
     const payload = await response.json().catch(() => null)
     const requestId = response.headers.get('X-Request-Id') || payload?.request_id || undefined
     requestTraces.unshift({ time: new Date().toISOString(), method, path, status: response.status, duration: Math.round(performance.now() - startedAt), request_id: requestId, result: response.ok ? 'SUCCESS' : 'ERROR' })
     requestTraces.splice(20)
-    if (response.status === 401) window.dispatchEvent(new Event('asva-auth-expired'))
-    if (!response.ok) throw new ApiError({ code: payload?.code || `HTTP_${response.status}`, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId })
+    if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('asva-auth-expired'))
+    if (!response.ok) throw new ApiError({ code: `HTTP_${response.status}`, serverCode: payload?.code, httpStatus: response.status, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId })
+    if (payload === null) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'INVALID_RESPONSE：API 返回的内容不是有效 JSON。', request_id: requestId })
     if ((path === '/api/auth/login' || path === '/api/auth/change-password') && payload?.token) writeAccessToken(payload.token)
     return payload as T
   }

@@ -18,18 +18,20 @@ import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } fro
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { accountAvatar, accountPanelFor, accountRoleLabel } from '../shared/account-identity.mjs'
 import { clearAccessToken, readAccessToken } from './auth-storage'
+import { runtimeConfig } from './runtime-config'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
-const remoteBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined
-const dataMode = (import.meta.env.VITE_DATA_MODE as string | undefined) || (remoteBaseUrl ? 'production' : 'demo')
-const isRemoteStaff = Boolean(remoteBaseUrl) || dataMode === 'production'
+const appEnv = runtimeConfig.appEnv
+const dataMode = runtimeConfig.dataMode
+const remoteBaseUrl = runtimeConfig.apiBaseUrl
+const isRemoteStaff = appEnv !== 'mock'
 const staffStorage = window.localStorage
-const workbenchApi: WorkbenchApi = remoteBaseUrl ? createHttpApi(remoteBaseUrl) : dataMode === 'production' ? createHttpApi('http://127.0.0.1:1') : createLocalAsyncApi(createGuardedLocalApi(repository))
+const workbenchApi: WorkbenchApi = appEnv === 'mock' ? createLocalAsyncApi(createGuardedLocalApi(repository)) : createHttpApi(remoteBaseUrl)
 
 type MePanel = 'account' | 'team'
 const PASSWORD_POLICY_HINT = '密码需为 5～64 位，可使用英文字母、数字和常见特殊符号；无需强制混合大小写、数字或符号。请避开明显弱密码和手机号。'
 function passwordErrorMessage(error: unknown) {
-  const code = (error as { code?: string })?.code
+  const code = (error as { serverCode?: string; code?: string })?.serverCode || (error as { code?: string })?.code
   return (code && PASSWORD_POLICY_MESSAGES[code]) || (error instanceof Error ? error.message : '密码不符合要求')
 }
 function validatePasswordInput(value: string) {
@@ -66,7 +68,7 @@ function sourceStatusLabel(status: string) {
 }
 
 function sourceFailureMessage(error: unknown) {
-  const code = (error as { code?: string })?.code
+  const code = (error as { serverCode?: string; code?: string })?.serverCode || (error as { code?: string })?.code
   if (code === 'UNSUPPORTED_DOCUMENT_FORMAT' || code === 'INVALID_DOCUMENT_MIME') return '当前支持 TXT、Markdown 和 Word（.docx）文件。'
   if (code === 'DOCX_CORRUPT' || code === 'DOCUMENT_TEXT_EMPTY') return '资料读取失败，请检查文件后重新上传。'
   if (code === 'FEISHU_UNAVAILABLE' || code === 'WRITE_CONFIRMED_READBACK_FAILED') return '飞书数据源暂时繁忙，资料可能已保存，请稍后刷新或重试。'
@@ -82,12 +84,12 @@ function roleName(staff: Staff) { return accountRoleLabel(staff.permissionRole) 
 function workflowStatus(appointment: Appointment): AppointmentWorkflowStatus { return appointment.status as AppointmentWorkflowStatus }
 function Login({ api, onLogin }: { api: WorkbenchApi; onLogin: (account: Staff & { mustChangePassword?: boolean }) => void }) {
   const [phone, setPhone] = useState('15021512537')
-  const [password, setPassword] = useState(dataMode === 'demo' ? '888888' : '')
+  const [password, setPassword] = useState(appEnv === 'mock' ? '888888' : '')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const submit = async (event: FormEvent) => { event.preventDefault(); setLoading(true); setError(''); try { const account = await api.login(phone.trim(), password); onLogin(account) } catch (loginError) { setError(loginError instanceof Error ? loginError.message : '登录失败') } finally { setLoading(false) } }
-  return <main className="login-page"><div className="login-orbit orbit-one" /><div className="login-orbit orbit-two" /><section className="login-card"><div className="brand-lockup"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><div className="login-copy"><div className="eyebrow">SERVICE FLOW</div><h1>看见客户，<br /><em>传递空静爱。</em></h1><p>资料进入，管理员从客户档案开始工作。</p></div><form onSubmit={submit} className="login-form"><label>手机号<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="numeric" autoComplete="username" /></label><label>密码<div className="code-row"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /><button type="button" className="text-button" onClick={() => setShowPassword((value) => !value)}>{showPassword ? '隐藏' : '显示'}</button></div></label>{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={loading}>{loading && <ButtonSpinner />}{loading ? '正在验证…' : '进入工作台'} <span>→</span></button></form>{dataMode === 'demo' ? <div className="login-hint">仅 Demo：请使用本地演示密码</div> : <div className="login-hint">密码只在服务端校验，不会写入浏览器。</div>}</section></main>
+  return <main className="login-page"><div className="login-orbit orbit-one" /><div className="login-orbit orbit-two" /><section className="login-card"><div className="brand-lockup"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><div className="login-copy"><div className="eyebrow">SERVICE FLOW</div><h1>看见客户，<br /><em>传递空静爱。</em></h1><p>资料进入，管理员从客户档案开始工作。</p></div><form onSubmit={submit} className="login-form"><label>手机号<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="numeric" autoComplete="username" /></label><label>密码<div className="code-row"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /><button type="button" className="text-button" onClick={() => setShowPassword((value) => !value)}>{showPassword ? '隐藏' : '显示'}</button></div></label>{(error || runtimeConfig.configurationError) && <p className="form-error">{error || runtimeConfig.configurationError}</p>}<button className="primary-button full-width" type="submit" disabled={loading}>{loading && <ButtonSpinner />}{loading ? '正在验证…' : '进入工作台'} <span>→</span></button></form>{appEnv === 'mock' ? <div className="login-hint">仅 Mock：请使用本地演示密码</div> : <div className="login-hint">密码只在服务端校验，不会写入浏览器。</div>}</section></main>
 }
 
 function ChangePassword({ api, onComplete }: { api: WorkbenchApi; onComplete: () => void }) {
@@ -112,7 +114,7 @@ function ChangePassword({ api, onComplete }: { api: WorkbenchApi; onComplete: ()
 }
 
 function WorkbenchApp() {
-  const [loggedInStaffId, setLoggedInStaffId] = useState<string | null>(() => staffStorage.getItem('asva-demo-staff-v2'))
+  const [loggedInStaffId, setLoggedInStaffId] = useState<string | null>(() => appEnv === 'mock' || readAccessToken() ? staffStorage.getItem('asva-demo-staff-v2') : null)
   const [mustChangePassword, setMustChangePassword] = useState(() => staffStorage.getItem('asva-password-change-required') === 'true')
   const [authRestoring, setAuthRestoring] = useState(() => isRemoteStaff && !staffStorage.getItem('asva-demo-staff-v2') && Boolean(readAccessToken()))
   const [currentStaff, setCurrentStaff] = useState<Staff | null>(() => !isRemoteStaff && loggedInStaffId ? api.staff(loggedInStaffId) ?? null : null)
@@ -132,6 +134,44 @@ function WorkbenchApp() {
     try { return api.dashboard(loggedInStaffId) } catch { return null }
   })
   const [loadError, setLoadError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const frontendMetaUrl = `${import.meta.env.BASE_URL}build-meta.json`
+    Promise.all([
+      workbenchApi.health(),
+      fetch(frontendMetaUrl).then((response) => response.ok ? response.json() : null).catch(() => null),
+    ]).then(([backend, frontend]) => {
+      if (cancelled) return
+      const frontendRelease = frontend?.release || 'UNKNOWN'
+      const backendRelease = backend.release || 'UNKNOWN'
+      const versionCompatible = Number.isFinite(Number(frontend?.releaseCounter)) && Number.isFinite(Number(backend.releaseCounter))
+        ? Number(frontend.releaseCounter) === Number(backend.releaseCounter)
+        : null
+      const handshake = {
+        'Frontend Environment': appEnv,
+        'Frontend Release': frontendRelease,
+        'API Base': remoteBaseUrl || 'UNSET',
+        'Backend Reachable': 'YES',
+        'Backend Environment': backend.appEnv || backend.environment || 'UNKNOWN',
+        'Backend Release': backendRelease,
+        'Version Compatible': versionCompatible === null ? 'UNKNOWN' : versionCompatible ? 'YES' : 'NO',
+        'Auth Mode': backend.authMode || 'UNKNOWN',
+        'Data Mode': backend.dataMode || 'UNKNOWN',
+      }
+      console.info('[ASVA][ENVIRONMENT_HANDSHAKE]', handshake)
+      const mismatches = [
+        runtimeConfig.configurationError ? 'FRONTEND_CONFIGURATION' : '',
+        backend.appEnv && appEnv !== 'invalid' && backend.appEnv !== appEnv ? 'ENVIRONMENT_MISMATCH' : '',
+        versionCompatible === false ? 'VERSION_MISMATCH' : '',
+        appEnv !== 'mock' && backend.dataMode !== 'production' ? 'DATA_MODE_MISMATCH' : '',
+      ].filter(Boolean)
+      if (mismatches.length) console.warn('[ASVA][ENVIRONMENT_MISMATCH]', { mismatches, handshake })
+    }).catch((error: unknown) => {
+      if (!cancelled) console.warn('[ASVA][ENVIRONMENT_HANDSHAKE]', { 'Backend Reachable': 'NO', code: (error as { code?: string })?.code || 'UNKNOWN', message: error instanceof Error ? error.message : 'health check failed' })
+    })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (!loggedInStaffId) {

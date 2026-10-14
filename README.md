@@ -72,7 +72,7 @@ npm run dev:server
 VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 ```
 
-服务端入口是 `server/index.mjs`，前端只通过 `/api` 调用；DeepSeek 密钥和飞书应用密钥不会进入浏览器。`/api/health` 会显示配置状态但不会返回密钥。
+服务端入口是 `server/index.mjs`，前端只通过 `/api` 调用；DeepSeek 密钥和飞书应用密钥不会进入浏览器。`/api/health` 会显示配置状态但不会返回密钥。开发环境默认要求真实 HTTP API，不会自动切换到 localStorage Demo；只有明确设置 `VITE_APP_ENV=mock` 才启用本地演示。
 
 当前 Base 结构：原预约表继续作为预约主表，并使用 Customers、Appointments、ServiceRecords、Staff、Products 五类数据；结构化客户档案字段已并入 `ASVA 客户`，每条 Customer Record 表示客户当前完整档案。`ASVA 画像变更历史`（`tblTH3OmBuzUsBVu`）保留用于重要字段审计，并在其中维护 `field_key`、`field_name`、`operator_id`、`changed_at`。旧 `ASVA 客户画像` 已改名为 `ASVA 客户画像（已停用）`，当前为 0 条记录。
 
@@ -80,7 +80,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 
 ## 架构边界
 
-页面不直接依赖飞书字段。当前页面 → `src/clientApi.ts` → HTTP `/api` → `server/repository.mjs` → 飞书多维表；未配置 `VITE_API_BASE_URL` 时保留本地演示模式。
+页面不直接依赖飞书字段。当前页面 → `src/clientApi.ts` → HTTP `/api` → `server/repository.mjs` → 飞书多维表；环境由 `VITE_APP_ENV` 明确决定：`development` 与 `production` 使用真实 API，`mock` 才使用本地演示数据。
 
 当前页面实际依赖的业务数据只有 Customers、Appointments、ServiceRecords（代码中的 `sessions`）、Staff、简单 Products，以及 Customer 内嵌档案字段和画像变更历史；旧画像表不再参与读取、写入或查询。
 

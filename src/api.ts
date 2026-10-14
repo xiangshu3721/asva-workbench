@@ -2,7 +2,7 @@ import type { Customer, Database, EnrollmentDraft, FeedbackInput, ManualCustomer
 import type { AsvaRepository } from './repositories'
 
 const requireLiveHttp = (): never => {
-  throw new Error('当前前端未连接真实 HTTP 服务，导师数据不会写入飞书。请配置 VITE_API_BASE_URL=http://127.0.0.1:8788 后重启前端。')
+  throw new Error('当前前端未连接真实 HTTP 服务，导师数据不会写入飞书。请配置 VITE_API_BASE_URL 后重启前端。')
 }
 
 export function createLocalApi(repository: AsvaRepository) {
