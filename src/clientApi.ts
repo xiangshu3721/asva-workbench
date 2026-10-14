@@ -6,6 +6,7 @@ import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSumm
 import { buildBasicDashboard } from '../shared/basic-dashboard.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { createLocalCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+import { readAccessToken, writeAccessToken } from './auth-storage'
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
@@ -164,7 +165,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     const method = init?.method || 'GET'
     const headers = new Headers(init?.headers)
     headers.set('Content-Type', 'application/json')
-    const token = window.sessionStorage.getItem('asva_session_token')
+    const token = readAccessToken()
     if (token) headers.set('Authorization', `Bearer ${token}`)
     else if (staffId) headers.set('X-Staff-Id', staffId)
     let response: Response
@@ -179,12 +180,12 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     requestTraces.splice(20)
     if (response.status === 401) window.dispatchEvent(new Event('asva-auth-expired'))
     if (!response.ok) throw new ApiError({ code: payload?.code || `HTTP_${response.status}`, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId })
-    if (path === '/api/auth/login' && payload?.token) window.sessionStorage.setItem('asva_session_token', payload.token)
+    if ((path === '/api/auth/login' || path === '/api/auth/change-password') && payload?.token) writeAccessToken(payload.token)
     return payload as T
   }
   return {
     login: (phone, password) => request<Staff & { mustChangePassword?: boolean }>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, password }) }),
-    changePassword: async (currentPassword, newPassword) => { const result = await request<{ ok: boolean; mustChangePassword: boolean; token?: string }>('/api/auth/change-password', undefined, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); if (result.token) window.sessionStorage.setItem('asva_session_token', result.token); return result },
+    changePassword: (currentPassword, newPassword) => request<{ ok: boolean; mustChangePassword: boolean; token?: string }>('/api/auth/change-password', undefined, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     resetPassword: (actorId, staffId) => request<{ ok: boolean; staffId: string; mustChangePassword: boolean; initialPassword?: string }>(`/api/staff/${encodeURIComponent(staffId)}/reset-password`, actorId, { method: 'POST', body: '{}' }),
     generateMentorInitialPassword: async (actorId, phone) => (await request<{ initial_password: string }>('/api/staff/mentor-initial-password', actorId, { method: 'POST', body: JSON.stringify({ phone }) })).initial_password,
     health: () => request<HealthMetadata>('/api/health', undefined),

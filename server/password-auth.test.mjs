@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { config } from './config.mjs'
-import { issueSession, verifySession } from './auth.mjs'
+import { ACCESS_TOKEN_TTL_MS, PASSWORD_CHANGE_TOKEN_TTL_MS, issueSession, verifySession } from './auth.mjs'
 import { FeishuRepository } from './repository.mjs'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
 import { MemoryAuthCredentialRepository, PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
@@ -20,7 +20,7 @@ function policyCode(password, options) {
 }
 
 const previous = { authMode: config.authMode, dataMode: config.dataMode, table: config.feishu.tables.authCredentials, secret: config.authSecret, adminCode: config.adminLoginCode }
-afterEach(() => { Object.assign(config, { authMode: previous.authMode, dataMode: previous.dataMode, authSecret: previous.secret, adminLoginCode: previous.adminCode }); config.feishu.tables.authCredentials = previous.table })
+afterEach(() => { vi.useRealTimers(); Object.assign(config, { authMode: previous.authMode, dataMode: previous.dataMode, authSecret: previous.secret, adminLoginCode: previous.adminCode }); config.feishu.tables.authCredentials = previous.table })
 
 describe('ASVA Authentication V1', () => {
   it('stores only a scrypt hash and verifies the password', async () => {
@@ -110,6 +110,21 @@ describe('ASVA Authentication V1', () => {
     const next = await repository.authenticate(admin.phone, 'another-strong-password', 'ip-change')
     expect(next.authVersion).toBe(1)
     expect(verifySession(oldToken).auth_version).toBe(0)
+  })
+
+  it('uses a 180-day formal token and a short first-login token', () => {
+    config.authSecret = 'test-secret'
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-14T00:00:00.000Z'))
+    const formalToken = issueSession(admin.id, 0, 'PASSWORD', 'SESSION')
+    const limitedToken = issueSession(admin.id, 0, 'PASSWORD', 'PASSWORD_CHANGE')
+    const formal = verifySession(formalToken)
+    const limited = verifySession(limitedToken)
+    expect(formal.exp - formal.iat).toBe(ACCESS_TOKEN_TTL_MS)
+    expect(formal.exp - formal.iat).toBe(180 * 24 * 60 * 60 * 1000)
+    expect(limited.exp - limited.iat).toBe(PASSWORD_CHANGE_TOKEN_TTL_MS)
+    vi.setSystemTime(new Date(formal.exp + 1))
+    expect(() => verifySession(formalToken)).toThrow('登录状态无效或已过期')
   })
 
   it('rejects reusing the current password without changing the credential', async () => {

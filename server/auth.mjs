@@ -9,9 +9,14 @@ export class AuthError extends Error {
 function encode(value) { return Buffer.from(JSON.stringify(value)).toString('base64url') }
 function sign(value) { return crypto.createHmac('sha256', config.authSecret).update(value).digest('base64url') }
 
+export const ACCESS_TOKEN_TTL_MS = 180 * 24 * 60 * 60 * 1000
+export const PASSWORD_CHANGE_TOKEN_TTL_MS = 15 * 60 * 1000
+
 export function issueSession(staffId, authVersion = 0, authMode = config.authMode, purpose = 'SESSION') {
   if (!config.authSecret) throw Object.assign(new Error('生产认证密钥未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
-  const payload = encode({ sub: staffId, auth_version: Number(authVersion) || 0, amr: authMode, purpose, iat: Date.now(), exp: Date.now() + 8 * 60 * 60 * 1000 })
+  const iat = Date.now()
+  const ttl = purpose === 'PASSWORD_CHANGE' ? PASSWORD_CHANGE_TOKEN_TTL_MS : ACCESS_TOKEN_TTL_MS
+  const payload = encode({ sub: staffId, auth_version: Number(authVersion) || 0, amr: authMode, purpose, iat, exp: iat + ttl })
   return `${payload}.${sign(payload)}`
 }
 
