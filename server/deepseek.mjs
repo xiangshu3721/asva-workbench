@@ -8,15 +8,20 @@ export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
 }
 
+export const HUMAN_LANGUAGE_RULE = '最终面向导师和管理员展示的解释必须使用自然、直接的中文；不要输出内部英文枚举、字段名、代码、Schema 名称、版本号、系统状态标识或调试信息。遇到信息不足时直接说“待确认”“资料还不够”，不要把内部值原样写进解释。'
+
 async function callDeepSeek(messages, temperature = 0.2) {
   if (!config.deepseek.apiKey) throw new DeepSeekUnavailableError('DeepSeek 尚未配置')
+  const humanizedMessages = messages.map((message) => message.role === 'system' && !message.content.includes(HUMAN_LANGUAGE_RULE)
+    ? { ...message, content: `${message.content}\n${HUMAN_LANGUAGE_RULE}` }
+    : message)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 35_000)
   try {
     const response = await fetch(`${config.deepseek.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.deepseek.apiKey}` },
-      body: JSON.stringify({ model: config.deepseek.model, messages, temperature, stream: false }),
+      body: JSON.stringify({ model: config.deepseek.model, messages: humanizedMessages, temperature, stream: false }),
       signal: controller.signal,
     })
     const payload = await response.json().catch(() => null)
