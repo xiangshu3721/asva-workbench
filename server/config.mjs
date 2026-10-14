@@ -78,6 +78,12 @@ export const config = {
   },
 }
 
+export function isCorsOriginAllowed(origin, appEnv = config.appEnv) {
+  if (!origin || corsAllowedOrigins.includes(origin)) return Boolean(origin)
+  if (appEnv !== 'development') return false
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+}
+
 export function configurationStatus() {
   return {
     deepseekConfigured: Boolean(config.deepseek.apiKey),
