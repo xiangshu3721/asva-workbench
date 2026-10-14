@@ -421,6 +421,7 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .understanding-evidence article span, .understanding-evidence article small { color: #718681; font-size: 10px; line-height: 1.45; }
 .understanding-no-basis { display: inline-block; margin-top: 7px; color: #a5b3ae; font-size: 9px; }
 .understanding-empty { color: #718681; font-size: 12px; }
+.customer-detail-v2 .understanding-read-warning { display: block; margin: 0 0 12px; color: #9a6a2a; font-size: 14px; line-height: 1.6; }
 .understanding-empty-panel { background: #f7fbf8; }
 .understanding-status-line { margin-top: 12px; color: #9a6b27; font-size: 10px; }
 .safety-panel { background: linear-gradient(120deg, #fffaf0 0%, #fffefa 72%); border-color: #eadfbe; }

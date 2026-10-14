@@ -1,6 +1,6 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
-import { config, configurationStatus } from './config.mjs'
+import { config, configurationStatus, isCorsOriginAllowed } from './config.mjs'
 import { createBrief, createCustomerIntelligence, createServiceSummary, DeepSeekUnavailableError } from './deepseek.mjs'
 import { FeishuRepository } from './repository.mjs'
 import { FeishuUnavailableError } from './feishu.mjs'
@@ -12,7 +12,7 @@ const repository = new FeishuRepository()
 
 function responseHeaders(request, requestId) {
   const requestedOrigin = request.headers.origin
-  const origin = requestedOrigin && config.corsAllowedOrigins.includes(requestedOrigin) ? requestedOrigin : ''
+  const origin = requestedOrigin && isCorsOriginAllowed(requestedOrigin) ? requestedOrigin : ''
   return {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
