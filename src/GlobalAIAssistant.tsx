@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AssistantQueryContext, AssistantQueryResult, AssistantResultRecord, WorkbenchApi } from './clientApi'
+import { sanitizeUserVisibleText } from './presentationCopy'
 
 type ChatMessage = { id: string; role: 'user' | 'assistant'; text: string; result?: AssistantQueryResult }
 
@@ -58,9 +59,10 @@ export function GlobalAIAssistant({ api, staffId, customerId, onCustomer }: { ap
     setThinking(true)
     try {
       const result = await api.assistantQuery(staffId, question, context)
+      const safeResult = { ...result, answer: sanitizeUserVisibleText(result.answer) }
       const assistantId = `assistant-${Date.now()}`
-      setMessages((current) => [...current, { id: assistantId, role: 'assistant', text: result.answer, result }])
-      window.setTimeout(() => speak(result.answer, assistantId), 0)
+      setMessages((current) => [...current, { id: assistantId, role: 'assistant', text: safeResult.answer, result: safeResult }])
+      window.setTimeout(() => speak(safeResult.answer, assistantId), 0)
     } catch (queryError) {
       setError(queryError instanceof Error ? queryError.message : '这次数据查询没有成功，请再试一次。')
     } finally { setThinking(false) }
@@ -108,9 +110,9 @@ export function GlobalAIAssistant({ api, staffId, customerId, onCustomer }: { ap
 function AssistantResult({ result, onCustomer, speaking, onSpeak }: { result: AssistantQueryResult; onCustomer: (id: string) => void; speaking: boolean; onSpeak: () => void }) {
   const records = result.records ?? result.candidates ?? []
   const detailFields = result.records?.[0]?.fields
-  return <div className="ai-result">{result.customerId && <button type="button" className="ai-detail-link" onClick={() => onCustomer(result.customerId!)}>查看客户详情 <span>→</span></button>}{detailFields && <div className="ai-detail-fields">{detailFields.map((field) => <div key={field.label}><span>{field.label}</span><strong>{field.value}</strong></div>)}</div>}{result.candidates && <div className="ai-result-list">{records.map((record) => <ResultRow key={record.id} record={record} onCustomer={onCustomer} />)}</div>}{result.records && !detailFields && <div className="ai-result-list">{records.slice(0, 20).map((record) => <ResultRow key={record.id} record={record} onCustomer={onCustomer} />)}</div>}{result.pagination?.has_more && <small className="ai-pagination-note">已显示前 {result.pagination.limit} 条，共 {result.pagination.total} 条。可以缩小条件继续查询。</small>}{result.dataBasis?.length ? <details className="ai-data-basis"><summary>查看数据依据</summary>{result.dataBasis.map((basis, index) => <div key={`${basis.metric || 'query'}-${index}`}><span>{basis.metric || '查询结果'}</span><small>{basis.source.join('、')} · {basis.row_count} 条{basis.coverage && !basis.coverage.complete ? ' · 数据源不完整' : ''}</small></div>)}</details> : null}<button type="button" className={speaking ? 'ai-replay speaking' : 'ai-replay'} onClick={onSpeak} aria-label="播放 AI 回复">{speaking ? 'AI 正在说话…' : '播放语音'}</button></div>
+  return <div className="ai-result">{result.customerId && <button type="button" className="ai-detail-link" onClick={() => onCustomer(result.customerId!)}>查看客户详情 <span>→</span></button>}{detailFields && <div className="ai-detail-fields">{detailFields.map((field) => <div key={field.label}><span>{sanitizeUserVisibleText(field.label)}</span><strong>{sanitizeUserVisibleText(field.value)}</strong></div>)}</div>}{result.candidates && <div className="ai-result-list">{records.map((record) => <ResultRow key={record.id} record={record} onCustomer={onCustomer} />)}</div>}{result.records && !detailFields && <div className="ai-result-list">{records.slice(0, 20).map((record) => <ResultRow key={record.id} record={record} onCustomer={onCustomer} />)}</div>}{result.pagination?.has_more && <small className="ai-pagination-note">已显示前 {result.pagination.limit} 条，共 {result.pagination.total} 条。可以缩小条件继续查询。</small>}{result.dataBasis?.length ? <details className="ai-data-basis"><summary>查看数据依据</summary>{result.dataBasis.map((basis, index) => <div key={`${basis.metric || 'query'}-${index}`}><span>{sanitizeUserVisibleText(basis.metric || '查询结果')}</span><small>{basis.source.map(sanitizeUserVisibleText).join('、')} · {basis.row_count} 条{basis.coverage && !basis.coverage.complete ? ' · 数据源不完整' : ''}</small></div>)}</details> : null}<button type="button" className={speaking ? 'ai-replay speaking' : 'ai-replay'} onClick={onSpeak} aria-label="播放 AI 回复">{speaking ? 'AI 正在说话…' : '播放语音'}</button></div>
 }
 
-function ResultRow({ record, onCustomer }: { record: AssistantResultRecord; onCustomer: (id: string) => void }) { return <button type="button" className="ai-result-row" onClick={() => record.customerId && onCustomer(record.customerId)}><span><strong>{record.name}</strong><small>{record.mentor ? `导师：${record.mentor}` : record.detail}{record.date ? ` · ${record.date}` : ''}</small></span><b>{record.amount === undefined ? '→' : `¥${record.amount.toLocaleString('zh-CN')}`}</b></button> }
+function ResultRow({ record, onCustomer }: { record: AssistantResultRecord; onCustomer: (id: string) => void }) { return <button type="button" className="ai-result-row" onClick={() => record.customerId && onCustomer(record.customerId)}><span><strong>{sanitizeUserVisibleText(record.name)}</strong><small>{record.mentor ? `导师：${sanitizeUserVisibleText(record.mentor)}` : sanitizeUserVisibleText(record.detail)}{record.date ? ` · ${sanitizeUserVisibleText(record.date)}` : ''}</small></span><b>{record.amount === undefined ? '→' : `¥${record.amount.toLocaleString('zh-CN')}`}</b></button> }
 
 type SpeechRecognitionLike = { lang: string; interimResults: boolean; results: ArrayLike<ArrayLike<{ transcript: string }>>; onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: (() => void) | null; onend: (() => void) | null; start: () => void; stop: () => void }

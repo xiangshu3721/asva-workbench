@@ -118,9 +118,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .customer-detail-v2 .sales-commercial > div:not(.sales-commercial-heading) { display: grid; gap: 3px; margin-top: 12px; color: #718b83; font-size: 13px; line-height: 1.55; }
 .customer-detail-v2 .sales-commercial > div span { color: #397b6c; font-weight: 700; }
 .customer-detail-v2 .sales-history { grid-column: 1 / -1; }
-.customer-detail-v2 .sales-history-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
-.customer-detail-v2 .sales-history-grid strong { color: #315f57; font-size: 14px; }
-.customer-detail-v2 .sales-history-grid p { margin: 7px 0 0; color: #5d766f; font-size: 14px; line-height: 1.6; }
+.customer-detail-v2 .sales-history-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.customer-detail-v2 .sales-history-heading h3 { margin: 0; }
+.customer-detail-v2 .sales-history-heading p { margin: 4px 0 0; color: #7b928c; font-size: 12px; line-height: 1.5; }
+.customer-detail-v2 .sales-history-metrics { grid-template-columns: minmax(0, 1fr); margin-bottom: 15px; }
+.customer-detail-v2 .sales-enrollment-directory > strong { display: block; margin-bottom: 10px; color: #315f57; font-size: 14px; }
 .customer-detail-v2 .sales-unknown, .customer-detail-v2 .sales-empty { color: #819890; font-size: 14px; line-height: 1.7; }
 .customer-detail-v2 .sales-empty { display: grid; gap: 12px; justify-items: start; }
 
@@ -130,11 +132,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
   .customer-detail-v2 .sales-advice-card, .customer-detail-v2 .sales-section { padding: 15px; border-radius: 14px; }
   .customer-detail-v2 .sales-advice-heading { display: grid; gap: 10px; }
   .customer-detail-v2 .sales-timing { justify-self: start; }
-  .customer-detail-v2 .sales-advice-columns, .customer-detail-v2 .sales-grid-two, .customer-detail-v2 .sales-history-grid { grid-template-columns: 1fr; gap: 14px; }
+  .customer-detail-v2 .sales-advice-columns, .customer-detail-v2 .sales-grid-two { grid-template-columns: 1fr; gap: 14px; }
+  .customer-detail-v2 .sales-history-heading { align-items: stretch; flex-direction: column; gap: 10px; }
+  .customer-detail-v2 .sales-history-heading .secondary-button { align-self: flex-start; }
+  .customer-detail-v2 .sales-history-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .customer-detail-v2 .sales-summary { font-size: 15px; line-height: 1.75; }
   .customer-detail-v2 .sales-section > h3, .customer-detail-v2 .sales-commercial-heading h3 { font-size: 18px; }
   .customer-detail-v2 .sales-insight-card > strong { font-size: 16px; }
-  .customer-detail-v2 .sales-insight-card > p, .customer-detail-v2 .sales-more p, .customer-detail-v2 .sales-commercial > p, .customer-detail-v2 .sales-history-grid p { font-size: 14px; line-height: 1.75; }
+  .customer-detail-v2 .sales-insight-card > p, .customer-detail-v2 .sales-more p, .customer-detail-v2 .sales-commercial > p { font-size: 14px; line-height: 1.75; }
 }
 
 /* V0.3 state workflow surfaces */
@@ -691,6 +696,11 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 }
 .customer-detail-v2 { gap: 16px; }
 .customer-detail-v2 .consultation-view { padding: 22px; background: linear-gradient(135deg, #f1faf6 0%, #fffefa 68%); }
+.customer-detail-v2 > .understanding-overview-section { padding: 18px 20px; background: linear-gradient(135deg, #f1faf6 0%, #fffefa 68%); }
+.customer-detail-v2 > .understanding-overview-section .understanding-overview { margin-top: 0; }
+.customer-detail-v2 .understanding-heading-sales { justify-content: flex-end; }
+.customer-detail-v2 .understanding-heading-sales .understanding-heading-actions { margin-top: 0; }
+.customer-detail-v2 .understanding-panel > .understanding-heading-actions { justify-content: space-between; margin-top: 12px; }
 .customer-detail-v2 .consultation-view > .understanding-heading h2 { margin: 0 0 5px; color: #174943; font-size: 21px; }
 .customer-detail-v2 .consultation-view > .understanding-heading p { font-size: 13px; line-height: 1.55; }
 .customer-detail-v2 .consultation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 22px; }
@@ -738,6 +748,7 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 @media (max-width: 780px) {
   .customer-detail-v2 { gap: 12px; }
   .customer-detail-v2 .consultation-view { padding: 16px; }
+  .customer-detail-v2 > .understanding-overview-section { padding: 16px; }
   .customer-detail-v2 .consultation-view > .understanding-heading h2 { font-size: 20px; }
   .customer-detail-v2 .consultation-view > .understanding-heading p { font-size: 14px; }
   .customer-detail-v2 .consultation-grid { grid-template-columns: 1fr; gap: 12px; margin-top: 18px; }
