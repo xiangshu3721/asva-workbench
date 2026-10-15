@@ -87,8 +87,11 @@ export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extract
 
 export function dedupeEvidence(items) {
   const unique = []
+  const keys = new Set()
   for (const item of items) {
-    if (unique.some((existing) => evidenceEquivalent(existing, item))) continue
+    const key = evidenceLogicalKey(item)
+    if (keys.has(key)) continue
+    keys.add(key)
     unique.push(item)
   }
   return unique
@@ -109,6 +112,20 @@ function normalizedScalar(value) {
 export function normalizeEvidenceValue(value) { return normalizedScalar(value) }
 
 export function normalizeEvidenceEventTime(value) { return normalizedScalar(value) }
+
+// A source-scoped logical identity deliberately ignores wording, excerpt and
+// locator drift. It is used only to reconcile one generated evidence set and
+// to protect human-confirmed facts; it is not a fuzzy/semantic matcher.
+export function evidenceLogicalKey(item) {
+  return [
+    item?.sourceId || '',
+    item?.evidenceType || '',
+    item?.semanticKind || '',
+    item?.fieldKey || '',
+    JSON.stringify(normalizeEvidenceValue(item?.standardValue)),
+    JSON.stringify(normalizeEvidenceEventTime(item?.occurredAt)),
+  ].join('|')
+}
 
 export function normalizeEvidenceLocator(locator) {
   if (!locator || typeof locator !== 'object') return { paragraphIndex: null, charStart: null, charEnd: null }

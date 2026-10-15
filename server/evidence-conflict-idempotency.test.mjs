@@ -25,14 +25,14 @@ const json = (value) => { try { return JSON.parse(value) } catch { return value 
 
 function makeDatabase() {
   const customer = { id: 'CUS-SYNTH-1', name: 'Synthetic 客户', mentorId: 'MENTOR-A', profileFields: { city: '杭州', job_status: '在职' }, profileFieldMeta: {}, profileVersion: 1, profileSchemaVersion: 'v1.0', need: '', helpExpectation: '', goal: '', grade: 'C', paid: false, intendedCourse: '' }
-  const source = { id: 'SRC-SYNTH-1', customerId: customer.id, subjectId: customer.id, sourceType: 'TEXT_INPUT', sourceRole: 'MENTOR', sourcePerspective: 'STAFF_REPORTED', rawText: '她目前已经长期住在深圳。', contentHash: 'hash-1', extractorVersion: 'evidence-v1', processingStatus: 'UPLOADED', processingVersion: 1, _recordId: 'rec-source-1' }
-  return { staff: [{ id: 'MENTOR-A', name: 'Synthetic Mentor A', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }, { id: 'MENTOR-B', name: 'Synthetic Mentor B', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }], customers: [customer], appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords: [source], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: { customers: [{ record_id: 'rec-customer-1', fields: { '客户ID': customer.id } }], sourceRecords: [{ record_id: source._recordId, fields: {} }], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], profileChanges: [] } }
+  const source = { id: 'SRC-SYNTH-1', customerId: customer.id, subjectId: customer.id, sourceType: 'TEXT_INPUT', sourceRole: 'MENTOR', sourcePerspective: 'STAFF_REPORTED', rawText: '她目前已经长期住在深圳。', contentHash: 'hash-1', extractorVersion: 'evidence-v1', processingStatus: 'UPLOADED', processingVersion: 1, lastBatchId: '', _recordId: 'rec-source-1' }
+  return { staff: [{ id: 'MENTOR-A', name: 'Synthetic Mentor A', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }, { id: 'MENTOR-B', name: 'Synthetic Mentor B', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }], customers: [customer], appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords: [source], evidenceItems: [], _allEvidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: { customers: [{ record_id: 'rec-customer-1', fields: { '客户ID': customer.id } }], sourceRecords: [{ record_id: source._recordId, fields: {} }], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], profileChanges: [] } }
 }
 
 function appendCreated(tableId, fields) {
   const recordId = `rec-${++recordSequence}`
   if (tableId === config.feishu.tables.evidenceItems) {
-    activeDatabase.evidenceItems.push({ id: fields['证据ID'], sourceId: fields['资料ID'], customerId: fields['客户ID'], subjectId: fields['主体ID'], evidenceType: fields['证据类型'], semanticKind: fields['语义类型'], fieldKey: fields['字段Key'], standardValue: json(fields['标准值']), displayText: fields['展示文本'], sourceExcerpt: fields['原文摘录'], locator: json(fields['资料定位']), occurredAt: fields['发生时间'], confidence: Number(fields['置信度']), reviewStatus: fields['审核状态'], extractionBatchId: fields['提取批次ID'], _recordId: recordId })
+    activeDatabase._allEvidenceItems.push({ id: fields['证据ID'], sourceId: fields['资料ID'], customerId: fields['客户ID'], subjectId: fields['主体ID'], evidenceType: fields['证据类型'], semanticKind: fields['语义类型'], fieldKey: fields['字段Key'], standardValue: json(fields['标准值']), displayText: fields['展示文本'], sourceExcerpt: fields['原文摘录'], locator: json(fields['资料定位']), occurredAt: fields['发生时间'], confidence: Number(fields['置信度']), reviewStatus: fields['审核状态'], extractionBatchId: fields['提取批次ID'], _recordId: recordId })
     activeDatabase._rows.evidenceItems.push({ record_id: recordId, fields })
   } else if (tableId === config.feishu.tables.profileUpdateProposals) {
     activeDatabase.profileUpdateProposals.push({ id: fields['建议ID'], customerId: fields['客户ID'], subjectId: fields['主体ID'], evidenceId: fields['证据ID'], sourceId: fields['资料ID'], fieldKey: fields['字段Key'], fieldName: fields['字段名称'], currentValue: json(fields['当前值']), proposedValue: json(fields['建议值']), action: fields['建议动作'], changeType: fields['变化类型'], reviewStatus: fields['审核状态'], confidence: Number(fields['置信度']), extractionBatchId: fields['批次ID'], _recordId: recordId })
@@ -45,8 +45,8 @@ function appendCreated(tableId, fields) {
 }
 
 function updateExisting(tableId, recordId, fields) {
-  if (tableId === config.feishu.tables.sourceRecords) { const source = activeDatabase.sourceRecords.find((item) => item._recordId === recordId); if (source && fields['处理状态']) source.processingStatus = fields['处理状态'] }
-  if (tableId === config.feishu.tables.evidenceItems) { const evidence = activeDatabase.evidenceItems.find((item) => item._recordId === recordId); if (evidence && fields['审核状态']) evidence.reviewStatus = fields['审核状态'] }
+  if (tableId === config.feishu.tables.sourceRecords) { const source = activeDatabase.sourceRecords.find((item) => item._recordId === recordId); if (source) { if (fields['处理状态']) source.processingStatus = fields['处理状态']; if (fields['处理版本'] !== undefined) source.processingVersion = Number(fields['处理版本']) || source.processingVersion; if (fields['最近提取批次ID'] !== undefined) source.lastBatchId = fields['最近提取批次ID'] || '' } }
+  if (tableId === config.feishu.tables.evidenceItems) { const evidence = activeDatabase._allEvidenceItems.find((item) => item._recordId === recordId); if (evidence && fields['审核状态']) evidence.reviewStatus = fields['审核状态'] }
   if (tableId === config.feishu.tables.profileUpdateProposals) { const proposal = activeDatabase.profileUpdateProposals.find((item) => item._recordId === recordId); if (proposal && fields['审核状态']) proposal.reviewStatus = fields['审核状态'] }
   if (tableId === config.feishu.tables.evidenceConflicts) { const conflict = activeDatabase.evidenceConflicts.find((item) => item._recordId === recordId); if (conflict) { if (fields['状态']) conflict.status = fields['状态']; if (fields['解决结果']) conflict.resolution = fields['解决结果'] } }
   return { record: { record_id: recordId } }
@@ -61,28 +61,36 @@ beforeEach(() => {
 
 function setupRepository(extractor = async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }]) {
   const repository = new FeishuRepository({ evidenceExtractor: extractor })
-  repository.load = async () => activeDatabase
+  repository.load = async () => {
+    const allEvidence = activeDatabase._allEvidenceItems
+    const currentSource = activeDatabase.sourceRecords.find((item) => item.id === 'SRC-SYNTH-1')
+    const evidenceItems = allEvidence.filter((item) => item.reviewStatus === 'CONFIRMED' || (item.reviewStatus === 'PENDING_REVIEW' && (!currentSource?.lastBatchId || currentSource.lastBatchId === item.extractionBatchId)))
+    const evidenceIds = new Set(evidenceItems.map((item) => item.id))
+    return { ...activeDatabase, evidenceItems, _allEvidenceItems: allEvidence, profileUpdateProposals: activeDatabase.profileUpdateProposals.filter((item) => evidenceIds.has(item.evidenceId)), evidenceConflicts: activeDatabase.evidenceConflicts.filter((item) => evidenceIds.has(item.newEvidenceId) || evidenceIds.has(item.currentEvidenceId)) }
+  }
   repository.markSafetyStale = async () => {}
   repository.scheduleCustomerUnderstandingRefresh = () => {}
   return repository
 }
 
-describe('R035 evidence retry and conflict confirmation', () => {
+describe('R036 source-scoped evidence replacement and conflict confirmation', () => {
   it('serializes concurrent retries and keeps source/evidence counts stable across three retries', async () => {
     const repository = setupRepository()
     const first = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(first.evidenceItems).toHaveLength(1)
     expect(activeDatabase.evidenceConflicts).toHaveLength(1)
     const sourceCount = activeDatabase.sourceRecords.length
-    const evidenceCount = activeDatabase.evidenceItems.length
+    const evidenceCount = activeDatabase._allEvidenceItems.length
     await Promise.all([repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true }), repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })])
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(activeDatabase.sourceRecords).toHaveLength(sourceCount)
-    expect(activeDatabase.evidenceItems).toHaveLength(evidenceCount)
-    expect(activeDatabase.profileUpdateProposals).toHaveLength(1)
-    expect(activeDatabase.evidenceConflicts).toHaveLength(1)
+    expect(activeDatabase._allEvidenceItems).toHaveLength(evidenceCount + 4)
+    expect(activeDatabase._allEvidenceItems.filter((item) => item.reviewStatus !== 'SUPERSEDED')).toHaveLength(1)
+    const finalDatabase = await repository.load()
+    expect(finalDatabase.profileUpdateProposals).toHaveLength(1)
+    expect(finalDatabase.evidenceConflicts).toHaveLength(1)
   })
 
   it('lets the assigned mentor overwrite once, preserves history, and makes resolution double-click idempotent', async () => {
@@ -97,12 +105,14 @@ describe('R035 evidence retry and conflict confirmation', () => {
     expect(activeDatabase.evidenceConflicts[0].status).toBe('RESOLVED')
     await repository.resolveConflict('MENTOR-A', conflict.id, 'USE_NEW')
     expect(activeDatabase.profileChanges.length).toBe(beforeChanges + 1)
-    const oldEvidenceCount = activeDatabase.evidenceItems.length
+    const oldEvidenceCount = activeDatabase._allEvidenceItems.length
     const retryWithOldValue = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '杭州', display_text: '当前居住地为杭州', source_excerpt: '她现在又说住在杭州', confidence: 0.96, locator: { paragraph_index: 0 } }])
     activeDatabase.sourceRecords[0].processingStatus = 'COMPLETED'
+    activeDatabase.sourceRecords[0].rawText = '她目前已经长期住在深圳。她现在又说住在杭州'
     await retryWithOldValue.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(activeDatabase.customers[0].profileFields.city).toBe('深圳')
-    expect(activeDatabase.evidenceItems.length).toBe(oldEvidenceCount + 1)
+    expect(activeDatabase._allEvidenceItems.length).toBe(oldEvidenceCount + 1)
+    expect(activeDatabase._allEvidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED')).toHaveLength(1)
   })
 
   it('keeps the current profile while retaining new source and evidence', async () => {
@@ -112,19 +122,19 @@ describe('R035 evidence retry and conflict confirmation', () => {
     const evidenceId = conflict.newEvidenceId
     await repository.resolveConflict('MENTOR-A', conflict.id, 'KEEP_CURRENT')
     expect(activeDatabase.customers[0].profileFields.city).toBe('杭州')
-    expect(activeDatabase.evidenceItems.some((item) => item.id === evidenceId)).toBe(true)
+    expect(activeDatabase._allEvidenceItems.some((item) => item.id === evidenceId)).toBe(true)
     expect(activeDatabase.evidenceConflicts[0].status).toBe('RESOLVED')
-    expect(activeDatabase.evidenceItems.find((item) => item.id === evidenceId).reviewStatus).toBe('REJECTED')
+    expect(activeDatabase._allEvidenceItems.find((item) => item.id === evidenceId).reviewStatus).toBe('REJECTED')
   })
 
   it('preserves old evidence when a forced retry fails after prior success', async () => {
     const repository = setupRepository()
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
-    const evidenceCount = activeDatabase.evidenceItems.length
+    const evidenceCount = activeDatabase._allEvidenceItems.length
     activeDatabase.sourceRecords[0].processingStatus = 'COMPLETED'
     const failingRepository = setupRepository(async () => { throw new Error('synthetic retry failure') })
     await expect(failingRepository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })).rejects.toThrow('synthetic retry failure')
-    expect(activeDatabase.evidenceItems).toHaveLength(evidenceCount)
+    expect(activeDatabase._allEvidenceItems).toHaveLength(evidenceCount)
   })
 
   it('does not expose another mentor customer conflicts', async () => {
@@ -139,5 +149,63 @@ describe('R035 evidence retry and conflict confirmation', () => {
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(activeDatabase.customers[0].profileFields.city).toBe('杭州')
     expect(activeDatabase.evidenceConflicts).toHaveLength(0)
+  })
+
+  it('replaces wording-drifted AI evidence without creating a second active item', async () => {
+    const repository = setupRepository()
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const drifted = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '深圳', display_text: '现居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.91, locator: { paragraph_index: 0, char_start: 0, char_end: 12 } }])
+    await drifted.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const current = await drifted.load()
+    expect(current.evidenceItems.filter((item) => item.sourceId === 'SRC-SYNTH-1')).toHaveLength(1)
+    expect(activeDatabase._allEvidenceItems).toHaveLength(2)
+    expect(activeDatabase._allEvidenceItems.filter((item) => item.reviewStatus === 'SUPERSEDED')).toHaveLength(1)
+  })
+
+  it('reconciles a four-item set down to three items', async () => {
+    let candidates = ['a', 'b', 'c', 'd'].map((value) => ({ evidence_type: 'SELF_MEANING', semantic_kind: 'OTHER', field_key: 'goal', value, display_text: `事件${value}`, source_excerpt: value, confidence: 0.9, locator: { paragraph_index: 0 } }))
+    activeDatabase.sourceRecords[0].rawText = 'a b c d e'
+    const repository = setupRepository(async () => candidates)
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    candidates = ['a', 'b', 'c'].map((value) => ({ evidence_type: 'SELF_MEANING', semantic_kind: 'OTHER', field_key: 'goal', value, display_text: `事件${value}`, source_excerpt: value, confidence: 0.9, locator: { paragraph_index: 0 } }))
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect((await repository.load()).evidenceItems.filter((item) => item.sourceId === 'SRC-SYNTH-1')).toHaveLength(3)
+  })
+
+  it('reconciles a three-item set up to five items without retaining stale active evidence', async () => {
+    let candidates = ['a', 'b', 'c'].map((value) => ({ evidence_type: 'FACT', semantic_kind: 'EVENT', field_key: 'goal', value, display_text: `事件${value}`, source_excerpt: value, confidence: 0.9, locator: { paragraph_index: 0 } }))
+    activeDatabase.sourceRecords[0].rawText = 'a b c d e'
+    const repository = setupRepository(async () => candidates)
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    candidates = ['a', 'b', 'c', 'd', 'e'].map((value) => ({ evidence_type: 'FACT', semantic_kind: 'EVENT', field_key: 'goal', value, display_text: `事件${value}`, source_excerpt: value, confidence: 0.9, locator: { paragraph_index: 0 } }))
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect((await repository.load()).evidenceItems.filter((item) => item.sourceId === 'SRC-SYNTH-1')).toHaveLength(5)
+  })
+
+  it('keeps the previous active batch when the replacement write partially fails', async () => {
+    const repository = setupRepository()
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const previousBatch = activeDatabase.sourceRecords[0].lastBatchId
+    const previousActiveCount = (await repository.load()).evidenceItems.length
+    createRecordMock.mockImplementation((tableId, fields) => {
+      if (tableId === config.feishu.tables.evidenceItems) throw new Error('synthetic partial write failure')
+      return appendCreated(tableId, fields)
+    })
+    await expect(repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })).rejects.toThrow('synthetic partial write failure')
+    expect(activeDatabase.sourceRecords[0].lastBatchId).toBe(previousBatch)
+    expect((await repository.load()).evidenceItems).toHaveLength(previousActiveCount)
+  })
+
+  it('does not expose proposals or conflicts that point to superseded evidence', async () => {
+    const repository = setupRepository()
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const firstEvidenceId = activeDatabase.evidenceConflicts[0].newEvidenceId
+    activeDatabase.sourceRecords[0].rawText = '她目前已经长期住在深圳。她现在又说住在杭州'
+    const drifted = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '杭州', display_text: '当前居住地为杭州', source_excerpt: '她现在又说住在杭州', confidence: 0.9, locator: { paragraph_index: 0 } }])
+    await drifted.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const current = await drifted.load()
+    expect(current.evidenceItems.some((item) => item.id === firstEvidenceId)).toBe(false)
+    expect(current.profileUpdateProposals.every((item) => current.evidenceItems.some((evidence) => evidence.id === item.evidenceId))).toBe(true)
+    expect(current.evidenceConflicts.every((item) => current.evidenceItems.some((evidence) => evidence.id === item.newEvidenceId || evidence.id === item.currentEvidenceId))).toBe(true)
   })
 })
