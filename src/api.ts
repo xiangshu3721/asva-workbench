@@ -32,7 +32,7 @@ export function createLocalApi(repository: AsvaRepository) {
       const all = repository.getDatabase()
       return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!status || item.status === status)).map((mentor) => ({
         mentor,
-        customerCount: all.customers.filter((customer) => customer.createdByStaffId === mentor.id).length,
+        customerCount: all.customers.filter((customer) => customer.mentorId === mentor.id).length,
       }))
     },
     dashboardSnapshot(actorId: string) {

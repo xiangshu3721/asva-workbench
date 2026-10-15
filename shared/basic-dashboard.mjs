@@ -71,7 +71,7 @@ export function buildBasicDashboard(database, now = new Date()) {
   const staffMap = new Map(staff.map((item) => [item.id, item]))
   const ownerCounts = new Map()
   for (const customer of customers) {
-    const staffId = String(customer.createdByStaffId || '').trim()
+    const staffId = String(customer.mentorId || '').trim()
     const owner = staffMap.get(staffId)
     const key = owner ? owner.id : '__UNKNOWN__'
     const current = ownerCounts.get(key) || { staff_id: owner?.id || '', staff_name: owner ? `${owner.name}${owner.permissionRole === 'ADMIN' ? '（管理员）' : ''}` : '历史/未识别', role: owner?.permissionRole || 'UNKNOWN', customer_count: 0 }

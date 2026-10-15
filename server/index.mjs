@@ -123,7 +123,7 @@ async function handle(request, response, requestId) {
     return send(request, response, 200, { initial_password: generateInitialPassword({ phone }) }, requestId)
   }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
-  if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guardAdmin(request)), requestId)
+  if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/me') return send(request, response, 200, await repository.staff(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/mentors') {
     const filter = url.searchParams.get('status') || ''
