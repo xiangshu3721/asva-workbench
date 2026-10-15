@@ -32,6 +32,7 @@ const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
 export const customerIdForOperation = (operationId) => stableOperationId(operationId, 'CUS')
 export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
+const mentorCreateLocks = new Map()
 const publicSource = ({ rawText: _rawText, _recordId: _recordId, processingError, ...safe }) => ({ ...safe, processingError: processingErrorMessage(processingError) || null })
 const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const loginRateLimiter = new LoginRateLimiter()
@@ -1260,39 +1261,90 @@ export class FeishuRepository {
   }
 
   async createMentor(actorId, input) {
+    const phone = normalizePhone(input?.phone)
+    const previous = mentorCreateLocks.get(phone) || Promise.resolve()
+    const current = previous.then(() => this.createMentorLocked(actorId, input, phone))
+    const tracked = current.catch(() => {})
+    mentorCreateLocks.set(phone, tracked)
+    try { return await current } finally { if (mentorCreateLocks.get(phone) === tracked) mentorCreateLocks.delete(phone) }
+  }
+
+  async createMentorLocked(actorId, input, phone = normalizePhone(input?.phone)) {
     this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
     const name = text(input?.name).trim()
-    const phone = normalizePhone(input?.phone)
     if (!name) throw new Error('导师昵称不能为空')
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
+    const findAuthByStaffId = async (staffId) => typeof this.authRepository.findByStaffId === 'function' ? this.authRepository.findByStaffId(staffId).catch(() => null) : null
     const duplicate = database.staff.find((item) => normalizePhone(item.phone) === phone)
-    if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
-    if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请编辑原导师记录，不要重复创建'), { status: 409 })
+    const existingCredential = await this.authRepository.findByPhone?.(phone)
+    if (duplicate || existingCredential) {
+      const credential = duplicate ? await findAuthByStaffId(duplicate.id) || existingCredential : existingCredential
+      if (duplicate?.status === 'ACTIVE' && credential && credential.credentialStatus !== 'DISABLED') throw Object.assign(new Error('该手机号已绑定完整导师账户，无需重复创建。若未保存初始密码，请使用重置密码。'), { code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
+      throw Object.assign(new Error('该手机号对应的导师账户资料不完整，系统未重复创建，请联系管理员处理。'), { code: 'ACCOUNT_INCONSISTENT', status: 409 })
+    }
     const initialPassword = typeof input?.initialPassword === 'string' && input.initialPassword ? input.initialPassword : generateInitialPassword({ phone })
     validatePassword(initialPassword, { phone })
     const passwordHash = await hashPassword(initialPassword)
     const createdAt = feishuDate()
-    let staffId = `M${Date.now()}`
-    while (database.staff.some((item) => item.id === staffId)) staffId = `M${Date.now()}${crypto.randomInt(10)}`
+    const staffId = stableOperationId(phone, 'M')
+    const credentialId = stableOperationId(phone, 'CRED')
     let staffRecordId = ''
+    let staffWriteCommitted = false
+    let authWriteCommitted = false
     try {
-      const createdStaff = await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: true, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }), { operation: 'mentor.create', operationId: staffId, entityType: 'staff', idempotency: { field: mapField('staff', 'staff_id'), value: staffId } })
+      const createdStaff = await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: true, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }), { operation: 'mentor.create', operationId: staffId, entityType: 'staff', idempotency: { field: mapField('staff', 'phone'), value: phone } })
       staffRecordId = createdStaff?.record?.record_id || createdStaff?.record_id || ''
-      await this.authRepository.createCredential({ staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
+      staffWriteCommitted = true
+      await this.authRepository.createCredential({ credentialId, staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
+      authWriteCommitted = true
     } catch (error) {
-      if (staffRecordId) {
-        try { await deleteRecord(config.feishu.tables.staff, staffRecordId) } catch (rollbackError) { this.audit('CREATE_MENTOR_ROLLBACK', staffId, actorId, 'FAILED', rollbackError instanceof Error ? rollbackError.message : String(rollbackError)); throw Object.assign(new Error('导师账号创建未完成，系统回滚失败，请联系管理员。'), { code: 'MENTOR_CREATE_ROLLBACK_FAILED', status: 503, cause: error }) }
+      if (!staffWriteCommitted && error?.retryable) {
+        const reconciledStaff = await this.reconcileMentorStaff(phone, staffId)
+        if (reconciledStaff) {
+          staffRecordId = reconciledStaff._recordId || staffRecordId
+          staffWriteCommitted = true
+          try {
+            await this.authRepository.createCredential({ credentialId, staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
+            authWriteCommitted = true
+          } catch (reconcileError) {
+            const existingAuth = await findAuthByStaffId(staffId)
+            if (existingAuth) authWriteCommitted = true
+            else error = reconcileError
+          }
+        }
       }
-      this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
-      throw error
+      if (staffWriteCommitted && !authWriteCommitted) {
+        const existingAuth = await findAuthByStaffId(staffId)
+        if (existingAuth) authWriteCommitted = true
+      }
+      if (staffWriteCommitted && authWriteCommitted) error = null
+      let compensated = false
+      if (staffRecordId && staffWriteCommitted && !authWriteCommitted && error?.code !== 'ACCOUNT_INCONSISTENT') {
+        try { await deleteRecord(config.feishu.tables.staff, staffRecordId); compensated = true } catch (rollbackError) { this.audit('CREATE_MENTOR_ROLLBACK', staffId, actorId, 'FAILED', rollbackError instanceof Error ? rollbackError.message : String(rollbackError)); throw Object.assign(new Error('导师账号创建未完成，系统回滚失败，请联系管理员。'), { code: 'MENTOR_CREATE_ROLLBACK_FAILED', status: 503, cause: error }) }
+      }
+      if (staffWriteCommitted && !authWriteCommitted && !compensated) {
+        const partial = Object.assign(new Error('导师账号创建未完成，系统已保留异常记录，请联系管理员处理。'), { code: 'PARTIAL_INCONSISTENT', status: 503, cause: error })
+        this.audit('CREATE_MENTOR', staffId, actorId, 'PARTIAL', partial.message)
+        throw partial
+      }
+      if (error) {
+        this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
+        throw error
+      }
     }
     this.audit('CREATE_MENTOR', staffId, actorId)
-    const created = (await this.load()).staff.find((item) => item.id === staffId)
-    if (!created) throw new FeishuUnavailableError('导师已写入，但刷新后无法读取该人员记录')
-    return { ...created, initialPassword }
+    const created = { id: staffId, name, role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true, displayRole: '导师', title: '导师', phone, specialty: '', avatar: name.slice(0, 1) }
+    return { ...created, initialPassword, accountCreateCommitted: true, createOutcome: 'CREATED' }
+  }
+
+  async reconcileMentorStaff(phone, staffId) {
+    try {
+      const database = await this.load({ force: true })
+      return database.staff.find((item) => item.id === staffId || normalizePhone(item.phone) === phone) || null
+    } catch { return null }
   }
 
   async updateMentor(actorId, mentorId, input) {
