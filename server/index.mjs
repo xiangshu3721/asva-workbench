@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { config, configurationStatus, isCorsOriginAllowed } from './config.mjs'
 import { createBrief, createCustomerIntelligence, createServiceSummary, DeepSeekUnavailableError } from './deepseek.mjs'
 import { FeishuRepository } from './repository.mjs'
-import { FeishuUnavailableError } from './feishu.mjs'
+import { FeishuUnavailableError, feishuGateway } from './feishu.mjs'
 import { AuthError, bearerToken, issueSession, verifySession } from './auth.mjs'
 import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
@@ -86,7 +86,7 @@ function errorCode(error) {
 }
 
 function safeMessage(error, code) {
-  if (code === 'FEISHU_UNAVAILABLE') return '数据源暂时不可用，请稍后重试。'
+  if (typeof code === 'string' && code.startsWith('FEISHU_')) return error?.retryable ? '保存暂时没有完成，内容仍保留在当前页面，请稍后重试。' : '数据同步暂时没有完成，请联系管理员处理。'
   if (code === 'DEEPSEEK_UNAVAILABLE') return 'AI 服务暂时不可用，请稍后重试。'
   return error instanceof Error ? error.message : '请求未完成，请稍后重试。'
 }
@@ -102,7 +102,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'OPTIONS') return send(request, response, 204, {}, requestId)
   const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
   if (request.method === 'GET' && url.pathname === '/api/health') {
-    return send(request, response, 200, { ok: true, service: 'asva-api', ...releaseMetadata, ...configurationStatus(), featureFlags: featureFlags(), tables: config.feishu.tables }, requestId)
+    return send(request, response, 200, { ok: true, service: 'asva-api', ...releaseMetadata, ...configurationStatus(), feishuProviderStatus: feishuGateway.providerStatus(), featureFlags: featureFlags(), tables: config.feishu.tables }, requestId)
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readBody(request)

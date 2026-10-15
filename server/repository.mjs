@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, deleteRecord, listRecords, updateRecord, FeishuUnavailableError, FeishuWriteConfirmedReadbackError } from './feishu.mjs'
+import { createRecord, deleteRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
 import { createCustomerIntelligence, createCustomerUnderstanding, createCustomerSalesUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -19,6 +19,7 @@ import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
 import { applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
+import { CustomerWriteQueue } from './customer-write-queue.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -30,6 +31,7 @@ const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
 export const customerIdForOperation = (operationId) => stableOperationId(operationId, 'CUS')
 export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
+const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const loginRateLimiter = new LoginRateLimiter()
 const invalidLogin = () => Object.assign(new Error('登录信息验证失败'), { code: 'AUTH_INVALID', status: 401 })
 const safeEqual = (left, right) => {
@@ -308,7 +310,8 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
       continue
     }
     const enrolledAt = draft.enrolledAt || now()
-    await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', { enrollment_id: operationId ? stableOperationId(`${operationId}:${product.id}`, 'ENR') : `E-${Date.now()}-${Math.floor(Math.random() * 1000)}`, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: now(), status: 'ACTIVE' }))
+    const enrollmentId = operationId ? stableOperationId(`${operationId}:${product.id}`, 'ENR') : `E-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+    await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', { enrollment_id: enrollmentId, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: now(), status: 'ACTIVE' }), { operation: 'enrollment.create', operationId: enrollmentId, customerId, entityType: 'enrollments', idempotency: { field: mapField('enrollments', 'enrollment_id'), value: enrollmentId } })
   }
   if (replace) {
     const selected = new Set(uniqueDrafts.keys())
@@ -387,16 +390,19 @@ function attachFeishuWriteContext(error, tableKey, operation, values) {
 }
 async function createMappedRecord(tableKey, operation, values) {
   const mapped = mapFields(tableKey, values)
+  const operationId = text(values.operationId || values.source_id || values.change_id || values.evidence_id || values.proposal_id || values.enrollment_id || values.service_record_id)
+  const uniqueKey = ['source_id', 'change_id', 'evidence_id', 'proposal_id', 'enrollment_id', 'service_record_id'].find((key) => text(values[key]))
   try {
-    return await createRecord(config.feishu.tables[tableKey], mapped)
+    return await createRecord(config.feishu.tables[tableKey], mapped, { operation, operationId, customerId: text(values.customer_id), entityType: tableKey, ...(uniqueKey ? { idempotency: { field: mapField(tableKey, uniqueKey), value: values[uniqueKey] } } : {}) })
   } catch (error) {
     throw attachFeishuWriteContext(error, tableKey, operation, values)
   }
 }
 async function updateMappedRecord(tableKey, operation, recordId, values) {
   const mapped = mapFields(tableKey, values)
+  const operationId = text(values.operationId || values.source_id || values.change_id || values.evidence_id || values.proposal_id || values.enrollment_id || values.service_record_id)
   try {
-    return await updateRecord(config.feishu.tables[tableKey], recordId, mapped)
+    return await updateRecord(config.feishu.tables[tableKey], recordId, mapped, { operation, operationId, customerId: text(values.customer_id), entityType: tableKey })
   } catch (error) {
     throw attachFeishuWriteContext(error, tableKey, operation, values)
   }
@@ -418,7 +424,7 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map() }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map() }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -426,6 +432,19 @@ export class FeishuRepository {
     console.info('[ASVA_AUDIT]', JSON.stringify(entry))
   }
   async load() {
+    try {
+      const database = await this.loadFresh()
+      this.lastKnownGood = cloneDatabase(database)
+      for (const customer of database.customers) this.lastKnownGoodByCustomer.set(customer.id, cloneDatabase(database))
+      return database
+    } catch (error) {
+      if (!error?.retryable || !this.lastKnownGood) throw error
+      console.warn('[ASVA_FEISHU_READ]', JSON.stringify({ result: 'LKG', freshness: 'DELAYED', normalized_error: error.code || 'FEISHU_UNAVAILABLE' }))
+      return { ...cloneDatabase(this.lastKnownGood), _dataFreshness: 'DELAYED' }
+    }
+  }
+
+  async loadFresh() {
     const entries = [['appointments', config.feishu.tables.appointments], ['customers', config.feishu.tables.customers], ['serviceRecords', config.feishu.tables.serviceRecords], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['profileChanges', config.feishu.tables.profileChanges], ['sourceRecords', config.feishu.tables.sourceRecords], ['evidenceItems', config.feishu.tables.evidenceItems], ['profileUpdateProposals', config.feishu.tables.profileUpdateProposals], ['evidenceConflicts', config.feishu.tables.evidenceConflicts]]
     const rows = await Promise.all(entries.map(([, tableId]) => tableId ? listRecords(tableId) : Promise.resolve([])))
     const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileChangeRows, sourceRows, evidenceRows, proposalRows, conflictRows] = rows
@@ -448,19 +467,30 @@ export class FeishuRepository {
     const writeRecordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id
     const result = await boundedReadAfterWrite(async () => {
       const database = await this.load()
+      if (database._dataFreshness === 'DELAYED') return { ...database, _persistenceStatus: 'COMMITTED' }
       if (targetCustomerId && !database.customers.some((item) => item.id === targetCustomerId)) {
         if (!allowMissingCustomerRetry) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
         throw new FeishuUnavailableError('写入后暂未读到目标记录', { retryable: true, operation: 'readback_customer' })
       }
       return database
     }, { delays: READ_AFTER_WRITE_DELAYS_MS })
+    if (result.value?._dataFreshness === 'DELAYED') {
+      console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+      return result.value
+    }
     if (result.value) {
       console.info('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_SUCCESS', retry_count: result.attempts - 1, final_result: 'SUCCESS' }))
       return result.value
     }
     const error = result.lastError
     console.error('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_FAILED', retry_count: result.attempts - 1, final_result: 'FAIL', provider_code: error?.providerCode, provider_request_id: error?.providerRequestId }))
-    throw new FeishuWriteConfirmedReadbackError('写入已确认，但回读暂时失败，请稍后刷新或重试。', { writeRecordId, providerCode: error?.providerCode, providerMessage: error?.providerMessage, providerRequestId: error?.providerRequestId, httpStatus: error?.httpStatus, retryable: false, operation: 'readback_after_write' })
+    const fallback = targetCustomerId ? this.lastKnownGoodByCustomer.get(targetCustomerId) : this.lastKnownGood
+    if (fallback) {
+      console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+      return { ...cloneDatabase(fallback), _dataFreshness: 'DELAYED', _persistenceStatus: 'COMMITTED' }
+    }
+    console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_UNAVAILABLE', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+    return { ...(this.lastKnownGood ? cloneDatabase(this.lastKnownGood) : { staff: [], customers: [], appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {} }), _dataFreshness: 'DELAYED', _persistenceStatus: 'COMMITTED' }
   }
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
@@ -809,7 +839,7 @@ export class FeishuRepository {
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
-        const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues))
+        const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues), { operation: 'customer.create', operationId: customerId, customerId, entityType: 'customers', idempotency: { field: mapField('customers', 'customer_id'), value: customerId } })
         current = await this.loadAfterWrite(writeResult, customerId)
         timings.customer_write_ms = Date.now() - customerWriteStartedAt
       }
@@ -838,7 +868,8 @@ export class FeishuRepository {
       this.saveTraces = this.saveTraces.slice(0, 50)
     }
   }
-  async updateCustomer(actorId, customerId, input) {
+  async updateCustomer(actorId, customerId, input) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerUnsafe(actorId, customerId, input)) }
+  async updateCustomerUnsafe(actorId, customerId, input) {
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     const actor = database.staff.find((item) => item.id === actorId)
@@ -872,20 +903,23 @@ export class FeishuRepository {
     return scope(await this.loadAfterWrite(undefined, customerId), actorId)
   }
 
-  async updateCustomerEnrollments(actorId, customerId, drafts, operationId = '') {
+  async updateCustomerEnrollments(actorId, customerId, drafts, operationId = '') { return this.customerWriteQueue.run(customerId, () => this.updateCustomerEnrollmentsUnsafe(actorId, customerId, drafts, operationId)) }
+  async updateCustomerEnrollmentsUnsafe(actorId, customerId, drafts, operationId = '') {
     const database = await this.load()
     scope(database, actorId)
     if (!database.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
     await mergeEnrollments(database, customerId, Array.isArray(drafts) ? drafts : [], actorId, text(operationId).trim(), { replace: true })
     return scope(await this.loadAfterWrite(undefined, customerId), actorId)
   }
-  async confirmProfile(actorId, customerId, updates) {
+  async confirmProfile(actorId, customerId, updates) { return this.customerWriteQueue.run(customerId, () => this.confirmProfileUnsafe(actorId, customerId, updates)) }
+  async confirmProfileUnsafe(actorId, customerId, updates) {
     const database = await this.load()
     if (!scope(database, actorId).customers.some((item) => item.id === customerId)) throw new Error('无权访问该客户')
     const current = database.customers.find((item) => item.id === customerId)
     if (!current) throw new Error('客户不存在')
     await persistCustomerProfile(database, customerId, normalizeProfileUpdates(updates, current, true), undefined, actorId)
-    return (await this.load()).customers.find((item) => item.id === customerId)
+    const latest = await this.loadAfterWrite(undefined, customerId)
+    return latest.customers.find((item) => item.id === customerId) || current
   }
   async extractDocument(actorId, input) {
     await this.staff(actorId)
@@ -895,7 +929,8 @@ export class FeishuRepository {
     if (!extracted.extracted_text) throw Object.assign(new Error('资料读取失败，请检查文件后重新上传。'), { code: 'DOCUMENT_TEXT_EMPTY', status: 422 })
     return extracted
   }
-  async createSource(actorId, input) {
+  async createSource(actorId, input) { return this.customerWriteQueue.run(text(input?.customerId), () => this.createSourceUnsafe(actorId, input)) }
+  async createSourceUnsafe(actorId, input) {
     requireStage2Tables()
     const startedAt = Date.now()
     const requestedCustomerId = text(input?.customerId).trim()
@@ -930,15 +965,16 @@ export class FeishuRepository {
     if (recentSourceWriteAt && Date.now() - recentSourceWriteAt <= RECENT_WRITE_WINDOW_MS) {
       const existingRecentSource = await waitForSourceVisibility(sourceId)
       if (existingRecentSource) return existingRecentSource
-      throw new FeishuWriteConfirmedReadbackError('资料已提交，正在同步，请稍后刷新或重试。', { operation: 'readback_after_source_write', retryable: false })
+      return { id: sourceId, sourceId, customerId: normalized.customerId, subjectType: normalized.subjectType, subjectId: normalized.subjectId, sourceType: normalized.sourceType, title: normalized.title, rawText: normalized.rawText, fileRef: normalized.fileRef, sourceRole: normalized.sourceRole, contentHash: normalized.contentHash, processingStatus: 'UPLOADED', _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
     }
     const timestamp = now()
     const sourceWriteResult = await createMappedRecord('sourceRecords', 'source.create', { source_id: sourceId, subject_type: normalized.subjectType, subject_id: normalized.subjectId, customer_id: normalized.customerId, source_type: normalized.sourceType, title: normalized.title, raw_text: normalized.rawText, file_ref: normalized.fileRef, occurred_at: '', uploaded_at: timestamp, uploaded_by: normalized.uploadedBy, source_role: normalized.sourceRole, service_record_id: normalized.serviceRecordId, content_hash: normalized.contentHash, processing_status: 'UPLOADED', processing_version: 1, sensitivity_level: 'HIGH', notes: normalized.notes, source_version: 1, extractor_version: 'evidence-v1', last_batch_id: '', processing_started_at: '', last_processing_at: '', processing_error: '', created_at: timestamp, updated_at: timestamp })
     this.recentSourceWrites.set(sourceId, Date.now())
     this.sourceSaveTimes.set(sourceId, Date.now() - startedAt)
     const result = await waitForSourceVisibility(sourceId)
-    if (!result) throw new FeishuWriteConfirmedReadbackError('资料已提交，正在同步，请稍后刷新或重试。', { writeRecordId: sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, operation: 'readback_after_source_write', retryable: false })
-    return result
+    if (result) return result
+    console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, source_id: sourceId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+    return { id: sourceId, sourceId, customerId: normalized.customerId, subjectType: normalized.subjectType, subjectId: normalized.subjectId, sourceType: normalized.sourceType, title: normalized.title, rawText: normalized.rawText, fileRef: normalized.fileRef, sourceRole: normalized.sourceRole, contentHash: normalized.contentHash, processingStatus: 'UPLOADED', _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
   }
   async sourceWorkspace(actorId, customerId) {
     requireStage2Tables()
@@ -1111,7 +1147,8 @@ export class FeishuRepository {
     if (newEvidence) await this.maybeCompleteSource(newEvidence.sourceId)
     return this.sourceWorkspace(actorId, conflict.customerId)
   }
-  async saveBrief(actorId, customerId, brief) {
+  async saveBrief(actorId, customerId, brief) { return this.customerWriteQueue.run(customerId, () => this.saveBriefUnsafe(actorId, customerId, brief)) }
+  async saveBriefUnsafe(actorId, customerId, brief) {
     const database = await this.load()
     if (!scope(database, actorId).customers.some((item) => item.id === customerId)) throw new Error('无权访问该客户')
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
@@ -1171,7 +1208,7 @@ export class FeishuRepository {
     while (database.staff.some((item) => item.id === staffId)) staffId = `M${Date.now()}${crypto.randomInt(10)}`
     let staffRecordId = ''
     try {
-      const createdStaff = await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: true, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }))
+      const createdStaff = await createRecord(config.feishu.tables.staff, mapFields('staff', { staff_id: staffId, nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: true, created_at: createdAt, updated_at: createdAt, display_role: '导师', mentor_id: staffId, specialty: '' }), { operation: 'mentor.create', operationId: staffId, entityType: 'staff', idempotency: { field: mapField('staff', 'staff_id'), value: staffId } })
       staffRecordId = createdStaff?.record?.record_id || createdStaff?.record_id || ''
       await this.authRepository.createCredential({ staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
     } catch (error) {
@@ -1245,7 +1282,8 @@ export class FeishuRepository {
     return deactivated
   }
 
-  async updateCustomerReferrer(actorId, customerId, referrerName) {
+  async updateCustomerReferrer(actorId, customerId, referrerName) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerReferrerUnsafe(actorId, customerId, referrerName)) }
+  async updateCustomerReferrerUnsafe(actorId, customerId, referrerName) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以修改介绍人'), { code: 'FORBIDDEN', status: 403 })
@@ -1314,7 +1352,7 @@ export class FeishuRepository {
     const profileUpdates = normalizeProfileUpdates(input.profileUpdates, customer, Boolean(input.profileUpdates?.length))
     let serviceRecordCreated = false
     try {
-      await createRecord(config.feishu.tables.serviceRecords, mapFields('serviceRecords', { service_record_id: serviceRecordId, customer_id: appointment.customerId, appointment_id: appointment.id, mentor_id: appointment.assignedMentorId || actorId, operator_id: actorId, topic: input.topic, result: input.result, current_core_need: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, profile_text: input.profileText || '', profile_updates_json: JSON.stringify(profileUpdates), profile_update_confirmed: profileUpdates.length > 0, ai_summary: input.aiSummary || '', ai_status: input.aiStatus || '', ai_next_step: input.aiNextStep || '', mentor_confirmed: true, created_at: now }))
+      await createRecord(config.feishu.tables.serviceRecords, mapFields('serviceRecords', { service_record_id: serviceRecordId, customer_id: appointment.customerId, appointment_id: appointment.id, mentor_id: appointment.assignedMentorId || actorId, operator_id: actorId, topic: input.topic, result: input.result, current_core_need: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, profile_text: input.profileText || '', profile_updates_json: JSON.stringify(profileUpdates), profile_update_confirmed: profileUpdates.length > 0, ai_summary: input.aiSummary || '', ai_status: input.aiStatus || '', ai_next_step: input.aiNextStep || '', mentor_confirmed: true, created_at: now }), { operation: 'service-record.create', operationId: serviceRecordId, customerId: appointment.customerId, entityType: 'serviceRecords', idempotency: { field: mapField('serviceRecords', 'service_record_id'), value: serviceRecordId } })
       serviceRecordCreated = true
     const directUpdates = [
       input.coreNeed && input.coreNeed !== customer.need ? { field: 'current_core_issue', value: input.coreNeed, source: 'MENTOR_CONFIRMED', confidence: 1, confirmed: true } : null,
@@ -1339,9 +1377,10 @@ export class FeishuRepository {
     if (!database.customers.some((item) => item.id === customerId)) {
       const normalized = validateManualCustomer({ nickname: input.nickname, phone: input.phone, wechat: input.wechat, situation: input.customerSituation || input.description })
       customerId = `CUS-${Date.now()}`
-      await createRecord(config.feishu.tables.customers, mapFields('customers', { customer_id: customerId, nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: '解忧小屋', notes: normalized.situation, created_at: input.createdAt || now(), sabc: 'C', is_paid: false, profile_schema_version: 'v0.5' }))
+      await createRecord(config.feishu.tables.customers, mapFields('customers', { customer_id: customerId, nickname: normalized.nickname, phone: normalized.phone, wechat: normalized.wechat, source: '解忧小屋', notes: normalized.situation, created_at: input.createdAt || now(), sabc: 'C', is_paid: false, profile_schema_version: 'v0.5' }), { operation: 'appointment.customer.create', operationId: customerId, customerId, entityType: 'customers', idempotency: { field: mapField('customers', 'customer_id'), value: customerId } })
     }
-    await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: input.requestId || `A-${Date.now()}`, customer_id: customerId, current_issue_description: input.description, expectation: input.expectation, submitted_at: input.submittedAt || new Date().toISOString(), status: 'WAIT_ASSIGN', assigned_mentor_id: '', followup_handled: false, followup_info_completed: false, created_at: input.createdAt || new Date().toISOString(), case_source: input.caseSource || input.source || 'JIEYOU_APPOINTMENT' }))
+    const appointmentId = input.requestId || `A-${Date.now()}`
+    await createRecord(config.feishu.tables.appointments, mapFields('appointments', { appointment_id: appointmentId, customer_id: customerId, current_issue_description: input.description, expectation: input.expectation, submitted_at: input.submittedAt || new Date().toISOString(), status: 'WAIT_ASSIGN', assigned_mentor_id: '', followup_handled: false, followup_info_completed: false, created_at: input.createdAt || new Date().toISOString(), case_source: input.caseSource || input.source || 'JIEYOU_APPOINTMENT' }), { operation: 'appointment.create', operationId: appointmentId, customerId, entityType: 'appointments', idempotency: { field: mapField('appointments', 'appointment_id'), value: appointmentId } })
     return this.load()
   }
 
