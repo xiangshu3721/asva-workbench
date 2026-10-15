@@ -163,7 +163,7 @@ export interface MentorAccountInput {
   initialPassword?: string
 }
 
-export type MentorAccountResult = Staff & { initialPassword?: string }
+export type MentorAccountResult = Staff & { initialPassword?: string; accountCreateCommitted?: boolean; createOutcome?: 'CREATED' | 'ALREADY_EXISTS' | 'PARTIAL_INCONSISTENT' }
 
 export interface ProfileEvidenceReference {
   evidenceId: string

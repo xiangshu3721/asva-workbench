@@ -89,6 +89,9 @@ function errorCode(error) {
 }
 
 function safeMessage(error, code) {
+  if (code === 'ACCOUNT_ALREADY_EXISTS') return error?.message || '该手机号已绑定完整导师账户，无需重复创建。若未保存初始密码，请使用重置密码。'
+  if (code === 'ACCOUNT_INCONSISTENT' || code === 'PARTIAL_INCONSISTENT') return error?.message || '导师账户资料不完整，请联系管理员处理。'
+  if ((code || '').startsWith('FEISHU_') && /^\/api\/staff\/mentors/.test(error?.operationPath || '')) return '导师账号暂时没有创建完成，当前填写的信息仍保留，请稍后重试。'
   if (typeof code === 'string' && code.startsWith('FEISHU_')) return error?.retryable ? '保存暂时没有完成，内容仍保留在当前页面，请稍后重试。' : '数据同步暂时没有完成，请联系管理员处理。'
   if (code === 'DEEPSEEK_UNAVAILABLE') return 'AI 服务暂时不可用，请稍后重试。'
   return error instanceof Error ? error.message : '请求未完成，请稍后重试。'

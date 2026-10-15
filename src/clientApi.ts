@@ -236,7 +236,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     profileDraft: (actorId, customerId, text) => request<ProfileDraft>('/api/customers/' + encodeURIComponent(customerId) + '/profile/extract', actorId, { method: 'POST', body: JSON.stringify({ text }) }),
     confirmProfile: (actorId, customerId, updates) => request<Customer>('/api/customers/' + encodeURIComponent(customerId) + '/profile/confirm', actorId, { method: 'POST', body: JSON.stringify({ updates }) }),
     updateCustomerReferrer: (actorId, customerId, referrerName) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/referrer`, actorId, { method: 'POST', body: JSON.stringify({ referrerName }) }),
-    createMentor: (actorId, input) => request<MentorAccountResult>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    createMentor: (actorId, input) => request<MentorAccountResult>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input), headers: { 'X-Idempotency-Key': `mentor-create-${input.phone.replace(/[\s-]/g, '')}` } }),
     updateMentor: (actorId, mentorId, input) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
     deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
     teamSnapshot: (actorId, status) => request<TeamSnapshot[]>(`/api/staff/mentors${status ? `?status=${encodeURIComponent(status)}` : ''}`, actorId),
