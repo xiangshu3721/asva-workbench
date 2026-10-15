@@ -106,7 +106,7 @@ export class FeishuAuthCredentialRepository {
     const existing = await this.list()
     if (existing.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 })
     const values = { credential_id: input.credentialId || `cred-${crypto.randomUUID()}`, staff_id: input.staffId, login_phone: normalizePhone(input.loginPhone), password_hash: input.passwordHash, password_algorithm: input.passwordAlgorithm || 'scrypt', must_change_password: input.mustChangePassword === true, auth_version: input.authVersion || 1, credential_status: input.credentialStatus || 'ACTIVE', password_changed_at: input.passwordChangedAt || null, created_at: input.createdAt || now(), updated_at: input.updatedAt || now(), last_login_at: input.lastLoginAt || null }
-    const result = await createRecord(this.tableId, fields('authCredentials', values))
+    const result = await createRecord(this.tableId, fields('authCredentials', values), { operation: 'auth-credential.create', operationId: values.credential_id, entityType: 'authCredentials', idempotency: { field: field('authCredentials', 'credential_id'), value: values.credential_id } })
     return { ...input, id: result?.record?.record_id || result?.record_id || values.credential_id, ...values, loginPhone: values.login_phone, staffId: values.staff_id, passwordHash: values.password_hash, authVersion: values.auth_version, mustChangePassword: values.must_change_password, _recordId: result?.record?.record_id || result?.record_id }
   }
   async update(credentialRecord, patch) {

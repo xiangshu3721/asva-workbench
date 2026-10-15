@@ -73,7 +73,7 @@ function sourceFailureMessage(error: unknown) {
   const code = (error as { serverCode?: string; code?: string })?.serverCode || (error as { code?: string })?.code
   if (code === 'UNSUPPORTED_DOCUMENT_FORMAT' || code === 'INVALID_DOCUMENT_MIME') return '当前支持 TXT、Markdown 和 Word（.docx）文件。'
   if (code === 'DOCX_CORRUPT' || code === 'DOCUMENT_TEXT_EMPTY') return '资料读取失败，请检查文件后重新上传。'
-  if (code === 'FEISHU_UNAVAILABLE' || code === 'WRITE_CONFIRMED_READBACK_FAILED') return '飞书数据源暂时繁忙，资料可能已保存，请稍后刷新或重试。'
+  if (typeof code === 'string' && (code.startsWith('FEISHU_') || code === 'FEISHU_UNAVAILABLE')) return '保存暂时没有完成，内容仍保留在当前页面，请稍后重试。'
   return '已保存，AI整理失败，可稍后重试。'
 }
 
