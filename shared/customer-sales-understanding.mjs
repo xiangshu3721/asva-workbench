@@ -17,6 +17,8 @@ const WILLINGNESS_MEDIUM_PATTERN = /(愿意(?:为|投入|花费|花|付费|支�
 const SERVICE_BEHAVIOR_PATTERN = /(主动预约|预约咨询|主动咨询|参加服务|参与服务|持续参加|持续沟通|再次咨询|多次沟通|进一步帮助|如何获得(?:进一步)?帮助|了解服务(?:内容|方式)|咨询服务|报名课程)/i
 const WILLINGNESS_LOW_PATTERN = /(不愿(?:意)?(?:付费|花钱|购买|投入)|不想(?:付费|花钱|购买|投入)|只接受免费|只想免费|免费才考虑|不会(?:再)?投入费用|当前不会投入|不考虑付费|拒绝(?:购买|付费|报名)|不(?:想|会|要)(?:购买|报名|付费)|不报名|不购买)/i
 const NEGATED_WILLINGNESS_SIGNAL_PATTERN = /(?:没有(?:主动)?(?:询问|表达)|未(?:曾)?(?:主动)?(?:询问|表达)|不曾(?:主动)?(?:询问|表达)|从未(?:主动)?(?:询问|表达)|尚未(?:主动)?(?:询问|表达)|还没(?:主动)?(?:询问|表达)|并未(?:主动)?(?:询问|表达)|不愿意|不想|拒绝|不会)[^。；;，,\n]{0,20}(?:价格|费用|收费|报价|报名|付款|支付|购买|投入|开始)/i
+const ABILITY_LOW_PATTERN = /(承担不起|支付不起|目前没有预算|暂时没有预算|预算不足|现金流紧张|现金流压力|控制非必要支出|不适合大额支出|几千块[^。；;\n]{0,12}(?:认真考虑|都要考虑)|认真考虑[^。；;\n]{0,12}(?:几千块|支出|花费)|当前支出压力|经济压力很大)/i
+const ABILITY_HIGH_PATTERN = /(明确(?:可|能|可以)(?:接受|安排|承担|投入|支付)[^。；;\n]{0,20}(?:金额|费用|支出|预算|万元|万)|(?:成长|学习|服务|年度)[^。；;\n]{0,8}预算[^。；;\n]{0,12}(?:\d|几万|万元)|稳定现金流|充足储蓄|可接受投入金额|可安排(?:一至|一到)?\d+[^。；;\n]{0,8}(?:万|万元))/i
 const FINANCIAL_SIGNAL_PATTERNS = {
   income: /(收入|月收入|年收入|工资|薪资|项目收入|收入稳定性|营收)/i,
   expense: /(支出|固定支出|房租|房贷|生活成本|每月开销|开销|家庭负担)/i,
@@ -103,6 +105,67 @@ export function commercialSignalsForEvidence(evidenceItems = [], enrollments = [
     financialEvidenceByCategory: signals.financialEvidenceByCategory,
     paidHistory: signals.paidHistory,
     hasStrongPaymentSignal: signals.hasStrongPaymentSignal,
+  }
+}
+
+function abilityEvidenceText(item) { return `${item.fact || ''} ${item.quote || ''} ${item.field_key || ''}`.replace(/\s+/g, ' ').trim() }
+
+function abilityEvidenceFacts(signals) {
+  return unique(signals.financialEvidence.map((item) => item.fact || item.quote)).slice(0, 5)
+}
+
+export function abilityEvidenceGate({ evidenceItems = [], enrollments = [] } = {}) {
+  const confirmed = confirmedEvidence(evidenceItems)
+  const signals = commercialSignals(confirmed, enrollments)
+  const financialEvidence = signals.financialEvidence
+  const financialByCategory = signals.financialEvidenceByCategory
+  const financialIds = unique(financialEvidence.map((item) => item.evidence_id))
+  const directLow = financialEvidence.filter((item) => ABILITY_LOW_PATTERN.test(abilityEvidenceText(item)))
+  const directHigh = financialEvidence.filter((item) => ABILITY_HIGH_PATTERN.test(abilityEvidenceText(item)))
+  const income = financialByCategory.income || []
+  const expense = financialByCategory.expense || []
+  const savings = financialByCategory.savings || []
+  const budget = financialByCategory.budget || []
+  const support = financialByCategory.financialSupport || []
+  const cashflow = financialByCategory.cashflowPressure || []
+  const paidHistory = signals.paidHistory || []
+  const hasLowStructure = (cashflow.length > 0 && (support.length > 0 || expense.length > 0 || savings.length > 0)) || (income.length > 0 && expense.length > 0 && savings.length > 0 && support.length > 0)
+  const hasHighStructure = income.length > 0 && savings.length > 0 && budget.length > 0
+  const hasHigh = directHigh.length > 0 || hasHighStructure || paidHistory.length > 0
+  const hasLow = directLow.length > 0 || hasLowStructure
+  const hasMedium = financialEvidence.length >= 2
+  const level = hasLow ? 'LOW' : hasHigh ? 'HIGH' : hasMedium ? 'MEDIUM' : 'UNKNOWN'
+  const evidenceIds = level === 'UNKNOWN' ? financialIds : financialIds
+  const facts = abilityEvidenceFacts(signals)
+  const explanations = {
+    HIGH: `现有信息显示，当前具备较明确的支付空间。${facts.join('；')}`,
+    MEDIUM: `现有信息显示，当前有一定支付空间，但具体投入条件仍需确认。${facts.join('；')}`,
+    LOW: `现有信息显示，当前支付空间比较有限。${facts.join('；')}`,
+    UNKNOWN: '目前还缺少足够的经济与预算信息，暂时无法判断支付空间。',
+  }
+  return {
+    level,
+    explanation: explanations[level],
+    evidenceIds: unique(evidenceIds),
+    knownFinancialSignals: facts,
+    unknowns: level === 'UNKNOWN' || level === 'MEDIUM' ? ['可接受的实际投入范围与近期支付安排'] : [],
+    rule: hasLow ? 'CONFIRMED_LIMITED_PAYMENT_SPACE' : hasHigh ? 'CONFIRMED_PAYMENT_SPACE' : hasMedium ? 'PARTIAL_FINANCIAL_CONTEXT' : 'INSUFFICIENT_FINANCIAL_EVIDENCE',
+  }
+}
+
+export function applyAbilityEvidenceGate(value, context = {}) {
+  const gate = abilityEvidenceGate(context)
+  const current = value?.ability_to_pay || {}
+  return {
+    ...value,
+    ability_to_pay: {
+      ...current,
+      level: gate.level,
+      explanation: gate.explanation,
+      known_financial_signals: gate.knownFinancialSignals,
+      unknowns: gate.unknowns,
+      evidence_ids: gate.evidenceIds,
+    },
   }
 }
 
