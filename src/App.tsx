@@ -22,8 +22,10 @@ import { canCommitCustomerResponse, createCustomerScopedState, isCustomerScopedS
 import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { accountAvatar, accountPanelFor, accountRoleLabel } from '../shared/account-identity.mjs'
-import { clearAccessToken, readAccessToken } from './auth-storage'
+import { clearAccessToken, readAccessToken, readAccessTokenIdentity } from './auth-storage'
 import { runtimeConfig } from './runtime-config'
+import { createResourceCache, type ResourceCache } from './app-data-cache'
+import { clearSessionSnapshots, readSessionSnapshot, writeSessionSnapshot } from './session-snapshots'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
 const appEnv = runtimeConfig.appEnv
@@ -79,6 +81,38 @@ function ButtonSpinner() { return <span className="button-spinner" aria-hidden="
 function GradeBadge({ grade }: { grade: CustomerGrade }) { return <span className={`grade grade-${grade}`}>{grade}</span> }
 function SectionTitle({ title, action }: { title: string; action?: ReactNode }) { return <div className="section-title"><h2>{title}</h2>{action}</div> }
 function roleName(staff: Staff) { return accountRoleLabel(staff.permissionRole) }
+const DASHBOARD_TTL_MS = 90_000
+const MENTOR_TTL_MS = 180_000
+const DATABASE_TTL_MS = 45_000
+const LOADING_DELAY_MS = 200
+const SESSION_SNAPSHOT_TTL_MS = 30 * 60 * 1000
+const appStartedAt = typeof performance === 'undefined' ? 0 : performance.now()
+type StaffSnapshot = Pick<Staff, 'id' | 'name' | 'role' | 'permissionRole' | 'status' | 'loginEnabled' | 'displayRole' | 'title' | 'specialty' | 'avatar'> & { authVersion: number }
+function staffSessionIdentity(staffId: string) {
+  const tokenIdentity = readAccessTokenIdentity()
+  const authVersion = tokenIdentity?.staffId === staffId ? tokenIdentity.authVersion : 0
+  return `${staffId}:${authVersion}`
+}
+const dashboardCacheKey = (staffId: string) => `dashboard:${staffSessionIdentity(staffId)}`
+const basicDashboardCacheKey = (staffId: string) => `dashboard-basic:${staffSessionIdentity(staffId)}:admin`
+const mentorCacheKey = (staffId: string, status = '') => `mentors:${staffSessionIdentity(staffId)}:${status || 'all'}`
+const staffSnapshotKey = (staffId: string) => `asva:session:staff:${staffSessionIdentity(staffId)}`
+const basicDashboardSnapshotKey = (staffId: string) => `asva:session:dashboard:${staffSessionIdentity(staffId)}:admin`
+const mentorSnapshotKey = (staffId: string) => `asva:session:mentors:${staffSessionIdentity(staffId)}:all`
+function toStaffSnapshot(staff: Staff): StaffSnapshot { return { id: staff.id, name: staff.name, role: staff.role, permissionRole: staff.permissionRole, status: staff.status, loginEnabled: staff.loginEnabled, displayRole: staff.displayRole, title: staff.title, specialty: staff.specialty, avatar: staff.avatar, authVersion: Number((staff as Staff & { authVersion?: number }).authVersion || readAccessTokenIdentity()?.authVersion || 0) } }
+function fromStaffSnapshot(snapshot: StaffSnapshot): Staff { return { ...snapshot, phone: '' } }
+function logAppPerformance(metric: string, extra: Record<string, unknown> = {}) { if (import.meta.env.DEV) console.info('[ASVA_PERF]', JSON.stringify({ metric, value_ms: Math.round(performance.now() - appStartedAt), ...extra })) }
+function useDelayedLoading(active: boolean, delayMs = LOADING_DELAY_MS) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    if (!active) { setVisible(false); return undefined }
+    const timer = window.setTimeout(() => setVisible(true), delayMs)
+    return () => window.clearTimeout(timer)
+  }, [active, delayMs])
+  return active && visible
+}
+function AppBootLoading({ error, onRetry }: { error?: string; onRetry?: () => void }) { return <main className="login-page app-boot-loading" aria-busy="true"><section className="login-card"><div className="eyebrow">ASVA</div><h1>正在进入工作台…</h1><p>{error || '正在准备工作台，请稍候。'}</p>{error && onRetry && <button className="primary-button full-width" type="button" onClick={onRetry}>重新连接</button>}</section></main> }
+function AppDataLoading({ error, onRetry }: { error?: string; onRetry?: () => void }) { const visible = useDelayedLoading(true); return <section className={`surface app-data-loading ${visible ? '' : 'app-data-loading-quiet'}`} aria-busy="true">{visible && <><div className="inline-loading-mark" aria-hidden="true" /><h2>{error ? '工作台数据暂时无法更新' : '正在加载…'}</h2>{error ? <><p>{error}</p>{onRetry && <button className="secondary-button small" type="button" onClick={onRetry}>重新加载</button>}</> : <p>页面很快就会准备好。</p>}</>}</section> }
 function workflowStatus(appointment: Appointment): AppointmentWorkflowStatus { return appointment.status as AppointmentWorkflowStatus }
 function Login({ api, onLogin }: { api: WorkbenchApi; onLogin: (account: Staff & { mustChangePassword?: boolean }) => void }) {
   const [phone, setPhone] = useState('15021512537')
@@ -112,12 +146,34 @@ function ChangePassword({ api, onComplete }: { api: WorkbenchApi; onComplete: ()
 }
 
 function WorkbenchApp() {
-  const [loggedInStaffId, setLoggedInStaffId] = useState<string | null>(() => appEnv === 'mock' || readAccessToken() ? staffStorage.getItem('asva-demo-staff-v2') : null)
+  const [loggedInStaffId, setLoggedInStaffId] = useState<string | null>(() => {
+    if (appEnv === 'mock') return staffStorage.getItem('asva-demo-staff-v2')
+    const tokenIdentity = readAccessTokenIdentity()
+    return tokenIdentity?.staffId || (readAccessToken() ? staffStorage.getItem('asva-demo-staff-v2') : null)
+  })
+  const [currentStaff, setCurrentStaff] = useState<Staff | null>(() => {
+    if (!isRemoteStaff) return loggedInStaffId ? api.staff(loggedInStaffId) ?? null : null
+    if (!loggedInStaffId) return null
+    const snapshot = readSessionSnapshot<StaffSnapshot>(staffSnapshotKey(loggedInStaffId), SESSION_SNAPSHOT_TTL_MS)
+    return snapshot ? fromStaffSnapshot(snapshot) : null
+  })
+  const dataCacheRef = useRef<ResourceCache | null>(null)
+  if (!dataCacheRef.current) {
+    dataCacheRef.current = createResourceCache()
+    if (loggedInStaffId) {
+      const dashboardSnapshot = readSessionSnapshot<BasicDashboard>(basicDashboardSnapshotKey(loggedInStaffId), SESSION_SNAPSHOT_TTL_MS)
+      if (dashboardSnapshot) dataCacheRef.current.set(basicDashboardCacheKey(loggedInStaffId), dashboardSnapshot)
+      const mentorSnapshot = readSessionSnapshot<Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>>(mentorSnapshotKey(loggedInStaffId), SESSION_SNAPSHOT_TTL_MS)
+      if (mentorSnapshot) dataCacheRef.current.set(mentorCacheKey(loggedInStaffId), mentorSnapshot)
+    }
+  }
+  const dataCache = dataCacheRef.current
   const [mustChangePassword, setMustChangePassword] = useState(() => staffStorage.getItem('asva-password-change-required') === 'true')
-  const [authRestoring, setAuthRestoring] = useState(() => isRemoteStaff && !staffStorage.getItem('asva-demo-staff-v2') && Boolean(readAccessToken()))
-  const [currentStaff, setCurrentStaff] = useState<Staff | null>(() => !isRemoteStaff && loggedInStaffId ? api.staff(loggedInStaffId) ?? null : null)
-  const [identityLoading, setIdentityLoading] = useState(Boolean(loggedInStaffId && isRemoteStaff))
+  const [authRestoring, setAuthRestoring] = useState(() => isRemoteStaff && Boolean(readAccessToken()) && !currentStaff)
+  const [identityLoading, setIdentityLoading] = useState(Boolean(loggedInStaffId && isRemoteStaff && !currentStaff))
   const [identityError, setIdentityError] = useState('')
+  const validatedStaffRef = useRef<string | null>(null)
+  const shellPerformanceLoggedRef = useRef(false)
   const [mePanel, setMePanel] = useState<MePanel>('account')
   const location = useLocation()
   const navigate = useNavigate()
@@ -172,30 +228,45 @@ function WorkbenchApp() {
   }, [])
 
   useEffect(() => {
+    if (authRestoring) return
     if (!loggedInStaffId) {
       setCurrentStaff(null)
       setIdentityLoading(false)
       return
     }
+    if (!isRemoteStaff && currentStaff?.id === loggedInStaffId) {
+      setIdentityLoading(false)
+      return
+    }
+    if (validatedStaffRef.current === loggedInStaffId) {
+      setIdentityLoading(false)
+      return
+    }
     let cancelled = false
-    setIdentityLoading(true)
+    validatedStaffRef.current = loggedInStaffId
+    const hasWarmStaff = currentStaff?.id === loggedInStaffId
+    if (!hasWarmStaff) setIdentityLoading(true)
     setIdentityError('')
     const loadCurrentStaff = isRemoteStaff ? workbenchApi.staff(loggedInStaffId) : Promise.resolve(api.staff(loggedInStaffId))
     loadCurrentStaff.then((profile) => {
       if (cancelled) return
       if (!profile) throw new Error('账号不存在')
+      writeSessionSnapshot(staffSnapshotKey(profile.id), toStaffSnapshot(profile))
       setCurrentStaff(profile)
-      setDatabase(null)
+      setDatabase(dataCache.get<Database>(dashboardCacheKey(profile.id)) ?? null)
       setMePanel('account')
       setIdentityLoading(false)
     }).catch((error: Error) => {
       if (cancelled) return
+      clearSessionSnapshots()
+      dataCache.invalidatePrefix('')
       setCurrentStaff(null)
-      setIdentityError(error.message || '账号信息暂时无法读取')
+      setLoggedInStaffId(null)
+      setIdentityError(error.message || '登录状态已失效，请重新登录')
       setIdentityLoading(false)
     })
     return () => { cancelled = true }
-  }, [loggedInStaffId])
+  }, [authRestoring, currentStaff?.id, dataCache, loggedInStaffId])
 
   useEffect(() => {
     if (!authRestoring) return undefined
@@ -204,13 +275,18 @@ function WorkbenchApp() {
     workbenchApi.staff('').then((profile) => {
       if (cancelled) return
       if (!profile) throw new Error('账号不存在')
+      writeSessionSnapshot(staffSnapshotKey(profile.id), toStaffSnapshot(profile))
+      validatedStaffRef.current = profile.id
       setCurrentStaff(profile)
+      setDatabase(dataCache.get<Database>(dashboardCacheKey(profile.id)) ?? null)
       setLoggedInStaffId(profile.id)
       setAuthRestoring(false)
       setIdentityLoading(false)
     }).catch((error: Error) => {
       if (cancelled) return
       clearAccessToken()
+      clearSessionSnapshots()
+      dataCache.invalidatePrefix('')
       staffStorage.removeItem('asva-demo-staff-v2')
       staffStorage.removeItem('asva-password-change-required')
       setCurrentStaff(null)
@@ -221,24 +297,42 @@ function WorkbenchApp() {
       setIdentityLoading(false)
     })
     return () => { cancelled = true }
-  }, [authRestoring])
+  }, [authRestoring, dataCache])
 
   const activeStaff = currentStaff
   const canSeeAll = activeStaff?.permissionRole === 'ADMIN'
 
   useEffect(() => {
-    if (!loggedInStaffId || !currentStaff) return
+    if (!activeStaff || identityLoading || shellPerformanceLoggedRef.current) return
+    shellPerformanceLoggedRef.current = true
+    logAppPerformance('APP_SHELL_VISIBLE_MS', { warm_staff_snapshot: true })
+  }, [activeStaff, identityLoading])
+
+  useEffect(() => {
+    if (!loggedInStaffId || !currentStaff || authRestoring) return
     let cancelled = false
+    const staffId = currentStaff.id
+    const dashboardKey = dashboardCacheKey(staffId)
+    const cachedDatabase = dataCache.get<Database>(dashboardKey)
+    setDatabase(cachedDatabase ?? null)
     setLoadError('')
-    workbenchApi.dashboard(currentStaff.id).then((next) => { if (!cancelled) setDatabase(next) }).catch((error: Error) => { if (!cancelled) setLoadError(error.message) })
-    return () => { cancelled = true }
-  }, [currentStaff?.id, loggedInStaffId, revision])
+    const forceRefresh = revision > 0
+    dataCache.load(dashboardKey, () => workbenchApi.dashboard(staffId), { ttlMs: DATABASE_TTL_MS, force: forceRefresh }).then((next) => { if (!cancelled) setDatabase(next) }).catch((error: Error) => { if (!cancelled && !dataCache.get<Database>(dashboardKey)) setLoadError(error.message) })
+    if (currentStaff.permissionRole === 'ADMIN') void dataCache.load(basicDashboardCacheKey(staffId), () => workbenchApi.basicDashboard(staffId), { ttlMs: DASHBOARD_TTL_MS, force: forceRefresh }).catch(() => undefined)
+    const prefetchMentors = () => { if (currentStaff.permissionRole === 'ADMIN') void dataCache.load(mentorCacheKey(staffId), () => workbenchApi.teamSnapshot(staffId), { ttlMs: MENTOR_TTL_MS }).catch(() => undefined) }
+    const idleApi = window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void }
+    const hasIdleCallback = typeof idleApi.requestIdleCallback === 'function'
+    const idleWindow = hasIdleCallback ? idleApi.requestIdleCallback(prefetchMentors, { timeout: 1200 }) : window.setTimeout(prefetchMentors, 200)
+    return () => { cancelled = true; if (typeof idleApi.cancelIdleCallback === 'function' && hasIdleCallback) idleApi.cancelIdleCallback(idleWindow); else window.clearTimeout(idleWindow) }
+  }, [authRestoring, currentStaff, dataCache, loggedInStaffId, revision])
 
   useEffect(() => {
     const expire = () => {
       staffStorage.removeItem('asva-demo-staff-v2')
       staffStorage.removeItem('asva-password-change-required')
       clearAccessToken()
+      clearSessionSnapshots()
+      dataCache.invalidatePrefix('')
       setCurrentStaff(null)
       setDatabase(null)
       setMePanel('account')
@@ -248,17 +342,17 @@ function WorkbenchApp() {
     }
     window.addEventListener('asva-auth-expired', expire)
     return () => window.removeEventListener('asva-auth-expired', expire)
-  }, [])
+  }, [dataCache])
 
-  const finishLogin = (account: Staff & { mustChangePassword?: boolean }) => { staffStorage.setItem('asva-demo-staff-v2', account.id); if (account.mustChangePassword) { staffStorage.setItem('asva-password-change-required', 'true'); setMustChangePassword(true) } else { staffStorage.removeItem('asva-password-change-required'); setMustChangePassword(false) } setCurrentStaff(account); setDatabase(null); setMePanel('account'); setLoggedInStaffId(account.id); setAuthRestoring(false) }
-  if (authRestoring) return <main className="login-page"><section className="login-card"><div className="eyebrow">ASVA</div><h1>正在恢复登录状态…</h1><p>正在确认当前账号信息，请稍候。</p></section></main>
+  const finishLogin = (account: Staff & { mustChangePassword?: boolean }) => { clearSessionSnapshots(); dataCache.invalidatePrefix(''); writeSessionSnapshot(staffSnapshotKey(account.id), toStaffSnapshot(account)); validatedStaffRef.current = account.id; staffStorage.setItem('asva-demo-staff-v2', account.id); if (account.mustChangePassword) { staffStorage.setItem('asva-password-change-required', 'true'); setMustChangePassword(true) } else { staffStorage.removeItem('asva-password-change-required'); setMustChangePassword(false) } setCurrentStaff(account); setDatabase(null); setIdentityLoading(false); setMePanel('account'); setLoggedInStaffId(account.id); setAuthRestoring(false) }
+  if (authRestoring) return <AppBootLoading />
   if (!loggedInStaffId) return <Login api={workbenchApi} onLogin={finishLogin} />
   if (mustChangePassword) return <ChangePassword api={workbenchApi} onComplete={() => { staffStorage.removeItem('asva-password-change-required'); setMustChangePassword(false) }} />
-  if (identityLoading || !activeStaff) return <main className="login-page"><section className="login-card"><div className="eyebrow">MY ACCOUNT</div><h1>正在读取账号信息…</h1><p>{identityError || '正在确认当前登录身份。'}</p>{identityError && <button className="primary-button full-width" onClick={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) }}>返回登录</button>}</section></main>
+  if (identityLoading || !activeStaff) return <AppBootLoading error={identityError || undefined} onRetry={identityError ? () => { clearSessionSnapshots(); dataCache.invalidatePrefix(''); staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) } : undefined} />
   if (activeStaff.status !== 'ACTIVE') return <Login api={workbenchApi} onLogin={finishLogin} />
-  if (!database) return <main className="login-page"><section className="login-card"><div className="eyebrow">ASVA API</div><h1>正在连接工作台</h1><p>{loadError || '正在读取飞书预约和客户数据。'}</p>{loadError && <button className="primary-button full-width" onClick={() => setRevision((value) => value + 1)}>重新连接</button>}</section></main>
-  const selectedCustomer = database.customers.find((item) => item.id === selectedCustomerId) ?? database.customers[0]
-  const refresh = () => setRevision((value) => value + 1)
+  const selectedCustomer = database?.customers.find((item) => item.id === selectedCustomerId) ?? database?.customers[0]
+  const refresh = () => { setRevision((value) => value + 1) }
+  const setDatabaseSnapshot = (next: Database) => { dataCache.set(dashboardCacheKey(activeStaff.id), next); setDatabase(next) }
   const openCustomer = (id: string) => navigate(`/customers/${encodeURIComponent(id)}`)
   const generateProfile = (customerId: string, text: string) => workbenchApi.profileDraft(activeStaff.id, customerId, text)
   const confirmProfile = (customerId: string, updates: ProfileUpdate[]) => workbenchApi.confirmProfile(activeStaff.id, customerId, updates).then((saved) => { refresh(); return saved })
@@ -273,10 +367,10 @@ function WorkbenchApp() {
   const refreshCustomerSafetyAssessment = (customerId: string, force = false) => workbenchApi.refreshCustomerSafetyAssessment(activeStaff.id, customerId, force)
   const saveBrief = (customerId: string, brief: string) => workbenchApi.saveBrief(activeStaff.id, customerId, brief)
   const saveReferrer = (customerId: string, referrerName: string) => workbenchApi.updateCustomerReferrer(activeStaff.id, customerId, referrerName).then((saved) => { refresh(); return saved })
-  const saveManualCustomer = async (input: ManualCustomerInput) => { const saved = await workbenchApi.createCustomer(activeStaff.id, input); setManualCustomerOpen(false); setDatabase(saved); refresh() }
+  const saveManualCustomer = async (input: ManualCustomerInput) => { const saved = await workbenchApi.createCustomer(activeStaff.id, input); setManualCustomerOpen(false); setDatabaseSnapshot(saved); refresh() }
   const previewManualCustomer = (input: ManualCustomerInput): Promise<CustomerDraftPreview> => workbenchApi.previewCustomer(activeStaff.id, input)
-  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput) => { const saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input); setManualCustomerOpen(false); setDatabase(saved); refresh() }
-  const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabase(saved); refresh() }
+  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput) => { const saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input); setManualCustomerOpen(false); setDatabaseSnapshot(saved); refresh() }
+  const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabaseSnapshot(saved); refresh() }
   const sourceWorkspace = (customerId: string) => workbenchApi.sourceWorkspace(activeStaff.id, customerId)
   const extractDocument = (input: DocumentUploadInput) => workbenchApi.extractDocument(activeStaff.id, input)
   const createSource = (input: SourceCreateInput) => workbenchApi.createSource(activeStaff.id, input)
@@ -284,29 +378,35 @@ function WorkbenchApp() {
   const reviewProposal = (proposalId: string, decision: 'CONFIRM' | 'REJECT') => workbenchApi.reviewProposal(activeStaff.id, proposalId, decision).then(() => { refresh() })
   const resolveConflict = (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => workbenchApi.resolveConflict(activeStaff.id, conflictId, resolution).then(() => { refresh() })
 
-  const customerPage = <CustomersPage staff={activeStaff} database={database} canSeeAll={canSeeAll} selectedCustomer={selectedCustomer} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSalesUnderstanding={getCustomerSalesUnderstanding} onRefreshSalesUnderstanding={refreshCustomerSalesUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onSourceWorkspace={sourceWorkspace} onExtractDocument={extractDocument} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onAddCustomer={() => setManualCustomerOpen(true)} />
-  const homePage = <HomePage staff={activeStaff} api={workbenchApi} onCustomers={(query = '') => navigate(`/customers${query}`)} />
-  const mePage = <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); setCurrentStaff(null); setDatabase(null); setMePanel('account'); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) }} />
-  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content"><Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant api={workbenchApi} staffId={activeStaff.id} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
+  const customerPage = database ? <CustomersPage key={`${activeStaff.id}:${staffSessionIdentity(activeStaff.id)}`} staff={activeStaff} database={database} canSeeAll={canSeeAll} selectedCustomer={selectedCustomer} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSalesUnderstanding={getCustomerSalesUnderstanding} onRefreshSalesUnderstanding={refreshCustomerSalesUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onSourceWorkspace={sourceWorkspace} onExtractDocument={extractDocument} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onAddCustomer={() => setManualCustomerOpen(true)} /> : <AppDataLoading error={loadError || undefined} onRetry={() => setRevision((value) => value + 1)} />
+  const homePage = <HomePage staff={activeStaff} isAdmin={canSeeAll} api={workbenchApi} cache={dataCache} cacheRevision={revision} onCustomers={(query = '') => navigate(`/customers${query}`)} />
+  const mePage = database ? <MePage staff={activeStaff} database={database} panel={mePanel} onPanel={setMePanel} api={workbenchApi} cache={dataCache} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); setCurrentStaff(null); setDatabase(null); setMePanel('account'); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) }} /> : <AppDataLoading error={loadError || undefined} onRetry={() => setRevision((value) => value + 1)} />
+  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content"><Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database?.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && database && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant api={workbenchApi} staffId={activeStaff.id} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
 }
 
-function HomePage({ staff, api, onCustomers }: { staff: Staff; api: WorkbenchApi; onCustomers: (query?: string) => void }) {
-  return <div className="home-page"><div className="welcome-row"><div><div className="eyebrow">ASVA WORKBENCH</div><h1>欢迎回来，{staff.name}<span className="period">。</span></h1><p className="page-lede">这里是客户档案入口，从资料与依据开始。</p></div></div><ResourceBanners /><HomeDataDashboard staffId={staff.id} api={api} onCustomers={onCustomers} /></div>
+function HomePage({ staff, isAdmin, api, cache, cacheRevision, onCustomers }: { staff: Staff; isAdmin: boolean; api: WorkbenchApi; cache: ResourceCache; cacheRevision: number; onCustomers: (query?: string) => void }) {
+  return <div className="home-page"><div className="welcome-row"><div><div className="eyebrow">ASVA WORKBENCH</div><h1>欢迎回来，{staff.name}<span className="period">。</span></h1><p className="page-lede">这里是客户档案入口，从资料与依据开始。</p></div></div><ResourceBanners />{isAdmin && <HomeDataDashboard staffId={staff.id} api={api} cache={cache} cacheRevision={cacheRevision} onCustomers={onCustomers} />}</div>
 }
 
-function HomeDataDashboard({ staffId, api, onCustomers }: { staffId: string; api: WorkbenchApi; onCustomers: (query?: string) => void }) {
-  const [dashboard, setDashboard] = useState<BasicDashboard | null>(null)
-  const [loading, setLoading] = useState(true)
+function HomeDataDashboard({ staffId, api, cache, cacheRevision, onCustomers }: { staffId: string; api: WorkbenchApi; cache: ResourceCache; cacheRevision: number; onCustomers: (query?: string) => void }) {
+  const cacheKey = basicDashboardCacheKey(staffId)
+  const [dashboard, setDashboard] = useState<BasicDashboard | null>(() => cache.get<BasicDashboard>(cacheKey) ?? null)
+  const [loading, setLoading] = useState(() => !cache.get<BasicDashboard>(cacheKey))
+  const loadingVisible = useDelayedLoading(loading)
   const [error, setError] = useState('')
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    const startedAt = performance.now()
+    const cached = cache.get<BasicDashboard>(cacheKey)
+    if (cached) { setDashboard(cached); setLoading(false) }
+    else setLoading(true)
     setError('')
-    api.basicDashboard(staffId).then((next) => { if (!cancelled) setDashboard(next) }).catch((loadError: Error) => { if (!cancelled) setError(loadError.message || '数据暂时加载失败') }).finally(() => { if (!cancelled) setLoading(false) })
+    cache.load(cacheKey, () => api.basicDashboard(staffId), { ttlMs: DASHBOARD_TTL_MS, force: cacheRevision > 0 }).then((next) => { writeSessionSnapshot(basicDashboardSnapshotKey(staffId), next); logAppPerformance('DASHBOARD_RENDER_MS', { duration_ms: Math.round(performance.now() - startedAt), from_cache: Boolean(cached) }); if (!cancelled) setDashboard(next) }).catch((loadError: Error) => { if (!cancelled && !cached) setError(loadError.message || '数据暂时加载失败') }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [api, staffId])
+  }, [api, cache, cacheKey, cacheRevision, staffId])
+  if (loading && !loadingVisible) return <section className="surface task-surface home-dashboard dashboard-loading-quiet" aria-busy="true"><SectionTitle title="基础数据看板" /></section>
   if (loading) return <section className="surface task-surface home-dashboard" aria-busy="true"><SectionTitle title="基础数据看板" /><div className="dashboard-skeleton" aria-label="基础数据看板加载中"><span /><span /><span /><span /></div><div className="dashboard-chart-skeleton"><span /><span /></div></section>
-  if (error || !dashboard) return <section className="surface task-surface home-dashboard"><SectionTitle title="基础数据看板" /><div className="dashboard-error"><p>{error || '数据暂时加载失败'}</p><button className="secondary-button small" type="button" onClick={() => { setDashboard(null); setError(''); setLoading(true); api.basicDashboard(staffId).then(setDashboard).catch((loadError: Error) => setError(loadError.message || '数据暂时加载失败')).finally(() => setLoading(false)) }}>重新加载</button></div></section>
+  if (error || !dashboard) return <section className="surface task-surface home-dashboard"><SectionTitle title="基础数据看板" /><div className="dashboard-error"><p>{error || '数据暂时加载失败'}</p><button className="secondary-button small" type="button" onClick={() => { setError(''); setLoading(true); void cache.refresh(cacheKey, () => api.basicDashboard(staffId)).then(setDashboard).catch((loadError: Error) => setError(loadError.message || '数据暂时加载失败')).finally(() => setLoading(false)) }}>重新加载</button></div></section>
   const metrics = [
     { label: '客户总数', value: dashboard.customer_total, onClick: () => onCustomers() },
     { label: '本周新增客户数', value: dashboard.new_customers_this_week },
@@ -1070,10 +1170,10 @@ function AssignDialog({ appointment, database, staffId, api, onClose, onAssign }
   return <div className="modal-backdrop" onMouseDown={() => { if (!submitting) onClose() }}><section className="modal-card compact-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={onClose} disabled={submitting}>×</button><div className="eyebrow">ASSIGN MENTOR</div><h2>{appointment.assignedMentorId ? '更换导师' : '分配导师'}</h2><p className="modal-lede">为 <strong>{customer?.name}</strong> 选择负责导师。分配后会写入预约和客户当前导师。</p>{loading ? <div className="inline-empty">正在读取最新的 ACTIVE 导师…</div> : mentors.length ? <><div className="mentor-choice-list">{mentors.map((mentor) => <button type="button" key={mentor.id} className={`mentor-choice ${mentor.id === mentorId ? 'selected' : ''}`} disabled={submitting} onClick={() => setMentorId(mentor.id)}><Avatar staff={mentor} /><span><strong>{mentor.name}</strong><small>{mentor.specialty || '导师'}</small></span><span className="choice-check">{mentor.id === mentorId ? '✓' : ''}</span></button>)}</div>{appointment.status === 'WAIT_FEEDBACK' && <p className="panel-note">该预约已进入待反馈，更换导师只调整后续业务归属，不会回退流程状态。</p>}{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" disabled={!mentorId || submitting} aria-busy={submitting} onClick={() => void submit()}>{submitting && <ButtonSpinner />}{submitting ? (appointment.assignedMentorId ? '更换中…' : '分配中…') : <>确认{appointment.assignedMentorId ? '更换' : '分配'} <span>→</span></>}</button></> : <div className="inline-empty">{error || '当前没有可分配的 ACTIVE 导师。'}</div>}</section></div>
 }
 
-function MePage({ staff, database, panel, onPanel, api, onLogout }: { staff: Staff; database: Database; panel: MePanel; onPanel: (panel: MePanel) => void; api: WorkbenchApi; onLogout: () => void }) {
+function MePage({ staff, database, panel, onPanel, api, cache, onLogout }: { staff: Staff; database: Database; panel: MePanel; onPanel: (panel: MePanel) => void; api: WorkbenchApi; cache: ResourceCache; onLogout: () => void }) {
   const isAdmin = staff.permissionRole === 'ADMIN'
   const effectivePanel = accountPanelFor(staff.permissionRole, panel) as MePanel
-  return <div className="me-page"><div className="profile-hero"><Avatar staff={staff} size="lg" /><div><div className="eyebrow">MY ACCOUNT</div><h1>{staff.name}</h1><p>{roleName(staff)}</p></div></div>{isAdmin && <div className="me-switcher"><button className={effectivePanel === 'account' ? 'active' : ''} onClick={() => onPanel('account')}>账号信息</button><button className={effectivePanel === 'team' ? 'active' : ''} onClick={() => onPanel('team')}>导师管理</button></div>}{effectivePanel === 'account' && <AccountPanel staff={staff} database={database} api={api} />}{effectivePanel === 'team' && <TeamPanel staffId={staff.id} database={database} api={api} />}<button className="logout-button" onClick={onLogout}>退出当前账号</button></div>
+  return <div className="me-page"><div className="profile-hero"><Avatar staff={staff} size="lg" /><div><div className="eyebrow">MY ACCOUNT</div><h1>{staff.name}</h1><p>{roleName(staff)}</p></div></div>{isAdmin && <div className="me-switcher"><button className={effectivePanel === 'account' ? 'active' : ''} onClick={() => onPanel('account')}>账号信息</button><button className={effectivePanel === 'team' ? 'active' : ''} onClick={() => onPanel('team')}>导师管理</button></div>}{effectivePanel === 'account' && <AccountPanel staff={staff} database={database} api={api} />}{effectivePanel === 'team' && <TeamPanel staffId={staff.id} database={database} api={api} cache={cache} />}<button className="logout-button" onClick={onLogout}>退出当前账号</button></div>
 }
 
 function AccountPanel({ staff, database, api }: { staff: Staff; database: Database; api: WorkbenchApi }) {
@@ -1083,18 +1183,24 @@ function AccountPanel({ staff, database, api }: { staff: Staff; database: Databa
 
 function maskPhone(phone: string) { return phone.length >= 7 ? phone.slice(0, 3) + '****' + phone.slice(-4) : phone }
 
-function TeamPanel({ staffId, database, api }: { staffId: string; database: Database; api: WorkbenchApi }) {
-  const [teams, setTeams] = useState<Awaited<ReturnType<WorkbenchApi['teamSnapshot']>> | null>(null)
+function TeamPanel({ staffId, database, api, cache }: { staffId: string; database: Database; api: WorkbenchApi; cache: ResourceCache }) {
+  const cacheKey = mentorCacheKey(staffId)
+  const [teams, setTeams] = useState<Awaited<ReturnType<WorkbenchApi['teamSnapshot']>> | null>(() => cache.get(cacheKey) ?? null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [formMentor, setFormMentor] = useState<Staff | 'create' | null>(null)
   const [deactivateTarget, setDeactivateTarget] = useState<Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>[number] | null>(null)
   const [resetTarget, setResetTarget] = useState<Staff | null>(null)
   const [error, setError] = useState('')
+  const loadingVisible = useDelayedLoading(!teams && !error)
 
-  const reload = async () => {
+  const reload = async (force = false) => {
     setError('')
+    const cached = cache.get<Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>>(cacheKey)
+    if (cached) setTeams(cached)
+    else setTeams(null)
     try {
-      const items = await api.teamSnapshot(staffId)
+      const items = await cache.load(cacheKey, () => api.teamSnapshot(staffId), { ttlMs: MENTOR_TTL_MS, force })
+      writeSessionSnapshot(mentorSnapshotKey(staffId), items.map((item) => ({ ...item, mentor: { ...item.mentor, phone: '' } })))
       setTeams(items)
       setSelectedId((current) => current && items.some((item) => item.mentor.id === current) ? current : items[0]?.mentor.id ?? null)
     } catch (loadError) {
@@ -1102,7 +1208,7 @@ function TeamPanel({ staffId, database, api }: { staffId: string; database: Data
     }
   }
 
-  useEffect(() => { void reload() }, [api, staffId])
+  useEffect(() => { void reload() }, [api, cache, cacheKey, staffId])
 
   const selected = teams?.find((item) => item.mentor.id === selectedId)
   const save = async (input: { name: string; phone: string; initialPassword?: string }): Promise<MentorAccountResult> => {
@@ -1111,17 +1217,19 @@ function TeamPanel({ staffId, database, api }: { staffId: string; database: Data
     else if (formMentor) result = await api.updateMentor(staffId, formMentor.id, input)
     else throw new Error('导师表单已关闭')
     if (formMentor !== 'create') setFormMentor(null)
-    await reload()
+    cache.invalidate(cacheKey)
+    await reload(true)
     return result
   }
   const deactivate = async () => {
     if (!deactivateTarget) return
     await api.deactivateMentor(staffId, deactivateTarget.mentor.id)
     setDeactivateTarget(null)
-    await reload()
+    cache.invalidate(cacheKey)
+    await reload(true)
   }
 
-  if (!teams) return <div className="management-panel"><p>{error || '正在读取团队数据…'}</p></div>
+  if (!teams) return <div className="management-panel">{error ? <p>{error}</p> : loadingVisible ? <p>正在加载导师列表…</p> : null}</div>
   return <div className="management-panel">
     <SectionTitle title="导师管理" action={<button className="primary-button small" type="button" onClick={() => setFormMentor('create')}>新增导师</button>} />
     {error && <p className="form-error">{error}</p>}

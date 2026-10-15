@@ -25,6 +25,9 @@ function responseHeaders(request, requestId) {
 }
 
 function send(request, response, statusCode, body, requestId) {
+  if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|staff\/mentors)/.test(request.url || '')) {
+    console.info('[ASVA_PERF_API]', JSON.stringify({ path: (request.url || '').split('?')[0], status: statusCode, handler_ms: Date.now() - (request.__asvaStartedAt || Date.now()), request_id: requestId }))
+  }
   response.writeHead(statusCode, responseHeaders(request, requestId))
   response.end(JSON.stringify(body))
 }
@@ -195,6 +198,7 @@ async function handle(request, response, requestId) {
 http.createServer((request, response) => {
   const requestId = typeof request.headers['x-request-id'] === 'string' && request.headers['x-request-id'].length < 100 ? request.headers['x-request-id'] : crypto.randomUUID()
   const startedAt = Date.now()
+  request.__asvaStartedAt = startedAt
   handle(request, response, requestId).catch(async (error) => {
     const code = error?.code || (error instanceof FeishuUnavailableError ? 'FEISHU_UNAVAILABLE' : error instanceof DeepSeekUnavailableError ? 'DEEPSEEK_UNAVAILABLE' : 'REQUEST_FAILED')
     const statusCode = status(error)

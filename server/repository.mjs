@@ -426,29 +426,61 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map() }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
     if (this.auditLogs.length > 200) this.auditLogs.length = 200
     console.info('[ASVA_AUDIT]', JSON.stringify(entry))
   }
-  async load() {
-    try {
-      const database = await this.loadFresh()
-      this.lastKnownGood = cloneDatabase(database)
-      for (const customer of database.customers) this.lastKnownGoodByCustomer.set(customer.id, cloneDatabase(database))
+  invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1 }
+
+  async load({ force = false } = {}) {
+    const nowMs = Date.now()
+    if (!force && this.databaseCache.data && nowMs - this.databaseCache.savedAt < 45_000) {
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_CACHE]', JSON.stringify({ cache: 'database', state: 'HIT', age_ms: nowMs - this.databaseCache.savedAt }))
+      return cloneDatabase(this.databaseCache.data)
+    }
+    if (!force && this.databaseCache.promise) {
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_CACHE]', JSON.stringify({ cache: 'database', state: 'IN_FLIGHT' }))
+      return this.databaseCache.promise.then(cloneDatabase)
+    }
+    const startedAt = Date.now()
+    const generation = this.databaseCache.generation
+    const request = this.loadFresh().then((database) => {
+      if (this.databaseCache.generation === generation) {
+        this.databaseCache.data = cloneDatabase(database)
+        this.databaseCache.savedAt = Date.now()
+      }
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_CACHE]', JSON.stringify({ cache: 'database', state: 'MISS', duration_ms: Date.now() - startedAt }))
       return database
-    } catch (error) {
+    }).catch((error) => {
       if (!error?.retryable || !this.lastKnownGood) throw error
       console.warn('[ASVA_FEISHU_READ]', JSON.stringify({ result: 'LKG', freshness: 'DELAYED', normalized_error: error.code || 'FEISHU_UNAVAILABLE' }))
       return { ...cloneDatabase(this.lastKnownGood), _dataFreshness: 'DELAYED' }
+    })
+    this.databaseCache.promise = request
+    request.finally(() => { if (this.databaseCache.promise === request) this.databaseCache.promise = null }).catch(() => {})
+    try {
+      const database = await request
+      this.lastKnownGood = cloneDatabase(database)
+      for (const customer of database.customers) this.lastKnownGoodByCustomer.set(customer.id, cloneDatabase(database))
+      return cloneDatabase(database)
+    } catch (error) {
+      throw error
     }
   }
 
   async loadFresh() {
     const entries = [['appointments', config.feishu.tables.appointments], ['customers', config.feishu.tables.customers], ['serviceRecords', config.feishu.tables.serviceRecords], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['profileChanges', config.feishu.tables.profileChanges], ['sourceRecords', config.feishu.tables.sourceRecords], ['evidenceItems', config.feishu.tables.evidenceItems], ['profileUpdateProposals', config.feishu.tables.profileUpdateProposals], ['evidenceConflicts', config.feishu.tables.evidenceConflicts]]
-    const rows = await Promise.all(entries.map(([, tableId]) => tableId ? listRecords(tableId) : Promise.resolve([])))
+    const tableDurations = {}
+    const rows = await Promise.all(entries.map(async ([table, tableId]) => {
+      if (!tableId) return []
+      const startedAt = Date.now()
+      const result = await listRecords(tableId)
+      tableDurations[table] = Date.now() - startedAt
+      return result
+    }))
     const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileChangeRows, sourceRows, evidenceRows, proposalRows, conflictRows] = rows
     const customers = customerRows.map(customer)
     const evidenceItems = evidenceRows.map(evidenceItem)
@@ -458,6 +490,7 @@ export class FeishuRepository {
       const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, conflicts: conflictRows.map(conflictRecord).filter((conflict) => conflict.customerId === item.id) })
       if (!item.understandingMeta || item.understandingMeta.inputFingerprint !== currentFingerprint || item.understandingMeta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) item.understandingStatus = 'STALE'
     }
+    if (config.appEnv === 'development') console.info('[ASVA_PERF_DASHBOARD_READ]', JSON.stringify({ external_request_count: entries.filter(([, tableId]) => Boolean(tableId)).length, parallel: true, table_durations_ms: tableDurations }))
     return {
       staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange), sourceRecords: sourceRows.map(sourceRecord), evidenceItems, profileUpdateProposals: proposalRows.map(proposalRecord), evidenceConflicts: conflictRows.map(conflictRecord),
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
@@ -466,6 +499,7 @@ export class FeishuRepository {
   }
 
   async loadAfterWrite(writeResult, targetCustomerId, { allowMissingCustomerRetry = Boolean(writeResult && targetCustomerId) } = {}) {
+    this.invalidateDatabaseCache()
     const writeRecordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id
     const result = await boundedReadAfterWrite(async () => {
       const database = await this.load()
@@ -562,6 +596,7 @@ export class FeishuRepository {
     return { ...account, authVersion: 0, mustChangePassword: false, authMode: config.authMode }
   }
   async setInitialPassword(staffId, password, { mustChangePassword = true } = {}) {
+    this.invalidateDatabaseCache()
     const account = (await this.load()).staff.find((item) => item.id === staffId)
     if (!account) throw new Error('账号不存在')
     if (account.status !== 'ACTIVE' || account.loginEnabled !== true) throw new Error('账号当前不可登录')
@@ -577,6 +612,7 @@ export class FeishuRepository {
     return { staffId, mustChangePassword }
   }
   async changePassword(staffId, currentPassword, nextPassword) {
+    this.invalidateDatabaseCache()
     const account = await this.staff(staffId)
     const credential = await this.authRepository.findByStaffId(staffId)
     const hasCurrentPassword = typeof currentPassword === 'string' && currentPassword.length > 0
@@ -594,6 +630,7 @@ export class FeishuRepository {
     return { ok: true, mustChangePassword: false, authVersion: Number(credential.authVersion || 0) + 1 }
   }
   async resetPassword(actorId, targetStaffId) {
+    this.invalidateDatabaseCache()
     const actor = await this.staff(actorId)
     if (actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以重置密码')
     const target = (await this.load()).staff.find((item) => item.id === targetStaffId)
@@ -641,6 +678,7 @@ export class FeishuRepository {
   }
 
   async refreshCustomerUnderstanding(actorId, customerId, { force = false } = {}) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
@@ -699,6 +737,7 @@ export class FeishuRepository {
   }
 
   async refreshCustomerSalesUnderstanding(actorId, customerId, { force = false } = {}) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
@@ -760,6 +799,7 @@ export class FeishuRepository {
   }
 
   async refreshCustomerSafetyAssessment(actorId, customerId, { force = false } = {}) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
@@ -809,6 +849,7 @@ export class FeishuRepository {
     return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates: [] }
   }
   async createCustomer(actorId, input, requestId = '') {
+    this.invalidateDatabaseCache()
     const startedAt = Date.now()
     const timings = { identity_resolution_ms: 0, customer_write_ms: 0, enrollment_write_ms: 0, profile_change_ms: 0, ai_ms: 0 }
     const operationId = text(input?.operationId).trim()
@@ -872,6 +913,7 @@ export class FeishuRepository {
   }
   async updateCustomer(actorId, customerId, input) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerUnsafe(actorId, customerId, input)) }
   async updateCustomerUnsafe(actorId, customerId, input) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     const actor = database.staff.find((item) => item.id === actorId)
@@ -907,6 +949,7 @@ export class FeishuRepository {
 
   async updateCustomerEnrollments(actorId, customerId, drafts, operationId = '') { return this.customerWriteQueue.run(customerId, () => this.updateCustomerEnrollmentsUnsafe(actorId, customerId, drafts, operationId)) }
   async updateCustomerEnrollmentsUnsafe(actorId, customerId, drafts, operationId = '') {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     scope(database, actorId)
     if (!database.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
@@ -915,6 +958,7 @@ export class FeishuRepository {
   }
   async confirmProfile(actorId, customerId, updates) { return this.customerWriteQueue.run(customerId, () => this.confirmProfileUnsafe(actorId, customerId, updates)) }
   async confirmProfileUnsafe(actorId, customerId, updates) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     if (!scope(database, actorId).customers.some((item) => item.id === customerId)) throw new Error('无权访问该客户')
     const current = database.customers.find((item) => item.id === customerId)
@@ -933,6 +977,7 @@ export class FeishuRepository {
   }
   async createSource(actorId, input) { return this.customerWriteQueue.run(text(input?.customerId), () => this.createSourceUnsafe(actorId, input)) }
   async createSourceUnsafe(actorId, input) {
+    this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
     const requestedCustomerId = text(input?.customerId).trim()
@@ -994,6 +1039,7 @@ export class FeishuRepository {
     return { source: publicSource(source), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && visibleDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === source.customerId)?.profileMaterialization }
   }
   async processSource(actorId, sourceId, { force = false } = {}) {
+    this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
     const database = await this.load()
@@ -1104,6 +1150,7 @@ export class FeishuRepository {
     }
   }
   async reviewProposal(actorId, proposalIdValue, decision) {
+    this.invalidateDatabaseCache()
     requireStage2Tables()
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
@@ -1129,6 +1176,7 @@ export class FeishuRepository {
     return this.sourceWorkspace(actorId, proposal.customerId)
   }
   async resolveConflict(actorId, conflictIdValue, resolution) {
+    this.invalidateDatabaseCache()
     requireStage2Tables()
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
@@ -1151,6 +1199,7 @@ export class FeishuRepository {
   }
   async saveBrief(actorId, customerId, brief) { return this.customerWriteQueue.run(customerId, () => this.saveBriefUnsafe(actorId, customerId, brief)) }
   async saveBriefUnsafe(actorId, customerId, brief) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     if (!scope(database, actorId).customers.some((item) => item.id === customerId)) throw new Error('无权访问该客户')
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
@@ -1160,6 +1209,7 @@ export class FeishuRepository {
   }
 
   async refreshCustomerSummary(actorId, customerId, { force = false } = {}) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     scope(database, actorId)
     const customerRecord = database.customers.find((item) => item.id === customerId)
@@ -1192,6 +1242,7 @@ export class FeishuRepository {
   }
 
   async createMentor(actorId, input) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
@@ -1227,6 +1278,7 @@ export class FeishuRepository {
   }
 
   async updateMentor(actorId, mentorId, input) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
@@ -1256,6 +1308,7 @@ export class FeishuRepository {
   }
 
   async deactivateMentor(actorId, mentorId) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
@@ -1286,6 +1339,7 @@ export class FeishuRepository {
 
   async updateCustomerReferrer(actorId, customerId, referrerName) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerReferrerUnsafe(actorId, customerId, referrerName)) }
   async updateCustomerReferrerUnsafe(actorId, customerId, referrerName) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以修改介绍人'), { code: 'FORBIDDEN', status: 403 })
@@ -1303,6 +1357,7 @@ export class FeishuRepository {
   }
 
   async assignAppointment(actorId, appointmentId, mentorId) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以分配导师')
@@ -1328,6 +1383,7 @@ export class FeishuRepository {
   }
 
   async markFollowupDone(actorId, appointmentId) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     const appointment = database.appointments.find((item) => item.id === appointmentId)
@@ -1339,6 +1395,7 @@ export class FeishuRepository {
   }
 
   async saveFeedback(actorId, input) {
+    this.invalidateDatabaseCache()
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === actorId)
     const appointment = database.appointments.find((item) => item.id === input.appointmentId)
@@ -1374,6 +1431,7 @@ export class FeishuRepository {
   }
 
   async createAppointment(input) {
+    this.invalidateDatabaseCache()
     let customerId = input.customerId
     const database = await this.load()
     if (!database.customers.some((item) => item.id === customerId)) {

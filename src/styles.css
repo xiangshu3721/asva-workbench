@@ -191,6 +191,24 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
   .side-rail { width: 214px; }
   .main-content { width: calc(100% - 214px); margin-left: 214px; }
 }
+
+/* R028 unified boot and cached page loading */
+.app-boot-loading .login-card { text-align: center; }
+.app-boot-loading .login-card h1 { margin: 34px 0 12px; color: var(--ink); font-size: 25px; letter-spacing: -.045em; }
+.app-boot-loading .login-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.app-data-loading { display: grid; min-height: 260px; place-items: center; align-content: center; gap: 9px; padding: 30px; text-align: center; }
+.app-data-loading h2 { margin: 0; color: var(--ink); font-size: 16px; }
+.app-data-loading p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.inline-loading-mark { width: 24px; height: 24px; border: 3px solid #d9eee6; border-top-color: var(--blue); border-radius: 50%; animation: app-loading-spin .8s linear infinite; }
+.app-data-loading-quiet,
+.dashboard-loading-quiet { min-height: 74px; }
+.app-data-loading-quiet > *,
+.dashboard-loading-quiet > * { visibility: hidden; }
+.dashboard-skeleton { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dashboard-skeleton span { min-height: 92px; border-radius: 18px; background: linear-gradient(90deg, rgba(226, 240, 235, .7), rgba(244, 249, 246, .95), rgba(226, 240, 235, .7)); background-size: 220% 100%; animation: app-loading-shimmer 1.4s ease-in-out infinite; }
+.dashboard-chart-skeleton { display: none; }
+@keyframes app-loading-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+@keyframes app-loading-spin { to { transform: rotate(360deg); } }
 /* V0.9 manual customer review */
 .check-line { display: flex !important; grid-template-columns: none; align-items: center; gap: 8px !important; }
 .check-line input, .review-update > input { width: auto !important; }

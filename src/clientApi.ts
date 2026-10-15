@@ -200,8 +200,13 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     }
     const payload = await response.json().catch(() => null)
     const requestId = response.headers.get('X-Request-Id') || payload?.request_id || undefined
-    requestTraces.unshift({ time: new Date().toISOString(), method, path, status: response.status, duration: Math.round(performance.now() - startedAt), request_id: requestId, result: response.ok ? 'SUCCESS' : 'ERROR' })
+    const duration = Math.round(performance.now() - startedAt)
+    requestTraces.unshift({ time: new Date().toISOString(), method, path, status: response.status, duration, request_id: requestId, result: response.ok ? 'SUCCESS' : 'ERROR' })
     requestTraces.splice(20)
+    if (import.meta.env.DEV) {
+      const metric = path === '/api/staff/me' ? 'STAFF_ME_MS' : path === '/api/dashboard' ? 'DASHBOARD_API_MS' : path === '/api/staff/mentors' ? 'MENTOR_API_MS' : undefined
+      if (metric) console.info('[ASVA_PERF]', JSON.stringify({ metric, value_ms: duration, status: response.status, request_id: requestId }))
+    }
     if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('asva-auth-expired'))
     if (!response.ok) throw new ApiError({ code: `HTTP_${response.status}`, serverCode: payload?.code, httpStatus: response.status, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId })
     if (payload === null) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'INVALID_RESPONSE：API 返回的内容不是有效 JSON。', request_id: requestId })
