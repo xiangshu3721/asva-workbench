@@ -440,7 +440,7 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -1057,6 +1057,13 @@ export class FeishuRepository {
     return { source: publicSource(source), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && visibleDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === source.customerId)?.profileMaterialization }
   }
   async processSource(actorId, sourceId, { force = false } = {}) {
+    const inFlight = this.sourceProcessingLocks.get(sourceId)
+    if (inFlight) return inFlight
+    const task = this.processSourceUnsafe(actorId, sourceId, { force })
+    this.sourceProcessingLocks.set(sourceId, task)
+    try { return await task } finally { if (this.sourceProcessingLocks.get(sourceId) === task) this.sourceProcessingLocks.delete(sourceId) }
+  }
+  async processSourceUnsafe(actorId, sourceId, { force = false } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
@@ -1092,12 +1099,15 @@ export class FeishuRepository {
       const customer = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []
       for (const item of unique) {
-        const existingEquivalent = database.evidenceItems.find((existing) => evidenceEquivalent(existing, item))
+        this.invalidateDatabaseCache()
+        const latestEvidenceDatabase = await this.load({ force: true })
+        const existingEquivalent = latestEvidenceDatabase.evidenceItems.find((existing) => evidenceEquivalent(existing, item))
         const id = stableId('EVD', `${sourceId}:${batchId}:${item.evidenceType}:${item.fieldKey}:${JSON.stringify(item.standardValue)}:${item.sourceExcerpt}`)
         const evidence = existingEquivalent || { ...item, id }
-        if (!existingEquivalent && !database.evidenceItems.some((existing) => existing.id === id)) { await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, created_at: now(), updated_at: now() }); createdEvidence.push(evidence) }
+        if (!existingEquivalent && !latestEvidenceDatabase.evidenceItems.some((existing) => existing.id === id)) { await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, created_at: now(), updated_at: now() }); createdEvidence.push(evidence) }
       }
-      const refreshed = await this.load()
+      this.invalidateDatabaseCache()
+      const refreshed = await this.load({ force: true })
       const allEvidence = refreshed.evidenceItems.filter((item) => item.sourceId === sourceId)
       if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
       const itemErrors = []
@@ -1114,8 +1124,10 @@ export class FeishuRepository {
           }
           if (shouldAutoConfirmEvidence(evidence) && evidence.reviewStatus !== 'CONFIRMED') await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
           if (!evidence.fieldKey) continue
-          const requiresReview = Boolean(change.conflictType === 'FACT_CONTRADICTION')
-          const autoApply = !requiresReview && isSnapshotEvidence(evidence) && ['ADD', 'UPDATE', 'APPEND'].includes(change.action) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+          const profileMeta = database.customers.find((item) => item.id === source.customerId)?.profileFieldMeta?.[evidence.fieldKey]
+          const humanConfirmed = profileMeta?.confirmed === true && ['MENTOR_CONFIRMED', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'USER_EXPLICIT'].includes(profileMeta?.source)
+          const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence))
+          const autoApply = !requiresReview && !humanConfirmed && isSnapshotEvidence(evidence) && ['ADD', 'UPDATE', 'APPEND'].includes(change.action) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
           if (autoApply) {
             const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_INFERENCE', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), true)[0]
             if (update) {
@@ -1128,9 +1140,11 @@ export class FeishuRepository {
             const proposal = { id: proposalId(evidence.id, evidence.fieldKey), customerId: source.customerId, subjectId: source.subjectId, evidenceId: evidence.id, sourceId, fieldKey: evidence.fieldKey, fieldName: mapField('customers', evidence.fieldKey), currentValue, proposedValue: evidence.standardValue, action: PROPOSAL_ACTIONS.has(change.action) ? change.action : 'REVIEW_REQUIRED', changeType: change.changeType, reviewStatus, reason: evidence.displayText, confidence: evidence.confidence, extractionBatchId: evidence.extractionBatchId, reviewerId: autoApply ? actorId : '', reviewedAt: autoApply ? timestamp : null, createdAt: timestamp, updatedAt: timestamp }
             if (!refreshed.profileUpdateProposals.some((item) => item.id === proposal.id)) await createMappedRecord('profileUpdateProposals', 'proposal.create', { proposal_id: proposal.id, customer_id: proposal.customerId, subject_id: proposal.subjectId, evidence_id: proposal.evidenceId, source_id: proposal.sourceId, field_key: proposal.fieldKey, field_name: proposal.fieldName, current_value: stage2Json(proposal.currentValue), proposed_value: stage2Json(proposal.proposedValue), action: proposal.action, change_type: proposal.changeType, review_status: proposal.reviewStatus, reason: proposal.reason, confidence: proposal.confidence, extraction_batch_id: proposal.extractionBatchId, reviewer_id: proposal.reviewerId, reviewed_at: proposal.reviewedAt || '', created_at: proposal.createdAt, updated_at: proposal.updatedAt })
           }
-          if (change.conflictType === 'FACT_CONTRADICTION') {
-            const conflict = { id: conflictId(evidence.fieldKey, '', evidence.id), subjectId: source.subjectId, customerId: source.customerId, fieldKey: evidence.fieldKey, conflictType: change.conflictType, currentValue, newValue: evidence.standardValue, currentEvidenceId: '', newEvidenceId: evidence.id, status: 'OPEN', suggestedResolution: '人工核验稳定事实', resolution: '', reviewerId: '', resolvedAt: null, createdAt: timestamp, updatedAt: timestamp }
-            if (!refreshed.evidenceConflicts.some((item) => item.id === conflict.id)) await createMappedRecord('evidenceConflicts', 'conflict.create', { conflict_id: conflict.id, subject_id: conflict.subjectId, customer_id: conflict.customerId, field_key: conflict.fieldKey, conflict_type: conflict.conflictType, current_value: stage2Json(conflict.currentValue), new_value: stage2Json(conflict.newValue), current_evidence_id: '', new_evidence_id: conflict.newEvidenceId, status: 'OPEN', suggested_resolution: conflict.suggestedResolution, resolution: '', reviewer_id: '', resolved_at: '', created_at: conflict.createdAt, updated_at: conflict.updatedAt })
+          if (requiresReview) {
+            const latest = await this.load({ force: true })
+            const currentEvidence = latest.evidenceItems.find((item) => item.customerId === source.customerId && item.fieldKey === evidence.fieldKey && item.reviewStatus === 'CONFIRMED' && JSON.stringify(item.standardValue ?? null) === JSON.stringify(currentValue ?? null))
+            const conflict = { id: conflictId(evidence.fieldKey, currentEvidence?.id || '', evidence.id), subjectId: source.subjectId, customerId: source.customerId, fieldKey: evidence.fieldKey, conflictType: change.conflictType, currentValue, newValue: evidence.standardValue, currentEvidenceId: currentEvidence?.id || '', newEvidenceId: evidence.id, status: 'OPEN', suggestedResolution: '人工核验当前资料与新资料', resolution: '', reviewerId: '', resolvedAt: null, createdAt: timestamp, updatedAt: timestamp }
+            if (!latest.evidenceConflicts.some((item) => item.id === conflict.id)) await createMappedRecord('evidenceConflicts', 'conflict.create', { conflict_id: conflict.id, subject_id: conflict.subjectId, customer_id: conflict.customerId, field_key: conflict.fieldKey, conflict_type: conflict.conflictType, current_value: stage2Json(conflict.currentValue), new_value: stage2Json(conflict.newValue), current_evidence_id: conflict.currentEvidenceId, new_evidence_id: conflict.newEvidenceId, status: 'OPEN', suggested_resolution: conflict.suggestedResolution, resolution: '', reviewer_id: '', resolved_at: '', created_at: conflict.createdAt, updated_at: conflict.updatedAt })
           }
         } catch (error) {
           itemErrors.push(processingErrorCode(error))
@@ -1182,7 +1196,7 @@ export class FeishuRepository {
       const evidence = database.evidenceItems.find((item) => item.id === proposal.evidenceId)
       if (!evidence || !proposal.fieldKey) throw new Error('建议缺少可追溯证据')
       const current = database.customers.find((item) => item.id === proposal.customerId)
-      const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'AI_EXTRACTED_CONFIRMED', confidence: proposal.confidence, confirmed: true }
+      const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'MENTOR_CONFIRMED', confidence: proposal.confidence, confirmed: true }
       if (update.source === 'AI_INFERENCE') throw Object.assign(new Error('AI假设不能写入当前客户档案'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
       await persistCustomerProfile(database, proposal.customerId, normalizeProfileUpdates([update], current, true), undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
       await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
@@ -1195,6 +1209,13 @@ export class FeishuRepository {
     return this.sourceWorkspace(actorId, proposal.customerId)
   }
   async resolveConflict(actorId, conflictIdValue, resolution) {
+    const inFlight = this.conflictResolutionLocks.get(conflictIdValue)
+    if (inFlight) return inFlight
+    const task = this.resolveConflictUnsafe(actorId, conflictIdValue, resolution)
+    this.conflictResolutionLocks.set(conflictIdValue, task)
+    try { return await task } finally { if (this.conflictResolutionLocks.get(conflictIdValue) === task) this.conflictResolutionLocks.delete(conflictIdValue) }
+  }
+  async resolveConflictUnsafe(actorId, conflictIdValue, resolution) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const database = await this.load()
@@ -1202,17 +1223,31 @@ export class FeishuRepository {
     if (!CONFLICT_RESOLUTIONS.has(resolution)) throw Object.assign(new Error('冲突处理方式无效'), { code: 'INVALID_CONFLICT_RESOLUTION', status: 400 })
     const conflict = visibleDatabase.evidenceConflicts.find((item) => item.id === conflictIdValue)
     if (!conflict) throw new Error('冲突不存在')
+    if (conflict.status !== 'OPEN') return this.sourceWorkspace(actorId, conflict.customerId)
     const row = database._rows.evidenceConflicts.find((item) => item.record_id === conflict._recordId)
     const proposal = database.profileUpdateProposals.find((item) => item.evidenceId === conflict.newEvidenceId)
-    if (resolution === 'USE_NEW' && proposal) await this.reviewProposal(actorId, proposal.id, 'CONFIRM')
-    if (resolution === 'MARK_UNKNOWN') return this.sourceWorkspace(actorId, conflict.customerId)
-    if (resolution === 'KEEP_CURRENT' || resolution === 'KEEP_BOTH') {
-      const evidence = database.evidenceItems.find((item) => item.id === conflict.newEvidenceId)
-      if (evidence) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: resolution === 'KEEP_BOTH' ? 'CONFIRMED' : 'REJECTED', reviewer_id: actorId, reviewed_at: now(), updated_at: now() }))
-      if (proposal) { const proposalRow = database._rows.profileUpdateProposals.find((item) => item.record_id === proposal._recordId); await updateRecord(stage2Table('profileUpdateProposals'), proposalRow.record_id, mapFields('profileUpdateProposals', { review_status: resolution === 'KEEP_CURRENT' ? 'REJECTED' : 'CONFIRMED', reviewer_id: actorId, reviewed_at: now(), updated_at: now() })) }
+    const timestamp = now()
+    const evidence = database.evidenceItems.find((item) => item.id === conflict.newEvidenceId)
+    if (resolution === 'USE_NEW' && proposal) {
+      if (!evidence || !proposal.fieldKey) throw new Error('冲突缺少可追溯证据')
+      const current = database.customers.find((item) => item.id === proposal.customerId)
+      const update = normalizeProfileUpdates([{ field: proposal.fieldKey, value: proposal.proposedValue, source: 'MENTOR_CONFIRMED', confidence: proposal.confidence }], current, true)[0]
+      if (!update) throw new Error('冲突的新资料无效')
+      await persistCustomerProfile(database, proposal.customerId, [update], undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+      const proposalRow = database._rows.profileUpdateProposals.find((item) => item.record_id === proposal._recordId)
+      if (proposalRow) await updateRecord(stage2Table('profileUpdateProposals'), proposalRow.record_id, mapFields('profileUpdateProposals', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+    } else {
+      const keepEvidence = resolution === 'KEEP_BOTH'
+      if (evidence) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: keepEvidence ? 'CONFIRMED' : 'REJECTED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+      if (proposal) {
+        const proposalRow = database._rows.profileUpdateProposals.find((item) => item.record_id === proposal._recordId)
+        if (proposalRow) await updateRecord(stage2Table('profileUpdateProposals'), proposalRow.record_id, mapFields('profileUpdateProposals', { review_status: keepEvidence ? 'CONFIRMED' : 'REJECTED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+      }
     }
-    await updateRecord(stage2Table('evidenceConflicts'), row.record_id, mapFields('evidenceConflicts', { status: 'RESOLVED', resolution, reviewer_id: actorId, resolved_at: now(), updated_at: now() }))
+    await updateRecord(stage2Table('evidenceConflicts'), row.record_id, mapFields('evidenceConflicts', { status: 'RESOLVED', resolution, reviewer_id: actorId, resolved_at: timestamp, updated_at: timestamp }))
     const newEvidence = database.evidenceItems.find((item) => item.id === conflict.newEvidenceId)
+    this.invalidateDatabaseCache()
     if (newEvidence) await this.maybeCompleteSource(newEvidence.sourceId)
     return this.sourceWorkspace(actorId, conflict.customerId)
   }
