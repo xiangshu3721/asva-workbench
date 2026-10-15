@@ -21,6 +21,13 @@ export const COMMERCIAL_BLOCKS = new Set(['NONE', 'SOFT_BLOCK', 'HARD_BLOCK'])
 export const ESCALATIONS = new Set(['NONE', 'ASVA_HUMAN', 'LICENSED_MENTAL_HEALTH', 'MEDICAL', 'EMERGENCY'])
 export const ALLOWED_ACTIONS = new Set(['LISTEN_SUPPORT', 'CLARIFY_CURRENT_STATE', 'CHECK_BASIC_FUNCTION', 'CHECK_SAFETY_INFORMATION', 'HUMAN_ONE_TO_ONE', 'CONTINUE_EXISTING_SUPPORT', 'PROFESSIONAL_REFERRAL', 'EMERGENCY_SUPPORT'])
 export const AVOID_ACTIONS = new Set(['NO_HIGH_PRESSURE_SALES', 'NO_DEEP_TRAUMA_EXPLORATION', 'NO_STRONG_PSYCHOLOGICAL_LABEL', 'NO_UNSUPPORTED_DIAGNOSIS', 'NO_GROUP_FIRST', 'NO_AUTOMATED_COMMERCIAL_RECOMMENDATION', 'NO_INTENSE_EXPERIENTIAL_WORK'])
+export const HIGH_RISK_GROUNDING_TYPES = new Set([
+  'SELF_HARM_IDEATION', 'SUICIDAL_INTENT_OR_PLAN', 'RECENT_SELF_HARM_BEHAVIOR',
+  'HARM_TO_OTHERS_IDEATION', 'VIOLENCE_OR_COERCION', 'SEVERE_FUNCTIONAL_IMPAIRMENT',
+  'SEVERE_SLEEP_DEPRIVATION_OR_ACTIVATION', 'REALITY_TESTING_CONCERN',
+  'SUBSTANCE_RELATED_SAFETY', 'ABUSE_OR_EXPLOITATION', 'ACUTE_TRAUMA_OR_BEREAVEMENT',
+  'BASIC_SELF_CARE_FAILURE', 'OTHER_SAFETY_CONCERN',
+])
 
 const DIAGNOSIS_PATTERN = /(抑郁症|焦虑症|双相|PTSD|人格障碍|精神分裂|精神病|焦虑型依恋|回避型人格|依恋障碍)/i
 const present = (value) => value !== null && value !== undefined && value !== ''
@@ -63,7 +70,7 @@ function sentenceParts(rawText) {
 
 function isNegated(sentence, index) {
   const prefix = sentence.slice(Math.max(0, index - 12), index)
-  return /(没有|没想过|从来没有|不曾|并没有|不会|否认|未曾)/.test(prefix)
+  return /(没有|无|没想过|从来没有|不曾|并没有|不会|否认|未曾|未)/.test(prefix)
 }
 
 function isThirdParty(sentence, index) {
@@ -74,7 +81,7 @@ function isThirdParty(sentence, index) {
 
 function recencyFor(sentence, negated) {
   if (/(十年前|多年以前|很久以前|小时候|过去|以前|曾经|当时)/.test(sentence)) return 'HISTORICAL'
-  if (/(现在|目前|此刻|今天|今晚|正在|仍然|依然|最近|这几天|近期)/.test(sentence)) return /(现在|目前|此刻|今天|今晚|正在|仍然|依然)/.test(sentence) ? 'CURRENT' : 'RECENT'
+  if (/(现在|目前|此刻|今天|今晚|正在|仍然|依然|最近|这几天|近期|昨晚|昨夜|前几天|上周)/.test(sentence)) return /(现在|目前|此刻|今天|今晚|正在|仍然|依然)/.test(sentence) ? 'CURRENT' : 'RECENT'
   if (negated) return 'UNKNOWN'
   return 'UNKNOWN'
 }
@@ -86,6 +93,49 @@ const SCANNER_PATTERNS = [
   { signal_type: 'SEVERE_SLEEP_DEPRIVATION_OR_ACTIVATION', pattern: /几天没睡|连续.*没睡|好几天.*睡不着|彻夜不眠/, label: '出现严重睡眠缺失相关表达' },
   { signal_type: 'REALITY_TESTING_CONCERN', pattern: /有人监视|听到声音.*伤害|看到不存在|现实.*不真实/, label: '出现需要进一步了解的现实体验' },
 ]
+
+const SAFETY_SEMANTIC_PATTERNS = {
+  SELF_HARM_IDEATION: /不想活|不想醒来|不再醒来|不醒来也无所谓|活着没意思|活着没有意义|想死|自杀|结束生命|伤害自己|自伤|自残|割腕|跳楼|吞药/i,
+  SUICIDAL_INTENT_OR_PLAN: /不想活|想死|自杀|结束生命|自杀计划|死亡计划|轻生|结束自己生命/i,
+  RECENT_SELF_HARM_BEHAVIOR: /伤害自己|自伤|自残|割腕|吞药|跳楼|伤口|自杀行为/i,
+  HARM_TO_OTHERS_IDEATION: /伤害他人|伤害别人|想杀|杀了他|杀了她|拿刀伤人|伤人念头/i,
+  VIOLENCE_OR_COERCION: /被打|家暴|暴力|威胁|控制|不让.*离开|限制自由|强迫/i,
+  SEVERE_FUNCTIONAL_IMPAIRMENT: /无法生活|无法工作|无法照顾自己|基本生活.*无法|基本功能.*受损|不吃不喝/i,
+  SEVERE_SLEEP_DEPRIVATION_OR_ACTIVATION: /几天没睡|连续.*没睡|好几天.*睡不着|彻夜不眠/i,
+  REALITY_TESTING_CONCERN: /有人监视|听到声音.*伤害|看到不存在|现实.*不真实/i,
+  SUBSTANCE_RELATED_SAFETY: /过量|酗酒|醉酒|戒断|毒品|药物滥用/i,
+  ABUSE_OR_EXPLOITATION: /家暴|被打|性侵|虐待|暴力威胁|经济控制/i,
+  ACUTE_TRAUMA_OR_BEREAVEMENT: /刚刚.*去世|最近.*死亡|突发.*事故|重大创伤|严重创伤/i,
+  BASIC_SELF_CARE_FAILURE: /无法照料自己|无法自理|不吃不喝|无法起床|无法维持基本生活/i,
+  OTHER_SAFETY_CONCERN: /安全风险|现实安全|失控|危险处境|紧急情况/i,
+}
+const NEGATION_PREFIX_PATTERN = /没有|无|没(?:有)?|从来没有|从未|不曾|未曾|并没有|否认|不会/i
+
+function refId(value) { return typeof value === 'string' ? value : value?.evidence_id || value?.evidenceId || '' }
+function evidenceRefText(ref) { return [ref?.display_text, ref?.excerpt, ref?.standard_value, ref?.field_key].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim() }
+function hasUnnegatedSemanticMatch(value, pattern) {
+  const source = String(value || '')
+  const matcher = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`)
+  let match
+  while ((match = matcher.exec(source))) {
+    const prefix = source.slice(Math.max(0, match.index - 14), match.index)
+    if (!NEGATION_PREFIX_PATTERN.test(prefix)) return true
+    if (match[0].length === 0) matcher.lastIndex += 1
+  }
+  return false
+}
+function safetySemanticMatch(signalType, refs) {
+  const pattern = SAFETY_SEMANTIC_PATTERNS[signalType]
+  return pattern ? refs.every((ref) => hasUnnegatedSemanticMatch(evidenceRefText(ref), pattern)) : false
+}
+function groundingIssue(signal, refs, customerId) {
+  if (!refs.length) return 'NO_EVIDENCE_REF'
+  if (!customerId || refs.some((ref) => typeof ref !== 'object')) return ''
+  if (refs.some((ref) => ref.customer_id && ref.customer_id !== customerId)) return 'CROSS_CUSTOMER_EVIDENCE'
+  if (refs.some((ref) => ref.source_exists === false || (ref.source_customer_id && ref.source_customer_id !== customerId))) return 'SOURCE_CUSTOMER_MISMATCH'
+  if (signal.polarity !== 'NEGATED' && HIGH_RISK_GROUNDING_TYPES.has(signal.signal_type) && !safetySemanticMatch(signal.signal_type, refs)) return 'EVIDENCE_SEMANTIC_MISMATCH'
+  return ''
+}
 
 export function scanImmediateSafety(rawText) {
   const flags = []
@@ -127,11 +177,23 @@ function normalizeSignal(item = {}) {
 
 export function normalizeSafetySignal(item) { return normalizeSignal(item) }
 
-export function validateSafetySignals(signals, evidenceRefs = []) {
+export function validateSafetySignals(signals, evidenceRefs = [], { customerId = '' } = {}) {
   const allowed = new Set(evidenceRefs.map((item) => item.evidence_id || item))
+  const refsById = new Map(evidenceRefs.map((item) => [refId(item), item]))
   const normalized = (Array.isArray(signals) ? signals : []).map(normalizeSignal)
-  const grounded = normalized.filter((item) => item.evidence_refs.length && item.evidence_refs.every((id) => allowed.has(id)))
-  return { signals: grounded, invalidCount: normalized.length - grounded.length, ungroundedCount: normalized.filter((item) => !item.evidence_refs.length || item.evidence_refs.some((id) => !allowed.has(id))).length }
+  const rejected = []
+  const grounded = normalized.filter((item) => {
+    const refs = item.evidence_refs.map((id) => refsById.get(id)).filter(Boolean)
+    const hasUnknownRef = !item.evidence_refs.length || item.evidence_refs.some((id) => !allowed.has(id))
+    const issue = hasUnknownRef ? 'UNKNOWN_EVIDENCE_REF' : groundingIssue(item, refs, customerId)
+    if (issue) {
+      rejected.push({ signal_type: item.signal_type, evidence_refs: item.evidence_refs, reason: issue })
+      if (customerId) console.warn('[ASVA_SAFETY_SIGNAL_GROUNDING_REJECTED]', JSON.stringify({ customer_id: customerId, signal_type: item.signal_type, evidence_refs: item.evidence_refs, reason: issue }))
+      return false
+    }
+    return true
+  })
+  return { signals: grounded, invalidCount: normalized.length - grounded.length, ungroundedCount: rejected.length, groundingRejectedCount: rejected.length, rejections: rejected }
 }
 
 function currentPresent(signal) { return signal.polarity === 'PRESENT' && ['CURRENT', 'RECENT'].includes(signal.recency) && signal.subject_scope === 'SELF' }

@@ -8,6 +8,14 @@ export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
 }
 
+export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJson = false, emptyContent = false } = {}) {
+  if (aborted) return 'DEEPSEEK_TIMEOUT'
+  if (invalidJson || emptyContent) return 'DEEPSEEK_INVALID_RESPONSE'
+  if (status === 429) return 'DEEPSEEK_RATE_LIMIT'
+  if (status === 408 || status >= 500) return 'DEEPSEEK_UNAVAILABLE'
+  return 'DEEPSEEK_INVALID_RESPONSE'
+}
+
 export const HUMAN_LANGUAGE_RULE = '最终面向导师和管理员展示的解释必须使用自然、直接的中文；不要输出内部英文枚举、字段名、代码、Schema 名称、版本号、系统状态标识或调试信息。遇到信息不足时直接说“待确认”“资料还不够”，不要把内部值原样写进解释。'
 
 async function callDeepSeek(messages, temperature = 0.2) {
@@ -24,13 +32,23 @@ async function callDeepSeek(messages, temperature = 0.2) {
       body: JSON.stringify({ model: config.deepseek.model, messages: humanizedMessages, temperature, stream: false }),
       signal: controller.signal,
     })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) throw new DeepSeekUnavailableError(payload?.error?.message || `DeepSeek HTTP ${response.status}`)
+    let payload = null
+    try {
+      payload = await response.json()
+    } catch {
+      if (response.ok) throw Object.assign(new Error('DeepSeek 返回内容不是有效 JSON'), { code: classifyDeepSeekResponse({ invalidJson: true }), status: 502 })
+    }
+    if (!response.ok) {
+      const code = classifyDeepSeekResponse({ status: response.status })
+      throw Object.assign(new Error(payload?.error?.message || `DeepSeek HTTP ${response.status}`), { code, status: response.status })
+    }
     const content = payload?.choices?.[0]?.message?.content?.trim()
-    if (!content) throw new DeepSeekUnavailableError('DeepSeek 返回内容为空')
+    if (!content) throw Object.assign(new Error('DeepSeek 返回内容为空或缺少 choices.message.content'), { code: classifyDeepSeekResponse({ emptyContent: true }), status: 502 })
     return content
   } catch (error) {
-    if (error instanceof DeepSeekUnavailableError) throw error
+    if (error?.code === 'DEEPSEEK_INVALID_RESPONSE' || error?.code === 'DEEPSEEK_RATE_LIMIT') throw error
+    if (error?.name === 'AbortError') throw Object.assign(new Error('DeepSeek 请求超时'), { code: classifyDeepSeekResponse({ aborted: true }), status: 504 })
+    if (error instanceof DeepSeekUnavailableError || error?.code === 'DEEPSEEK_UNAVAILABLE') throw error
     throw new DeepSeekUnavailableError(error instanceof Error ? error.message : 'DeepSeek 请求失败')
   } finally {
     clearTimeout(timeout)
@@ -108,13 +126,17 @@ export async function createProfileDraft(input) {
 }
 
 export async function createEvidenceCandidates(input) {
+  const sourceText = String(input.text || '')
+  const promptInput = JSON.stringify({ source_text: sourceText, source_role: input.sourceRole || 'ADMIN', source_perspective: input.sourcePerspective || (input.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'), current_snapshot: input.current || {} })
+  input.onDiagnostics?.({ source_char_count: sourceText.length, prompt_char_count: promptInput.length, token_estimate: Math.ceil(promptInput.length / 2) })
   const raw = await callDeepSeek([
     { role: 'system', content: '你是 ASVA 资料整理助手。只从当前资料文本中提取可回溯的原子信息，不生成客户画像总结，不诊断，不补全，不把推测写成事实。严格返回 JSON：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"Customer字段英文名或空","value":"标准值","display_text":"简短展示文本","source_excerpt":"资料中的原文短摘录","occurred_at":"资料中明确的时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0}}]}。source_perspective=STAFF_REPORTED 时，不能把内容写成客户原话或 SELF_MEANING；可记录明确事实为 FACT。source_perspective=CUSTOMER_FIRST_PARTY 时，客户本人表达可用 SELF_MEANING 或 FACT。只有导师观察资料才可使用 OBSERVATION；HYPOTHESIS 必须带有可能、似乎、推测等不确定语气。凡是带有“高中时期、18岁、约20岁、约24岁、后来、进入、转向、离乡、成为”等历史时间或转折表达的教育经历、职业经历、职业迷茫和后续转向，必须拆成可回溯的 FACT + EVENT 证据，field_key 可为空；只有当前状态或稳定快照才使用 PROFILE_FIELD/CURRENT_STATE。字段只能使用：gender,birth_date,age,birth_year,city,hometown,marital_status,education,living_status,children_summary,occupation,industry,position,work_years,job_status,income_range,career_stage,career_satisfaction,career_problem,career_goal,entrepreneurship_experience,family_summary,parents_relationship,father_summary,mother_summary,relationship_with_father,relationship_with_mother,siblings,family_events,family_support_level,relationship_status,partner_summary,marriage_years,relationship_satisfaction,relationship_conflicts,communication_pattern,conflict_pattern,relationship_goal,children_detail,parent_child_relationship,parenting_problem,parenting_values,hobbies,sports,reading,travel,art_preferences,social_preference,sleep,diet,routine,life_satisfaction,self_description,personality_traits,communication_style,decision_style,emotion_expression,stress_response,conflict_style,action_style,strengths,common_blocks,core_values,family_values,career_values,money_values,relationship_values,success_definition,happiness_definition,freedom_definition,growth_attitude,current_core_issue,secondary_issues,current_stressors,current_goal,current_expectation,current_resources,support_system,current_barriers,energy_state,recent_major_changes。' },
-    { role: 'user', content: JSON.stringify({ source_text: input.text || '', source_role: input.sourceRole || 'ADMIN', source_perspective: input.sourcePerspective || (input.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'), current_snapshot: input.current || {} }) },
+    { role: 'user', content: promptInput },
   ])
   const parsed = parseJson(raw)
-  const items = Array.isArray(parsed?.items) ? parsed.items : []
-  const sourceText = String(input.text || '')
+  if (!parsed) throw Object.assign(new Error('资料整理模型返回内容无法解析为 JSON'), { code: 'JSON_PARSE_FAILED', status: 502 })
+  if (!Array.isArray(parsed.items)) throw Object.assign(new Error('资料整理模型返回 JSON 缺少 items 数组'), { code: 'SCHEMA_VALIDATION_FAILED', status: 502 })
+  const items = parsed.items
   const explicitDate = sourceText.match(/(\d{4})年(\d{1,2})月(\d{1,2})日出生/)
   if (explicitDate && !items.some((item) => item?.field_key === 'birth_date')) {
     const value = `${explicitDate[1]}-${String(explicitDate[2]).padStart(2, '0')}-${String(explicitDate[3]).padStart(2, '0')}`

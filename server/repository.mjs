@@ -1054,6 +1054,7 @@ export class FeishuRepository {
     const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}`)
     const processingStartedAt = now()
     const processingVersion = Number(source.processingVersion || 1) + 1
+    const processingDiagnostics = { source_char_count: String(source.rawText || '').length, prompt_char_count: 0, token_estimate: 0 }
     await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, last_batch_id: batchId, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
     try {
       if (!source.rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
@@ -1061,7 +1062,7 @@ export class FeishuRepository {
       if (!resumeExistingEvidence) {
         const chunks = chunkText(source.rawText)
         for (const chunk of chunks) {
-          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {} })
+          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
           for (const rawItem of rawItems) {
             if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
             const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
@@ -1123,7 +1124,7 @@ export class FeishuRepository {
       const finishedAt = now()
       await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_batch_id: batchId, last_processing_at: finishedAt, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',').slice(0, 200) : '', updated_at: finishedAt })
       const debugDatabase = await this.load()
-      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, extraction_batch: batchId, evidence_count: unique.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',') : '', extraction_batch: batchId, evidence_count: unique.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)
       await this.markSafetyStale(source.customerId).catch((error) => this.audit('MARK_SAFETY_STALE', source.customerId, actorId, 'FAIL', error instanceof Error ? error.code || error.message : 'SAFETY_STALE_FAILED'))
@@ -1132,7 +1133,7 @@ export class FeishuRepository {
     } catch (error) {
       const failedAt = now()
       await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_batch_id: batchId, last_processing_at: failedAt, processing_error: processingErrorCode(error), updated_at: failedAt }).catch(() => {})
-      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', duration_ms: Date.now() - startedAt })
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', processing_error: processingErrorCode(error), extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'EXTRACTION_FAILED')
       throw error

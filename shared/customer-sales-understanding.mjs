@@ -12,10 +12,20 @@ const EXPLOITATIVE_TERMS = ['趁着', '抓住痛点成交', '制造焦虑', '逼
 const EXPLOITATIVE_PATTERN = new RegExp(`(?:${EXPLOITATIVE_TERMS.join('|')})`, 'gi')
 const SAFE_GUIDANCE_CLAUSE_PATTERN = /(^|[，。；;]\s*)(?:不|不要|禁止|避免|不得|不能|严禁|不应|无需|不进行|不使用|不用|不做|不要用)[^。；;]*/g
 const UNSUPPORTED_DEEP_FEAR_PATTERN = /(被抛弃|抛弃恐惧|童年创伤|原生家庭创伤|深层创伤|依恋创伤)/i
-const WILLINGNESS_HIGH_PATTERN = /(主动询问(?:价格|费用|收费|报价|报名|付款|购买)|价格(?:多少|怎么付|如何付)|费用(?:多少|怎么付|如何付)|报名(?:方式|流程)|怎么(?:报名|付款)|如何(?:报名|付款)|主动报名|明确(?:表示)?愿意(?:购买|付费|付款)|准备(?:购买|付款)|我(?:要|想)购买|主动购买|续费|升级服务|已(?:经)?支付|已付款|已付费|已购买)/i
-const WILLINGNESS_MEDIUM_PATTERN = /(愿意(?:为|投入|花费|付费|支付)|准备(?:为|投入|花费|付费)|可以(?:为|投入|花费)|(?:有|可接受|能接受)(?:一定)?预算|投入费用|花钱解决|付费解决|愿意进一步投入)/i
-const SERVICE_BEHAVIOR_PATTERN = /(主动预约|预约咨询|主动咨询|参加服务|参与服务|持续参加|持续沟通|再次咨询|多次沟通|进一步帮助|如何获得(?:进一步)?帮助|了解服务内容|咨询服务|报名课程)/i
+const WILLINGNESS_HIGH_PATTERN = /(主动询问(?:价格|费用|收费|报价|报名|付款|购买)|价格(?:多少|怎么付|如何付)|费用(?:多少|怎么付|如何付)|报名(?:方式|流程)|怎么(?:报名|付款)|如何(?:报名|付款)|主动报名|明确(?:表示)?愿意(?:购买|付费|付款|投入(?:费用|资金)?)|准备(?:购买|付款)|我(?:要|想)购买|主动购买|续费|升级服务|开始时间|什么时候开始|已(?:经)?支付|已付款|已付费|已购买)/i
+const WILLINGNESS_MEDIUM_PATTERN = /(愿意(?:为|投入|花费|花|付费|支付)|准备(?:为|投入|花费|花|付费)|可以(?:为|投入|花费|花)|(?:有|可接受|能接受)(?:一定)?预算|投入费用|花钱解决|付费解决|愿意进一步投入)/i
+const SERVICE_BEHAVIOR_PATTERN = /(主动预约|预约咨询|主动咨询|参加服务|参与服务|持续参加|持续沟通|再次咨询|多次沟通|进一步帮助|如何获得(?:进一步)?帮助|了解服务(?:内容|方式)|咨询服务|报名课程)/i
 const WILLINGNESS_LOW_PATTERN = /(不愿(?:意)?(?:付费|花钱|购买|投入)|不想(?:付费|花钱|购买|投入)|只接受免费|只想免费|免费才考虑|不会(?:再)?投入费用|当前不会投入|不考虑付费|拒绝(?:购买|付费|报名)|不(?:想|会|要)(?:购买|报名|付费)|不报名|不购买)/i
+const NEGATED_WILLINGNESS_SIGNAL_PATTERN = /(?:没有(?:主动)?(?:询问|表达)|未(?:曾)?(?:主动)?(?:询问|表达)|不曾(?:主动)?(?:询问|表达)|从未(?:主动)?(?:询问|表达)|尚未(?:主动)?(?:询问|表达)|还没(?:主动)?(?:询问|表达)|并未(?:主动)?(?:询问|表达)|不愿意|不想|拒绝|不会)[^。；;，,\n]{0,20}(?:价格|费用|收费|报价|报名|付款|支付|购买|投入|开始)/i
+const FINANCIAL_SIGNAL_PATTERNS = {
+  income: /(收入|月收入|年收入|工资|薪资|项目收入|收入稳定性|营收)/i,
+  expense: /(支出|固定支出|房租|房贷|生活成本|每月开销|开销|家庭负担)/i,
+  savings: /(储蓄|存款|可动用资金|流动资金)/i,
+  budget: /(预算|可投入金额|可接受支出|成长预算|学习预算|投入金额|几千块.*支出|支出.*认真考虑|一年.*万元以内)/i,
+  debt: /(负债|消费贷|借款|债务压力)/i,
+  financialSupport: /(家庭经济支持|配偶支持|父母支持|无家庭支持|没有持续家庭经济支持|家庭支持)/i,
+  cashflowPressure: /(入不敷出|控制非必要支出|现金流紧张|支出.*认真考虑|认真考虑.*支出)/i,
+}
 const present = (value) => value !== null && value !== undefined && value !== ''
 const text = (value, limit = 320) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, limit)
 const unique = (items) => [...new Set((items || []).filter(Boolean).map(String))]
@@ -58,9 +68,42 @@ function normalizeHistory({ enrollments = [], products = [], sessions = [] } = {
 
 function commercialSignals(evidenceItems = [], enrollments = []) {
   const evidence = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS')
-  const paymentEvidence = evidence.filter((item) => /(付费|支付|付款|价格|费用|预算|报名|购买|续费|升级|金额|开始学习|什么时候开始)/.test(`${item.displayText || ''} ${item.sourceExcerpt || ''} ${item.fieldKey || ''}`))
+  const evidenceText = (item) => `${item.displayText || ''} ${item.sourceExcerpt || ''} ${item.standardValue || ''} ${item.fieldKey || ''}`.replace(/\s+/g, ' ').trim()
+  const paymentEvidence = evidence.filter((item) => {
+    const textValue = evidenceText(item)
+    return /(付费|支付|付款|价格|费用|预算|报名|购买|续费|升级|金额|开始学习|开始时间|什么时候开始)/.test(textValue) && !NEGATED_WILLINGNESS_SIGNAL_PATTERN.test(textValue)
+  })
+  const financialEvidence = evidence.flatMap((item) => {
+    const textValue = evidenceText(item)
+    const categories = Object.entries(FINANCIAL_SIGNAL_PATTERNS).filter(([, pattern]) => pattern.test(textValue)).map(([category]) => category)
+    return categories.map((category) => ({
+      category,
+      evidence_id: item.id,
+      source_record_id: item.sourceId || null,
+      fact: text(item.displayText || item.standardValue),
+      quote: text(item.sourceExcerpt || item.displayText),
+      field_key: text(item.fieldKey),
+    }))
+  })
   const paidHistory = enrollments.filter((item) => item.paymentStatus === 'PAID' || item.paid)
-  return { paymentEvidence, paidHistory, hasStrongPaymentSignal: paymentEvidence.length > 0 || paidHistory.length > 0 }
+  const financialEvidenceByCategory = Object.fromEntries(Object.keys(FINANCIAL_SIGNAL_PATTERNS).map((category) => [category, financialEvidence.filter((item) => item.category === category)]))
+  return { paymentEvidence, financialEvidence, financialEvidenceByCategory, paidHistory, hasStrongPaymentSignal: paymentEvidence.length > 0 || paidHistory.length > 0 }
+}
+
+export function normalizeFinancialEvidence(evidenceItems = []) {
+  const signals = commercialSignals(evidenceItems, [])
+  return signals.financialEvidenceByCategory
+}
+
+export function commercialSignalsForEvidence(evidenceItems = [], enrollments = []) {
+  const signals = commercialSignals(evidenceItems, enrollments)
+  return {
+    paymentEvidence: signals.paymentEvidence,
+    financialEvidence: signals.financialEvidence,
+    financialEvidenceByCategory: signals.financialEvidenceByCategory,
+    paidHistory: signals.paidHistory,
+    hasStrongPaymentSignal: signals.hasStrongPaymentSignal,
+  }
 }
 
 function confirmedEvidence(evidenceItems = []) {
@@ -73,18 +116,28 @@ function directSignal(items, pattern) {
   return items.filter((item) => pattern.test(evidenceText(item))).map((item) => item.id).filter(Boolean)
 }
 
+function positiveWillingnessSignal(item) {
+  const value = evidenceText(item)
+  return WILLINGNESS_HIGH_PATTERN.test(value) && !NEGATED_WILLINGNESS_SIGNAL_PATTERN.test(value)
+}
+
+function serviceBehaviorEvidenceIds({ evidenceItems = [] } = {}) {
+  return directSignal(confirmedEvidence(evidenceItems), SERVICE_BEHAVIOR_PATTERN)
+}
+
 function hasServiceBehavior({ evidenceItems = [], enrollments = [], sessions = [], appointments = [] } = {}) {
   const confirmed = confirmedEvidence(evidenceItems)
-  return appointments.length > 0 || enrollments.some((item) => item && item.status !== 'CANCELLED') || sessions.length > 0 || directSignal(confirmed, SERVICE_BEHAVIOR_PATTERN).length > 0
+  return appointments.length > 0 || enrollments.some((item) => item && item.status !== 'CANCELLED') || sessions.length > 0 || serviceBehaviorEvidenceIds({ evidenceItems: confirmed }).length > 0
 }
 
 export function willingnessEvidenceGate({ evidenceItems = [], enrollments = [], sessions = [], appointments = [] } = {}) {
   const confirmed = confirmedEvidence(evidenceItems)
-  const highEvidenceIds = directSignal(confirmed, WILLINGNESS_HIGH_PATTERN)
+  const highEvidenceIds = confirmed.filter(positiveWillingnessSignal).map((item) => item.id).filter(Boolean)
   const mediumWillingnessIds = directSignal(confirmed, WILLINGNESS_MEDIUM_PATTERN)
   const lowEvidenceIds = directSignal(confirmed, WILLINGNESS_LOW_PATTERN)
   const paidHistory = enrollments.filter((item) => item && (item.paymentStatus === 'PAID' || item.paid === true))
   const serviceBehavior = hasServiceBehavior({ evidenceItems, enrollments, sessions, appointments })
+  const serviceBehaviorEvidence = serviceBehaviorEvidenceIds({ evidenceItems })
   const hasHighSignal = highEvidenceIds.length > 0 || paidHistory.length > 0
   const hasMediumSignal = mediumWillingnessIds.length > 0 && serviceBehavior
   const level = hasHighSignal ? 'HIGH' : lowEvidenceIds.length > 0 ? 'LOW' : hasMediumSignal ? 'MEDIUM' : 'UNKNOWN'
@@ -92,6 +145,7 @@ export function willingnessEvidenceGate({ evidenceItems = [], enrollments = [], 
     level,
     highEvidenceIds: unique(highEvidenceIds),
     mediumWillingnessIds: unique(mediumWillingnessIds),
+    serviceBehaviorEvidenceIds: unique(serviceBehaviorEvidence),
     lowEvidenceIds: unique(lowEvidenceIds),
     paidHistoryCount: paidHistory.length,
     serviceBehavior,
@@ -102,7 +156,7 @@ export function willingnessEvidenceGate({ evidenceItems = [], enrollments = [], 
 export function applyWillingnessEvidenceGate(value, context = {}) {
   const gate = willingnessEvidenceGate(context)
   const current = value?.willingness_to_pay || {}
-  const evidenceIds = gate.level === 'HIGH' ? unique([...gate.highEvidenceIds, ...gate.mediumWillingnessIds]) : gate.level === 'LOW' ? gate.lowEvidenceIds : gate.level === 'MEDIUM' ? unique([...gate.mediumWillingnessIds, ...gate.highEvidenceIds]) : []
+  const evidenceIds = gate.level === 'HIGH' ? unique([...gate.highEvidenceIds, ...gate.mediumWillingnessIds]) : gate.level === 'LOW' ? gate.lowEvidenceIds : gate.level === 'MEDIUM' ? unique([...gate.mediumWillingnessIds, ...gate.serviceBehaviorEvidenceIds, ...gate.highEvidenceIds]) : []
   const explanations = {
     HIGH: '存在明确的询价、购买或真实支付信号，可以在人工确认后评估商业讨论。',
     MEDIUM: '存在愿意投入解决问题的明确表达，并有真实服务行为；仍需继续确认具体条件。',
@@ -142,7 +196,12 @@ export function buildCustomerSalesContext({ customer = {}, evidenceItems = [], s
     current_goals: understanding.current_goals,
     evidence_refs: understanding.evidence_refs,
     coverage_gaps: understanding.coverage_gaps,
-    financial_evidence: signals.paymentEvidence.map((item) => ({ display_text: text(item.displayText), excerpt: text(item.sourceExcerpt), evidence_id: item.id })),
+    financial_evidence: signals.financialEvidence,
+    financial_evidence_by_category: signals.financialEvidenceByCategory,
+    commercial_signals: {
+      payment_evidence: signals.paymentEvidence.map((item) => ({ display_text: text(item.displayText), excerpt: text(item.sourceExcerpt), evidence_id: item.id })),
+      service_behavior_evidence_ids: directSignal(confirmed, SERVICE_BEHAVIOR_PATTERN),
+    },
     paid_history_count: signals.paidHistory.length,
     historical_enrollments: history.enrollmentHistory,
     service_history: history.serviceHistory,
