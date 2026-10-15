@@ -86,13 +86,12 @@ export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extract
 }
 
 export function dedupeEvidence(items) {
-  const seen = new Set()
-  return items.filter((item) => {
-    const key = evidenceDedupKey(item)
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  const unique = []
+  for (const item of items) {
+    if (unique.some((existing) => evidenceEquivalent(existing, item))) continue
+    unique.push(item)
+  }
+  return unique
 }
 
 function normalizedScalar(value) {
@@ -136,7 +135,9 @@ export function evidenceEquivalent(left, right) {
   if (String(left.fieldKey || '') !== String(right.fieldKey || '')) return false
   if (JSON.stringify(normalizeEvidenceValue(left.standardValue)) !== JSON.stringify(normalizeEvidenceValue(right.standardValue))) return false
   if (JSON.stringify(normalizeEvidenceEventTime(left.occurredAt)) !== JSON.stringify(normalizeEvidenceEventTime(right.occurredAt))) return false
-  return evidenceLocatorsEquivalent(left.locator, right.locator)
+  if (evidenceLocatorsEquivalent(left.locator, right.locator)) return true
+  const normalizeExcerpt = (value) => normalizeText(value, 500).replace(/\s+/g, '')
+  return Boolean(normalizeExcerpt(left.sourceExcerpt) && normalizeExcerpt(left.sourceExcerpt) === normalizeExcerpt(right.sourceExcerpt))
 }
 
 export function evidenceDedupKey(item) {
@@ -161,6 +162,7 @@ export function classifyEvidenceChange(evidence, currentValue) {
   if (STABLE_FACT_FIELDS.has(evidence.fieldKey)) return { action: 'REVIEW_REQUIRED', changeType: 'FACT_CONTRADICTION', conflictType: 'FACT_CONTRADICTION' }
   if (CUMULATIVE_FIELDS.has(evidence.fieldKey)) return { action: 'APPEND', changeType: 'CUMULATIVE_ADDITION', conflictType: null }
   if (SUBJECTIVE_FIELDS.has(evidence.fieldKey) || evidence.evidenceType === 'SELF_MEANING' || evidence.evidenceType === 'OBSERVATION') return { action: 'REVIEW_REQUIRED', changeType: 'SUBJECTIVE_DIFFERENCE', conflictType: 'SUBJECTIVE_DIFFERENCE' }
+  if (evidence.semanticKind === 'EVENT') return { action: 'ADD', changeType: 'NEW_INFORMATION', conflictType: null }
   if (evidence.semanticKind === 'CURRENT_STATE' || ['city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_goal'].includes(evidence.fieldKey)) return { action: 'UPDATE', changeType: 'STATE_CHANGE', conflictType: 'POSSIBLE_STATE_CHANGE' }
   return { action: 'REVIEW_REQUIRED', changeType: 'SOURCE_DISAGREEMENT', conflictType: 'SOURCE_DISAGREEMENT' }
 }

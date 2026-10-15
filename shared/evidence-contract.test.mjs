@@ -46,4 +46,18 @@ describe('Stage 2 evidence contract', () => {
     expect(evidenceEquivalent(left, { ...right, standardValue: '另一个值' })).toBe(false)
     expect(evidenceEquivalent(left, { ...right, occurredAt: '约21岁' })).toBe(false)
   })
+
+  it('treats future-plan events as new information rather than current-fact conflicts', () => {
+    expect(classifyEvidenceChange({ fieldKey: 'city', semanticKind: 'EVENT', evidenceType: 'FACT', standardValue: '深圳' }, '杭州')).toEqual({ action: 'ADD', changeType: 'NEW_INFORMATION', conflictType: null })
+  })
+
+  it('dedupes the same source evidence even when extraction locators drift', () => {
+    const base = { sourceId: 'SRC-1', evidenceType: 'FACT', semanticKind: 'CURRENT_STATE', fieldKey: 'city', standardValue: '杭州', occurredAt: '', confidence: 0.9, displayText: '当前城市为杭州', sourceExcerpt: '目前住在 杭州', locator: { paragraphIndex: 1, charStart: 0, charEnd: 10 } }
+    const shifted = { ...base, sourceExcerpt: '目前住在杭州', locator: { paragraphIndex: 9, charStart: 100, charEnd: 110 } }
+    expect(dedupeEvidence([base, shifted])).toHaveLength(1)
+  })
+
+  it('requires human review for a changed current-state field', () => {
+    expect(classifyEvidenceChange({ fieldKey: 'job_status', semanticKind: 'CURRENT_STATE', evidenceType: 'FACT', standardValue: '自由职业' }, '在职')).toMatchObject({ action: 'UPDATE', changeType: 'STATE_CHANGE', conflictType: 'POSSIBLE_STATE_CHANGE' })
+  })
 })
