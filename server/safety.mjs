@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { scanImmediateSafety, assessSafetyRules, normalizeSafetyAssessment, qualityCheckSafetyAssessment, safetyEvidenceFingerprint, SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION } from '../shared/safety-contract.mjs'
+import { scanImmediateSafety, assessSafetyRules, normalizeSafetyAssessment, qualityCheckSafetyAssessment, safetyEvidenceFingerprint, validateSafetySignals, SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION } from '../shared/safety-contract.mjs'
 import { buildCustomerUnderstandingContext, CONTEXT_DENSITY_POLICY_VERSION } from '../shared/customer-understanding.mjs'
 
 const SENSITIVE_FIELDS = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
@@ -24,12 +24,16 @@ function evidenceRef(item, sourceRecords, index) {
     evidence_id: item.id,
     evidence_ref: `E${index + 1}`,
     source_id: item.sourceId,
+    customer_id: item.customerId || null,
+    source_customer_id: source?.customerId || null,
+    source_exists: Boolean(source),
     source_title: text(source?.title || '资料记录', 80),
     display_text: text(item.displayText || '已记录信息', 180),
     excerpt: text(item.sourceExcerpt || item.displayText || '', 240),
+    standard_value: text(item.standardValue || '', 240),
+    field_key: item.fieldKey || '',
     evidence_type: item.evidenceType,
     semantic_kind: item.semanticKind,
-    field_key: item.fieldKey || '',
     occurred_at: item.occurredAt || null,
     source_perspective: item.sourcePerspective || (item.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'),
   }
@@ -76,7 +80,10 @@ export function buildCustomerSafetyContext({ customer = {}, evidenceItems = [], 
     ...Object.values(snapshot),
   ].filter(Boolean).join('\n')
   const immediateFlags = scanImmediateSafety(sourceTextForScan)
-  const safeImmediateFlags = immediateFlags.map(({ matched_phrase: _matched, source_excerpt: excerpt, ...safe }) => ({ ...safe, evidence_refs: [refs.find((item) => excerpt && `${item.display_text} ${item.excerpt}`.includes(excerpt))?.evidence_id || refs[0]?.evidence_id].filter(Boolean) }))
+  const safeImmediateFlags = immediateFlags.map(({ matched_phrase: _matched, source_excerpt: excerpt, ...safe }) => {
+    const matched = refs.find((item) => excerpt && `${item.display_text} ${item.excerpt}`.includes(excerpt))
+    return matched ? { ...safe, evidence_refs: [matched.evidence_id] } : null
+  }).filter(Boolean)
   const safetyDataSufficiency = classifySufficiency({ evidence: confirmed, snapshot })
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').slice(0, 8).map((item) => ({ field_key: item.fieldKey, current_value: text(item.currentValue), proposed_value: text(item.newValue) }))
   const contextDensity = densityContext.classification
@@ -115,7 +122,8 @@ export function buildSafetyAssessment({ context, candidates = {}, now = new Date
     const scannerOverride = (context?.immediate_safety_flags || []).find((flag) => HIGH_RISK_SIGNAL_TYPES.has(flag.signal_type) && HIGH_RISK_SIGNAL_TYPES.has(item.signal_type) && flag.evidence_refs?.some((ref) => evidence_refs.includes(ref)))
     return scannerOverride ? { ...item, subject_scope: scannerOverride.subject_scope, polarity: scannerOverride.polarity, recency: scannerOverride.recency, explicitness: scannerOverride.explicitness, evidence_refs } : { ...item, evidence_refs }
   })
-  const signals = normalizedCandidates.filter((item) => item.evidence_refs?.length)
+  const grounding = validateSafetySignals(normalizedCandidates, evidenceRefs, { customerId: context?.customer_id || '' })
+  const signals = grounding.signals
   const rules = assessSafetyRules({ signals, safetyDataSufficiency: context?.safety_data_sufficiency, contextDensity: context?.context_density, openConflict: (context?.open_conflicts || []).length > 0 })
   const raw = {
     assessment_id: `SAFETY-${context?.customer_id || 'CUSTOMER'}`,
