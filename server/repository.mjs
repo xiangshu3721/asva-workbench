@@ -20,6 +20,7 @@ import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
 import { applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
+import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -31,6 +32,7 @@ const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
 export const customerIdForOperation = (operationId) => stableOperationId(operationId, 'CUS')
 export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
+const publicSource = ({ rawText: _rawText, _recordId: _recordId, processingError, ...safe }) => ({ ...safe, processingError: processingErrorMessage(processingError) || null })
 const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const loginRateLimiter = new LoginRateLimiter()
 const invalidLogin = () => Object.assign(new Error('登录信息验证失败'), { code: 'AUTH_INVALID', status: 401 })
@@ -981,7 +983,7 @@ export class FeishuRepository {
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
-    return { sources: visibleDatabase.sourceRecords.filter((item) => item.customerId === customerId).map(({ rawText: _rawText, ...safe }) => safe), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.customerId === customerId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.customerId === customerId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.customerId === customerId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === customerId)?.profileMaterialization }
+    return { sources: visibleDatabase.sourceRecords.filter((item) => item.customerId === customerId).map(publicSource), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.customerId === customerId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.customerId === customerId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.customerId === customerId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === customerId)?.profileMaterialization }
   }
   async sourceDetail(actorId, sourceId) {
     requireStage2Tables()
@@ -989,7 +991,7 @@ export class FeishuRepository {
     const visibleDatabase = scope(database, actorId)
     const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     if (!source) throw new Error('资料不存在')
-    return { source, evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && visibleDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === source.customerId)?.profileMaterialization }
+    return { source: publicSource(source), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && visibleDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === source.customerId)?.profileMaterialization }
   }
   async processSource(actorId, sourceId, { force = false } = {}) {
     requireStage2Tables()
