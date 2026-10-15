@@ -1110,7 +1110,8 @@ export class FeishuRepository {
               const exactExcerpt = Boolean(excerpt && compactSource.includes(excerpt))
               const rawStart = Number(rawItem?.locator?.char_start)
               const rawEnd = Number(rawItem?.locator?.char_end)
-              const explicitRange = Number.isInteger(rawStart) && Number.isInteger(rawEnd) && rawStart >= 0 && rawEnd > rawStart && rawEnd <= rawSource.length && rawSource.slice(rawStart, rawEnd).trim().length > 0
+              const rangeIsGrounded = (start, end) => Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start && end <= rawSource.length && rawSource.slice(start, end).trim().length > 0
+              const explicitRange = rangeIsGrounded(rawStart, rawEnd) || rangeIsGrounded(Number(chunk.charStart || 0) + rawStart, Number(chunk.charStart || 0) + rawEnd)
               normalized._sourceGrounded = exactExcerpt || explicitRange
               candidates.push(normalized)
             }
