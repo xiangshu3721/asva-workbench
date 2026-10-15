@@ -12,6 +12,7 @@ import { GlobalAIAssistant } from './GlobalAIAssistant'
 import { DebugPanel, ReleaseIndicator } from './DebugPanel'
 import { applySpeechResults, emptySpeechTranscript, joinSpeechText, shouldRecoverSpeech, speechErrorMessage, speechTranscriptText, type SpeechTranscriptState } from './speech'
 import { canStartCustomerSave } from './save-contract'
+import { createEvidenceWorkspaceCache } from './evidence-workspace-cache'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { shouldResumeSource } from './processing-contract'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
@@ -451,6 +452,9 @@ function CustomerDetail(props: CustomerDetailProps) {
   const activeCustomerIdRef = useRef(customer.id)
   const understandingSequenceRef = useRef(0)
   const salesSequenceRef = useRef(0)
+  const sourceWorkspaceLoaderRef = useRef(props.onSourceWorkspace)
+  sourceWorkspaceLoaderRef.current = props.onSourceWorkspace
+  const [evidenceWorkspaceCache] = useState(() => createEvidenceWorkspaceCache<SourceWorkspace>((customerId) => sourceWorkspaceLoaderRef.current(customerId)))
   if (activeCustomerIdRef.current !== customer.id) {
     activeCustomerIdRef.current = customer.id
     understandingSequenceRef.current += 1
@@ -553,7 +557,7 @@ function CustomerDetail(props: CustomerDetailProps) {
     </header>
     <CustomerUnderstandingOverview understanding={currentUnderstanding} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} />
     <CustomerUnderstandingPanel key={customer.id} response={understandingResponse} fallback={customer.understanding} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={setUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
-    <details className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>档案、服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><CustomerProfileRenderer customer={customer} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details className="record-disclosure evidence-disclosure"><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body"><EvidenceWorkspace key={customer.id} customer={customer} onLoad={props.onSourceWorkspace} onExtractDocument={props.onExtractDocument} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} /></div></details></div></details>
+    <details className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>档案、服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><CustomerProfileRenderer customer={customer} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details className="record-disclosure evidence-disclosure"><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body"><EvidenceWorkspace key={customer.id} customer={customer} cachedWorkspace={evidenceWorkspaceCache.getCached(customer.id)} onLoad={(customerId) => evidenceWorkspaceCache.load(customerId)} onWorkspaceChange={(customerId, workspace) => evidenceWorkspaceCache.setCached(customerId, workspace)} onExtractDocument={props.onExtractDocument} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} /></div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={database.products.filter(activeProductForManualEntry)} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
 }
@@ -691,9 +695,15 @@ function EnrollmentEditor({ customer, products, enrollments, onClose, onSave }: 
 
 function CustomerHistory({ appointments, sessions, database }: { appointments: Database['appointments']; sessions: Database['sessions']; database: Database }) { const events = [...appointments.map((item) => ({ id: item.id, date: item.createdAt, type: '预约', title: item.topic, body: item.description || item.expectation, mentorId: item.assignedMentorId })), ...sessions.map((item) => ({ id: item.id, date: item.date, type: '服务记录', title: item.topic, body: item.aiSummary || item.note, mentorId: item.mentorId }))].sort((a, b) => b.date.localeCompare(a.date)); return <section className="customer-detail-section"><SectionHeading title="历史记录" meta={`${events.length} 条`} icon="◷" action={<span className="history-filter">全部</span>} />{events.length ? <div className="history-timeline">{events.map((event) => { const mentor = database.staff.find((item) => item.id === event.mentorId); return <article className="history-event" key={event.id}><time>{detailDate(event.date)}</time><span className="history-dot" /><div><div className="history-event-title"><strong>{event.title}</strong></div><small>{event.type}{mentor ? ` · ${mentor.name}` : ''}</small><p>{event.body || '暂无详细记录。'}</p></div></article> })}</div> : <div className="detail-empty-line">还没有预约或服务记录。</div>}</section> }
 
-function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onProcess, onResolveConflict }: { customer: Customer; onLoad: (customerId: string) => Promise<SourceWorkspace>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void> }) {
-  const [workspace, setWorkspace] = useState<SourceWorkspace>({ sources: [], evidenceItems: [], proposals: [], conflicts: [] })
-  const [workspaceLoading, setWorkspaceLoading] = useState(true)
+function EvidenceWorkspace({ customer, cachedWorkspace, onLoad, onWorkspaceChange, onExtractDocument, onCreate, onProcess, onResolveConflict }: { customer: Customer; cachedWorkspace?: SourceWorkspace; onLoad: (customerId: string) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void> }) {
+  const emptyWorkspace: SourceWorkspace = { sources: [], evidenceItems: [], proposals: [], conflicts: [] }
+  const [workspace, setWorkspace] = useState<SourceWorkspace>(() => cachedWorkspace || emptyWorkspace)
+  const workspaceRef = useRef(cachedWorkspace || emptyWorkspace)
+  const workspaceLoadedRef = useRef(Boolean(cachedWorkspace))
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(Boolean(cachedWorkspace))
+  const [workspaceLoading, setWorkspaceLoading] = useState(!cachedWorkspace)
+  const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false)
+  const [workspaceLoadError, setWorkspaceLoadError] = useState('')
   const [rawText, setRawText] = useState('')
   const [sourcePerspective, setSourcePerspective] = useState<'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'>('STAFF_REPORTED')
   const [attachedFile, setAttachedFile] = useState<File | null>(null)
@@ -707,19 +717,35 @@ function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onPr
   const processingRef = useRef(new Set<string>())
   const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
   const workspaceRequestSequenceRef = useRef(0)
-  const load = async () => {
+  const setWorkspaceSnapshot = (next: SourceWorkspace) => {
+    workspaceRef.current = next
+    workspaceLoadedRef.current = true
+    setWorkspaceLoaded(true)
+    setWorkspace(next)
+    onWorkspaceChange?.(customer.id, next)
+  }
+  const load = async ({ refresh = false }: { refresh?: boolean } = {}) => {
+    if (!refresh && workspaceLoadedRef.current) return workspaceRef.current
     const requestSequence = ++workspaceRequestSequenceRef.current
-    setWorkspaceLoading(true)
+    if (refresh) setWorkspaceRefreshing(true)
+    else setWorkspaceLoading(true)
     try {
       const next = await onLoad(customer.id)
       if (requestSequence !== workspaceRequestSequenceRef.current || next.sources.some((source) => source.customerId !== customer.id)) return null
-      setWorkspace(next)
+      setWorkspaceSnapshot(next)
+      setWorkspaceLoadError('')
       return next
     } catch (loadError) {
-      if (requestSequence === workspaceRequestSequenceRef.current) setError(sourceFailureMessage(loadError))
+      if (requestSequence === workspaceRequestSequenceRef.current) {
+        if (workspaceLoadedRef.current) setMessage('暂时无法更新相关依据。')
+        else setWorkspaceLoadError('相关依据暂时加载失败')
+      }
       return null
     } finally {
-      if (requestSequence === workspaceRequestSequenceRef.current) setWorkspaceLoading(false)
+      if (requestSequence === workspaceRequestSequenceRef.current) {
+        if (refresh) setWorkspaceRefreshing(false)
+        else setWorkspaceLoading(false)
+      }
     }
   }
   useEffect(() => () => { recognitionRef.current?.stop(); processingRef.current.clear() }, [customer.id])
@@ -742,7 +768,9 @@ function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onPr
   }
   const mergeProcessed = (processed: { source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }) => {
     if (processed.source.customerId !== customer.id) return
-    setWorkspace((current) => ({ sources: [processed.source, ...current.sources.filter((item) => item.id !== processed.source.id)], evidenceItems: [...current.evidenceItems.filter((item) => item.sourceId !== processed.source.id), ...processed.evidenceItems], proposals: [...current.proposals.filter((item) => item.sourceId !== processed.source.id), ...processed.proposals], conflicts: [...current.conflicts.filter((item) => !processed.conflicts.some((conflict) => conflict.id === item.id)), ...processed.conflicts] }))
+    const current = workspaceRef.current
+    const next = { sources: [processed.source, ...current.sources.filter((item) => item.id !== processed.source.id)], evidenceItems: [...current.evidenceItems.filter((item) => item.sourceId !== processed.source.id), ...processed.evidenceItems], proposals: [...current.proposals.filter((item) => item.sourceId !== processed.source.id), ...processed.proposals], conflicts: [...current.conflicts.filter((item) => !processed.conflicts.some((conflict) => conflict.id === item.id)), ...processed.conflicts] }
+    setWorkspaceSnapshot(next)
     const updated = processed.proposals.filter((item) => item.reviewStatus === 'CONFIRMED').length
     const confirmations = processed.conflicts.filter((item) => item.status === 'OPEN').length
     setAnalysisSummary(`已整理完成 · 更新 ${updated} 项 · 新增 ${processed.evidenceItems.length} 条记录 · 需要确认 ${confirmations} 项`)
@@ -759,12 +787,11 @@ function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onPr
       }
     }
     void reconcile()
-    const timer = window.setInterval(() => { void reconcile() }, 7000)
-    return () => { cancelled = true; window.clearInterval(timer) }
+    return () => { cancelled = true }
   }, [customer.id])
   const retrySource = async (sourceId: string) => {
     setSaving(true); setError('')
-    try { mergeProcessed(await onProcess(sourceId, true)); setMessage('已重新识别并整理完成') } catch (processError) { await load(); setMessage(sourceFailureMessage(processError)) } finally { setSaving(false) }
+    try { mergeProcessed(await onProcess(sourceId, true)); setMessage('已重新识别并整理完成') } catch (processError) { await load({ refresh: true }); setMessage(sourceFailureMessage(processError)) } finally { setSaving(false) }
   }
   const save = async () => {
     if ((!rawText.trim() && !attachedFile) || saving) return
@@ -775,15 +802,16 @@ function EvidenceWorkspace({ customer, onLoad, onExtractDocument, onCreate, onPr
       const source = await onCreate({ operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: attachedFile ? 'FILE_UPLOAD' : 'TEXT_INPUT', rawText: attachedFile ? attachedDocument?.extracted_text || '' : rawText.trim(), sourcePerspective, notes: attachedFile ? rawText.trim() : undefined, document })
       const sourceSaveMs = Math.round(performance.now() - saveStartedAt)
       setSaving(false); setRawText(''); setAttachedFile(null); setAttachedDocument(null); setComposerOpen(false); setMessage(`已保存，正在整理 · ${sourceSaveMs}ms`); setAnalysisSummary('')
-      void onProcess(source.id).then(mergeProcessed).then(() => setMessage('已整理完成')).catch(async (processError) => { await load(); setMessage(sourceFailureMessage(processError)) })
+      void onProcess(source.id).then(mergeProcessed).then(() => setMessage('已整理完成')).catch(async (processError) => { await load({ refresh: true }); setMessage(sourceFailureMessage(processError)) })
     } catch (saveError) { setError(sourceFailureMessage(saveError, 'save')); setSaving(false) }
   }
-  const resolve = async (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => { setSaving(true); try { await onResolveConflict(conflictId, resolution); await load() } catch (resolveError) { setError(resolveError instanceof Error ? resolveError.message : '冲突处理失败') } finally { setSaving(false) } }
+  const resolve = async (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => { setSaving(true); try { await onResolveConflict(conflictId, resolution); await load({ refresh: true }) } catch (resolveError) { setError(resolveError instanceof Error ? resolveError.message : '冲突处理失败') } finally { setSaving(false) } }
   const grouped = (type: string) => workspace.evidenceItems.filter((item) => item.evidenceType === type)
   const fieldLabel = (field: string) => ({ birth_date: '出生日期', gender: '性别', phone: '手机号', wechat: '微信号' } as Record<string, string>)[field] || '稳定信息'
-  return <section className="customer-detail-section profile-supplement" id="profile-supplement">
+  return <section className="customer-detail-section profile-supplement" id="profile-supplement" aria-busy={workspaceLoading} data-refreshing={workspaceRefreshing ? 'true' : undefined}>
     <SectionHeading title="档案记录" meta={`已记录 ${workspace.sources.length} 份 · 待确认 ${workspace.conflicts.filter((item) => item.status === 'OPEN').length} 项`} icon="＋" action={<button className="secondary-button small" type="button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? '收起' : '＋ 补充档案'}</button>} />
-    {workspaceLoading && <p className="understanding-empty">正在加载相关依据…</p>}
+    {workspaceLoading && <p className="understanding-empty evidence-workspace-loading">正在加载相关依据…</p>}
+    {workspaceLoadError && !workspaceLoading && !workspaceLoaded && <div className="evidence-load-error"><p>{workspaceLoadError}</p><button className="secondary-button small" type="button" onClick={() => void load()}>重试</button></div>}
     {composerOpen && <>
       <p className="supplement-note">写下补充说明，或上传一份资料；保存后系统会在后台读取并整理。</p>
       <textarea value={rawText} onChange={(event) => setRawText(event.target.value)} placeholder="可选：补充资料背景，例如：这是客户上周咨询后的整理资料。" />
