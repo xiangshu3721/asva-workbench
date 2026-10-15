@@ -1103,17 +1103,26 @@ export class FeishuRepository {
           for (const rawItem of rawItems) {
             if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
             const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
-            if (normalized) candidates.push(normalized)
+            if (normalized) {
+              const excerpt = normalizeText(normalized.sourceExcerpt, 500).replace(/\s+/g, '')
+              const rawSource = normalizeText(source.rawText, 500_000)
+              const compactSource = rawSource.replace(/\s+/g, '')
+              const exactExcerpt = Boolean(excerpt && compactSource.includes(excerpt))
+              const rawStart = Number(rawItem?.locator?.char_start)
+              const rawEnd = Number(rawItem?.locator?.char_end)
+              const explicitRange = Number.isInteger(rawStart) && Number.isInteger(rawEnd) && rawStart >= 0 && rawEnd > rawStart && rawEnd <= rawSource.length && rawSource.slice(rawStart, rawEnd).trim().length > 0
+              normalized._sourceGrounded = exactExcerpt || explicitRange
+              candidates.push(normalized)
+            }
           }
         }
       }
       const unique = dedupeEvidence(candidates)
       const protectedKeys = new Set(allExistingEvidence.filter((item) => item.reviewStatus === 'CONFIRMED').map((item) => evidenceLogicalKey(item)))
       const replaceableEvidence = unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item)))
-      const compactSourceText = normalizeText(source.rawText, 500_000).replace(/\s+/g, '')
       for (const item of replaceableEvidence) {
         const compactExcerpt = normalizeText(item.sourceExcerpt, 500).replace(/\s+/g, '')
-        if (item.sourceId !== sourceId || !compactExcerpt || !compactSourceText.includes(compactExcerpt)) throw Object.assign(new Error('Evidence 原文摘录未通过来源校验'), { code: 'EVIDENCE_SOURCE_NOT_GROUNDED', status: 422 })
+        if (item.sourceId !== sourceId || !compactExcerpt || item._sourceGrounded !== true) throw Object.assign(new Error('Evidence 原文摘录未通过来源校验'), { code: 'EVIDENCE_SOURCE_NOT_GROUNDED', status: 422 })
       }
       const customer = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []
