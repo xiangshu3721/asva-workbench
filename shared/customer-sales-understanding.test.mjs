@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyWillingnessEvidenceGate, buildCustomerSalesContext, commercialSignalsForEvidence, createLocalCustomerSalesUnderstanding, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from './customer-sales-understanding.mjs'
+import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, commercialSignalsForEvidence, createLocalCustomerSalesUnderstanding, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from './customer-sales-understanding.mjs'
 
 const evidence = (overrides = {}) => ({ id: 'EVD-1', sourceId: 'SRC-1', customerId: 'CUS-1', evidenceType: 'SELF_MEANING', semanticKind: 'NEED', fieldKey: 'current_core_issue', standardValue: '最近工作和关系都很累', displayText: '客户明确说最近工作和关系都很累', sourceExcerpt: '我最近工作和关系都很累', confidence: 0.9, reviewStatus: 'CONFIRMED', ...overrides })
 
@@ -194,5 +194,43 @@ describe('CustomerSalesUnderstandingV1 contract', () => {
     const income = evidence({ displayText: '客户收入较高，但没有表达购买或投入意愿' })
     const value = normalizeCustomerSalesUnderstanding({ ability_to_pay: { level: 'HIGH' }, willingness_to_pay: { level: 'MEDIUM' } })
     expect(applyWillingnessEvidenceGate(value, { evidenceItems: [income] }).willingness_to_pay.level).toBe('UNKNOWN')
+  })
+
+  it('makes Ruolan ability LOW regardless of the model candidate', () => {
+    const ruolan = [
+      evidence({ id: 'R-INCOME', displayText: '月收入约7000～9000元', sourceExcerpt: '过去3个月平均月收入约7000～9000元' }),
+      evidence({ id: 'R-EXPENSE', displayText: '固定支出约6000元', sourceExcerpt: '每月固定支出约6000元' }),
+      evidence({ id: 'R-SAVINGS', displayText: '可动用储蓄约10000元', sourceExcerpt: '可动用储蓄约10000元' }),
+      evidence({ id: 'R-SUPPORT', displayText: '没有持续家庭经济支持', sourceExcerpt: '目前没有持续的家庭经济支持' }),
+      evidence({ id: 'R-BUDGET', displayText: '几千块的支出都要认真考虑', sourceExcerpt: '现在几千块的支出我都要认真考虑' }),
+    ]
+    const results = ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN', 'HIGH'].map((level) => applyAbilityEvidenceGate({ ability_to_pay: { level } }, { evidenceItems: ruolan }).ability_to_pay)
+    expect(results.map((item) => item.level)).toEqual(['LOW', 'LOW', 'LOW', 'LOW', 'LOW'])
+    expect(results[0].evidence_ids).toEqual(expect.arrayContaining(['R-INCOME', 'R-EXPENSE', 'R-SAVINGS', 'R-BUDGET']))
+    expect(results[0].explanation).toContain('支付空间比较有限')
+  })
+
+  it('makes Qinghe ability HIGH only from direct financial space evidence', () => {
+    const qinghe = [
+      evidence({ id: 'Q-INCOME', displayText: '月收入约4—5万元', sourceExcerpt: '我的月收入约4—5万元' }),
+      evidence({ id: 'Q-SAVINGS', displayText: '流动储蓄约30万元', sourceExcerpt: '目前有流动储蓄约30万元' }),
+      evidence({ id: 'Q-BUDGET', displayText: '每年成长预算3—5万元', sourceExcerpt: '每年有3—5万元成长预算' }),
+      evidence({ id: 'Q-INVEST', fieldKey: 'occupation', displayText: '企业主', sourceExcerpt: '职业是企业主' }),
+    ]
+    const results = ['HIGH', 'LOW', 'UNKNOWN'].map((level) => applyAbilityEvidenceGate({ ability_to_pay: { level } }, { evidenceItems: qinghe }).ability_to_pay)
+    expect(results.map((item) => item.level)).toEqual(['HIGH', 'HIGH', 'HIGH'])
+    expect(results[0].evidence_ids).toEqual(expect.arrayContaining(['Q-INCOME', 'Q-SAVINGS', 'Q-BUDGET']))
+    expect(results[0].evidence_ids).not.toContain('Q-INVEST')
+  })
+
+  it('keeps ability UNKNOWN when only identity or enrollment context exists', () => {
+    const identityOnly = [
+      evidence({ id: 'E-OCCUPATION', fieldKey: 'occupation', displayText: '职业：企业高管', sourceExcerpt: '她是一名企业高管' }),
+      evidence({ id: 'E-CITY', fieldKey: 'city', displayText: '城市：上海', sourceExcerpt: '目前住在上海' }),
+    ]
+    const result = applyAbilityEvidenceGate({ ability_to_pay: { level: 'HIGH' } }, { evidenceItems: identityOnly, enrollments: [{ id: 'ENR-1', paymentStatus: 'UNRECORDED', paid: false }] })
+    expect(result.ability_to_pay.level).toBe('UNKNOWN')
+    expect(result.ability_to_pay.evidence_ids).toEqual([])
+    expect(result.ability_to_pay.explanation).toContain('缺少足够的经济与预算信息')
   })
 })

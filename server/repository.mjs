@@ -18,7 +18,7 @@ import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
-import { applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
+import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 
@@ -732,7 +732,7 @@ export class FeishuRepository {
     const storedMeta = customerRecord.salesUnderstandingMeta || {}
     const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === context.input_fingerprint && storedMeta.promptVersion === CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION
     const status = fresh ? 'FRESH' : storedMeta.status === 'PROCESSING' ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
-    const salesUnderstanding = customerRecord.salesUnderstanding ? applyWillingnessEvidenceGate(customerRecord.salesUnderstanding, { evidenceItems, enrollments, sessions, appointments }) : null
+    const salesUnderstanding = customerRecord.salesUnderstanding ? applyAbilityEvidenceGate(applyWillingnessEvidenceGate(customerRecord.salesUnderstanding, { evidenceItems, enrollments, sessions, appointments }), { evidenceItems, enrollments }) : null
     return { customerId, status, salesUnderstanding, meta: { ...storedMeta, salesUnderstandingId: storedMeta.salesUnderstandingId || `SALES-UNDERSTANDING-${customerId}`, customerId, salesUnderstandingVersion: CUSTOMER_SALES_UNDERSTANDING_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || context.input_fingerprint, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION }, historical_enrollments: historicalSalesRecords({ enrollments, products, sessions }).enrollmentHistory, service_history: historicalSalesRecords({ enrollments: [], products, sessions }).serviceHistory, evidence_refs: context.evidence_refs, context_summary: { density: context.customer_snapshot.context_density, evidence_count: context.evidence_refs.length } }
   }
 
@@ -761,7 +761,7 @@ export class FeishuRepository {
     try {
       if (!config.deepseek.apiKey) throw Object.assign(new Error('DeepSeek 尚未配置'), { code: 'DEEPSEEK_UNAVAILABLE', status: 503 })
       const redactValues = [customerRecord.name, customerRecord.phone, customerRecord.wechat]
-      const result = applyWillingnessEvidenceGate(normalizeCustomerSalesUnderstanding(await createCustomerSalesUnderstanding({ context, redactValues }), { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), safetyAssessment: customerRecord.safety, contextDensity: context.customer_snapshot.context_density.classification }), { evidenceItems, enrollments, sessions, appointments })
+      const result = applyAbilityEvidenceGate(applyWillingnessEvidenceGate(normalizeCustomerSalesUnderstanding(await createCustomerSalesUnderstanding({ context, redactValues }), { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), safetyAssessment: customerRecord.safety, contextDensity: context.customer_snapshot.context_density.classification }), { evidenceItems, enrollments, sessions, appointments }), { evidenceItems, enrollments })
       const quality = qualityCheckCustomerSalesUnderstanding(result, { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), hasStrongPaymentSignal: context.financial_evidence.length > 0 || context.paid_history_count > 0 })
       if (!quality.ok) throw Object.assign(new Error('销售视角质量门禁未通过'), { code: 'SALES_UNDERSTANDING_QUALITY_FAILED', status: 502, quality })
       const freshMeta = { ...processingMeta, status: 'FRESH', generatedAt: result.generated_at || now(), updatedAt: now(), durationMs: Date.now() - startedAt, evidenceCount: context.evidence_refs.length, quality, payload: result }
