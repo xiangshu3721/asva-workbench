@@ -34,3 +34,18 @@ export function clearAccessToken() {
   storage('localStorage')?.removeItem(ACCESS_TOKEN_STORAGE_KEY)
   storage('sessionStorage')?.removeItem(LEGACY_ACCESS_TOKEN_STORAGE_KEY)
 }
+
+export type AccessTokenIdentity = { staffId: string; authVersion: number; expiresAt: number }
+
+export function readAccessTokenIdentity(token = readAccessToken()): AccessTokenIdentity | undefined {
+  if (!token) return undefined
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return undefined
+    const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - payload.length % 4) % 4))) as { sub?: string; auth_version?: number; exp?: number }
+    if (!claims.sub) return undefined
+    return { staffId: String(claims.sub), authVersion: Number(claims.auth_version || 0), expiresAt: Number(claims.exp || 0) }
+  } catch {
+    return undefined
+  }
+}
