@@ -85,7 +85,9 @@ function createManualCustomer(database: Database, input: ManualCustomerInput, up
   const { nickname, phone, wechat, introducer } = validateManualCustomer(input)
   const id = `C-${Date.now()}-${Math.floor(Math.random() * 1000)}`
   const createdAt = new Date().toISOString()
-  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), createdByStaffId: actor.id, createdByName: actor.name, name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId: null, referrerName: introducer, introducer, need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat: wechat || null }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
+  const mentorId = permissionRole(actor) === 'MENTOR' ? actor.id : input.mentorId ?? null
+  if (mentorId && !database.staff.some((item) => item.id === mentorId && permissionRole(item) === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { code: 'INVALID_MENTOR_ASSIGNMENT', status: 400 })
+  const customer: Customer = { id, createdAt: createdAt.slice(0, 10), createdByStaffId: actor.id, createdByName: actor.name, name: nickname, initials: nickname.slice(0, 1), phone, wechat, source: input.source ?? '管理员手动录入', status: '活跃', grade: 'C', gradeSource: 'AI建议', mentorId, referrerName: introducer, introducer, need: '', helpExpectation: '', goal: '', brief: '', intendedCourse: null, confirmedFacts: [], aiQuestions: [], paid: false, lastActivity: '刚刚', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: input.situation.trim(), profileFields: { phone, wechat, current_mentor_id: mentorId }, profileFieldMeta: { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}), ...(mentorId ? { current_mentor_id: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }, profileUpdatedAt: createdAt, profileVersion: 1, profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION }
   database.customers.unshift(customer)
   if (updates.length) applyProfileUpdates(database, customer.id, normalizedProfileUpdates(updates, emptyProfile(customer.id), true), undefined, 'admin')
   return customer
@@ -113,6 +115,14 @@ function assertCustomerManager(staff: Staff) {
 
 function assertAdminIntroducerEditor(staff: Staff) {
   if (permissionRole(staff) !== 'ADMIN' || staff.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以修改介绍人'), { code: 'FORBIDDEN', status: 403 })
+}
+
+function assertMentorAssignmentAuthority(database: Database, actor: Staff, updates: ProfileUpdate[] | undefined) {
+  const assignment = (updates ?? []).find((item) => ['mentor_id', 'current_mentor_id'].includes(item.field))
+  if (!assignment) return
+  if (permissionRole(actor) !== 'ADMIN' || actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以重新分配导师'), { code: 'FORBIDDEN', status: 403 })
+  const mentorId = String(assignment.value ?? '').trim()
+  if (mentorId && !database.staff.some((item) => item.id === mentorId && permissionRole(item) === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { code: 'INVALID_MENTOR_ASSIGNMENT', status: 400 })
 }
 
 function applyManualIntroducerChange(database: Database, customer: Customer, actor: Staff, value: string) {
@@ -203,7 +213,7 @@ function scopedDatabase(database: Database, staff: Staff): Database {
     assertAdmin(staff)
     return database
   }
-  const ids = new Set(database.customers.filter((customer) => customer.createdByStaffId === staff.id).map((customer) => customer.id))
+  const ids = new Set(database.customers.filter((customer) => customer.mentorId === staff.id).map((customer) => customer.id))
   const byCustomer = <T extends { customerId: string }>(items: T[]) => items.filter((item) => ids.has(item.customerId))
   return { ...database, customers: database.customers.filter((customer) => ids.has(customer.id)), appointments: byCustomer(database.appointments), sessions: byCustomer(database.sessions), enrollments: byCustomer(database.enrollments), profileChanges: byCustomer(database.profileChanges) }
 }
@@ -347,6 +357,7 @@ export function createLocalRepository(): AsvaRepository {
       if (oldPhone !== phone) applyProfileUpdates(database, customerId, [{ field: 'phone', value: phone, source: 'USER_EXPLICIT', confidence: 1, confirmed: true }], undefined, actor.id)
       if (normalizeWechat(oldWechat) !== normalizeWechat(wechat)) applyProfileUpdates(database, customerId, [{ field: 'wechat', value: wechat, source: 'USER_EXPLICIT', confidence: 1, confirmed: true }], undefined, actor.id)
       if (input.situation.trim()) customer.notes = input.situation.trim()
+      assertMentorAssignmentAuthority(database, actor, input.profileUpdates)
       if (input.profileUpdates?.length) applyProfileUpdates(database, customerId, normalizedProfileUpdates(input.profileUpdates, customerProfileState(customer), true), undefined, actorId)
       if (introducerProvided) applyManualIntroducerChange(database, customer, actor, input.introducer ?? '')
       mergeEnrollments(database, customerId, input.enrollments, actor.id)
@@ -456,6 +467,7 @@ export function createLocalRepository(): AsvaRepository {
       if (!scopedDatabase(database, actor).customers.some((item) => item.id === customerId)) throw new Error('无权访问该客户')
       const customer = database.customers.find((item) => item.id === customerId)
       if (!customer) throw new Error('客户不存在')
+      assertMentorAssignmentAuthority(database, actor, updates)
       applyProfileUpdates(database, customerId, normalizedProfileUpdates(updates, customerProfileState(customer), true), undefined, actor.id)
       writeDatabase(database)
       return database.customers.find((item) => item.id === customerId)!

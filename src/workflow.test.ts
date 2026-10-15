@@ -25,10 +25,10 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(() => api.login('15021512537', '123456')).toThrow('手机号或验证码错误')
   })
 
-  it('starts a new appointment in WAIT_ASSIGN and hides it from a mentor', () => {
+  it('starts a new appointment in WAIT_ASSIGN and keeps mentor scope tied to current assignment', () => {
     const api = createLocalApi(createLocalRepository())
     expect(api.dashboard('staff-admin').appointments.find((item) => item.id === 'A-20261004-01')?.status).toBe('WAIT_ASSIGN')
-    expect(api.dashboard('mentor-zhang').customers).toHaveLength(0)
+    expect(api.dashboard('mentor-zhang').customers.some((item) => item.id === 'C00001298')).toBe(true)
   })
 
   it('moves WAIT_ASSIGN to WAIT_FOLLOW_UP only through ADMIN assignment', () => {
@@ -122,9 +122,10 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(customer?.createdByName).toBe(api.staff('staff-admin')?.name)
   })
 
-  it('enforces creator-scoped customer reads at the API boundary', () => {
+  it('enforces current-mentor-scoped customer reads at the API boundary', () => {
     const api = createLocalApi(createLocalRepository())
-    expect(api.customer('mentor-zhang', 'C00001301')).toBeUndefined()
+    expect(api.customer('mentor-zhang', 'C00001301')?.mentorId).toBe('mentor-zhang')
+    expect(api.customer('mentor-zhang', 'C00001305')).toBeUndefined()
     expect(api.customer('staff-admin', 'C00001276')?.name).toBe('许清和')
   })
 

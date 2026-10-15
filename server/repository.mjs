@@ -191,13 +191,26 @@ function conflictRecord(row) {
   return { id: text(get('evidenceConflicts', f, 'conflict_id')) || row.record_id, subjectId: text(get('evidenceConflicts', f, 'subject_id')), customerId: text(get('evidenceConflicts', f, 'customer_id')), fieldKey: text(get('evidenceConflicts', f, 'field_key')), conflictType: text(get('evidenceConflicts', f, 'conflict_type')), currentValue: parsedJson(get('evidenceConflicts', f, 'current_value'), text(get('evidenceConflicts', f, 'current_value'))), newValue: parsedJson(get('evidenceConflicts', f, 'new_value'), text(get('evidenceConflicts', f, 'new_value'))), currentEvidenceId: text(get('evidenceConflicts', f, 'current_evidence_id')), newEvidenceId: text(get('evidenceConflicts', f, 'new_evidence_id')), status: text(get('evidenceConflicts', f, 'status')) || 'OPEN', suggestedResolution: text(get('evidenceConflicts', f, 'suggested_resolution')), resolution: text(get('evidenceConflicts', f, 'resolution')), reviewerId: text(get('evidenceConflicts', f, 'reviewer_id')), resolvedAt: date(get('evidenceConflicts', f, 'resolved_at')) || null, createdAt: date(get('evidenceConflicts', f, 'created_at')) || null, updatedAt: date(get('evidenceConflicts', f, 'updated_at')) || null, _recordId: row.record_id }
 }
 
+function customerBelongsToStaff(customer, staffId) {
+  return customer?.mentorId === staffId
+}
+
+function assertMentorAssignmentAuthority(database, actorId, updates) {
+  const assignment = (Array.isArray(updates) ? updates : []).find((item) => ['mentor_id', 'current_mentor_id'].includes(item?.field))
+  if (!assignment) return
+  const actor = database.staff.find((item) => item.id === actorId)
+  if (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以重新分配导师'), { code: 'FORBIDDEN', status: 403 })
+  const mentorId = text(assignment.value).trim()
+  if (mentorId && !database.staff.some((item) => item.id === mentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { code: 'INVALID_MENTOR_ASSIGNMENT', status: 400 })
+}
+
 function scope(database, actorId) {
   const actor = database.staff.find((item) => item.id === actorId)
   if (!actor) throw new Error('账号不存在')
   if (actor.status !== 'ACTIVE') throw new Error('该账户已停用，请联系管理员。')
   if (actor.permissionRole === 'ADMIN' && actor.loginEnabled !== true) throw new Error('导师端暂未开放，请联系管理员。')
   if (actor.permissionRole !== 'MENTOR') return database
-  const visibleCustomerIds = new Set(database.customers.filter((item) => item.createdByStaffId === actor.id).map((item) => item.id))
+  const visibleCustomerIds = new Set(database.customers.filter((item) => customerBelongsToStaff(item, actor.id)).map((item) => item.id))
   const visible = (items) => items.filter((item) => visibleCustomerIds.has(item.customerId))
   return { ...database, customers: database.customers.filter((item) => visibleCustomerIds.has(item.id)), appointments: visible(database.appointments), sessions: visible(database.sessions), enrollments: visible(database.enrollments), profileChanges: visible(database.profileChanges), sourceRecords: visible(database.sourceRecords), evidenceItems: visible(database.evidenceItems), profileUpdateProposals: visible(database.profileUpdateProposals), evidenceConflicts: visible(database.evidenceConflicts) }
 }
@@ -533,8 +546,8 @@ export class FeishuRepository {
   async basicDashboard(staffId) {
     const database = await this.load()
     const actor = database.staff.find((item) => item.id === staffId)
-    if (!actor || actor.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看数据看板')
-    return buildBasicDashboard(database)
+    if (!actor || actor.status !== 'ACTIVE' || actor.loginEnabled !== true) throw new Error('无权查看数据看板')
+    return buildBasicDashboard(actor.permissionRole === 'ADMIN' ? database : scope(database, staffId))
   }
   async assistantQuery(actorId, question, context) {
     try {
@@ -878,7 +891,9 @@ export class FeishuRepository {
         const createdAt = now()
         const initialFields = { phone: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt }, ...(normalized.wechat ? { wechat: { source: 'STRUCTURED_INPUT', confidence: 1, confirmed: true, updatedAt: createdAt } } : {}) }
         const actor = database.staff.find((item) => item.id === actorId)
-        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+        const assignedMentorId = actor?.permissionRole === 'MENTOR' ? actor.id : text(input?.mentorId).trim()
+        if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
+        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
@@ -922,6 +937,7 @@ export class FeishuRepository {
     const current = visibleDatabase.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!current || !row) throw new Error('客户不存在')
+    assertMentorAssignmentAuthority(database, actorId, input.profileUpdates)
     validateEnrollmentDrafts(database, input.enrollments)
     const normalized = validateManualCustomer({ ...input, nickname: input.nickname || current.name, phone: input.phone || current.phone, wechat: input.wechat || current.wechat })
     const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), normalized)
@@ -963,6 +979,7 @@ export class FeishuRepository {
     if (!scope(database, actorId).customers.some((item) => item.id === customerId)) throw new Error('无权访问该客户')
     const current = database.customers.find((item) => item.id === customerId)
     if (!current) throw new Error('客户不存在')
+    assertMentorAssignmentAuthority(database, actorId, updates)
     await persistCustomerProfile(database, customerId, normalizeProfileUpdates(updates, current, true), undefined, actorId)
     const latest = await this.loadAfterWrite(undefined, customerId)
     return latest.customers.find((item) => item.id === customerId) || current
@@ -1450,7 +1467,7 @@ export class FeishuRepository {
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看团队数据')
     const all = await this.load()
-    return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!statusFilter || item.status === statusFilter)).map((mentor) => ({ mentor, customerCount: all.customers.filter((item) => item.createdByStaffId === mentor.id).length }))
+    return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!statusFilter || item.status === statusFilter)).map((mentor) => ({ mentor, customerCount: all.customers.filter((item) => customerBelongsToStaff(item, mentor.id)).length }))
   }
 
   async dashboardSnapshot(actorId) {

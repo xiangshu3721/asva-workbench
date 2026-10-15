@@ -46,7 +46,7 @@ describe('ASVA basic dashboard aggregation', () => {
       enrollments: [], staff, products,
     }, new Date('2026-10-08T12:00:00+08:00'))
     expect(dashboard.profile_pending_total).toBe(2)
-    expect(dashboard.customer_owner_distribution).toEqual(expect.arrayContaining([{ staff_id: '', staff_name: '历史/未识别', role: 'UNKNOWN', customer_count: 2 }]))
+    expect(dashboard.customer_owner_distribution).toEqual(expect.arrayContaining([{ staff_id: '', staff_name: '历史/未识别', role: 'UNKNOWN', customer_count: 3 }]))
   })
 
   it('returns a clean empty course state and deterministic management facts', () => {

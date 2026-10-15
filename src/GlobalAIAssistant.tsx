@@ -4,20 +4,38 @@ import { sanitizeUserVisibleText } from './presentationCopy'
 
 type ChatMessage = { id: string; role: 'user' | 'assistant'; text: string; result?: AssistantQueryResult }
 
-const STORAGE_KEY = 'asva-ai-chat-v1'
+const STORAGE_PREFIX = 'asva:ai-assistant:'
+const LEGACY_STORAGE_KEY = 'asva-ai-chat-v1'
 const suggestions = ['查一下林知微', '现在有多少待分配预约？', '上个月觉塑报名了哪些客户？', '哪个导师目前客户最多？']
 
-function readHistory(): ChatMessage[] {
+function storageSafe(): Storage | null {
+  if (typeof window === 'undefined') return null
+  try { return window.sessionStorage } catch { return null }
+}
+
+function readHistory(scope: string): ChatMessage[] {
   try {
-    const saved = window.localStorage.getItem(STORAGE_KEY)
+    const saved = storageSafe()?.getItem(`${STORAGE_PREFIX}${scope}`)
     return saved ? JSON.parse(saved) as ChatMessage[] : []
   } catch { return [] }
 }
 
-export function GlobalAIAssistant({ api, staffId, customerId, onCustomer }: { api: WorkbenchApi; staffId: string; customerId?: string; onCustomer: (customerId: string) => void }) {
+export function clearAssistantHistory(): void {
+  try {
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY)
+    const storage = storageSafe()
+    if (!storage) return
+    for (let index = storage.length - 1; index >= 0; index -= 1) {
+      const key = storage.key(index)
+      if (key?.startsWith(STORAGE_PREFIX)) storage.removeItem(key)
+    }
+  } catch { /* browser storage may be unavailable */ }
+}
+
+export function GlobalAIAssistant({ api, staffId, storageScope, customerId, onCustomer }: { api: WorkbenchApi; staffId: string; storageScope: string; customerId?: string; onCustomer: (customerId: string) => void }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
-  const [messages, setMessages] = useState<ChatMessage[]>(readHistory)
+  const [messages, setMessages] = useState<ChatMessage[]>(() => readHistory(storageScope))
   const [thinking, setThinking] = useState(false)
   const [listening, setListening] = useState(false)
   const [voiceReplies, setVoiceReplies] = useState(true)
@@ -29,8 +47,8 @@ export function GlobalAIAssistant({ api, staffId, customerId, onCustomer }: { ap
   const context: AssistantQueryContext = { page: customerId ? 'CUSTOMER_DETAIL' : undefined, customerId, lastQuery }
 
   useEffect(() => {
-    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-30))) } catch { /* local history is optional */ }
-  }, [messages])
+    try { storageSafe()?.setItem(`${STORAGE_PREFIX}${storageScope}`, JSON.stringify(messages.slice(-30))) } catch { /* local history is optional */ }
+  }, [messages, storageScope])
 
   const stopSpeaking = () => {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
