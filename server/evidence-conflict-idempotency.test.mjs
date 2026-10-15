@@ -59,7 +59,7 @@ beforeEach(() => {
   updateRecordMock.mockReset().mockImplementation((tableId, recordId, fields) => updateExisting(tableId, recordId, fields))
 })
 
-function setupRepository(extractor = async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }]) {
+function setupRepository(extractor = async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }]) {
   const repository = new FeishuRepository({ evidenceExtractor: extractor })
   repository.load = async () => {
     const allEvidence = activeDatabase._allEvidenceItems
@@ -79,6 +79,7 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     const first = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(first.evidenceItems).toHaveLength(1)
     expect(activeDatabase.evidenceConflicts).toHaveLength(1)
+    expect(activeDatabase.evidenceConflicts[0].fieldKey).toBe('city')
     const sourceCount = activeDatabase.sourceRecords.length
     const evidenceCount = activeDatabase._allEvidenceItems.length
     await Promise.all([repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true }), repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })])

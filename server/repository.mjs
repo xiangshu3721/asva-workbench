@@ -21,6 +21,7 @@ import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMet
 import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
+import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -1104,6 +1105,19 @@ export class FeishuRepository {
             if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
             const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
             if (normalized) {
+              const canonical = normalizeCanonicalFact({ fieldKey: rawItem?.field_key || normalized.fieldKey || '', value: rawItem?.value ?? normalized.standardValue, sourceExcerpt: normalized.sourceExcerpt, displayText: normalized.displayText, semanticKind: rawItem?.semantic_kind || normalized.semanticKind, occurredAt: normalized.occurredAt })
+              normalized._canonicalGrounded = canonical.grounded !== false
+              normalized._canonicalFieldKey = canonical.canonicalFieldKey
+              normalized._temporalType = canonical.temporalType
+              if (canonical.storageFieldKey) {
+                normalized.fieldKey = canonical.storageFieldKey
+                normalized.standardValue = canonical.canonicalValue
+                normalized.semanticKind = canonical.semanticKind
+              } else {
+                // Unknown mappings remain auditable Evidence but cannot enter
+                // profile update or conflict logic.
+                normalized.fieldKey = null
+              }
               const excerpt = normalizeText(normalized.sourceExcerpt, 500).replace(/\s+/g, '')
               const rawSource = normalizeText(source.rawText, 500_000)
               const compactSource = rawSource.replace(/\s+/g, '')
@@ -1123,7 +1137,7 @@ export class FeishuRepository {
       const replaceableEvidence = unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item)))
       for (const item of replaceableEvidence) {
         const compactExcerpt = normalizeText(item.sourceExcerpt, 500).replace(/\s+/g, '')
-        if (item.sourceId !== sourceId || !compactExcerpt || item._sourceGrounded !== true) throw Object.assign(new Error('Evidence 原文摘录未通过来源校验'), { code: 'EVIDENCE_SOURCE_NOT_GROUNDED', status: 422 })
+        if (item.sourceId !== sourceId || !compactExcerpt || item._sourceGrounded !== true || item._canonicalGrounded !== true) throw Object.assign(new Error('Evidence 原文摘录未通过来源校验'), { code: 'EVIDENCE_SOURCE_NOT_GROUNDED', status: 422 })
       }
       const customer = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []

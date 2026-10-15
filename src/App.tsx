@@ -909,7 +909,7 @@ function EvidenceWorkspace({ customer, cachedWorkspace, onLoad, onWorkspaceChang
   }
   const resolve = async (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => { setSaving(true); try { await onResolveConflict(conflictId, resolution); await load({ refresh: true }) } catch (resolveError) { setError(resolveError instanceof Error ? resolveError.message : '冲突处理失败') } finally { setSaving(false) } }
   const grouped = (type: string) => workspace.evidenceItems.filter((item) => item.evidenceType === type)
-  const fieldLabel = (field: string) => ({ birth_date: '出生日期', gender: '性别', phone: '手机号', wechat: '微信号' } as Record<string, string>)[field] || '稳定信息'
+  const fieldLabel = (field: string) => ({ birth_date: '出生日期', gender: '性别', phone: '手机号', wechat: '微信号', city: '居住城市', current_city: '居住城市', occupation: '当前职业', job_status: '工作状态', employment_status: '工作状态', relationship_status: '关系状态', marital_status: '婚姻状态', age: '年龄', sleep: '睡眠情况', sleep_status: '睡眠情况' } as Record<string, string>)[field] || '待确认资料'
   return <section className="customer-detail-section profile-supplement" id="profile-supplement" aria-busy={workspaceLoading} data-refreshing={workspaceRefreshing ? 'true' : undefined}>
     <SectionHeading title="档案记录" meta={`已记录 ${workspace.sources.length} 份 · 待确认 ${workspace.conflicts.filter((item) => item.status === 'OPEN').length} 项`} icon="＋" action={<button className="secondary-button small" type="button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? '收起' : '＋ 补充档案'}</button>} />
     {workspaceLoading && <p className="understanding-empty evidence-workspace-loading">正在加载相关依据…</p>}
@@ -946,9 +946,9 @@ function EvidenceWorkspace({ customer, cachedWorkspace, onLoad, onWorkspaceChang
         <span>当前：{displayProfileValue(conflict.currentValue as ProfileValue)}；资料中：{displayProfileValue(conflict.newValue as ProfileValue)}</span>
         <small>来源：{source?.title || '资料记录'} · 可展开“查看整理依据”回看原文依据。</small>
         <div className="review-actions">
-          <button className="secondary-button small" type="button" disabled={saving} onClick={() => void resolve(conflict.id, 'KEEP_CURRENT')}>保留当前</button>
+          <button className="secondary-button small" type="button" disabled={saving} onClick={() => void resolve(conflict.id, 'KEEP_CURRENT')}>保持当前档案</button>
           <button className="secondary-button small" type="button" disabled={saving} onClick={() => void resolve(conflict.id, 'MARK_UNKNOWN')}>暂不处理</button>
-          <button className="primary-button small" type="button" disabled={saving} onClick={() => void resolve(conflict.id, 'USE_NEW')}>使用新值</button>
+          <button className="primary-button small" type="button" disabled={saving} onClick={() => void resolve(conflict.id, 'USE_NEW')}>覆盖到档案</button>
         </div>
       </div>
     })}
