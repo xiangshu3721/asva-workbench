@@ -10,7 +10,7 @@ import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeW
 import { customerHistoryPolicy } from './schema-contract.mjs'
 import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, PASSWORD_POLICY_CODES, dummyPasswordHash, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
 import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
-import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
+import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
 import { buildCustomerUnderstandingContext, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
 import { isStaleProcessing, processingErrorCode } from '../shared/processing-contract.mjs'
@@ -497,17 +497,28 @@ export class FeishuRepository {
     }))
     const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileChangeRows, sourceRows, evidenceRows, proposalRows, conflictRows] = rows
     const customers = customerRows.map(customer)
-    const evidenceItems = evidenceRows.map(evidenceItem)
+    const sourceRecords = sourceRows.map(sourceRecord)
+    const allEvidenceItems = evidenceRows.map(evidenceItem)
+    const evidenceItems = allEvidenceItems.filter((item) => {
+      if (item.reviewStatus === 'CONFIRMED') return true
+      if (item.reviewStatus !== 'PENDING_REVIEW') return false
+      const source = sourceRecords.find((candidate) => candidate.id === item.sourceId)
+      return !source?.lastBatchId || source.lastBatchId === item.extractionBatchId
+    })
+    const activeEvidenceIds = new Set(evidenceItems.map((item) => item.id))
+    const proposals = proposalRows.map(proposalRecord).filter((item) => activeEvidenceIds.has(item.evidenceId))
+    const conflicts = conflictRows.map(conflictRecord).filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId))
     for (const item of customers) {
       const customerEvidence = evidenceItems.filter((evidence) => evidence.customerId === item.id)
       item.profileMaterialization = materializeCustomerProfile({ customer: item, evidenceItems: customerEvidence, summaryMeta: item.aiSummaryMeta })
-      const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, conflicts: conflictRows.map(conflictRecord).filter((conflict) => conflict.customerId === item.id) })
+      const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, conflicts: conflicts.filter((conflict) => conflict.customerId === item.id) })
       if (!item.understandingMeta || item.understandingMeta.inputFingerprint !== currentFingerprint || item.understandingMeta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) item.understandingStatus = 'STALE'
     }
     if (config.appEnv === 'development') console.info('[ASVA_PERF_DASHBOARD_READ]', JSON.stringify({ external_request_count: entries.filter(([, tableId]) => Boolean(tableId)).length, parallel: true, table_durations_ms: tableDurations }))
     return {
-      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange), sourceRecords: sourceRows.map(sourceRecord), evidenceItems, profileUpdateProposals: proposalRows.map(proposalRecord), evidenceConflicts: conflictRows.map(conflictRecord),
+      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange), sourceRecords, evidenceItems, profileUpdateProposals: proposals, evidenceConflicts: conflicts,
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
+      _allEvidenceItems: allEvidenceItems,
       _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows, sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
     }
   }
@@ -1072,15 +1083,16 @@ export class FeishuRepository {
     let source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     const sourceRow = database._rows.sourceRecords.find((item) => item.record_id === source?._recordId)
     if (!source || !sourceRow) throw new Error('资料不存在')
+    const allExistingEvidence = (database._allEvidenceItems || database.evidenceItems).filter((item) => item.sourceId === sourceId)
     const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
     if (!force && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length) return this.sourceDetail(actorId, sourceId)
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
-    const resumeExistingEvidence = existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
-    const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}`)
-    const processingStartedAt = now()
     const processingVersion = Number(source.processingVersion || 1) + 1
+    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
+    const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}:${processingVersion}`)
+    const processingStartedAt = now()
     const processingDiagnostics = { source_char_count: String(source.rawText || '').length, prompt_char_count: 0, token_estimate: 0 }
-    await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, last_batch_id: batchId, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
+    await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
     try {
       if (!source.rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
       const candidates = []
@@ -1096,16 +1108,29 @@ export class FeishuRepository {
         }
       }
       const unique = dedupeEvidence(candidates)
+      const protectedKeys = new Set(allExistingEvidence.filter((item) => item.reviewStatus === 'CONFIRMED').map((item) => evidenceLogicalKey(item)))
+      const replaceableEvidence = unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item)))
+      const compactSourceText = normalizeText(source.rawText, 500_000).replace(/\s+/g, '')
+      for (const item of replaceableEvidence) {
+        const compactExcerpt = normalizeText(item.sourceExcerpt, 500).replace(/\s+/g, '')
+        if (item.sourceId !== sourceId || !compactExcerpt || !compactSourceText.includes(compactExcerpt)) throw Object.assign(new Error('Evidence 原文摘录未通过来源校验'), { code: 'EVIDENCE_SOURCE_NOT_GROUNDED', status: 422 })
+      }
       const customer = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []
-      for (const item of unique) {
-        this.invalidateDatabaseCache()
-        const latestEvidenceDatabase = await this.load({ force: true })
-        const existingEquivalent = latestEvidenceDatabase.evidenceItems.find((existing) => evidenceEquivalent(existing, item))
-        const id = stableId('EVD', `${sourceId}:${batchId}:${item.evidenceType}:${item.fieldKey}:${JSON.stringify(item.standardValue)}:${item.sourceExcerpt}`)
-        const evidence = existingEquivalent || { ...item, id }
-        if (!existingEquivalent && !latestEvidenceDatabase.evidenceItems.some((existing) => existing.id === id)) { await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, created_at: now(), updated_at: now() }); createdEvidence.push(evidence) }
+      for (const item of replaceableEvidence) {
+        const evidence = { ...item, id: stableId('EVD', `${sourceId}:${batchId}:${evidenceLogicalKey(item)}`) }
+        await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, created_at: now(), updated_at: now() })
+        createdEvidence.push(evidence)
       }
+      this.invalidateDatabaseCache()
+      const persisted = await this.load({ force: true })
+      const persistedAllEvidence = (persisted._allEvidenceItems || persisted.evidenceItems).filter((item) => item.sourceId === sourceId && item.extractionBatchId === batchId && item.reviewStatus !== 'SUPERSEDED')
+      if (persistedAllEvidence.length !== replaceableEvidence.length) throw Object.assign(new Error('Evidence 批次写入校验失败'), { code: 'EVIDENCE_BATCH_READBACK_FAILED', status: 502 })
+      await updateMappedRecord('sourceRecords', 'source.processing.activate', sourceRow.record_id, { last_batch_id: batchId, updated_at: now() })
+      this.invalidateDatabaseCache()
+      const activated = await this.load({ force: true })
+      const oldReplaceable = (activated._allEvidenceItems || activated.evidenceItems).filter((item) => item.sourceId === sourceId && item.reviewStatus !== 'CONFIRMED' && item.reviewStatus !== 'SUPERSEDED' && item.extractionBatchId !== batchId)
+      for (const oldEvidence of oldReplaceable) await updateMappedRecord('evidenceItems', 'evidence.supersede', oldEvidence._recordId, { review_status: 'SUPERSEDED', updated_at: now() })
       this.invalidateDatabaseCache()
       const refreshed = await this.load({ force: true })
       const allEvidence = refreshed.evidenceItems.filter((item) => item.sourceId === sourceId)
@@ -1154,7 +1179,7 @@ export class FeishuRepository {
       const hasOpenConflict = debugBeforeStatus.evidenceConflicts.some((item) => item.newEvidenceId && debugBeforeStatus.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
       const finalStatus = hasOpenConflict ? 'REVIEW_REQUIRED' : itemErrors.length ? 'FAILED' : 'COMPLETED'
       const finishedAt = now()
-      await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_batch_id: batchId, last_processing_at: finishedAt, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',').slice(0, 200) : '', updated_at: finishedAt })
+      await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',').slice(0, 200) : '', updated_at: finishedAt })
       const debugDatabase = await this.load()
       this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',') : '', extraction_batch: batchId, evidence_count: unique.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
@@ -1164,7 +1189,7 @@ export class FeishuRepository {
       return this.sourceDetail(actorId, sourceId)
     } catch (error) {
       const failedAt = now()
-      await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_batch_id: batchId, last_processing_at: failedAt, processing_error: processingErrorCode(error), updated_at: failedAt }).catch(() => {})
+      await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_processing_at: failedAt, processing_error: processingErrorCode(error), updated_at: failedAt }).catch(() => {})
       this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', processing_error: processingErrorCode(error), extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'EXTRACTION_FAILED')
