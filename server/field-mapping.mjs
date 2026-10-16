@@ -103,13 +103,13 @@ export const FIELD_MAPPING = {
     raw_text: '原始文本', file_ref: '文件引用', occurred_at: '资料发生时间', uploaded_at: '上传时间', uploaded_by: '上传人', source_role: '来源角色',
     service_record_id: '关联服务记录ID', content_hash: '内容Hash', processing_status: '处理状态', processing_version: '处理版本', sensitivity_level: '敏感级别',
     notes: '备注', created_at: '创建时间', updated_at: '更新时间', source_version: '资料版本', extractor_version: '提取器版本', last_batch_id: '最近提取批次ID',
-    processing_started_at: '处理开始时间', last_processing_at: '最近处理时间', processing_error: '处理错误',
+    processing_started_at: '处理开始时间', last_processing_at: '最近处理时间', processing_error: '处理错误', privacy_level: '隐私级别', privacy_status: '隐私处理状态', privacy_meta_json: '隐私元数据', mentor_safe_summary: '导师安全摘要',
   },
   evidenceItems: {
     evidence_id: '证据ID', subject_type: '主体类型', subject_id: '主体ID', customer_id: '客户ID', source_id: '资料ID', evidence_type: '证据类型',
     semantic_kind: '语义类型', field_key: '字段Key', standard_value: '标准值', display_text: '展示文本', source_excerpt: '原文摘录', locator_json: '资料定位',
     occurred_at: '发生时间', source_role: '来源角色', confidence: '置信度', review_status: '审核状态', reviewer_id: '审核人', reviewed_at: '审核时间', extraction_batch_id: '提取批次ID',
-    provider: '提取模型提供方', model: '模型', model_version: '模型版本', prompt_version: 'Prompt版本', created_at: '创建时间', updated_at: '更新时间',
+    provider: '提取模型提供方', model: '模型', model_version: '模型版本', prompt_version: 'Prompt版本', privacy_level: '隐私级别', privacy_meta_json: '隐私元数据', mentor_safe_text: '导师安全文本', created_at: '创建时间', updated_at: '更新时间',
   },
   profileUpdateProposals: {
     proposal_id: '建议ID', customer_id: '客户ID', subject_id: '主体ID', evidence_id: '证据ID', source_id: '资料ID', field_key: '字段Key', field_name: '字段名称',
