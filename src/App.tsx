@@ -27,6 +27,7 @@ import { runtimeConfig } from './runtime-config'
 import { createResourceCache, type ResourceCache } from './app-data-cache'
 import { clearSessionSnapshots, readSessionSnapshot, writeSessionSnapshot } from './session-snapshots'
 import { sortProductsForSelection } from './product-order'
+import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
 const repository = createLocalRepository()
 const api = createLocalApi(repository)
 const appEnv = runtimeConfig.appEnv
@@ -82,6 +83,7 @@ function ButtonSpinner() { return <span className="button-spinner" aria-hidden="
 function GradeBadge({ grade }: { grade: CustomerGrade }) { return <span className={`grade grade-${grade}`}>{grade}</span> }
 function SectionTitle({ title, action }: { title: string; action?: ReactNode }) { return <div className="section-title"><h2>{title}</h2>{action}</div> }
 function roleName(staff: Staff) { return accountRoleLabel(staff.permissionRole) }
+function staffStatusLabel(status: Staff['status']) { return status === 'ACTIVE' ? '在职' : '已停用' }
 const DASHBOARD_TTL_MS = 90_000
 const MENTOR_TTL_MS = 180_000
 const DATABASE_TTL_MS = 45_000
@@ -1193,6 +1195,8 @@ function TeamPanel({ staffId, database, api, cache }: { staffId: string; databas
   const [deactivateTarget, setDeactivateTarget] = useState<Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>[number] | null>(null)
   const [resetTarget, setResetTarget] = useState<Staff | null>(null)
   const [error, setError] = useState('')
+  const [feedback, setFeedback] = useState('')
+  const [temporaryCredential, setTemporaryCredential] = useState<TemporaryMentorCredential | null>(null)
   const loadingVisible = useDelayedLoading(!teams && !error)
 
   const reload = async (force = false) => {
@@ -1213,14 +1217,53 @@ function TeamPanel({ staffId, database, api, cache }: { staffId: string; databas
   useEffect(() => { void reload() }, [api, cache, cacheKey, staffId])
 
   const selected = teams?.find((item) => item.mentor.id === selectedId)
+  const applyTeams = (items: Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>) => {
+    setTeams(items)
+    setSelectedId((current) => current && items.some((item) => item.mentor.id === current) ? current : items[0]?.mentor.id ?? null)
+  }
+  const refreshAfterMutation = (preserve?: Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>[number]) => {
+    void cache.refresh(cacheKey, () => api.teamSnapshot(staffId)).then((items) => {
+      const next = reconcileMentorSnapshot(items, preserve)
+      writeSessionSnapshot(mentorSnapshotKey(staffId), next.map((item) => ({ ...item, mentor: { ...item.mentor, phone: '' } })))
+      cache.set(cacheKey, next)
+      applyTeams(next)
+    }).catch(() => {
+      if (preserve) setError('列表后台更新暂时失败，已保留刚创建的导师。')
+    })
+  }
+  const copyMentor = async (mentor: Staff, password?: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      const baseUrl = `${window.location.origin}${import.meta.env.BASE_URL}`
+      await navigator.clipboard.writeText(buildMentorCopyText(mentor, baseUrl, password))
+      if (password) setTemporaryCredential((current) => current?.mentor.id === mentor.id ? { ...current, password: undefined, copied: true } : current)
+      setFeedback(password ? '登录信息已复制' : '账号信息已复制')
+    } catch {
+      setFeedback('复制失败，请手动复制')
+    }
+  }
   const save = async (input: { name: string; phone: string; initialPassword?: string }): Promise<MentorAccountResult> => {
     let result: MentorAccountResult
     if (formMentor === 'create') result = await api.createMentor(staffId, input)
     else if (formMentor) result = await api.updateMentor(staffId, formMentor.id, input)
     else throw new Error('导师表单已关闭')
-    if (formMentor !== 'create') setFormMentor(null)
-    cache.invalidate(cacheKey)
-    await reload(true)
+    if (formMentor === 'create') {
+      const mentor = publicMentorSummary(result)
+      const optimistic = { mentor, customerCount: 0 }
+      const next = insertMentorSnapshot(teams || [], result)
+      cache.set(cacheKey, next)
+      cache.invalidate(basicDashboardCacheKey(staffId))
+      cache.invalidate(dashboardCacheKey(staffId))
+      setTemporaryCredential({ mentor, password: result.initialPassword, copied: false })
+      setFeedback('导师账号已创建')
+      setFormMentor(null)
+      applyTeams(next.length ? next : [optimistic])
+      refreshAfterMutation(optimistic)
+    } else {
+      setFormMentor(null)
+      cache.invalidate(cacheKey)
+      refreshAfterMutation()
+    }
     return result
   }
   const deactivate = async () => {
@@ -1234,6 +1277,7 @@ function TeamPanel({ staffId, database, api, cache }: { staffId: string; databas
   if (!teams) return <div className="management-panel">{error ? <p>{error}</p> : loadingVisible ? <p>正在加载导师列表…</p> : null}</div>
   return <div className="management-panel">
     <SectionTitle title="导师管理" action={<button className="primary-button small" type="button" onClick={() => setFormMentor('create')}>新增导师</button>} />
+    {feedback && <p className="panel-success">{feedback}</p>}
     {error && <p className="form-error">{error}</p>}
     <p className="panel-note">新增导师会生成一次性初始密码；首次登录后必须设置个人密码。</p>
     <div className="team-list">{teams.map((item) => <button type="button" key={item.mentor.id} className={'team-row ' + (selectedId === item.mentor.id ? 'selected' : '')} onClick={() => setSelectedId(item.mentor.id)}>
@@ -1242,13 +1286,13 @@ function TeamPanel({ staffId, database, api, cache }: { staffId: string; databas
       <span className="team-counts"><Badge tone={item.mentor.status === 'ACTIVE' ? 'green' : 'neutral'}>{item.mentor.status === 'ACTIVE' ? '在职' : '已停用'}</Badge><b>{item.customerCount}</b><small>负责客户</small></span>
     </button>)}</div>
     {selected && <section className="mentor-detail">
-      <div className="mentor-detail-heading"><div><h3>{selected.mentor.name}</h3><p>{selected.mentor.phone} · {selected.mentor.status}</p></div><Badge tone={selected.mentor.status === 'ACTIVE' ? 'green' : 'neutral'}>{selected.mentor.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE'}</Badge></div>
+      <div className="mentor-detail-heading"><div><h3>{selected.mentor.name}</h3><p>{selected.mentor.phone} · {staffStatusLabel(selected.mentor.status)}</p></div><Badge tone={selected.mentor.status === 'ACTIVE' ? 'green' : 'neutral'}>{staffStatusLabel(selected.mentor.status)}</Badge></div>
       <p>负责客户 {selected.customerCount}</p>
       {database.customers.filter((customer) => customer.mentorId === selected.mentor.id).slice(0, 6).map((customer) => <div className="mini-customer" key={customer.id}><span>{customer.initials}</span><strong>{customer.name}</strong><small>{customer.need}</small></div>)}
-      {selected.mentor.status === 'ACTIVE' ? <div className="mentor-actions"><button className="secondary-button small" type="button" onClick={() => setFormMentor(selected.mentor)}>编辑账号</button><button className="secondary-button small" type="button" onClick={() => setResetTarget(selected.mentor)}>重置密码</button><button className="secondary-button small danger-button" type="button" onClick={() => setDeactivateTarget(selected)}>停用账号</button></div> : <small className="mentor-readonly">该账号已停用，保留用于历史记录。</small>}
+      {selected.mentor.status === 'ACTIVE' ? <div className="mentor-actions"><button className="secondary-button small" type="button" onClick={() => void copyMentor(selected.mentor)}>复制账号</button>{temporaryCredential?.mentor.id === selected.mentor.id && temporaryCredential.password ? <button className="primary-button small" type="button" onClick={() => void copyMentor(selected.mentor, temporaryCredential.password)}>复制登录信息</button> : temporaryCredential?.mentor.id === selected.mentor.id && temporaryCredential.copied ? <span className="copy-success">已复制</span> : null}<button className="secondary-button small" type="button" onClick={() => setFormMentor(selected.mentor)}>编辑账号</button><button className="secondary-button small" type="button" onClick={() => setResetTarget(selected.mentor)}>重置密码</button><button className="secondary-button small danger-button" type="button" onClick={() => setDeactivateTarget(selected)}>停用账号</button></div> : <small className="mentor-readonly">该账号已停用，保留用于历史记录。</small>}
     </section>}
     {formMentor && <MentorFormDialog mentor={formMentor === 'create' ? undefined : formMentor} api={api} actorId={staffId} onClose={() => setFormMentor(null)} onSubmit={save} />}
-    {resetTarget && <PasswordResetDialog staff={resetTarget} api={api} actorId={staffId} onClose={() => setResetTarget(null)} onComplete={() => { setError('密码已重置；下次登录必须修改个人密码。') }} />}
+    {resetTarget && <PasswordResetDialog staff={resetTarget} api={api} actorId={staffId} onClose={() => setResetTarget(null)} onComplete={(password) => { setTemporaryCredential({ mentor: resetTarget, password, copied: false }); setResetTarget(null); setFeedback('密码已重置，可复制新的登录信息。') }} />}
     {deactivateTarget && <MentorDeactivateDialog snapshot={deactivateTarget} onClose={() => setDeactivateTarget(null)} onConfirm={deactivate} />}
   </div>
 }
@@ -1258,8 +1302,7 @@ function PasswordResetDialog({ staff, api, actorId, onClose, onComplete }: { sta
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); setError(''); try { const result = await api.resetPassword(actorId, staff.id); setInitialPassword(result.initialPassword || ''); onComplete(result.initialPassword || '') } catch (resetError) { setError(resetError instanceof Error ? resetError.message : '重置密码失败') } finally { setSaving(false) } }
-  const copy = async () => { if (!initialPassword) return; await navigator.clipboard?.writeText(`导师：${staff.name}\n手机号：${staff.phone}\n临时密码：${initialPassword}`) }
-  return <div className="modal-backdrop"><form className="modal-card compact-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">RESET PASSWORD</div><h2>重置{staff.name}的密码</h2>{initialPassword ? <><p className="modal-lede">新临时密码仅显示本次。请线下提供给导师，首次登录后必须修改。</p><div className="initial-password-result"><code>{initialPassword}</code><button type="button" className="secondary-button small" onClick={() => void copy()}>复制账号信息</button></div><button className="primary-button full-width" type="button" onClick={onClose}>完成</button></> : <><p className="modal-lede">系统会生成新的随机临时密码；旧 Session 会立即失效，导师下次登录必须修改密码。</p>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving && <ButtonSpinner />}{saving ? '重置中…' : '生成并重置'}</button></div></>}</form></div>
+  return <div className="modal-backdrop"><form className="modal-card compact-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">RESET PASSWORD</div><h2>重置{staff.name}的密码</h2><p className="modal-lede">系统会生成新的随机临时密码；旧 Session 会立即失效，重置成功后可在导师卡片中复制新的登录信息。</p>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving}>{saving && <ButtonSpinner />}{saving ? '重置中…' : '生成并重置'}</button></div></form></div>
 }
 
 function SelfPasswordDialog({ api, onClose }: { api: WorkbenchApi; onClose: () => void }) {
@@ -1291,24 +1334,15 @@ function SelfPasswordDialog({ api, onClose }: { api: WorkbenchApi; onClose: () =
 function MentorFormDialog({ mentor, api, actorId, onClose, onSubmit }: { mentor?: Staff; api: WorkbenchApi; actorId: string; onClose: () => void; onSubmit: (input: { name: string; phone: string; initialPassword?: string }) => Promise<MentorAccountResult> }) {
   const [name, setName] = useState(mentor?.name ?? '')
   const [phone, setPhone] = useState(mentor?.phone ?? '')
-  const [initialPassword, setInitialPassword] = useState('')
-  const [created, setCreated] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  useEffect(() => {
-    if (mentor) return
-    let cancelled = false
-    api.generateMentorInitialPassword(actorId, phone.trim()).then((password) => { if (!cancelled) setInitialPassword(password) }).catch((loadError) => { if (!cancelled) setError(loadError instanceof Error ? loadError.message : '初始密码生成失败') })
-    return () => { cancelled = true }
-  }, [api, actorId, mentor])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setSaving(true)
     setError('')
-    try { const result = await onSubmit({ name: name.trim(), phone: phone.trim(), initialPassword: mentor ? undefined : initialPassword }); if (!mentor) { setInitialPassword(result.initialPassword || initialPassword); setCreated(true) } } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存失败') } finally { setSaving(false) }
+    try { await onSubmit({ name: name.trim(), phone: phone.trim() }) } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存失败') } finally { setSaving(false) }
   }
-  const copy = async () => { if (!initialPassword) return; await navigator.clipboard?.writeText(`导师：${name.trim()}\n手机号：${phone.trim()}\n初始密码：${initialPassword}`) }
-  return <div className="modal-backdrop"><form className="modal-card compact-modal form-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">MENTOR ACCOUNT</div><h2>{mentor ? '编辑导师' : '新增导师'}</h2>{created ? <><p className="modal-lede">账号已创建，请将手机号和初始密码提供给导师。该密码仅显示本次，首次登录后必须修改。</p><div className="initial-password-result"><div><small>初始密码</small><code>{initialPassword}</code></div><button type="button" className="secondary-button small" onClick={() => void copy()}>复制账号信息</button></div><button className="primary-button full-width" type="button" onClick={onClose}>完成</button></> : <><p className="modal-lede">只需填写昵称和手机号。系统会生成初始密码，导师首次登录后需要修改。</p><label>导师昵称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：王老师" autoFocus /></label><label>手机号<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="numeric" placeholder="11 位手机号" /></label>{!mentor && <label>初始密码<div className="initial-password-row"><input value={initialPassword} readOnly aria-label="初始密码" /><button type="button" className="secondary-button small" onClick={() => void copy()} disabled={!initialPassword}>复制</button><button type="button" className="secondary-button small" onClick={() => { setError(''); void api.generateMentorInitialPassword(actorId, phone.trim()).then(setInitialPassword).catch((loadError) => setError(loadError instanceof Error ? loadError.message : '初始密码生成失败')) }} disabled={!phone.trim()}>重新生成</button></div></label>}{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={saving || !initialPassword} aria-busy={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '保存账号'} <span>→</span></button></>}</form></div>
+  return <div className="modal-backdrop"><form className="modal-card compact-modal form-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button><div className="eyebrow">MENTOR ACCOUNT</div><h2>{mentor ? '编辑导师' : '新增导师'}</h2><p className="modal-lede">只需填写昵称和手机号。系统会生成一次性初始密码，账号创建成功后可立即复制。</p><label>导师昵称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：王老师" autoFocus /></label><label>手机号<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="numeric" placeholder="11 位手机号" /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button full-width" type="submit" disabled={saving || !name.trim() || !phone.trim()} aria-busy={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '保存账号'} <span>→</span></button></form></div>
 }
 
 function MentorDeactivateDialog({ snapshot, onClose, onConfirm }: { snapshot: Awaited<ReturnType<WorkbenchApi['teamSnapshot']>>[number]; onClose: () => void; onConfirm: () => Promise<void> }) {
