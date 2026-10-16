@@ -150,6 +150,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guard(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
   const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
   if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/privacy/service-necessity') return send(request, response, 200, await repository.overrideServiceNecessity(await guardAdmin(request), await readBody(request)), requestId)
   const proposalReview = url.pathname.match(/^\/api\/profile-proposals\/([^/]+)\/review$/)
   if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guard(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }
   const conflictResolve = url.pathname.match(/^\/api\/evidence-conflicts\/([^/]+)\/resolve$/)
