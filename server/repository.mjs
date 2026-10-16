@@ -1134,11 +1134,14 @@ export class FeishuRepository {
       }
       const unique = dedupeEvidence(candidates)
       const protectedKeys = new Set(allExistingEvidence.filter((item) => item.reviewStatus === 'CONFIRMED').map((item) => evidenceLogicalKey(item)))
-      const replaceableEvidence = unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item)))
-      for (const item of replaceableEvidence) {
+      const rejectedEvidence = []
+      const replaceableEvidence = unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item))).filter((item) => {
         const compactExcerpt = normalizeText(item.sourceExcerpt, 500).replace(/\s+/g, '')
-        if (item.sourceId !== sourceId || !compactExcerpt || item._sourceGrounded !== true || item._canonicalGrounded !== true) throw Object.assign(new Error('Evidence 原文摘录未通过来源校验'), { code: 'EVIDENCE_SOURCE_NOT_GROUNDED', status: 422 })
-      }
+        const valid = item.sourceId === sourceId && Boolean(compactExcerpt) && item._sourceGrounded === true && item._canonicalGrounded === true
+        if (!valid) rejectedEvidence.push({ fieldKey: item.fieldKey || '', reason: item._sourceGrounded === true ? 'CANONICAL_NOT_GROUNDED' : 'SOURCE_NOT_GROUNDED' })
+        return valid
+      })
+      processingDiagnostics.rejected_evidence_count = rejectedEvidence.length
       const customer = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []
       for (const item of replaceableEvidence) {
@@ -1159,7 +1162,7 @@ export class FeishuRepository {
       const refreshed = await this.load({ force: true })
       const allEvidence = refreshed.evidenceItems.filter((item) => item.sourceId === sourceId)
       if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-      const itemErrors = []
+      const derivedErrors = []
       for (const evidence of allEvidence) {
         try {
           const currentValue = database.customers.find((item) => item.id === source.customerId)?.profileFields?.[evidence.fieldKey] ?? null
@@ -1196,16 +1199,16 @@ export class FeishuRepository {
             if (!latest.evidenceConflicts.some((item) => item.id === conflict.id)) await createMappedRecord('evidenceConflicts', 'conflict.create', { conflict_id: conflict.id, subject_id: conflict.subjectId, customer_id: conflict.customerId, field_key: conflict.fieldKey, conflict_type: conflict.conflictType, current_value: stage2Json(conflict.currentValue), new_value: stage2Json(conflict.newValue), current_evidence_id: conflict.currentEvidenceId, new_evidence_id: conflict.newEvidenceId, status: 'OPEN', suggested_resolution: conflict.suggestedResolution, resolution: '', reviewer_id: '', resolved_at: '', created_at: conflict.createdAt, updated_at: conflict.updatedAt })
           }
         } catch (error) {
-          itemErrors.push(processingErrorCode(error))
+          derivedErrors.push(processingErrorCode(error))
         }
       }
       const debugBeforeStatus = await this.load()
       const hasOpenConflict = debugBeforeStatus.evidenceConflicts.some((item) => item.newEvidenceId && debugBeforeStatus.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
-      const finalStatus = hasOpenConflict ? 'REVIEW_REQUIRED' : itemErrors.length ? 'FAILED' : 'COMPLETED'
+      const finalStatus = hasOpenConflict ? 'REVIEW_REQUIRED' : 'COMPLETED'
       const finishedAt = now()
-      await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',').slice(0, 200) : '', updated_at: finishedAt })
+      await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: derivedErrors.length ? [...new Set(derivedErrors)].join(',').slice(0, 200) : '', updated_at: finishedAt })
       const debugDatabase = await this.load()
-      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, processing_error: itemErrors.length ? [...new Set(itemErrors)].join(',') : '', extraction_batch: batchId, evidence_count: unique.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, processing_error: derivedErrors.length ? [...new Set(derivedErrors)].join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)
       await this.markSafetyStale(source.customerId).catch((error) => this.audit('MARK_SAFETY_STALE', source.customerId, actorId, 'FAIL', error instanceof Error ? error.code || error.message : 'SAFETY_STALE_FAILED'))

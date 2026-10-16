@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { ACCESS_TOKEN_STORAGE_KEY, clearAccessToken, readAccessToken, writeAccessToken } from './auth-storage'
+import { ACCESS_TOKEN_STORAGE_KEY, LAST_LOGIN_PHONE_STORAGE_KEY, clearAccessToken, readAccessToken, readLastLoginPhone, writeAccessToken, writeLastLoginPhone } from './auth-storage'
 
 function installStorage() {
   const local = new Map<string, string>()
@@ -29,5 +29,13 @@ describe('persistent access token storage', () => {
     clearAccessToken()
     expect(local.has(ACCESS_TOKEN_STORAGE_KEY)).toBe(false)
     expect(session.has('asva_session_token')).toBe(false)
+  })
+
+  it('remembers only the last successful phone in browser-local storage', () => {
+    const { local } = installStorage()
+    expect(readLastLoginPhone()).toBe('')
+    writeLastLoginPhone(' 13800000001 ')
+    expect(readLastLoginPhone()).toBe('13800000001')
+    expect(local.get(LAST_LOGIN_PHONE_STORAGE_KEY)).toBe('13800000001')
   })
 })

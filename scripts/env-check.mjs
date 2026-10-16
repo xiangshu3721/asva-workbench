@@ -20,7 +20,7 @@ loadEnvFile(path.join(root, '.env'))
 loadEnvFile(path.join(root, '.env.local'))
 
 const appEnv = process.env.VITE_APP_ENV?.trim() || 'development'
-const validAppEnv = new Set(['development', 'production', 'mock'])
+const validAppEnv = new Set(['development', 'staging', 'production', 'mock'])
 const apiBase = process.env.VITE_API_BASE_URL?.trim().replace(/\/$/, '') || ''
 const frontendMeta = [path.join(root, 'public/build-meta.json'), path.join(root, 'build-meta.json')]
   .map((filePath) => { try { return JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { return null } })
@@ -52,7 +52,8 @@ console.log(`Version Compatible: ${versionCompatible === null ? 'UNKNOWN' : vers
 console.log(`Auth Mode: ${backend?.authMode || 'UNKNOWN'}`)
 console.log(`Data Mode: ${backend?.dataMode || 'UNKNOWN'}`)
 
+const expectedDataMode = appEnv === 'mock' ? 'mock' : appEnv === 'staging' ? 'staging' : 'production'
 const healthyConfiguration = !validAppEnv.has(appEnv) ? false : appEnv === 'mock'
   ? !apiBase
-  : Boolean(apiBase) && backendReachable && backend?.appEnv === appEnv && backend?.dataMode === 'production' && versionCompatible !== false
+  : Boolean(apiBase) && backendReachable && backend?.appEnv === appEnv && backend?.dataMode === expectedDataMode && (appEnv !== 'staging' || backend?.productionWriteProtection === 'ON') && versionCompatible !== false
 if (!healthyConfiguration) process.exitCode = 1

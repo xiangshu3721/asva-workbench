@@ -22,6 +22,11 @@ describe('runtime environment contract', () => {
     expect(config.configurationError).toBeNull()
   })
 
+  it('accepts an isolated staging API and rejects the production API', () => {
+    expect(resolveRuntimeConfig({ VITE_APP_ENV: 'staging', VITE_API_BASE_URL: 'https://staging.example.test/asva-api' })).toMatchObject({ appEnv: 'staging', dataMode: 'staging', configurationError: null })
+    expect(resolveRuntimeConfig({ VITE_APP_ENV: 'staging', VITE_API_BASE_URL: 'https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.com/asva-api' }).configurationError).toContain('Staging 禁止连接 Production API')
+  })
+
   it('rejects unknown environments', () => {
     expect(resolveRuntimeConfig({ VITE_APP_ENV: 'demo', VITE_API_BASE_URL: 'http://127.0.0.1:8788' }).appEnv).toBe('invalid')
   })
