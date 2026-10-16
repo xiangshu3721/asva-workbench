@@ -313,7 +313,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
   .brief-scroll { display: flex; overflow-x: auto; gap: 8px; margin-right: -15px; padding-right: 15px; scroll-snap-type: x mandatory; scrollbar-width: none; }.brief-scroll::-webkit-scrollbar { display: none; }.brief-card { flex: 0 0 78%; min-height: 142px; scroll-snap-align: start; }
   .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }.overview-metrics .detail-metric { min-height: 62px; }.enrollment-row { align-items: flex-start; padding: 10px; }
   .history-event { grid-template-columns: 68px 10px minmax(0, 1fr); gap: 8px; }.history-event-title { align-items: flex-start; flex-direction: column; gap: 4px; }.history-event p { white-space: normal; }
-  .supplement-actions { display: grid; grid-template-columns: 1fr 1fr; }.supplement-actions button { width: 100%; }.profile-draft-row { grid-template-columns: 72px minmax(0, 1fr); }
+  .source-tools { display: grid; grid-template-columns: 1fr; gap: 8px; }.source-tools > * { width: 100%; }.perspective-toggle { margin: 12px 0 0; }.supplement-actions { display: grid; grid-template-columns: 1fr 1fr; }.supplement-actions button { width: 100%; }.profile-draft-row { grid-template-columns: 72px minmax(0, 1fr); }
   .initial-password-row { grid-template-columns: minmax(0, 1fr) auto; }.initial-password-row button:last-child { grid-column: 1 / -1; width: 100%; }.initial-password-result { align-items: stretch; flex-direction: column; }
 }
 

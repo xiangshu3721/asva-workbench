@@ -2,7 +2,9 @@ import { config } from '../server/config.mjs'
 import { listRecords } from '../server/feishu.mjs'
 import { read as readField } from '../server/field-mapping.mjs'
 
-if (config.dataMode !== 'production' || config.environment !== 'production') throw new Error('orphan check requires production environment')
+const productionLike = config.dataMode === 'production' && config.environment === 'production'
+const stagingLike = config.appEnv === 'staging' && config.dataMode === 'staging' && config.productionWriteProtection === 'ON'
+if (!productionLike && !stagingLike) throw new Error('orphan check requires production or protected staging environment')
 const keys = ['customers', 'staff', 'authCredentials', 'appointments', 'serviceRecords', 'enrollments', 'sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts', 'profileChanges']
 const rows = Object.fromEntries(await Promise.all(keys.map(async (key) => [key, config.feishu.tables[key] ? await listRecords(config.feishu.tables[key]) : []])))
 const text = (value) => value === null || value === undefined ? '' : String(value).trim()

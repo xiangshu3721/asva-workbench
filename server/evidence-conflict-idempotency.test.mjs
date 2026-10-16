@@ -152,6 +152,30 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     expect(activeDatabase.evidenceConflicts).toHaveLength(0)
   })
 
+  it('keeps valid candidates when one candidate fails source grounding', async () => {
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } },
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'job_status', value: '已离职', display_text: '当前工作状态为已离职', source_excerpt: '这段话并不在原始资料中', confidence: 0.9, locator: { paragraph_index: 0 } },
+    ])
+    const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+    expect(result.evidenceItems.filter((item) => item.reviewStatus !== 'SUPERSEDED')).toHaveLength(1)
+    expect(result.evidenceItems[0].fieldKey).toBe('city')
+  })
+
+  it('keeps an unknown canonical candidate auditable without failing the source', async () => {
+    const repository = setupRepository(async () => [
+      { evidence_type: 'SELF_MEANING', semantic_kind: 'OTHER', field_key: 'unknown_internal_field', value: '希望慢一点', display_text: '客户希望节奏慢一点', source_excerpt: '她希望慢一点', confidence: 0.9, locator: { paragraph_index: 0 } },
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    activeDatabase.sourceRecords[0].rawText = '她希望慢一点。她目前已经长期住在深圳。'
+    const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+    expect(result.evidenceItems).toHaveLength(2)
+    expect(result.evidenceItems.some((item) => !item.fieldKey)).toBe(true)
+    expect(result.evidenceItems.some((item) => item.fieldKey === 'city')).toBe(true)
+  })
+
   it('replaces wording-drifted AI evidence without creating a second active item', async () => {
     const repository = setupRepository()
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })

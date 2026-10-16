@@ -82,6 +82,8 @@ VITE_API_BASE_URL=http://127.0.0.1:8788 npm run dev
 
 页面不直接依赖飞书字段。当前页面 → `src/clientApi.ts` → HTTP `/api` → `server/repository.mjs` → 飞书多维表；环境由 `VITE_APP_ENV` 明确决定：`development` 与 `production` 使用真实 API，`mock` 才使用本地演示数据。
 
+发布纪律：ASVA Production 已进入真实用户阶段。后续功能、Bug 修复和交互调整必须经过自动化测试、独立 Staging 部署、Staging synthetic data 测试和人工验收；只有 `STAGING_VERIFIED = YES` 才允许发布 Production。Production 只做版本、健康、页面、登录和必要的只读确认，不作为功能测试环境。Staging 必须使用独立 API / 数据表、`APP_ENV=staging`、`DATA_MODE=staging` 和 `PRODUCTION_WRITE_PROTECTION=ON`，连接 Production API 或 Production 表 ID 时立即失败。
+
 当前页面实际依赖的业务数据只有 Customers、Appointments、ServiceRecords（代码中的 `sessions`）、Staff、简单 Products，以及 Customer 内嵌档案字段和画像变更历史；旧画像表不再参与读取、写入或查询。
 
 服务端职责：

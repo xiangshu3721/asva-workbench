@@ -1,4 +1,5 @@
 export const ACCESS_TOKEN_STORAGE_KEY = 'asva_access_token'
+export const LAST_LOGIN_PHONE_STORAGE_KEY = 'asva:last-login-phone'
 const LEGACY_ACCESS_TOKEN_STORAGE_KEY = 'asva_session_token'
 
 function storage(name: 'localStorage' | 'sessionStorage'): Storage | null {
@@ -33,6 +34,15 @@ export function writeAccessToken(token: string) {
 export function clearAccessToken() {
   storage('localStorage')?.removeItem(ACCESS_TOKEN_STORAGE_KEY)
   storage('sessionStorage')?.removeItem(LEGACY_ACCESS_TOKEN_STORAGE_KEY)
+}
+
+export function readLastLoginPhone(): string {
+  return storage('localStorage')?.getItem(LAST_LOGIN_PHONE_STORAGE_KEY) || ''
+}
+
+export function writeLastLoginPhone(phone: string) {
+  const normalized = phone.trim()
+  if (normalized) storage('localStorage')?.setItem(LAST_LOGIN_PHONE_STORAGE_KEY, normalized)
 }
 
 export type AccessTokenIdentity = { staffId: string; authVersion: number; expiresAt: number }

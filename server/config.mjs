@@ -22,12 +22,15 @@ loadEnvFile(path.join(rootDir, '.env.local'))
 const value = (key, fallback = '') => process.env[key]?.trim() || fallback
 const normalizeAppEnv = (raw) => {
   if (raw === 'production') return 'production'
+  if (raw === 'staging') return 'staging'
   if (raw === 'mock') return 'mock'
   if (raw === 'development' || raw === 'local') return 'development'
   return 'invalid'
 }
 const legacyEnvironment = value('ASVA_ENVIRONMENT', value('NODE_ENV', 'development'))
 const appEnv = normalizeAppEnv(value('APP_ENV', legacyEnvironment))
+const productionWriteProtection = value('PRODUCTION_WRITE_PROTECTION', 'OFF')
+const productionTableIds = new Set(['tblUrXu4ivBGJ7zV', 'tblFKkM7fPTqi8Zx', 'tblFGmyJi3RJQ7bM', 'tblojNfk4bVM5KxH', 'tblLG2SFwYpKgiMQ', 'tblTH3OmBuzUsBVu'])
 const frontendOrigin = value('ASVA_FRONTEND_ORIGIN', 'https://xiangshu3721.github.io')
 const corsAllowedOrigins = (value('CORS_ALLOWED_ORIGINS') || [frontendOrigin, 'https://xiangshu3721.github.io', 'http://localhost:5173', 'http://127.0.0.1:5173'].join(','))
   .split(',')
@@ -42,7 +45,8 @@ export const config = {
   authMode: value('AUTH_MODE', 'ADMIN_CODE'),
   appEnv,
   environment: legacyEnvironment,
-  dataMode: value('DATA_MODE', appEnv === 'mock' ? 'mock' : 'production'),
+  dataMode: value('DATA_MODE', appEnv === 'mock' ? 'mock' : appEnv === 'staging' ? 'staging' : 'production'),
+  productionWriteProtection,
   allowDevOtp: value('ALLOW_DEV_OTP', 'false') === 'true',
   maxDocumentSizeMb: Number(value('MAX_DOCUMENT_SIZE_MB', '20')) || 20,
   frontendOrigin,
@@ -78,6 +82,13 @@ export const config = {
   },
 }
 
+if (config.appEnv === 'staging') {
+  if (config.dataMode !== 'staging') throw new Error('STAGING_DATA_MODE_REQUIRED')
+  if (config.productionWriteProtection !== 'ON') throw new Error('STAGING_PRODUCTION_WRITE_PROTECTION_REQUIRED')
+  const configuredProductionTable = Object.values(config.feishu.tables).some((tableId) => tableId && productionTableIds.has(tableId))
+  if (configuredProductionTable) throw new Error('STAGING_PRODUCTION_TABLE_ID_FORBIDDEN')
+}
+
 export function isCorsOriginAllowed(origin, appEnv = config.appEnv) {
   if (!origin || corsAllowedOrigins.includes(origin)) return Boolean(origin)
   if (appEnv !== 'development') return false
@@ -95,6 +106,7 @@ export function configurationStatus() {
     appEnv: config.appEnv,
     environment: config.environment,
     dataMode: config.dataMode,
+    productionWriteProtection: config.productionWriteProtection,
     featureFlags: config.features,
   }
 }
