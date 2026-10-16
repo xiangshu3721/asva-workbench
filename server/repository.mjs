@@ -22,7 +22,7 @@ import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSa
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
-import { classifyPrivacyText, privacySafeText, resolvePrivacyPolicy } from '../shared/privacy-guard.mjs'
+import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -182,11 +182,15 @@ function parsedJson(value, fallback = null) { try { return JSON.parse(text(value
 function sourceRecord(row) {
   const f = row.fields || {}
   const sourceRole = text(get('sourceRecords', f, 'source_role')) || 'CUSTOMER'
-  return { id: text(get('sourceRecords', f, 'source_id')) || row.record_id, subjectType: text(get('sourceRecords', f, 'subject_type')) || 'PERSON', subjectId: text(get('sourceRecords', f, 'subject_id')), customerId: text(get('sourceRecords', f, 'customer_id')), sourceType: text(get('sourceRecords', f, 'source_type')), title: text(get('sourceRecords', f, 'title')), rawText: text(get('sourceRecords', f, 'raw_text')), fileRef: text(get('sourceRecords', f, 'file_ref')), occurredAt: date(get('sourceRecords', f, 'occurred_at')) || null, uploadedAt: date(get('sourceRecords', f, 'uploaded_at')) || null, uploadedBy: text(get('sourceRecords', f, 'uploaded_by')), sourceRole, sourcePerspective: sourcePerspectiveFromRole(sourceRole), serviceRecordId: text(get('sourceRecords', f, 'service_record_id')), contentHash: text(get('sourceRecords', f, 'content_hash')), processingStatus: text(get('sourceRecords', f, 'processing_status')) || 'UPLOADED', processingVersion: Number(get('sourceRecords', f, 'processing_version') || 1), sensitivityLevel: text(get('sourceRecords', f, 'sensitivity_level')) || 'HIGH', privacyLevel: text(get('sourceRecords', f, 'privacy_level')) || 'NORMAL', privacyStatus: text(get('sourceRecords', f, 'privacy_status')) || 'READY', privacyMeta: parsedJson(get('sourceRecords', f, 'privacy_meta_json'), {}), mentorSafeSummary: text(get('sourceRecords', f, 'mentor_safe_summary')), notes: text(get('sourceRecords', f, 'notes')), sourceVersion: Number(get('sourceRecords', f, 'source_version') || 1), extractorVersion: text(get('sourceRecords', f, 'extractor_version')), lastBatchId: text(get('sourceRecords', f, 'last_batch_id')), processingStartedAt: date(get('sourceRecords', f, 'processing_started_at')) || null, lastProcessingAt: date(get('sourceRecords', f, 'last_processing_at')) || null, processingError: text(get('sourceRecords', f, 'processing_error')) || null, createdAt: date(get('sourceRecords', f, 'created_at')) || null, updatedAt: date(get('sourceRecords', f, 'updated_at')) || null, _recordId: row.record_id }
+  const privacyMeta = parsedJson(get('sourceRecords', f, 'privacy_meta_json'), {})
+  const serviceNecessity = privacyMeta.serviceNecessity || (text(get('sourceRecords', f, 'privacy_level')) === 'HIGH_SENSITIVE' ? 'RELEVANT' : '')
+  return { id: text(get('sourceRecords', f, 'source_id')) || row.record_id, subjectType: text(get('sourceRecords', f, 'subject_type')) || 'PERSON', subjectId: text(get('sourceRecords', f, 'subject_id')), customerId: text(get('sourceRecords', f, 'customer_id')), sourceType: text(get('sourceRecords', f, 'source_type')), title: text(get('sourceRecords', f, 'title')), rawText: text(get('sourceRecords', f, 'raw_text')), fileRef: text(get('sourceRecords', f, 'file_ref')), occurredAt: date(get('sourceRecords', f, 'occurred_at')) || null, uploadedAt: date(get('sourceRecords', f, 'uploaded_at')) || null, uploadedBy: text(get('sourceRecords', f, 'uploaded_by')), sourceRole, sourcePerspective: sourcePerspectiveFromRole(sourceRole), serviceRecordId: text(get('sourceRecords', f, 'service_record_id')), contentHash: text(get('sourceRecords', f, 'content_hash')), processingStatus: text(get('sourceRecords', f, 'processing_status')) || 'UPLOADED', processingVersion: Number(get('sourceRecords', f, 'processing_version') || 1), sensitivityLevel: text(get('sourceRecords', f, 'sensitivity_level')) || 'HIGH', privacyLevel: text(get('sourceRecords', f, 'privacy_level')) || 'NORMAL', privacyStatus: text(get('sourceRecords', f, 'privacy_status')) || 'READY', privacyMeta, serviceNecessity, serviceNecessityReason: privacyMeta.serviceNecessityReason || '', temporalType: privacyMeta.temporalType || 'UNKNOWN', mentorSafeSummary: text(get('sourceRecords', f, 'mentor_safe_summary')) || privacyMeta.mentorSafeSummary || '', mentorServiceDetail: privacyMeta.mentorServiceDetail || '', necessaryExcerpt: privacyMeta.necessaryExcerpt || '', salesSafeSummary: privacyMeta.salesSafeSummary || '', notes: text(get('sourceRecords', f, 'notes')), sourceVersion: Number(get('sourceRecords', f, 'source_version') || 1), extractorVersion: text(get('sourceRecords', f, 'extractor_version')), lastBatchId: text(get('sourceRecords', f, 'last_batch_id')), processingStartedAt: date(get('sourceRecords', f, 'processing_started_at')) || null, lastProcessingAt: date(get('sourceRecords', f, 'last_processing_at')) || null, processingError: text(get('sourceRecords', f, 'processing_error')) || null, createdAt: date(get('sourceRecords', f, 'created_at')) || null, updatedAt: date(get('sourceRecords', f, 'updated_at')) || null, _recordId: row.record_id }
 }
 function evidenceItem(row) {
   const f = row.fields || {}
-  return { id: text(get('evidenceItems', f, 'evidence_id')) || row.record_id, subjectType: text(get('evidenceItems', f, 'subject_type')) || 'PERSON', subjectId: text(get('evidenceItems', f, 'subject_id')), customerId: text(get('evidenceItems', f, 'customer_id')), sourceId: text(get('evidenceItems', f, 'source_id')), evidenceType: text(get('evidenceItems', f, 'evidence_type')), semanticKind: text(get('evidenceItems', f, 'semantic_kind')), fieldKey: text(get('evidenceItems', f, 'field_key')), standardValue: parsedJson(get('evidenceItems', f, 'standard_value'), text(get('evidenceItems', f, 'standard_value'))), displayText: text(get('evidenceItems', f, 'display_text')), sourceExcerpt: text(get('evidenceItems', f, 'source_excerpt')), locator: parsedJson(get('evidenceItems', f, 'locator_json'), {}), occurredAt: date(get('evidenceItems', f, 'occurred_at')) || null, sourceRole: text(get('evidenceItems', f, 'source_role')), confidence: Number(get('evidenceItems', f, 'confidence') || 0), reviewStatus: text(get('evidenceItems', f, 'review_status')) || 'PENDING_REVIEW', extractionBatchId: text(get('evidenceItems', f, 'extraction_batch_id')), provider: text(get('evidenceItems', f, 'provider')) || 'DEEPSEEK', model: text(get('evidenceItems', f, 'model')), modelVersion: text(get('evidenceItems', f, 'model_version')), promptVersion: text(get('evidenceItems', f, 'prompt_version')), privacyLevel: text(get('evidenceItems', f, 'privacy_level')) || 'NORMAL', privacyMeta: parsedJson(get('evidenceItems', f, 'privacy_meta_json'), {}), mentorSafeText: text(get('evidenceItems', f, 'mentor_safe_text')), createdAt: date(get('evidenceItems', f, 'created_at')) || null, updatedAt: date(get('evidenceItems', f, 'updated_at')) || null, _recordId: row.record_id }
+  const privacyMeta = parsedJson(get('evidenceItems', f, 'privacy_meta_json'), {})
+  const serviceNecessity = privacyMeta.serviceNecessity || (text(get('evidenceItems', f, 'privacy_level')) === 'HIGH_SENSITIVE' ? 'RELEVANT' : '')
+  return { id: text(get('evidenceItems', f, 'evidence_id')) || row.record_id, subjectType: text(get('evidenceItems', f, 'subject_type')) || 'PERSON', subjectId: text(get('evidenceItems', f, 'subject_id')), customerId: text(get('evidenceItems', f, 'customer_id')), sourceId: text(get('evidenceItems', f, 'source_id')), evidenceType: text(get('evidenceItems', f, 'evidence_type')), semanticKind: text(get('evidenceItems', f, 'semantic_kind')), fieldKey: text(get('evidenceItems', f, 'field_key')), standardValue: parsedJson(get('evidenceItems', f, 'standard_value'), text(get('evidenceItems', f, 'standard_value'))), displayText: text(get('evidenceItems', f, 'display_text')), sourceExcerpt: text(get('evidenceItems', f, 'source_excerpt')), locator: parsedJson(get('evidenceItems', f, 'locator_json'), {}), occurredAt: date(get('evidenceItems', f, 'occurred_at')) || null, sourceRole: text(get('evidenceItems', f, 'source_role')), confidence: Number(get('evidenceItems', f, 'confidence') || 0), reviewStatus: text(get('evidenceItems', f, 'review_status')) || 'PENDING_REVIEW', extractionBatchId: text(get('evidenceItems', f, 'extraction_batch_id')), provider: text(get('evidenceItems', f, 'provider')) || 'DEEPSEEK', model: text(get('evidenceItems', f, 'model')), modelVersion: text(get('evidenceItems', f, 'model_version')), promptVersion: text(get('evidenceItems', f, 'prompt_version')), privacyLevel: text(get('evidenceItems', f, 'privacy_level')) || 'NORMAL', privacyMeta, serviceNecessity, serviceNecessityReason: privacyMeta.serviceNecessityReason || '', temporalType: privacyMeta.temporalType || 'UNKNOWN', mentorSafeText: text(get('evidenceItems', f, 'mentor_safe_text')), mentorServiceDetail: privacyMeta.mentorServiceDetail || '', necessaryExcerpt: privacyMeta.necessaryExcerpt || '', salesSafeSummary: privacyMeta.salesSafeSummary || '', createdAt: date(get('evidenceItems', f, 'created_at')) || null, updatedAt: date(get('evidenceItems', f, 'updated_at')) || null, _recordId: row.record_id }
 }
 function proposalRecord(row) {
   const f = row.fields || {}
@@ -212,17 +216,17 @@ function assertMentorAssignmentAuthority(database, actorId, updates) {
 
 function mentorVisibleSource(source) {
   const meta = source?.privacyMeta || {}
-  const policy = resolvePrivacyPolicy({ privacyLevel: source?.privacyLevel, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: 'MENTOR', assertionType: meta.assertionType })
+  const policy = resolvePrivacyPolicy({ privacyLevel: source?.privacyLevel, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: 'MENTOR', assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: source?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: source?.temporalType || meta.temporalType })
   if (policy.canViewRaw) return source
-  return { ...source, rawText: '', mentorSafeSummary: source.mentorSafeSummary || privacySafeText(meta) }
+  return { ...source, rawText: '', mentorSafeSummary: source.mentorSafeSummary || privacySafeText(meta), mentorServiceDetail: policy.canViewServiceDetail ? (source.mentorServiceDetail || meta.mentorServiceDetail || '') : '', necessaryExcerpt: policy.canViewNecessaryExcerpt ? (source.necessaryExcerpt || meta.necessaryExcerpt || '') : '', salesSafeSummary: meta.salesSafeSummary || '', privacyPolicy: policy }
 }
 
 function mentorVisibleEvidence(evidence, source) {
   const meta = evidence?.privacyMeta || source?.privacyMeta || {}
   const level = evidence?.privacyLevel || source?.privacyLevel || 'NORMAL'
-  const policy = resolvePrivacyPolicy({ privacyLevel: level, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: 'MENTOR', assertionType: meta.assertionType })
+  const policy = resolvePrivacyPolicy({ privacyLevel: level, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: 'MENTOR', assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: evidence?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: evidence?.temporalType || meta.temporalType })
   if (policy.canViewRaw) return evidence
-  return { ...evidence, sourceExcerpt: '', displayText: evidence.mentorSafeText || privacySafeText(meta), standardValue: policy.canPromoteToProfile ? evidence.standardValue : undefined }
+  return { ...evidence, sourceExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', displayText: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || evidence.mentorSafeText || privacySafeText(meta)) : (evidence.mentorSafeText || privacySafeText(meta)), standardValue: policy.canPromoteToProfile ? evidence.standardValue : undefined, mentorServiceDetail: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || '') : '', necessaryExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', salesSafeSummary: meta.salesSafeSummary || '', privacyPolicy: policy }
 }
 
 function mentorVisibleSafetyAssessment(assessment, actorRole) {
@@ -731,7 +735,7 @@ export class FeishuRepository {
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const evidenceItems = visible.evidenceItems.filter((item) => item.customerId === customerId)
+    const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
     const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, conflicts })
     const fingerprint = context.input_fingerprint
@@ -759,7 +763,7 @@ export class FeishuRepository {
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const evidenceItems = visible.evidenceItems.filter((item) => item.customerId === customerId)
+    const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
     const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, conflicts })
     const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts })
@@ -797,7 +801,7 @@ export class FeishuRepository {
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const evidenceItems = visible.evidenceItems.filter((item) => item.customerId === customerId && resolvePrivacyPolicy({ privacyLevel: item.privacyLevel, categories: item.privacyMeta?.categories, safetyFlags: item.privacyMeta?.safetyFlags, currentRole: 'ADMIN', assertionType: item.privacyMeta?.assertionType }).canUseInSales)
+    const evidenceItems = buildSalesContext({ evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
     const enrollments = visible.enrollments.filter((item) => item.customerId === customerId)
     const products = database.products
@@ -818,7 +822,7 @@ export class FeishuRepository {
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const evidenceItems = visible.evidenceItems.filter((item) => item.customerId === customerId && resolvePrivacyPolicy({ privacyLevel: item.privacyLevel, categories: item.privacyMeta?.categories, safetyFlags: item.privacyMeta?.safetyFlags, currentRole: 'ADMIN', assertionType: item.privacyMeta?.assertionType }).canUseInSales)
+    const evidenceItems = buildSalesContext({ evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
     const enrollments = visible.enrollments.filter((item) => item.customerId === customerId)
     const sessions = visible.sessions.filter((item) => item.customerId === customerId)
@@ -877,8 +881,8 @@ export class FeishuRepository {
       const evidence = evidenceById.get(evidence_id)
       const source = sourceById.get(source_id)
       const meta = evidence?.privacyMeta || source?.privacyMeta || {}
-      const policy = resolvePrivacyPolicy({ privacyLevel: evidence?.privacyLevel || source?.privacyLevel, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: actor?.permissionRole || 'ADMIN', assertionType: meta.assertionType })
-      return { evidence_id, source_id, source_title, display_text: policy.canViewRaw ? display_text : evidence?.mentorSafeText || source?.mentorSafeSummary || privacySafeText(meta), excerpt: policy.canViewRaw ? excerpt : '', occurred_at, evidence_type, source_perspective }
+      const policy = resolvePrivacyPolicy({ privacyLevel: evidence?.privacyLevel || source?.privacyLevel, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: actor?.permissionRole || 'ADMIN', assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: evidence?.serviceNecessity || source?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: evidence?.temporalType || source?.temporalType || meta.temporalType })
+      return { evidence_id, source_id, source_title, display_text: policy.canViewRaw ? display_text : policy.canViewServiceDetail ? evidence?.mentorServiceDetail || meta.mentorServiceDetail || evidence?.mentorSafeText || source?.mentorSafeSummary || privacySafeText(meta) : evidence?.mentorSafeText || source?.mentorSafeSummary || privacySafeText(meta), excerpt: policy.canViewRaw ? excerpt : policy.canViewNecessaryExcerpt ? evidence?.necessaryExcerpt || meta.necessaryExcerpt || '' : '', occurred_at, evidence_type, source_perspective }
     })
     return { customerId, status, assessment: mentorVisibleSafetyAssessment(storedMeta.payload || null, actor?.permissionRole), meta: { ...storedMeta, customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || context.input_fingerprint, promptVersion: SAFETY_PROMPT_VERSION, safetyDataSufficiency: context.safety_data_sufficiency }, context_summary: { density: context.context_density, safety_data_sufficiency: context.safety_data_sufficiency, critical_unknowns: storedMeta.payload?.critical_unknowns || [], evidence_count: context.evidence_refs.length }, evidence_refs }
   }
@@ -1111,7 +1115,7 @@ export class FeishuRepository {
       const privacy = classifyPrivacyText(normalized.rawText)
       await updateMappedRecord('sourceRecords', 'source.privacy.classify', sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, { privacy_level: privacy.privacyLevel, privacy_status: 'READY', privacy_meta_json: JSON.stringify(privacy), mentor_safe_summary: privacy.mentorSafeSummary, updated_at: now() })
     } catch (error) {
-      await updateMappedRecord('sourceRecords', 'source.privacy.review-required', sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, { privacy_level: 'HIGH_SENSITIVE', privacy_status: 'REVIEW_REQUIRED', privacy_meta_json: JSON.stringify({ classificationReason: '隐私分类失败', categories: [], safetyFlags: [] }), mentor_safe_summary: '该资料正在进行安全处理，请稍后查看。', updated_at: now() }).catch(() => {})
+      await updateMappedRecord('sourceRecords', 'source.privacy.review-required', sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, { privacy_level: 'HIGH_SENSITIVE', privacy_status: 'REVIEW_REQUIRED', privacy_meta_json: JSON.stringify({ classificationReason: '隐私分类失败', categories: [], safetyFlags: [], serviceNecessity: 'UNKNOWN', mentorSafeSummary: '该资料正在进行安全处理，请稍后查看。' }), mentor_safe_summary: '该资料正在进行安全处理，请稍后查看。', updated_at: now() }).catch(() => {})
       this.audit('CLASSIFY_SOURCE_PRIVACY', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'PRIVACY_CLASSIFICATION_FAILED')
     }
     const result = await waitForSourceVisibility(sourceId)
@@ -1375,6 +1379,21 @@ export class FeishuRepository {
     this.invalidateDatabaseCache()
     if (newEvidence) await this.maybeCompleteSource(newEvidence.sourceId)
     return this.sourceWorkspace(actorId, conflict.customerId)
+  }
+  async overrideServiceNecessity(actorId, { entityType = 'source', id, serviceNecessity } = {}) {
+    this.invalidateDatabaseCache()
+    if (!SERVICE_NECESSITY_LEVELS.has(serviceNecessity)) throw Object.assign(new Error('服务必要性等级无效'), { code: 'INVALID_SERVICE_NECESSITY', status: 400 })
+    const database = await this.load()
+    const actor = database.staff.find((item) => item.id === actorId)
+    if (!actor || actor.permissionRole !== 'ADMIN') throw Object.assign(new Error('只有管理员可以调整服务必要性'), { code: 'FORBIDDEN', status: 403 })
+    const table = entityType === 'evidence' ? 'evidenceItems' : 'sourceRecords'
+    const record = database[table].find((item) => item.id === id)
+    const row = database._rows[table]?.find((item) => item.record_id === record?._recordId)
+    if (!record || !row) throw Object.assign(new Error('隐私资料不存在'), { code: 'PRIVACY_RECORD_NOT_FOUND', status: 404 })
+    const nextMeta = applyServiceNecessityOverride(record.privacyMeta || {}, serviceNecessity)
+    await updateRecord(stage2Table(table), row.record_id, mapFields(table, { privacy_meta_json: JSON.stringify(nextMeta), updated_at: now() }))
+    this.audit('OVERRIDE_SERVICE_NECESSITY', id, actorId)
+    return this.sourceWorkspace(actorId, record.customerId)
   }
   async saveBrief(actorId, customerId, brief) { return this.customerWriteQueue.run(customerId, () => this.saveBriefUnsafe(actorId, customerId, brief)) }
   async saveBriefUnsafe(actorId, customerId, brief) {
