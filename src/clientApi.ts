@@ -57,6 +57,8 @@ export interface WorkbenchApi {
   savePerformanceTraces(): Promise<SavePerformanceTrace[]>
   evidenceDebug(): Promise<EvidenceDebugTrace[]>
   dashboard(staffId: string): Promise<Database>
+  customerDirectory(staffId: string): Promise<Database>
+  customerDetail(actorId: string, customerId: string): Promise<Database>
   basicDashboard(staffId: string): Promise<BasicDashboard>
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
@@ -135,6 +137,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     savePerformanceTraces: async () => [],
     evidenceDebug: async () => [],
     dashboard: async (staffId) => api.dashboard(staffId),
+    customerDirectory: async (staffId) => api.dashboard(staffId),
+    customerDetail: async (actorId, customerId) => { const database = api.dashboard(actorId); return { ...database, customers: database.customers.filter((item) => item.id === customerId), appointments: database.appointments.filter((item) => item.customerId === customerId), sessions: database.sessions.filter((item) => item.customerId === customerId), enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId) } },
     basicDashboard: async (staffId) => buildBasicDashboard(api.dashboard(staffId)),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
@@ -224,6 +228,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     savePerformanceTraces: () => request<SavePerformanceTrace[]>('/api/debug/save-traces', undefined),
     evidenceDebug: () => request<EvidenceDebugTrace[]>('/api/debug/evidence', undefined),
     dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
+    customerDirectory: (staffId) => request<Database>('/api/customers/directory', staffId),
+    customerDetail: (actorId, customerId) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/detail`, actorId),
     basicDashboard: (staffId) => request<BasicDashboard>('/api/dashboard/basic', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
