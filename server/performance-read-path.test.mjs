@@ -19,13 +19,13 @@ const admin = { id: 'STAFF-ADMIN', name: '管理员', role: 'ADMIN', permissionR
 const mentor = { id: 'STAFF-MENTOR', name: '导师', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }
 const fixtureRows = () => ({
   [tableId('customers')]: [
-    row('customers', 'rec-c1', { customer_id: 'CUS-1', nickname: '客户一', current_mentor_id: mentor.id }),
+    row('customers', 'rec-c1', { customer_id: 'CUS-1', nickname: '客户一', current_mentor_id: mentor.id, city: '杭州' }),
     row('customers', 'rec-c2', { customer_id: 'CUS-2', nickname: '客户二', current_mentor_id: 'STAFF-OTHER' }),
   ],
   [tableId('staff')]: [row('staff', 'rec-admin', { staff_id: admin.id, name: admin.name, permission_role: 'ADMIN', status: 'ACTIVE', login_enabled: true }), row('staff', 'rec-mentor', { staff_id: mentor.id, name: mentor.name, permission_role: 'MENTOR', status: 'ACTIVE', login_enabled: true })],
   [tableId('products')]: [],
   [tableId('enrollments')]: [],
-  [tableId('evidenceItems')]: [row('evidenceItems', 'rec-e1', { evidence_id: 'E-1', customer_id: 'CUS-1', source_id: 'SRC-1', review_status: 'CONFIRMED', display_text: '客户一证据' }), row('evidenceItems', 'rec-e2', { evidence_id: 'E-2', customer_id: 'CUS-2', source_id: 'SRC-2', review_status: 'CONFIRMED', display_text: '客户二证据' })],
+  [tableId('evidenceItems')]: [row('evidenceItems', 'rec-e1', { evidence_id: 'E-1', customer_id: 'CUS-1', source_id: 'SRC-1', review_status: 'CONFIRMED', semantic_kind: 'CURRENT_STATE', field_key: 'city', standard_value: '杭州', display_text: '客户一证据', source_excerpt: '客户一资料', confidence: 0.95 }), row('evidenceItems', 'rec-e2', { evidence_id: 'E-2', customer_id: 'CUS-2', source_id: 'SRC-2', review_status: 'CONFIRMED', display_text: '客户二证据' })],
   [tableId('appointments')]: [],
   [tableId('serviceRecords')]: [],
   [tableId('profileChanges')]: [],
@@ -78,5 +78,16 @@ describe('R043 progressive read paths', () => {
     expect(staff.id).toBe(admin.id)
     expect(listRecordsMock).toHaveBeenCalledTimes(1)
     expect(listRecordsMock).toHaveBeenCalledWith(tableId('staff'))
+  })
+
+  it('loads the customer profile materialization on demand without returning raw workspace tables', async () => {
+    const repository = new FeishuRepository()
+    const profile = await repository.customerProfile(mentor.id, 'CUS-1')
+
+    expect(profile.customerId).toBe('CUS-1')
+    expect(profile.profileMaterialization.sections.some((section) => section.items.length > 0)).toBe(true)
+    expect(profile).not.toHaveProperty('sourceRecords')
+    expect(profile).not.toHaveProperty('evidenceItems')
+    await expect(repository.customerProfile(mentor.id, 'CUS-2')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
   })
 })

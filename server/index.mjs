@@ -130,6 +130,8 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && url.pathname === '/api/customers/directory') return send(request, response, 200, await repository.customerDirectory(await guard(request)), requestId)
   const customerDetailPath = url.pathname.match(/^\/api\/customers\/([^/]+)\/detail$/)
   if (request.method === 'GET' && customerDetailPath) return send(request, response, 200, await repository.customerDetail(await guard(request), decodeURIComponent(customerDetailPath[1])), requestId)
+  const customerProfilePath = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile$/)
+  if (request.method === 'GET' && customerProfilePath) return send(request, response, 200, await repository.customerProfile(await guard(request), decodeURIComponent(customerProfilePath[1])), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/me') return send(request, response, 200, await repository.staff(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/mentors') {
     const filter = url.searchParams.get('status') || ''

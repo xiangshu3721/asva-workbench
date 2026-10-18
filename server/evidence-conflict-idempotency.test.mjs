@@ -138,6 +138,38 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     expect(activeDatabase._allEvidenceItems).toHaveLength(evidenceCount)
   })
 
+  it('preserves the previous active generation when a replacement batch is empty', async () => {
+    const repository = setupRepository()
+    const first = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const previousBatchId = first.source.lastBatchId
+    const previousActiveCount = (await repository.load()).evidenceItems.length
+    activeDatabase.sourceRecords[0].processingStatus = 'COMPLETED'
+
+    const emptyRepository = setupRepository(async () => [])
+    const result = await emptyRepository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+    expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+    expect(result.source.lastBatchId).toBe(previousBatchId)
+    expect((await emptyRepository.load()).evidenceItems).toHaveLength(previousActiveCount)
+    expect(activeDatabase._allEvidenceItems.filter((item) => item.reviewStatus === 'SUPERSEDED')).toHaveLength(0)
+  })
+
+  it('preserves the previous active generation when all replacement candidates fail grounding', async () => {
+    const repository = setupRepository()
+    const first = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const previousBatchId = first.source.lastBatchId
+    const previousActiveCount = (await repository.load()).evidenceItems.length
+    activeDatabase.sourceRecords[0].processingStatus = 'COMPLETED'
+
+    const groundingFailureRepository = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '这段话不在当前资料中', confidence: 0.96, locator: { paragraph_index: 0 } }])
+    const result = await groundingFailureRepository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+    expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+    expect(result.source.lastBatchId).toBe(previousBatchId)
+    expect((await groundingFailureRepository.load()).evidenceItems).toHaveLength(previousActiveCount)
+    expect(activeDatabase._allEvidenceItems.filter((item) => item.reviewStatus === 'SUPERSEDED')).toHaveLength(0)
+  })
+
   it('does not expose another mentor customer conflicts', async () => {
     const repository = setupRepository()
     await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })

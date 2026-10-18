@@ -72,4 +72,18 @@ describe('R043 explicit directory/detail DTOs', () => {
     expect(directory.customers[0]).not.toHaveProperty('profileFields')
     expect(directory.customers[0]).not.toHaveProperty('understanding')
   })
+
+  it('keeps the on-demand profile scoped and free of raw source tables', async () => {
+    const repository = new FeishuRepository()
+    const profile = await repository.customerProfile(mentor.id, 'CUS-1')
+    const payload = JSON.stringify(profile)
+
+    expect(profile.customerId).toBe('CUS-1')
+    expect(profile.profileMaterialization).toBeDefined()
+    expect(payload).not.toContain('CUS-2')
+    expect(payload).not.toContain('客户二安全资料')
+    expect(payload).not.toContain('HIGH_SENSITIVE')
+    expect(profile).not.toHaveProperty('sourceRecords')
+    expect(profile).not.toHaveProperty('evidenceItems')
+  })
 })
