@@ -10,12 +10,68 @@ import { createLocalCustomerUnderstanding } from '../shared/customer-understandi
 import { buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, historicalSalesRecords } from '../shared/customer-sales-understanding.mjs'
 import { readAccessToken, writeAccessToken } from './auth-storage'
 
+type CustomerDto = Partial<Customer> & Pick<Customer, 'id' | 'name'>
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function arrayValue<T>(value: unknown): T[] { return Array.isArray(value) ? value as T[] : [] }
+
+/**
+ * Keep the progressive directory/detail contract safe at the API boundary.
+ * The directory intentionally returns only profile coverage; it must not be
+ * mistaken for a fully materialized profile and must still be renderable.
+ */
+export function normalizeCustomerDto(value: unknown): Customer {
+  const item = objectValue(value) as CustomerDto
+  const rawMaterialization = objectValue(item.profileMaterialization)
+  const hasMaterializationBody = Array.isArray(rawMaterialization.sections) && Array.isArray(rawMaterialization.lifeEvents)
+  const coverage = objectValue(rawMaterialization.coverage)
+  const profileMaterialization = item.profileMaterialization ? {
+    schemaVersion: String(rawMaterialization.schemaVersion || ''),
+    currentSnapshot: objectValue(rawMaterialization.currentSnapshot) as ProfileMaterialization['currentSnapshot'],
+    sections: arrayValue<ProfileMaterialization['sections'][number]>(rawMaterialization.sections),
+    lifeEvents: arrayValue<ProfileMaterialization['lifeEvents'][number]>(rawMaterialization.lifeEvents),
+    coverage: {
+      percentage: Number(coverage.percentage || 0),
+      domains: arrayValue<ProfileMaterialization['coverage']['domains'][number]>(coverage.domains),
+    },
+    aiSummaryStatus: (rawMaterialization.aiSummaryStatus || 'STALE') as SummaryStatus,
+    ...(typeof rawMaterialization.aiSummaryFingerprint === 'string' ? { aiSummaryFingerprint: rawMaterialization.aiSummaryFingerprint } : {}),
+  } : undefined
+  return {
+    ...(item as Customer),
+    confirmedFacts: arrayValue<string>(item.confirmedFacts),
+    aiQuestions: arrayValue<string>(item.aiQuestions),
+    profileFields: objectValue(item.profileFields) as Customer['profileFields'],
+    profileFieldMeta: objectValue(item.profileFieldMeta) as Customer['profileFieldMeta'],
+    ...(profileMaterialization ? { profileMaterialization, profileMaterializationLoaded: hasMaterializationBody } : {}),
+  }
+}
+
+export function normalizeDatabaseDto(value: unknown): Database {
+  const database = objectValue(value)
+  return {
+    ...(database as unknown as Database),
+    staff: arrayValue<Staff>(database.staff),
+    customers: arrayValue(database.customers).map(normalizeCustomerDto),
+    appointments: arrayValue<Database['appointments'][number]>(database.appointments),
+    sessions: arrayValue<Database['sessions'][number]>(database.sessions),
+    followups: arrayValue<Database['followups'][number]>(database.followups),
+    products: arrayValue<Database['products'][number]>(database.products),
+    enrollments: arrayValue<Database['enrollments'][number]>(database.enrollments),
+    profileChanges: arrayValue<Database['profileChanges'][number]>(database.profileChanges),
+  }
+}
+
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
 export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number } }
 export interface CustomerSalesUnderstandingResponse { customerId: string; status: SummaryStatus; salesUnderstanding: CustomerSalesUnderstandingV1 | null; meta: CustomerSalesUnderstandingMeta; historical_enrollments: Array<{ name: string; type: string; status: string; enrolled_at?: string | null; paid_at?: string | null; payment_status: string; amount_recorded?: number | null }>; service_history: Array<{ name: string; type: string; status: string; occurred_at?: string | null; summary: string }>; evidence_refs: CustomerUnderstandingResponse['evidence_refs']; context_summary: { density: string; evidence_count: number } }
 export interface SafetyAssessmentResponse { customerId: string; status: 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'; assessment: { risk_level: string; risk_confidence: string; service_gate: string; commercial_block: string; requires_human_review: boolean; requires_safety_check: boolean; recommended_escalation: string; critical_unknowns: string[]; service_cautions: string[]; next_action: string; safety_signals: Array<{ signal_type: string; subject_scope: string; polarity: string; recency: string; short_description: string }>; } | null; meta: Record<string, unknown>; context_summary: { density: string; safety_data_sufficiency: string; critical_unknowns: string[]; evidence_count: number }; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }> }
-export interface TeamSnapshot { mentor: Staff; customerCount: number }
+export interface TeamSnapshotCustomerPreview { id: string; name: string; initials: string; need: string }
+export interface TeamSnapshot { mentor: Staff; customerCount: number; customerPreviews?: TeamSnapshotCustomerPreview[] }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; paidCustomers: number; mentorCount: number; recentCustomers: Customer[] }
 export interface BasicDashboardCourse { course_id: string; course_name: string; enrollment_count: number; percentage: number }
 export interface BasicDashboardOwner { staff_id: string; staff_name: string; role: string; customer_count: number }
@@ -227,9 +283,9 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     health: () => request<HealthMetadata>('/api/health', undefined),
     savePerformanceTraces: () => request<SavePerformanceTrace[]>('/api/debug/save-traces', undefined),
     evidenceDebug: () => request<EvidenceDebugTrace[]>('/api/debug/evidence', undefined),
-    dashboard: (staffId) => request<Database>('/api/dashboard', staffId),
-    customerDirectory: (staffId) => request<Database>('/api/customers/directory', staffId),
-    customerDetail: (actorId, customerId) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/detail`, actorId),
+    dashboard: async (staffId) => normalizeDatabaseDto(await request<Database>('/api/dashboard', staffId)),
+    customerDirectory: async (staffId) => normalizeDatabaseDto(await request<Database>('/api/customers/directory', staffId)),
+    customerDetail: async (actorId, customerId) => normalizeDatabaseDto(await request<Database>(`/api/customers/${encodeURIComponent(customerId)}/detail`, actorId)),
     basicDashboard: (staffId) => request<BasicDashboard>('/api/dashboard/basic', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),

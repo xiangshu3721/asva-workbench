@@ -112,7 +112,7 @@ export function GlobalAIAssistant({ api, staffId, storageScope, customerId, onCu
   const openCustomer = (id: string) => { setOpen(false); onCustomer(id) }
 
   return <>
-    {!open && <button className="ai-fab" type="button" aria-label="打开 AI 助手" onClick={() => setOpen(true)}><span className="ai-spark">✦</span><span>AI 助手</span></button>}
+    {!open && <button className="ai-fab" type="button" aria-label="打开 AI 助手" onClick={() => setOpen(true)}><span className="ai-spark">✦</span><span className="ai-fab-label">AI 助手</span></button>}
     {open && <div className="ai-panel-backdrop" onMouseDown={() => setOpen(false)}><section className="ai-panel" onMouseDown={(event) => event.stopPropagation()}>
       <header className="ai-panel-header"><button type="button" className="ai-back-button" onClick={() => setOpen(false)} aria-label="关闭 AI 助手">←</button><div><strong>AI 助手</strong><small>只读查询工作台数据</small></div><button type="button" className="ai-clear-button" onClick={clear}>清空</button></header>
       <div className="ai-chat-body" aria-live="polite">

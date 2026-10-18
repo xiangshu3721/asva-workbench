@@ -244,6 +244,8 @@ export interface Customer {
   profileSchemaVersion?: string
   profileVersion?: number
   profileMaterialization?: ProfileMaterialization
+  /** Directory/detail DTOs may expose only coverage until the profile module loads. */
+  profileMaterializationLoaded?: boolean
 }
 
 export interface ProfileFieldMeta {
