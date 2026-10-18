@@ -44,30 +44,31 @@ afterEach(() => {
   Object.assign(config.feishu.tables, originalTables)
 })
 
-describe('R042 staged read paths', () => {
+describe('R043 progressive read paths', () => {
   it('deduplicates concurrent directory reads and reuses the directory cache', async () => {
     const repository = new FeishuRepository()
     const [first, second] = await Promise.all([repository.customerDirectory(admin.id), repository.customerDirectory(admin.id)])
 
     expect(first.customers).toHaveLength(2)
     expect(second.customers).toHaveLength(2)
-    expect(listRecordsMock).toHaveBeenCalledTimes(5)
+    expect(listRecordsMock).toHaveBeenCalledTimes(4)
     await repository.customerDirectory(admin.id)
-    expect(listRecordsMock).toHaveBeenCalledTimes(5)
+    expect(listRecordsMock).toHaveBeenCalledTimes(4)
   })
 
-  it('loads detail tables separately, filters source rows by customer, and protects mentor scope', async () => {
+  it('loads only customer-relevant detail tables and protects mentor scope', async () => {
     const repository = new FeishuRepository()
     const directory = await repository.loadDirectory()
     const detail = await repository.loadCustomerDetailFresh('CUS-1', directory)
 
     expect(detail.customers).toHaveLength(1)
-    expect(detail.sourceRecords.map((item) => item.customerId)).toEqual(['CUS-1'])
-    expect(detail.evidenceItems.map((item) => item.customerId)).toEqual(['CUS-1'])
-    expect(listRecordsMock).toHaveBeenCalledTimes(12)
+    expect(detail.sourceRecords).toEqual([])
+    expect(detail.evidenceItems).toEqual([])
+    expect(listRecordsMock).toHaveBeenCalledTimes(7)
 
     const mentorDetail = await repository.customerDetail(mentor.id, 'CUS-1')
     expect(mentorDetail.customers.map((item) => item.id)).toEqual(['CUS-1'])
+    expect(JSON.stringify(mentorDetail)).not.toContain('CUS-2')
     await expect(repository.customerDetail(mentor.id, 'CUS-2')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
   })
 

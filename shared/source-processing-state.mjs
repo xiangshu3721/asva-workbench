@@ -12,10 +12,11 @@ export function processingErrorMessage(error) {
   return '智能整理暂时失败，可重新整理。'
 }
 
-export function sourceProcessingPresentation(status, error = '') {
+export function sourceProcessingPresentation(status, error = '', stale = false) {
   if (status === 'FAILED') return { label: '已保存 · 整理暂时失败', message: '资料已保存，智能整理暂时失败。', canRetry: true }
   if (status === 'COMPLETED') return { label: '已保存 · 整理完成', message: '', canRetry: false }
   if (status === 'REVIEW_REQUIRED') return { label: '已保存 · 等待确认', message: '', canRetry: false }
+  if (status === 'PROCESSING' && stale) return { label: '已保存 · 整理超时', message: '资料已保存，整理状态超时，请确认后重新整理。', canRetry: true }
   if (status === 'UPLOADED' || status === 'PROCESSING') return { label: '已保存 · 正在整理', message: '资料已保存，正在智能整理。', canRetry: true }
   if (error) return { label: '已保存 · 整理暂时失败', message: '资料已保存，智能整理暂时失败。', canRetry: true }
   return { label: '已保存 · 正在整理', message: '资料已保存，正在智能整理。', canRetry: true }
