@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 const appSource = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
 const repositorySource = readFileSync(new URL('../server/repository.mjs', import.meta.url), 'utf8')
+const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
+const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
 
 describe('R043 customer archive and understanding persistence', () => {
   it('merges directory refreshes without replacing loaded detail state', () => {
@@ -31,5 +33,22 @@ describe('R043 customer archive and understanding persistence', () => {
 
   it('hides duplicate evidence body text without changing stored evidence', () => {
     expect(appSource).toContain("const showExcerpt = sourceExcerpt && sourceExcerpt.replace(/\\s+/g, '') !== displayText.replace(/\\s+/g, '')")
+  })
+
+  it('deduplicates evidence only in the display layer while retaining source traceability', () => {
+    expect(appSource).toContain('function dedupeEvidenceDisplay(items: EvidenceDisplayInput[]): EvidenceDisplayItem[]')
+    expect(appSource).toContain('data-evidence-ids={item.evidenceIds.join(\',\')}')
+    expect(repositorySource).not.toContain('dedupeEvidenceDisplay')
+  })
+
+  it('keeps the new-customer mobile controls at a non-zooming font size', () => {
+    expect(appSource).toContain('manual-customer-modal')
+    expect(stylesSource).toContain(".manual-customer-modal input:not([type='checkbox']):not([type='file']), .manual-customer-modal textarea, .manual-customer-modal select { font-size: 16px; }")
+    expect(indexSource).not.toMatch(/user-scalable\\s*=|maximum-scale\\s*=\\s*1/)
+  })
+
+  it('centers the upload label and gives the history card the shared disclosure shell', () => {
+    expect(stylesSource).toContain('.file-button { position: relative; display: inline-flex; align-items: center; justify-content: center;')
+    expect(stylesSource).toContain('.customer-detail-v2 .profile-change-history > .record-disclosure')
   })
 })

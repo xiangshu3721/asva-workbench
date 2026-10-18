@@ -103,6 +103,7 @@ export interface AssistantQueryResult { kind: string; answer: string; customerId
 export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
 export interface DocumentExtractionResult { document_type: string; extracted_text: string; extraction_method: string; char_count: number; warnings: string[]; duration_ms: number; file_hash: string; size: number }
 export interface DocumentUploadInput { filename: string; mimeType: string; extension: string; size: number; base64: string }
+export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 
 export interface WorkbenchApi {
   login(phone: string, password: string): Promise<Staff & { mustChangePassword?: boolean }>
@@ -115,6 +116,7 @@ export interface WorkbenchApi {
   dashboard(staffId: string): Promise<Database>
   customerDirectory(staffId: string): Promise<Database>
   customerDetail(actorId: string, customerId: string): Promise<Database>
+  customerProfile(actorId: string, customerId: string): Promise<CustomerProfileResponse>
   basicDashboard(staffId: string): Promise<BasicDashboard>
   staff(staffId: string): Promise<Staff | undefined>
   customer(actorId: string, id: string): Promise<Customer | undefined>
@@ -195,6 +197,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     dashboard: async (staffId) => api.dashboard(staffId),
     customerDirectory: async (staffId) => api.dashboard(staffId),
     customerDetail: async (actorId, customerId) => { const database = api.dashboard(actorId); return { ...database, customers: database.customers.filter((item) => item.id === customerId), appointments: database.appointments.filter((item) => item.customerId === customerId), sessions: database.sessions.filter((item) => item.customerId === customerId), enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId) } },
+    customerProfile: async (actorId, customerId) => { const customer = await api.customer(actorId, customerId); if (!customer) throw new Error('客户不存在或无权访问'); return { customerId, profileFields: customer.profileFields, profileFieldMeta: customer.profileFieldMeta, profileUpdatedAt: customer.profileUpdatedAt, profileSchemaVersion: customer.profileSchemaVersion, profileVersion: customer.profileVersion, profileMaterialization: customer.profileMaterialization || { schemaVersion: 'profile-materialization-v1', currentSnapshot: {}, sections: [], lifeEvents: [], coverage: { percentage: 0, domains: [] }, aiSummaryStatus: 'STALE' } } },
     basicDashboard: async (staffId) => buildBasicDashboard(api.dashboard(staffId)),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),
@@ -286,6 +289,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     dashboard: async (staffId) => normalizeDatabaseDto(await request<Database>('/api/dashboard', staffId)),
     customerDirectory: async (staffId) => normalizeDatabaseDto(await request<Database>('/api/customers/directory', staffId)),
     customerDetail: async (actorId, customerId) => normalizeDatabaseDto(await request<Database>(`/api/customers/${encodeURIComponent(customerId)}/detail`, actorId)),
+    customerProfile: (actorId, customerId) => request<CustomerProfileResponse>(`/api/customers/${encodeURIComponent(customerId)}/profile`, actorId),
     basicDashboard: (staffId) => request<BasicDashboard>('/api/dashboard/basic', staffId),
     staff: async (staffId) => request<Staff>('/api/staff/me', staffId),
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
