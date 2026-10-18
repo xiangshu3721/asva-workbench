@@ -102,6 +102,21 @@ const mentorCacheKey = (staffId: string, status = '') => `mentors:${staffSession
 const staffSnapshotKey = (staffId: string) => `asva:session:staff:${staffSessionIdentity(staffId)}`
 const basicDashboardSnapshotKey = (staffId: string) => `asva:session:dashboard:${staffSessionIdentity(staffId)}:scoped`
 const mentorSnapshotKey = (staffId: string) => `asva:session:mentors:${staffSessionIdentity(staffId)}:all`
+const customerDetailCacheKey = (staffId: string, customerId: string) => `customer-detail:${staffSessionIdentity(staffId)}:${customerId}`
+function mergeCustomerDetail(directory: Database, detail: Database, customerId: string): Database {
+  const replaceCustomerScoped = <T extends { customerId: string }>(current: T[], next: T[]) => [...current.filter((item) => item.customerId !== customerId), ...next]
+  const detailCustomer = detail.customers.find((item) => item.id === customerId)
+  return {
+    ...directory,
+    customers: detailCustomer ? directory.customers.map((item) => item.id === customerId ? detailCustomer : item) : directory.customers,
+    appointments: replaceCustomerScoped(directory.appointments, detail.appointments),
+    sessions: replaceCustomerScoped(directory.sessions, detail.sessions),
+    enrollments: replaceCustomerScoped(directory.enrollments, detail.enrollments),
+    profileChanges: replaceCustomerScoped(directory.profileChanges, detail.profileChanges),
+    staff: detail.staff.length ? detail.staff : directory.staff,
+    products: detail.products.length ? detail.products : directory.products,
+  }
+}
 function toStaffSnapshot(staff: Staff): StaffSnapshot { return { id: staff.id, name: staff.name, role: staff.role, permissionRole: staff.permissionRole, status: staff.status, loginEnabled: staff.loginEnabled, displayRole: staff.displayRole, title: staff.title, specialty: staff.specialty, avatar: staff.avatar, authVersion: Number((staff as Staff & { authVersion?: number }).authVersion || readAccessTokenIdentity()?.authVersion || 0) } }
 function fromStaffSnapshot(snapshot: StaffSnapshot): Staff { return { ...snapshot, phone: '' } }
 function logAppPerformance(metric: string, extra: Record<string, unknown> = {}) { if (import.meta.env.DEV) console.info('[ASVA_PERF]', JSON.stringify({ metric, value_ms: Math.round(performance.now() - appStartedAt), ...extra })) }
@@ -321,7 +336,7 @@ function WorkbenchApp() {
     setDatabase(cachedDatabase ?? null)
     setLoadError('')
     const forceRefresh = revision > 0
-    dataCache.load(dashboardKey, () => workbenchApi.dashboard(staffId), { ttlMs: DATABASE_TTL_MS, force: forceRefresh }).then((next) => { if (!cancelled) setDatabase(next) }).catch((error: Error) => { if (!cancelled && !dataCache.get<Database>(dashboardKey)) setLoadError(error.message) })
+    dataCache.load(dashboardKey, () => workbenchApi.customerDirectory(staffId), { ttlMs: DATABASE_TTL_MS, force: forceRefresh }).then((next) => { if (!cancelled) setDatabase(next) }).catch((error: Error) => { if (!cancelled && !dataCache.get<Database>(dashboardKey)) setLoadError(error.message) })
     void dataCache.load(basicDashboardCacheKey(staffId), () => workbenchApi.basicDashboard(staffId), { ttlMs: DASHBOARD_TTL_MS, force: forceRefresh }).catch(() => undefined)
     const prefetchMentors = () => { if (currentStaff.permissionRole === 'ADMIN') void dataCache.load(mentorCacheKey(staffId), () => workbenchApi.teamSnapshot(staffId), { ttlMs: MENTOR_TTL_MS }).catch(() => undefined) }
     const idleApi = window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void }
@@ -329,6 +344,22 @@ function WorkbenchApp() {
     const idleWindow = hasIdleCallback ? idleApi.requestIdleCallback(prefetchMentors, { timeout: 1200 }) : window.setTimeout(prefetchMentors, 200)
     return () => { cancelled = true; if (typeof idleApi.cancelIdleCallback === 'function' && hasIdleCallback) idleApi.cancelIdleCallback(idleWindow); else window.clearTimeout(idleWindow) }
   }, [authRestoring, currentStaff, dataCache, loggedInStaffId, revision])
+
+  useEffect(() => {
+    if (!currentStaff || !database || !selectedCustomerId || !database.customers.some((item) => item.id === selectedCustomerId)) return undefined
+    const key = customerDetailCacheKey(currentStaff.id, selectedCustomerId)
+    let cancelled = false
+    const startedAt = performance.now()
+    const cachedDetail = dataCache.get<Database>(key)
+    dataCache.load(key, () => workbenchApi.customerDetail(currentStaff.id, selectedCustomerId), { ttlMs: DATABASE_TTL_MS }).then((detail) => {
+      if (cancelled) return
+      setDatabase((current) => current ? mergeCustomerDetail(current, detail, selectedCustomerId) : current)
+      logAppPerformance('CUSTOMER_DETAIL_READY_MS', { duration_ms: Math.round(performance.now() - startedAt), from_cache: Boolean(cachedDetail) })
+    }).catch((error: Error) => {
+      if (!cancelled && import.meta.env.DEV) console.warn('[ASVA_PERF]', JSON.stringify({ metric: 'CUSTOMER_DETAIL_ERROR', message: error.message }))
+    })
+    return () => { cancelled = true }
+  }, [currentStaff?.id, database?.customers.length, dataCache, selectedCustomerId])
 
   useEffect(() => {
     const expire = () => {

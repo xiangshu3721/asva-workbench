@@ -25,7 +25,7 @@ function responseHeaders(request, requestId) {
 }
 
 function send(request, response, statusCode, body, requestId) {
-  if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|staff\/mentors)/.test(request.url || '')) {
+  if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|customers(?:\/directory|\/[^/]+\/detail)?|staff\/mentors)/.test(request.url || '')) {
     console.info('[ASVA_PERF_API]', JSON.stringify({ path: (request.url || '').split('?')[0], status: statusCode, handler_ms: Date.now() - (request.__asvaStartedAt || Date.now()), request_id: requestId }))
   }
   response.writeHead(statusCode, responseHeaders(request, requestId))
@@ -127,6 +127,9 @@ async function handle(request, response, requestId) {
   }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guard(request)), requestId)
+  if (request.method === 'GET' && url.pathname === '/api/customers/directory') return send(request, response, 200, await repository.customerDirectory(await guard(request)), requestId)
+  const customerDetailPath = url.pathname.match(/^\/api\/customers\/([^/]+)\/detail$/)
+  if (request.method === 'GET' && customerDetailPath) return send(request, response, 200, await repository.customerDetail(await guard(request), decodeURIComponent(customerDetailPath[1])), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/me') return send(request, response, 200, await repository.staff(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/mentors') {
     const filter = url.searchParams.get('status') || ''

@@ -494,14 +494,81 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
     if (this.auditLogs.length > 200) this.auditLogs.length = 200
     console.info('[ASVA_AUDIT]', JSON.stringify(entry))
   }
-  invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1 }
+  invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1; this.directoryCache.data = null; this.directoryCache.savedAt = 0; this.directoryCache.promise = null; this.directoryCache.generation += 1; this.staffCache.data = null; this.staffCache.savedAt = 0; this.staffCache.promise = null; this.staffCache.generation += 1 }
+
+  async loadStaffRecords({ force = false } = {}) {
+    if (this.load !== FeishuRepository.prototype.load) {
+      const database = await this.load({ force })
+      return (database.staff || []).map((item) => ({ ...item }))
+    }
+    const nowMs = Date.now()
+    if (!force && this.staffCache.data && nowMs - this.staffCache.savedAt < 45_000) return this.staffCache.data.map((item) => ({ ...item }))
+    if (!force && this.staffCache.promise) return this.staffCache.promise
+    const startedAt = Date.now()
+    const request = (async () => {
+      const rows = config.feishu.tables.staff ? await listRecords(config.feishu.tables.staff) : []
+      const records = rows.map(staff)
+      this.staffCache.data = records
+      this.staffCache.savedAt = Date.now()
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_CACHE]', JSON.stringify({ cache: 'staff', state: 'MISS', duration_ms: Date.now() - startedAt, row_count: records.length }))
+      return records.map((item) => ({ ...item }))
+    })()
+    this.staffCache.promise = request
+    request.finally(() => { if (this.staffCache.promise === request) this.staffCache.promise = null }).catch(() => {})
+    return request
+  }
+
+  async loadDirectory({ force = false } = {}) {
+    const nowMs = Date.now()
+    if (!force && this.directoryCache.data && nowMs - this.directoryCache.savedAt < 45_000) {
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_CACHE]', JSON.stringify({ cache: 'directory', state: 'HIT', age_ms: nowMs - this.directoryCache.savedAt }))
+      return cloneDatabase(this.directoryCache.data)
+    }
+    if (!force && this.directoryCache.promise) {
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_CACHE]', JSON.stringify({ cache: 'directory', state: 'IN_FLIGHT' }))
+      return this.directoryCache.promise.then(cloneDatabase)
+    }
+    const generation = this.directoryCache.generation
+    const startedAt = Date.now()
+    const request = this.loadDirectoryFresh().then((database) => {
+      if (this.directoryCache.generation === generation) { this.directoryCache.data = cloneDatabase(database); this.directoryCache.savedAt = Date.now() }
+      if (config.appEnv === 'development') console.info('[ASVA_PERF_DIRECTORY_READ]', JSON.stringify({ table_count: 5, duration_ms: Date.now() - startedAt, customer_count: database.customers.length }))
+      return database
+    })
+    this.directoryCache.promise = request
+    request.finally(() => { if (this.directoryCache.promise === request) this.directoryCache.promise = null }).catch(() => {})
+    return request
+  }
+
+  async loadDirectoryFresh() {
+    const entries = [['customers', config.feishu.tables.customers], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments], ['evidenceItems', config.feishu.tables.evidenceItems]]
+    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? listRecords(tableId) : []))
+    const [customerRows, staffRows, productRows, enrollmentRows, evidenceRows] = rows
+    const customers = customerRows.map(customer)
+    const evidenceByCustomer = new Map()
+    for (const item of evidenceRows.map(evidenceItem)) {
+      if (!item.customerId) continue
+      const list = evidenceByCustomer.get(item.customerId) || []
+      list.push(item)
+      evidenceByCustomer.set(item.customerId, list)
+    }
+    for (const item of customers) {
+      const evidenceItems = evidenceByCustomer.get(item.id) || []
+      const materialized = materializeCustomerProfile({ customer: item, evidenceItems, summaryMeta: item.aiSummaryMeta })
+      item.profileMaterialization = { ...materialized, currentSnapshot: {}, sections: [], lifeEvents: [] }
+    }
+    return {
+      staff: staffRows.map(staff), customers, appointments: [], sessions: [], followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
+      _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'], _rows: { customers: customerRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, evidenceItems: evidenceRows }, _dataScope: 'DIRECTORY',
+    }
+  }
 
   async load({ force = false } = {}) {
     const nowMs = Date.now()
@@ -577,6 +644,62 @@ export class FeishuRepository {
     }
   }
 
+  async customerDirectory(actorId) {
+    return scope(await this.loadDirectory(), actorId)
+  }
+
+  async loadCustomerDetailFresh(customerId, directory) {
+    const entries = [['appointments', config.feishu.tables.appointments], ['serviceRecords', config.feishu.tables.serviceRecords], ['profileChanges', config.feishu.tables.profileChanges], ['sourceRecords', config.feishu.tables.sourceRecords], ['evidenceItems', config.feishu.tables.evidenceItems], ['profileUpdateProposals', config.feishu.tables.profileUpdateProposals], ['evidenceConflicts', config.feishu.tables.evidenceConflicts]]
+    const startedAt = Date.now()
+    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? listRecords(tableId) : []))
+    const [appointmentRows, serviceRows, profileChangeRows, sourceRows, evidenceRows, proposalRows, conflictRows] = rows
+    const sourceRecords = sourceRows.map(sourceRecord).filter((item) => item.customerId === customerId)
+    const allEvidenceItems = evidenceRows.map(evidenceItem)
+    const evidenceItems = allEvidenceItems.filter((item) => {
+      if (item.customerId !== customerId) return false
+      if (item.reviewStatus === 'CONFIRMED') return true
+      if (item.reviewStatus !== 'PENDING_REVIEW') return false
+      const source = sourceRecords.find((candidate) => candidate.id === item.sourceId)
+      return !source?.lastBatchId || source.lastBatchId === item.extractionBatchId
+    })
+    const activeEvidenceIds = new Set(evidenceItems.map((item) => item.id))
+    const conflicts = conflictRows.map(conflictRecord).filter((item) => item.customerId === customerId && (activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId)))
+    const customerRecord = directory.customers.find((item) => item.id === customerId)
+    if (!customerRecord) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const materialized = materializeCustomerProfile({ customer: customerRecord, evidenceItems, summaryMeta: customerRecord.aiSummaryMeta })
+    const detailDatabase = {
+      staff: directory.staff,
+      customers: [{ ...customerRecord, profileMaterialization: materialized }],
+      appointments: appointmentRows.map(appointment).filter((item) => item.customerId === customerId),
+      sessions: serviceRows.map(service).filter((item) => item.customerId === customerId),
+      followups: [],
+      products: directory.products,
+      enrollments: directory.enrollments.filter((item) => item.customerId === customerId),
+      profileChanges: profileChangeRows.map(profileChange).filter((item) => item.customerId === customerId),
+      sourceRecords,
+      evidenceItems,
+      profileUpdateProposals: proposalRows.map(proposalRecord).filter((item) => item.customerId === customerId && activeEvidenceIds.has(item.evidenceId)),
+      evidenceConflicts: conflicts,
+      _allEvidenceItems: allEvidenceItems.filter((item) => item.customerId === customerId),
+      _rows: { appointments: appointmentRows, services: serviceRows, profileChanges: profileChangeRows, sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
+      _dataScope: 'CUSTOMER_DETAIL',
+    }
+    if (config.appEnv === 'development') console.info('[ASVA_PERF_CUSTOMER_DETAIL_READ]', JSON.stringify({ table_count: entries.filter(([, tableId]) => Boolean(tableId)).length, duration_ms: Date.now() - startedAt, customer_id_present: Boolean(customerRecord) }))
+    return detailDatabase
+  }
+
+  async customerDetail(actorId, customerId) {
+    const directory = await this.customerDirectory(actorId)
+    if (!directory.customers.some((item) => item.id === customerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const detail = scope(await this.loadCustomerDetailFresh(customerId, directory), actorId)
+    const customerRecord = detail.customers.find((item) => item.id === customerId)
+    if (customerRecord) {
+      const materialized = materializeCustomerProfile({ customer: customerRecord, evidenceItems: detail.evidenceItems.filter((item) => item.customerId === customerId), summaryMeta: customerRecord.aiSummaryMeta })
+      customerRecord.profileMaterialization = materialized
+    }
+    return { ...detail, sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _allEvidenceItems: undefined, _rows: undefined }
+  }
+
   async loadAfterWrite(writeResult, targetCustomerId, { allowMissingCustomerRetry = Boolean(writeResult && targetCustomerId) } = {}) {
     this.invalidateDatabaseCache()
     const writeRecordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id
@@ -610,10 +733,10 @@ export class FeishuRepository {
 
   async dashboard(staffId) { return scope(await this.load(), staffId) }
   async basicDashboard(staffId) {
-    const database = await this.load()
+    const database = await this.customerDirectory(staffId)
     const actor = database.staff.find((item) => item.id === staffId)
     if (!actor || actor.status !== 'ACTIVE' || actor.loginEnabled !== true) throw new Error('无权查看数据看板')
-    return buildBasicDashboard(actor.permissionRole === 'ADMIN' ? database : scope(database, staffId))
+    return buildBasicDashboard(database)
   }
   async assistantQuery(actorId, question, context) {
     try {
@@ -633,7 +756,7 @@ export class FeishuRepository {
   async savePerformanceTraces(actorId) { await this.dashboard(actorId); return [...this.saveTraces] }
   async evidenceDebug(actorId) { await this.staff(actorId); return [...this.evidenceTraces] }
   async staff(staffId) {
-    const record = (await this.load()).staff.find((item) => item.id === staffId)
+    const record = (await this.loadStaffRecords()).find((item) => item.id === staffId)
     if (!record) throw new Error('账号不存在')
     if (record.status !== 'ACTIVE') throw new Error('该账户已停用，请联系管理员。')
     return record
@@ -650,7 +773,7 @@ export class FeishuRepository {
   }
   async authenticate(phone, secret, ip = 'unknown') {
     if (loginRateLimiter.isBlocked(phone, ip)) throw Object.assign(new Error('登录尝试过于频繁，请稍后再试'), { code: 'AUTH_RATE_LIMITED', status: 429 })
-    const database = await this.load()
+    const database = { staff: await this.loadStaffRecords() }
     const normalized = normalizePhone(phone)
     const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
     const validStaff = ['ADMIN', 'MENTOR'].includes(account?.permissionRole) && account.status === 'ACTIVE' && account.loginEnabled === true
@@ -728,7 +851,7 @@ export class FeishuRepository {
     const credential = await this.authRepository.findByStaffId(staffId)
     if (credential) await this.authRepository.updateLoginPhone(staffId, normalizePhone(phone))
   }
-  async customer(actorId, customerId) { return (await this.dashboard(actorId)).customers.find((item) => item.id === customerId) }
+  async customer(actorId, customerId) { return (await this.customerDetail(actorId, customerId)).customers.find((item) => item.id === customerId) }
 
   async getCustomerUnderstanding(actorId, customerId) {
     const database = await this.load()
@@ -1694,17 +1817,17 @@ export class FeishuRepository {
   }
 
   async teamSnapshot(actorId, statusFilter = '') {
-    const database = await this.dashboard(actorId)
+    const database = await this.customerDirectory(actorId)
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看团队数据')
-    const all = await this.load()
+    const all = await this.loadDirectory()
     return all.staff.filter((item) => item.permissionRole === 'MENTOR' && (!statusFilter || item.status === statusFilter)).map((mentor) => ({ mentor, customerCount: all.customers.filter((item) => customerBelongsToStaff(item, mentor.id)).length }))
   }
 
   async dashboardSnapshot(actorId) {
-    const database = await this.dashboard(actorId)
+    const database = await this.customerDirectory(actorId)
     if (database.staff.find((item) => item.id === actorId)?.permissionRole !== 'ADMIN' || database.staff.find((item) => item.id === actorId)?.loginEnabled !== true) throw new Error('无权查看数据看板')
-    const all = await this.load()
+    const all = await this.loadDirectory()
     const currentMonth = new Date()
     const monthKeys = Array.from({ length: 3 }, (_, index) => {
       const month = new Date(Date.UTC(currentMonth.getUTCFullYear(), currentMonth.getUTCMonth() - (2 - index), 1))
