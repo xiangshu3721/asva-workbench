@@ -38,6 +38,12 @@ describe('R043 progressive customer rendering', () => {
     expect(customer.profileMaterializationLoaded).toBe(true)
   })
 
+  it('keeps provisional profile items in the on-demand profile DTO', () => {
+    const customer = normalizeCustomerDto({ id: 'CUS-1', name: 'Synthetic 客户', profileMaterialization: { sections: [], provisionalItems: [{ evidenceId: 'E-1', sourceId: 'SRC-1', fieldKey: 'occupation', value: '设计师', displayText: '客户正在探索新的职业方向', label: '客户表达 · 待核实', text: '客户正在探索新的职业方向', contentSource: 'STAFF_TRANSCRIBED_CUSTOMER', informationNature: 'PERSONAL_STATEMENT', verificationStatus: 'SOURCE_SUPPORTED', occurredAt: null, conflictState: 'UNCONFIRMED', sectionTitle: '职业与事业', evidenceIds: ['E-1'], basis: [] }], lifeEvents: [], coverage: { percentage: 50, domains: [] } } })
+    expect(customer.profileMaterialization?.provisionalItems).toHaveLength(1)
+    expect(customer.profileMaterialization?.provisionalItems[0].verificationStatus).toBe('SOURCE_SUPPORTED')
+  })
+
   it('guards the renderer against an incomplete progressive materialization', () => {
     expect(appSource).toContain('const lifeEvents = materialization?.lifeEvents || []')
     expect(appSource).toContain('customer.profileMaterializationLoaded !== false')

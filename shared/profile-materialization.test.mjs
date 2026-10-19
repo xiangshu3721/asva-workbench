@@ -39,4 +39,30 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(materializeCustomerProfile({ customer, evidenceItems, summaryMeta: { status: 'FRESH', inputFingerprint: fingerprint } }).aiSummaryStatus).toBe('FRESH')
     expect(materializeCustomerProfile({ customer, evidenceItems, summaryMeta: { status: 'FRESH', inputFingerprint: 'old' } }).aiSummaryStatus).toBe('STALE')
   })
+
+  it('projects ordinary unconfirmed evidence without turning it into a confirmed fact', () => {
+    const result = materializeCustomerProfile({ customer, evidenceItems: [
+      evidence({ id: 'EVD-PENDING', reviewStatus: 'PENDING_REVIEW', fieldKey: 'occupation', semanticKind: 'EVENT', displayText: '最近开始探索心理学方向', sourceExcerpt: '她说最近开始探索心理学方向', contentSource: 'STAFF_TRANSCRIBED_CUSTOMER', informationNature: 'PERSONAL_STATEMENT', verificationStatus: 'SOURCE_SUPPORTED' }),
+      evidence({ id: 'EVD-AI', reviewStatus: 'PENDING_REVIEW', evidenceType: 'HYPOTHESIS', fieldKey: 'personality_traits', semanticKind: 'OTHER', displayText: '可能比较回避冲突', sourceExcerpt: '模型推测', informationNature: 'AI_INFERENCE', verificationStatus: 'UNKNOWN' }),
+      evidence({ id: 'EVD-CONFIRMED', reviewStatus: 'CONFIRMED', fieldKey: 'city', standardValue: '杭州', displayText: '现居杭州' }),
+    ] })
+    expect(result.provisionalItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceId: 'EVD-PENDING', fieldKey: 'occupation', verificationStatus: 'SOURCE_SUPPORTED', sectionTitle: '职业与事业' }),
+      expect.objectContaining({ evidenceId: 'EVD-AI', label: '待验证洞察' }),
+    ]))
+    expect(result.provisionalItems).not.toEqual(expect.arrayContaining([expect.objectContaining({ evidenceId: 'EVD-CONFIRMED' })]))
+    expect(result.sections.find((section) => section.title === 'TA是谁').items.some((item) => item.text === '杭州')).toBe(true)
+  })
+
+  it('does not project superseded or rejected evidence and deduplicates repeated display text', () => {
+    const result = materializeCustomerProfile({ customer, evidenceItems: [
+      evidence({ id: 'EVD-OLD', reviewStatus: 'SUPERSEDED', displayText: '旧资料' }),
+      evidence({ id: 'EVD-REJECTED', reviewStatus: 'REJECTED', displayText: '被拒资料' }),
+      evidence({ id: 'EVD-1', reviewStatus: 'PENDING_REVIEW', displayText: '近期睡眠有所改善', sourceExcerpt: '近期睡眠有所改善', fieldKey: 'energy_state', semanticKind: 'CURRENT_STATE' }),
+      evidence({ id: 'EVD-2', reviewStatus: 'PENDING_REVIEW', displayText: '近期睡眠有所改善', sourceExcerpt: '近期睡眠有所改善', fieldKey: 'energy_state', semanticKind: 'CURRENT_STATE' }),
+    ] })
+    expect(result.provisionalItems.map((item) => item.evidenceId)).not.toEqual(expect.arrayContaining(['EVD-OLD', 'EVD-REJECTED']))
+    expect(result.provisionalItems.filter((item) => item.text === '近期睡眠有所改善')).toHaveLength(1)
+    expect(result.provisionalItems.find((item) => item.text === '近期睡眠有所改善').evidenceIds).toEqual(['EVD-1', 'EVD-2'])
+  })
 })

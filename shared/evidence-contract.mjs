@@ -6,6 +6,9 @@ export const SOURCE_STATUSES = new Set(['UPLOADED', 'PROCESSING', 'REVIEW_REQUIR
 export const EVIDENCE_TYPES = new Set(['FACT', 'SELF_MEANING', 'OBSERVATION', 'HYPOTHESIS'])
 export const SEMANTIC_KINDS = new Set(['PROFILE_FIELD', 'CURRENT_STATE', 'EVENT', 'RELATIONSHIP', 'RESOURCE', 'NEED', 'GOAL', 'PREFERENCE', 'OTHER'])
 export const EVIDENCE_REVIEW_STATUSES = new Set(['PENDING_REVIEW', 'CONFIRMED', 'REJECTED', 'SUPERSEDED'])
+export const CONTENT_SOURCES = new Set(['CUSTOMER_DIRECT', 'STAFF_TRANSCRIBED_CUSTOMER', 'MENTOR_REPORTED', 'MENTOR_OBSERVATION', 'THIRD_PARTY_REPORTED', 'UNKNOWN', 'MIXED'])
+export const INFORMATION_NATURES = new Set(['OBJECTIVE_RECORD', 'PERSONAL_STATEMENT', 'REPORTED_SPEECH', 'BEHAVIOR_OBSERVATION', 'SUBJECTIVE_JUDGMENT', 'AI_INFERENCE', 'UNKNOWN'])
+export const VERIFICATION_STATUSES = new Set(['UNKNOWN', 'SOURCE_SUPPORTED', 'HUMAN_VERIFIED', 'CONFLICTED'])
 export const PROPOSAL_ACTIONS = new Set(['ADD', 'UPDATE', 'APPEND', 'KEEP_CURRENT', 'REVIEW_REQUIRED'])
 export const CHANGE_TYPES = new Set(['NEW_INFORMATION', 'STATE_CHANGE', 'FACT_CONTRADICTION', 'CUMULATIVE_ADDITION', 'SUBJECTIVE_DIFFERENCE', 'SOURCE_DISAGREEMENT', 'NO_CHANGE'])
 export const CONFLICT_TYPES = new Set(['FACT_CONTRADICTION', 'POSSIBLE_STATE_CHANGE', 'SUBJECTIVE_DIFFERENCE', 'SOURCE_DISAGREEMENT'])
@@ -26,6 +29,16 @@ export function contentHash(value) {
 }
 
 export function normalizeText(value, max = 20000) { return String(value || '').replace(/\r\n/g, '\n').trim().slice(0, max) }
+
+const normalizedEnum = (value) => String(value || '').trim().toUpperCase()
+export function normalizeContentSource(value) { const normalized = normalizedEnum(value); return CONTENT_SOURCES.has(normalized) ? normalized : 'UNKNOWN' }
+export function normalizeInformationNature(value) { const normalized = normalizedEnum(value); return INFORMATION_NATURES.has(normalized) ? normalized : 'UNKNOWN' }
+export function normalizeVerificationStatus(value, { allowHumanVerified = false, hasSourceExcerpt = false } = {}) {
+  const normalized = normalizedEnum(value)
+  if (!VERIFICATION_STATUSES.has(normalized)) return hasSourceExcerpt ? 'SOURCE_SUPPORTED' : 'UNKNOWN'
+  if (normalized === 'HUMAN_VERIFIED' && !allowHumanVerified) return hasSourceExcerpt ? 'SOURCE_SUPPORTED' : 'UNKNOWN'
+  return normalized
+}
 
 export function chunkText(value, maxChars = 4000) {
   const source = String(value || '').replace(/\r\n/g, '\n')
@@ -53,7 +66,7 @@ export function chunkText(value, maxChars = 4000) {
   return chunks.filter((item) => item.text.trim())
 }
 
-export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extractionBatchId, model = 'deepseek-chat', modelVersion = 'v1', promptVersion = 'evidence-v1' } = {}) {
+export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extractionBatchId, model = 'deepseek-chat', modelVersion = 'v1', promptVersion = 'evidence-v1', trustedCustomerSubmission = false } = {}) {
   if (!candidate || typeof candidate !== 'object') return null
   const evidenceType = String(candidate.evidence_type || '').toUpperCase()
   const semanticKind = String(candidate.semantic_kind || '').toUpperCase()
@@ -66,6 +79,15 @@ export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extract
   const confidence = Number(candidate.confidence)
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null
   const locator = candidate.locator && typeof candidate.locator === 'object' ? candidate.locator : {}
+  let contentSource = normalizeContentSource(candidate.content_source ?? candidate.contentSource)
+  const informationNature = normalizeInformationNature(candidate.information_nature ?? candidate.informationNature)
+  const verificationStatus = normalizeVerificationStatus(candidate.verification_status ?? candidate.verificationStatus, { hasSourceExcerpt: Boolean(excerpt) })
+  // First-person wording and quotation marks are content clues only. They do
+  // not prove that the customer submitted the material. That proof must come
+  // from a server-controlled, authenticated customer-submission channel; the
+  // model output and the staff-entered excerpt are never trusted for it.
+  if (contentSource === 'CUSTOMER_DIRECT' && trustedCustomerSubmission !== true) contentSource = 'UNKNOWN'
+  if (contentSource === 'MENTOR_OBSERVATION' && candidate.evidence_type !== 'OBSERVATION' && informationNature !== 'BEHAVIOR_OBSERVATION') contentSource = 'MENTOR_REPORTED'
   return {
     sourceId: sourceId || null,
     evidenceType,
@@ -77,6 +99,9 @@ export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extract
     locator: { charStart: Number.isFinite(Number(locator.char_start)) ? Number(locator.char_start) : chunk?.charStart, charEnd: Number.isFinite(Number(locator.char_end)) ? Number(locator.char_end) : chunk?.charEnd, paragraphIndex: Number.isFinite(Number(locator.paragraph_index)) ? Number(locator.paragraph_index) : chunk?.paragraphIndex },
     occurredAt: typeof candidate.occurred_at === 'string' ? candidate.occurred_at.slice(0, 80) : '',
     confidence: Math.max(0, Math.min(1, confidence)),
+    contentSource,
+    informationNature,
+    verificationStatus: contentSource === 'MIXED' && verificationStatus === 'SOURCE_SUPPORTED' ? 'UNKNOWN' : verificationStatus,
     reviewStatus: 'PENDING_REVIEW',
     extractionBatchId: extractionBatchId || '',
     model,
@@ -187,6 +212,7 @@ export function classifyEvidenceChange(evidence, currentValue) {
 export function sourcePerspectiveFromRole(sourceRole) {
   if (sourceRole === 'MENTOR') return 'MENTOR_OBSERVATION'
   if (sourceRole === 'CUSTOMER') return 'CUSTOMER_FIRST_PARTY'
+  if (sourceRole === 'UNKNOWN') return 'UNKNOWN'
   return 'STAFF_REPORTED'
 }
 

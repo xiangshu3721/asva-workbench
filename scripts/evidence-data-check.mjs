@@ -1,6 +1,6 @@
 import { config } from '../server/config.mjs'
 import { listRecords } from '../server/feishu.mjs'
-import { EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, PROPOSAL_ACTIONS, CHANGE_TYPES, CONFLICT_STATUSES, CONFLICT_TYPES, evidenceEquivalent } from '../shared/evidence-contract.mjs'
+import { CONTENT_SOURCES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, INFORMATION_NATURES, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, PROPOSAL_ACTIONS, CHANGE_TYPES, CONFLICT_STATUSES, CONFLICT_TYPES, VERIFICATION_STATUSES, evidenceEquivalent } from '../shared/evidence-contract.mjs'
 import { read as readField } from '../server/field-mapping.mjs'
 
 const names = ['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts', 'profileChanges', 'customers']
@@ -20,6 +20,7 @@ const sourceIds = new Set(sources.map((row) => String(value('sourceRecords', row
 const evidenceIds = new Set(evidence.map((row) => String(value('evidenceItems', row, 'evidence_id') || row.record_id)))
 const sourceHashes = new Set()
 const issues = []
+let legacyMissingProvenanceCount = 0
 for (const row of sources) {
   const id = String(value('sourceRecords', row, 'source_id') || row.record_id)
   const customerId = String(value('sourceRecords', row, 'customer_id') || '')
@@ -38,6 +39,12 @@ for (const row of evidence) {
   if (!String(value('evidenceItems', row, 'source_id') || '') || !sourceIds.has(String(value('evidenceItems', row, 'source_id')))) issues.push(`EVIDENCE_NO_SOURCE:${id}`)
   if (!String(value('evidenceItems', row, 'subject_id') || '')) issues.push(`EVIDENCE_NO_SUBJECT:${id}`)
   if (!EVIDENCE_TYPES.has(String(value('evidenceItems', row, 'evidence_type') || '')) || !SEMANTIC_KINDS.has(String(value('evidenceItems', row, 'semantic_kind') || '')) || !EVIDENCE_REVIEW_STATUSES.has(String(value('evidenceItems', row, 'review_status') || ''))) issues.push(`INVALID_EVIDENCE_ENUM:${id}`)
+  const contentSource = String(value('evidenceItems', row, 'content_source') || '')
+  const informationNature = String(value('evidenceItems', row, 'information_nature') || '')
+  const verificationStatus = String(value('evidenceItems', row, 'verification_status') || '')
+  if (!contentSource && !informationNature && !verificationStatus) legacyMissingProvenanceCount += 1
+  if ((contentSource && !CONTENT_SOURCES.has(contentSource)) || (informationNature && !INFORMATION_NATURES.has(informationNature)) || (verificationStatus && !VERIFICATION_STATUSES.has(verificationStatus))) issues.push(`INVALID_PROVENANCE_ENUM:${id}`)
+  if (verificationStatus === 'HUMAN_VERIFIED' && !String(value('evidenceItems', row, 'reviewer_id') || '')) issues.push(`HUMAN_VERIFIED_EVIDENCE_NO_REVIEWER:${id}`)
   if (['CONFIRMED'].includes(String(value('evidenceItems', row, 'review_status') || '')) && !String(value('evidenceItems', row, 'reviewer_id') || '')) issues.push(`CONFIRMED_EVIDENCE_NO_REVIEWER:${id}`)
 }
 for (const row of proposals) {
@@ -69,5 +76,5 @@ for (const row of customers) {
   summaryStatusCounts[status] += 1
   if (status === 'PROCESSING' && meta?.updatedAt && Date.now() - new Date(meta.updatedAt).getTime() > 10 * 60 * 1000) issues.push(`SUMMARY_PROCESSING_STALE:${String(value('customers', row, 'customer_id') || row.record_id)}`)
 }
-console.log(JSON.stringify({ ok: issues.length === 0, status: 'PASS', counts: Object.fromEntries(names.map((name) => [name, rows[name].length])), summaryStatusCounts, issues }))
+console.log(JSON.stringify({ ok: issues.length === 0, status: 'PASS', counts: Object.fromEntries(names.map((name) => [name, rows[name].length])), summaryStatusCounts, legacyMissingProvenanceCount, issues }))
 if (issues.length) process.exitCode = 1

@@ -221,7 +221,7 @@ function profileChange(row) {
 function parsedJson(value, fallback = null) { try { return JSON.parse(text(value) || '') } catch { return fallback } }
 function sourceRecord(row) {
   const f = row.fields || {}
-  const sourceRole = text(get('sourceRecords', f, 'source_role')) || 'CUSTOMER'
+  const sourceRole = text(get('sourceRecords', f, 'source_role')) || 'UNKNOWN'
   const privacyMeta = parsedJson(get('sourceRecords', f, 'privacy_meta_json'), {})
   const serviceNecessity = privacyMeta.serviceNecessity || (text(get('sourceRecords', f, 'privacy_level')) === 'HIGH_SENSITIVE' ? 'RELEVANT' : '')
   return { id: text(get('sourceRecords', f, 'source_id')) || row.record_id, subjectType: text(get('sourceRecords', f, 'subject_type')) || 'PERSON', subjectId: text(get('sourceRecords', f, 'subject_id')), customerId: text(get('sourceRecords', f, 'customer_id')), sourceType: text(get('sourceRecords', f, 'source_type')), title: text(get('sourceRecords', f, 'title')), rawText: text(get('sourceRecords', f, 'raw_text')), fileRef: text(get('sourceRecords', f, 'file_ref')), occurredAt: date(get('sourceRecords', f, 'occurred_at')) || null, uploadedAt: date(get('sourceRecords', f, 'uploaded_at')) || null, uploadedBy: text(get('sourceRecords', f, 'uploaded_by')), sourceRole, sourcePerspective: sourcePerspectiveFromRole(sourceRole), serviceRecordId: text(get('sourceRecords', f, 'service_record_id')), contentHash: text(get('sourceRecords', f, 'content_hash')), processingStatus: text(get('sourceRecords', f, 'processing_status')) || 'UPLOADED', processingVersion: Number(get('sourceRecords', f, 'processing_version') || 1), sensitivityLevel: text(get('sourceRecords', f, 'sensitivity_level')) || 'HIGH', privacyLevel: text(get('sourceRecords', f, 'privacy_level')) || 'NORMAL', privacyStatus: text(get('sourceRecords', f, 'privacy_status')) || 'READY', privacyMeta, serviceNecessity, serviceNecessityReason: privacyMeta.serviceNecessityReason || '', temporalType: privacyMeta.temporalType || 'UNKNOWN', mentorSafeSummary: text(get('sourceRecords', f, 'mentor_safe_summary')) || privacyMeta.mentorSafeSummary || '', mentorServiceDetail: privacyMeta.mentorServiceDetail || '', necessaryExcerpt: privacyMeta.necessaryExcerpt || '', salesSafeSummary: privacyMeta.salesSafeSummary || '', notes: text(get('sourceRecords', f, 'notes')), sourceVersion: Number(get('sourceRecords', f, 'source_version') || 1), extractorVersion: text(get('sourceRecords', f, 'extractor_version')), lastBatchId: text(get('sourceRecords', f, 'last_batch_id')), processingStartedAt: date(get('sourceRecords', f, 'processing_started_at')) || null, lastProcessingAt: date(get('sourceRecords', f, 'last_processing_at')) || null, processingError: text(get('sourceRecords', f, 'processing_error')) || null, createdAt: date(get('sourceRecords', f, 'created_at')) || null, updatedAt: date(get('sourceRecords', f, 'updated_at')) || null, _recordId: row.record_id }
@@ -230,7 +230,10 @@ function evidenceItem(row) {
   const f = row.fields || {}
   const privacyMeta = parsedJson(get('evidenceItems', f, 'privacy_meta_json'), {})
   const serviceNecessity = privacyMeta.serviceNecessity || (text(get('evidenceItems', f, 'privacy_level')) === 'HIGH_SENSITIVE' ? 'RELEVANT' : '')
-  return { id: text(get('evidenceItems', f, 'evidence_id')) || row.record_id, subjectType: text(get('evidenceItems', f, 'subject_type')) || 'PERSON', subjectId: text(get('evidenceItems', f, 'subject_id')), customerId: text(get('evidenceItems', f, 'customer_id')), sourceId: text(get('evidenceItems', f, 'source_id')), evidenceType: text(get('evidenceItems', f, 'evidence_type')), semanticKind: text(get('evidenceItems', f, 'semantic_kind')), fieldKey: text(get('evidenceItems', f, 'field_key')), standardValue: parsedJson(get('evidenceItems', f, 'standard_value'), text(get('evidenceItems', f, 'standard_value'))), displayText: text(get('evidenceItems', f, 'display_text')), sourceExcerpt: text(get('evidenceItems', f, 'source_excerpt')), locator: parsedJson(get('evidenceItems', f, 'locator_json'), {}), occurredAt: date(get('evidenceItems', f, 'occurred_at')) || null, sourceRole: text(get('evidenceItems', f, 'source_role')), confidence: Number(get('evidenceItems', f, 'confidence') || 0), reviewStatus: text(get('evidenceItems', f, 'review_status')) || 'PENDING_REVIEW', extractionBatchId: text(get('evidenceItems', f, 'extraction_batch_id')), provider: text(get('evidenceItems', f, 'provider')) || 'DEEPSEEK', model: text(get('evidenceItems', f, 'model')), modelVersion: text(get('evidenceItems', f, 'model_version')), promptVersion: text(get('evidenceItems', f, 'prompt_version')), privacyLevel: text(get('evidenceItems', f, 'privacy_level')) || 'NORMAL', privacyMeta, serviceNecessity, serviceNecessityReason: privacyMeta.serviceNecessityReason || '', temporalType: privacyMeta.temporalType || 'UNKNOWN', mentorSafeText: text(get('evidenceItems', f, 'mentor_safe_text')), mentorServiceDetail: privacyMeta.mentorServiceDetail || '', necessaryExcerpt: privacyMeta.necessaryExcerpt || '', salesSafeSummary: privacyMeta.salesSafeSummary || '', createdAt: date(get('evidenceItems', f, 'created_at')) || null, updatedAt: date(get('evidenceItems', f, 'updated_at')) || null, _recordId: row.record_id }
+  const contentSource = text(get('evidenceItems', f, 'content_source')) || undefined
+  const informationNature = text(get('evidenceItems', f, 'information_nature')) || undefined
+  const verificationStatus = text(get('evidenceItems', f, 'verification_status')) || undefined
+  return { id: text(get('evidenceItems', f, 'evidence_id')) || row.record_id, subjectType: text(get('evidenceItems', f, 'subject_type')) || 'PERSON', subjectId: text(get('evidenceItems', f, 'subject_id')), customerId: text(get('evidenceItems', f, 'customer_id')), sourceId: text(get('evidenceItems', f, 'source_id')), evidenceType: text(get('evidenceItems', f, 'evidence_type')), semanticKind: text(get('evidenceItems', f, 'semantic_kind')), fieldKey: text(get('evidenceItems', f, 'field_key')), standardValue: parsedJson(get('evidenceItems', f, 'standard_value'), text(get('evidenceItems', f, 'standard_value'))), displayText: text(get('evidenceItems', f, 'display_text')), sourceExcerpt: text(get('evidenceItems', f, 'source_excerpt')), locator: parsedJson(get('evidenceItems', f, 'locator_json'), {}), occurredAt: date(get('evidenceItems', f, 'occurred_at')) || null, sourceRole: text(get('evidenceItems', f, 'source_role')), contentSource, informationNature, verificationStatus, provenanceStatus: contentSource || informationNature || verificationStatus ? 'EXPLICIT' : 'LEGACY_MISSING', confidence: Number(get('evidenceItems', f, 'confidence') || 0), reviewStatus: text(get('evidenceItems', f, 'review_status')) || 'PENDING_REVIEW', extractionBatchId: text(get('evidenceItems', f, 'extraction_batch_id')), provider: text(get('evidenceItems', f, 'provider')) || 'DEEPSEEK', model: text(get('evidenceItems', f, 'model')), modelVersion: text(get('evidenceItems', f, 'model_version')), promptVersion: text(get('evidenceItems', f, 'prompt_version')), privacyLevel: text(get('evidenceItems', f, 'privacy_level')) || 'NORMAL', privacyMeta, serviceNecessity, serviceNecessityReason: privacyMeta.serviceNecessityReason || '', temporalType: privacyMeta.temporalType || 'UNKNOWN', mentorSafeText: text(get('evidenceItems', f, 'mentor_safe_text')), mentorServiceDetail: privacyMeta.mentorServiceDetail || '', necessaryExcerpt: privacyMeta.necessaryExcerpt || '', salesSafeSummary: privacyMeta.salesSafeSummary || '', createdAt: date(get('evidenceItems', f, 'created_at')) || null, updatedAt: date(get('evidenceItems', f, 'updated_at')) || null, _recordId: row.record_id }
 }
 function proposalRecord(row) {
   const f = row.fields || {}
@@ -267,6 +270,20 @@ function mentorVisibleEvidence(evidence, source) {
   const policy = resolvePrivacyPolicy({ privacyLevel: level, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: 'MENTOR', assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: evidence?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: evidence?.temporalType || meta.temporalType })
   if (policy.canViewRaw) return evidence
   return { ...evidence, sourceExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', displayText: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || evidence.mentorSafeText || privacySafeText(meta)) : (evidence.mentorSafeText || privacySafeText(meta)), standardValue: policy.canPromoteToProfile ? evidence.standardValue : undefined, mentorServiceDetail: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || '') : '', necessaryExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', salesSafeSummary: meta.salesSafeSummary || '', privacyPolicy: policy }
+}
+
+function profileMaterializationEvidence({ evidenceItems = [], sourceRecords = [], customer, actor }) {
+  const sourceById = new Map(sourceRecords.map((source) => [source.id, source]))
+  const role = actor?.permissionRole || 'ADMIN'
+  const isAssignedMentor = role !== 'MENTOR' || customer?.mentorId === actor?.id
+  return evidenceItems.filter((evidence) => {
+    if (evidence.customerId !== customer?.id) return false
+    if (evidence.contentSource === 'THIRD_PARTY_REPORTED') return false
+    const source = sourceById.get(evidence.sourceId)
+    const meta = evidence.privacyMeta || source?.privacyMeta || {}
+    const policy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel || source?.privacyLevel, categories: meta.categories, currentRole: role, isAssignedMentor, assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: evidence.serviceNecessity || source?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: evidence.temporalType || source?.temporalType || meta.temporalType, safetyFlags: meta.safetyFlags })
+    return policy.canPromoteToProfile
+  })
 }
 
 function mentorVisibleSafetyAssessment(assessment, actorRole) {
@@ -538,7 +555,7 @@ function sourceInput(input, actorId) {
   return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, operationId: text(input?.operationId), contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
 }
 function evidenceWriteFields(item, source, sourceId) {
-  return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
+  return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: item.contentSource, information_nature: item.informationNature, verification_status: item.verificationStatus, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
 }
 
 export class FeishuRepository {
@@ -667,7 +684,8 @@ export class FeishuRepository {
     const conflicts = conflictRows.map(conflictRecord).filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId))
     for (const item of customers) {
       const customerEvidence = evidenceItems.filter((evidence) => evidence.customerId === item.id)
-      item.profileMaterialization = materializeCustomerProfile({ customer: item, evidenceItems: customerEvidence, summaryMeta: item.aiSummaryMeta })
+      const profileEvidence = profileMaterializationEvidence({ evidenceItems: customerEvidence, sourceRecords, customer: item, actor: { permissionRole: 'ADMIN' } })
+      item.profileMaterialization = materializeCustomerProfile({ customer: item, evidenceItems: profileEvidence, summaryMeta: item.aiSummaryMeta })
       const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, conflicts: conflicts.filter((conflict) => conflict.customerId === item.id) })
       if (!item.understandingMeta || item.understandingMeta.inputFingerprint !== currentFingerprint || item.understandingMeta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) item.understandingStatus = 'STALE'
     }
@@ -723,7 +741,8 @@ export class FeishuRepository {
     const visibleDatabase = scope(database, actorId)
     const customer = visibleDatabase.customers.find((item) => item.id === customerId)
     if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const evidenceItems = visibleDatabase.evidenceItems.filter((item) => item.customerId === customerId)
+    const actor = database.staff.find((item) => item.id === actorId)
+    const evidenceItems = profileMaterializationEvidence({ evidenceItems: visibleDatabase.evidenceItems, sourceRecords: visibleDatabase.sourceRecords, customer, actor })
     const profileMaterialization = materializeCustomerProfile({ customer, evidenceItems, summaryMeta: customer.aiSummaryMeta })
     return publicCustomerProfile(customer, profileMaterialization)
   }
@@ -1303,7 +1322,9 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     const customer = visibleDatabase.customers.find((item) => item.id === customerId)
     const evidenceItems = visibleDatabase.evidenceItems.filter((item) => item.customerId === customerId)
-    return { sources: visibleDatabase.sourceRecords.filter((item) => item.customerId === customerId).map((item) => publicSource(item, { includeRaw })), evidenceItems, proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.customerId === customerId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.customerId === customerId), profileMaterialization: customer ? materializeCustomerProfile({ customer, evidenceItems, summaryMeta: customer.aiSummaryMeta }) : undefined }
+    const actor = database.staff.find((item) => item.id === actorId)
+    const profileEvidence = customer ? profileMaterializationEvidence({ evidenceItems, sourceRecords: visibleDatabase.sourceRecords, customer, actor }) : []
+    return { sources: visibleDatabase.sourceRecords.filter((item) => item.customerId === customerId).map((item) => publicSource(item, { includeRaw })), evidenceItems, proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.customerId === customerId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.customerId === customerId), profileMaterialization: customer ? materializeCustomerProfile({ customer, evidenceItems: profileEvidence, summaryMeta: customer.aiSummaryMeta }) : undefined }
   }
   async sourceDetail(actorId, sourceId) {
     requireStage2Tables()
@@ -1352,7 +1373,7 @@ export class FeishuRepository {
     const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
     const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}:${processingVersion}`)
     const processingStartedAt = now()
-    const processingDiagnostics = { source_char_count: String(source.rawText || '').length, prompt_char_count: 0, token_estimate: 0, extracted_candidate_count: 0, privacy_restricted_count: 0 }
+    const processingDiagnostics = { source_char_count: String(source.rawText || '').length, prompt_char_count: 0, token_estimate: 0, extracted_candidate_count: 0, privacy_restricted_count: 0, cross_customer_rejected_count: 0 }
     await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
     try {
       if (!source.rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
@@ -1363,8 +1384,15 @@ export class FeishuRepository {
           const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
           processingDiagnostics.extracted_candidate_count += rawItems.length
           for (const rawItem of rawItems) {
-            if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR') continue
-            const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1' })
+            if (rawItem?.customer_id && String(rawItem.customer_id) !== String(source.customerId)) {
+              processingDiagnostics.cross_customer_rejected_count += 1
+              continue
+            }
+            if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR' && String(rawItem?.content_source || '').toUpperCase() !== 'MENTOR_OBSERVATION') continue
+            // The current mentor/admin write path has no authenticated
+            // customer-submission proof. Keep CUSTOMER_DIRECT unavailable
+            // here even when the model sees first-person or quoted wording.
+            const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1', trustedCustomerSubmission: false })
             if (normalized) {
               const canonical = normalizeCanonicalFact({ fieldKey: rawItem?.field_key || normalized.fieldKey || '', value: rawItem?.value ?? normalized.standardValue, sourceExcerpt: normalized.sourceExcerpt, displayText: normalized.displayText, semanticKind: rawItem?.semantic_kind || normalized.semanticKind, occurredAt: normalized.occurredAt })
               normalized._canonicalGrounded = canonical.grounded !== false
@@ -1414,7 +1442,7 @@ export class FeishuRepository {
       for (const item of replaceableEvidence) {
         const evidence = { ...item, id: stableId('EVD', `${sourceId}:${batchId}:${evidenceLogicalKey(item)}`) }
         try {
-          await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, privacy_level: evidence.privacyLevel || 'NORMAL', privacy_meta_json: stage2Json(evidence.privacyMeta || {}), mentor_safe_text: evidence.mentorSafeText || evidence.displayText, created_at: now(), updated_at: now() })
+          await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: evidence.contentSource, information_nature: evidence.informationNature, verification_status: evidence.verificationStatus, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, privacy_level: evidence.privacyLevel || 'NORMAL', privacy_meta_json: stage2Json(evidence.privacyMeta || {}), mentor_safe_text: evidence.mentorSafeText || evidence.displayText, created_at: now(), updated_at: now() })
         } catch (error) {
           throw Object.assign(error instanceof Error ? error : new Error('Evidence 批次写入失败'), { code: 'EVIDENCE_WRITE_FAILED', causeCode: processingErrorCode(error) })
         }
@@ -1484,7 +1512,10 @@ export class FeishuRepository {
           const humanConfirmed = profileMeta?.confirmed === true && ['MENTOR_CONFIRMED', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'USER_EXPLICIT'].includes(profileMeta?.source)
           const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence))
           const privacyPolicy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel, categories: evidence.privacyMeta?.categories, safetyFlags: evidence.privacyMeta?.safetyFlags, currentRole: 'ADMIN', assertionType: evidence.privacyMeta?.assertionType })
-          const autoApply = privacyPolicy.canPromoteToProfile && !requiresReview && !humanConfirmed && isSnapshotEvidence(evidence) && ['ADD', 'UPDATE', 'APPEND'].includes(change.action) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+          const provenanceAllowsAutoApply = !evidence.contentSource && !evidence.informationNature && !evidence.verificationStatus
+            ? true
+            : evidence.verificationStatus === 'HUMAN_VERIFIED'
+          const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !humanConfirmed && isSnapshotEvidence(evidence) && ['ADD', 'UPDATE', 'APPEND'].includes(change.action) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
           if (autoApply) {
             const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_INFERENCE', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), true)[0]
             if (update) {
@@ -1557,6 +1588,8 @@ export class FeishuRepository {
       const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'MENTOR_CONFIRMED', confidence: proposal.confidence, confirmed: true }
       if (update.source === 'AI_INFERENCE') throw Object.assign(new Error('AI假设不能写入当前客户档案'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
       await persistCustomerProfile(database, proposal.customerId, normalizeProfileUpdates([update], current, true), undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      // Confirming a profile proposal records a human decision about this
+      // proposal. It does not prove the external truth of the evidence.
       await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
     } else {
       const evidence = database.evidenceItems.find((item) => item.id === proposal.evidenceId)
@@ -1592,6 +1625,8 @@ export class FeishuRepository {
       const update = normalizeProfileUpdates([{ field: proposal.fieldKey, value: proposal.proposedValue, source: 'MENTOR_CONFIRMED', confidence: proposal.confidence }], current, true)[0]
       if (!update) throw new Error('冲突的新资料无效')
       await persistCustomerProfile(database, proposal.customerId, [update], undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      // Conflict resolution chooses how the profile should proceed; it is
+      // not an external fact-verification operation.
       await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
       const proposalRow = database._rows.profileUpdateProposals.find((item) => item.record_id === proposal._recordId)
       if (proposalRow) await updateRecord(stage2Table('profileUpdateProposals'), proposalRow.record_id, mapFields('profileUpdateProposals', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))

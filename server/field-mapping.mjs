@@ -108,7 +108,7 @@ export const FIELD_MAPPING = {
   evidenceItems: {
     evidence_id: '证据ID', subject_type: '主体类型', subject_id: '主体ID', customer_id: '客户ID', source_id: '资料ID', evidence_type: '证据类型',
     semantic_kind: '语义类型', field_key: '字段Key', standard_value: '标准值', display_text: '展示文本', source_excerpt: '原文摘录', locator_json: '资料定位',
-    occurred_at: '发生时间', source_role: '来源角色', confidence: '置信度', review_status: '审核状态', reviewer_id: '审核人', reviewed_at: '审核时间', extraction_batch_id: '提取批次ID',
+    occurred_at: '发生时间', source_role: '来源角色', content_source: '内容来源', information_nature: '信息性质', verification_status: '核实状态', confidence: '置信度', review_status: '审核状态', reviewer_id: '审核人', reviewed_at: '审核时间', extraction_batch_id: '提取批次ID',
     provider: '提取模型提供方', model: '模型', model_version: '模型版本', prompt_version: 'Prompt版本', privacy_level: '隐私级别', privacy_meta_json: '隐私元数据', mentor_safe_text: '导师安全文本', created_at: '创建时间', updated_at: '更新时间',
   },
   profileUpdateProposals: {

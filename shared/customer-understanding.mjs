@@ -37,7 +37,11 @@ function evidenceRef(item, sourceRecords) {
     excerpt: safeText(item.sourceExcerpt || item.displayText, 220),
     occurred_at: item.occurredAt || null,
     evidence_type: item.evidenceType,
-    source_perspective: item.sourcePerspective || (item.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'),
+    source_perspective: item.sourcePerspective || source?.sourcePerspective || (item.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'),
+    content_source: item.contentSource || null,
+    information_nature: item.informationNature || null,
+    verification_status: item.verificationStatus || null,
+    provenance_status: item.provenanceStatus || (item.contentSource || item.informationNature || item.verificationStatus ? 'EXPLICIT' : 'LEGACY_MISSING'),
   }
 }
 
