@@ -85,6 +85,7 @@ export interface EvidenceItem { id: string; sourceId: string; customerId: string
 export interface ProfileUpdateProposal { id: string; customerId: string; evidenceId: string; sourceId: string; fieldKey: string; fieldName: string; currentValue: unknown; proposedValue: unknown; action: string; changeType: string; reviewStatus: string; reason: string; confidence: number }
 export interface EvidenceConflict { id: string; customerId: string; fieldKey: string; conflictType: string; currentValue: unknown; newValue: unknown; currentEvidenceId?: string; newEvidenceId: string; status: string; resolution?: string }
 export interface SourceWorkspace { sources: SourceRecord[]; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[]; profileMaterialization?: ProfileMaterialization }
+export interface SourceSaveStatus { status: 'PERSISTED' | 'NOT_FOUND'; source: SourceRecord | null }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -150,6 +151,7 @@ export interface WorkbenchApi {
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
   extractDocument(actorId: string, input: DocumentUploadInput): Promise<DocumentExtractionResult>
   sourceWorkspace(actorId: string, customerId: string): Promise<SourceWorkspace>
+  sourceStatus(actorId: string, customerId: string, operationId: string): Promise<SourceSaveStatus>
   createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
@@ -170,6 +172,9 @@ export class ApiError extends Error {
 const requestTraces: ApiRequestTrace[] = []
 export function getApiRequestTraces() { return [...requestTraces] }
 export function clearApiRequestTraces() { requestTraces.splice(0, requestTraces.length) }
+
+export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
+export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
 
 type LocalApi = ReturnType<typeof createLocalApi>
 
@@ -231,6 +236,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
     extractDocument: async () => { throw new Error('本地 Demo 不支持文件读取') },
     sourceWorkspace: async () => ({ sources: [], evidenceItems: [], proposals: [], conflicts: [] }),
+    sourceStatus: async () => ({ status: 'NOT_FOUND', source: null }),
     createSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
     processSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
     overrideServiceNecessity: async () => { throw new Error('本地 Demo 不支持隐私策略调整') },
@@ -251,9 +257,22 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     else if (staffId) headers.set('X-Staff-Id', staffId)
     if (!base) throw new ApiError({ code: 'CONFIGURATION_ERROR', message: '未配置真实 API 地址。请设置 VITE_API_BASE_URL 后重启前端；如需演示，请明确设置 VITE_APP_ENV=mock。' })
     let response: Response
-    try { response = await fetch(`${base}${path}`, { ...init, headers }) } catch (error) {
+    let payload: Record<string, any> | null = null
+    const timeoutMs = path === '/api/sources' && method === 'POST' ? CLIENT_SOURCE_SAVE_TIMEOUT_MS : CLIENT_DEFAULT_TIMEOUT_MS
+    const controller = new AbortController()
+    let timedOut = false
+    const timeoutHandle = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
+    try {
+      response = await fetch(`${base}${path}`, { ...init, headers, signal: controller.signal })
+      try { payload = await response.json() } catch (error) {
+        if (timedOut) throw error
+        payload = null
+      }
+    } catch (error) {
+      clearTimeout(timeoutHandle)
       requestTraces.unshift({ time: new Date().toISOString(), method, path, status: null, duration: Math.round(performance.now() - startedAt), result: 'ERROR' })
       requestTraces.splice(20)
+      if (timedOut) throw new ApiError({ code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认保存结果。' })
       const online = typeof navigator === 'undefined' || navigator.onLine !== false
       const pageOrigin = typeof window === 'undefined' ? '' : window.location.origin
       const apiOrigin = typeof window === 'undefined' ? '' : new URL(base, window.location.href).origin
@@ -263,7 +282,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
         : 'NETWORK_UNREACHABLE：无法连接开发 API，请确认 asva-api 已启动且地址可访问。'
       throw new ApiError({ code, message })
     }
-    const payload = await response.json().catch(() => null)
+    clearTimeout(timeoutHandle)
     const requestId = response.headers.get('X-Request-Id') || payload?.request_id || undefined
     const duration = Math.round(performance.now() - startedAt)
     requestTraces.unshift({ time: new Date().toISOString(), method, path, status: response.status, duration, request_id: requestId, result: response.ok ? 'SUCCESS' : 'ERROR' })
@@ -323,6 +342,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),
     extractDocument: (actorId, input) => request<DocumentExtractionResult>('/api/documents/extract', actorId, { method: 'POST', body: JSON.stringify({ document: input }) }),
     sourceWorkspace: (actorId, customerId) => request<SourceWorkspace>(`/api/customers/${encodeURIComponent(customerId)}/sources`, actorId),
+    sourceStatus: (actorId, customerId, operationId) => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}`, actorId),
     createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),
     processSource: (actorId, sourceId, force = false) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/process`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     overrideServiceNecessity: (actorId, input) => request<SourceWorkspace>('/api/privacy/service-necessity', actorId, { method: 'POST', body: JSON.stringify(input) }),

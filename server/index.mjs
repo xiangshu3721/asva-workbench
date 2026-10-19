@@ -155,6 +155,8 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guard(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
   const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
   if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
+  const sourceStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/source-status$/)
+  if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || ''), requestId)
   if (request.method === 'POST' && url.pathname === '/api/privacy/service-necessity') return send(request, response, 200, await repository.overrideServiceNecessity(await guardAdmin(request), await readBody(request)), requestId)
   const proposalReview = url.pathname.match(/^\/api\/profile-proposals\/([^/]+)\/review$/)
   if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guard(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }
