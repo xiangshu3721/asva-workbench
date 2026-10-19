@@ -25,7 +25,7 @@ const fixtureRows = () => ({
   [tableId('staff')]: [row('staff', 'rec-admin', { staff_id: admin.id, name: admin.name, permission_role: 'ADMIN', status: 'ACTIVE', login_enabled: true }), row('staff', 'rec-mentor', { staff_id: mentor.id, name: mentor.name, permission_role: 'MENTOR', status: 'ACTIVE', login_enabled: true })],
   [tableId('products')]: [],
   [tableId('enrollments')]: [],
-  [tableId('evidenceItems')]: [row('evidenceItems', 'rec-e1', { evidence_id: 'E-1', customer_id: 'CUS-1', source_id: 'SRC-1', review_status: 'CONFIRMED', semantic_kind: 'CURRENT_STATE', field_key: 'city', standard_value: '杭州', display_text: '客户一证据', source_excerpt: '客户一资料', confidence: 0.95 }), row('evidenceItems', 'rec-e2', { evidence_id: 'E-2', customer_id: 'CUS-2', source_id: 'SRC-2', review_status: 'CONFIRMED', display_text: '客户二证据' })],
+  [tableId('evidenceItems')]: [row('evidenceItems', 'rec-e1', { evidence_id: 'E-1', customer_id: 'CUS-1', source_id: 'SRC-1', review_status: 'CONFIRMED', semantic_kind: 'CURRENT_STATE', field_key: 'city', standard_value: '杭州', display_text: '客户一证据', source_excerpt: '客户一资料', confidence: 0.95 }), row('evidenceItems', 'rec-e-pending', { evidence_id: 'E-PENDING', customer_id: 'CUS-1', source_id: 'SRC-1', review_status: 'PENDING_REVIEW', semantic_kind: 'EVENT', field_key: 'occupation', evidence_type: 'SELF_MEANING', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', display_text: '正在探索新的职业方向', source_excerpt: '她说正在探索新的职业方向', confidence: 0.7 }), row('evidenceItems', 'rec-e-high', { evidence_id: 'E-HIGH', customer_id: 'CUS-1', source_id: 'SRC-1', review_status: 'PENDING_REVIEW', semantic_kind: 'CURRENT_STATE', field_key: 'current_core_issue', privacy_level: 'HIGH_SENSITIVE', privacy_meta_json: JSON.stringify({ categories: ['SELF_HARM'], safetyFlags: ['SELF_HARM'], temporalType: 'CURRENT' }), display_text: '高敏安全原文', source_excerpt: '高敏安全原文' }), row('evidenceItems', 'rec-e2', { evidence_id: 'E-2', customer_id: 'CUS-2', source_id: 'SRC-2', review_status: 'CONFIRMED', display_text: '客户二证据' })],
   [tableId('appointments')]: [],
   [tableId('serviceRecords')]: [],
   [tableId('profileChanges')]: [],
@@ -89,5 +89,15 @@ describe('R043 progressive read paths', () => {
     expect(profile).not.toHaveProperty('sourceRecords')
     expect(profile).not.toHaveProperty('evidenceItems')
     await expect(repository.customerProfile(mentor.id, 'CUS-2')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
+  })
+
+  it('auto-archives ordinary evidence while excluding high-sensitive evidence from the profile projection', async () => {
+    const repository = new FeishuRepository()
+    const profile = await repository.customerProfile(admin.id, 'CUS-1')
+    expect(profile.profileMaterialization.provisionalItems).toEqual(expect.arrayContaining([expect.objectContaining({ evidenceId: 'E-PENDING', sectionTitle: '职业与事业' })]))
+    expect(profile.profileMaterialization.provisionalItems).not.toEqual(expect.arrayContaining([expect.objectContaining({ evidenceId: 'E-HIGH' })]))
+    const mentorProfile = await repository.customerProfile(mentor.id, 'CUS-1')
+    expect(mentorProfile.profileMaterialization.provisionalItems).toEqual(expect.arrayContaining([expect.objectContaining({ evidenceId: 'E-PENDING' })]))
+    expect(JSON.stringify(mentorProfile.profileMaterialization)).not.toContain('高敏安全原文')
   })
 })

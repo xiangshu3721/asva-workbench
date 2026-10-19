@@ -32,7 +32,7 @@ function makeDatabase() {
 function appendCreated(tableId, fields) {
   const recordId = `rec-${++recordSequence}`
   if (tableId === config.feishu.tables.evidenceItems) {
-    activeDatabase._allEvidenceItems.push({ id: fields['证据ID'], sourceId: fields['资料ID'], customerId: fields['客户ID'], subjectId: fields['主体ID'], evidenceType: fields['证据类型'], semanticKind: fields['语义类型'], fieldKey: fields['字段Key'], standardValue: json(fields['标准值']), displayText: fields['展示文本'], sourceExcerpt: fields['原文摘录'], locator: json(fields['资料定位']), occurredAt: fields['发生时间'], confidence: Number(fields['置信度']), reviewStatus: fields['审核状态'], extractionBatchId: fields['提取批次ID'], _recordId: recordId })
+    activeDatabase._allEvidenceItems.push({ id: fields['证据ID'], sourceId: fields['资料ID'], customerId: fields['客户ID'], subjectId: fields['主体ID'], evidenceType: fields['证据类型'], semanticKind: fields['语义类型'], fieldKey: fields['字段Key'], standardValue: json(fields['标准值']), displayText: fields['展示文本'], sourceExcerpt: fields['原文摘录'], locator: json(fields['资料定位']), occurredAt: fields['发生时间'], sourceRole: fields['来源角色'], contentSource: fields['内容来源'], informationNature: fields['信息性质'], verificationStatus: fields['核实状态'], provenanceStatus: fields['内容来源'] || fields['信息性质'] || fields['核实状态'] ? 'EXPLICIT' : 'LEGACY_MISSING', confidence: Number(fields['置信度']), reviewStatus: fields['审核状态'], extractionBatchId: fields['提取批次ID'], _recordId: recordId })
     activeDatabase._rows.evidenceItems.push({ record_id: recordId, fields })
   } else if (tableId === config.feishu.tables.profileUpdateProposals) {
     activeDatabase.profileUpdateProposals.push({ id: fields['建议ID'], customerId: fields['客户ID'], subjectId: fields['主体ID'], evidenceId: fields['证据ID'], sourceId: fields['资料ID'], fieldKey: fields['字段Key'], fieldName: fields['字段名称'], currentValue: json(fields['当前值']), proposedValue: json(fields['建议值']), action: fields['建议动作'], changeType: fields['变化类型'], reviewStatus: fields['审核状态'], confidence: Number(fields['置信度']), extractionBatchId: fields['批次ID'], _recordId: recordId })
@@ -46,7 +46,7 @@ function appendCreated(tableId, fields) {
 
 function updateExisting(tableId, recordId, fields) {
   if (tableId === config.feishu.tables.sourceRecords) { const source = activeDatabase.sourceRecords.find((item) => item._recordId === recordId); if (source) { if (fields['处理状态']) source.processingStatus = fields['处理状态']; if (fields['处理版本'] !== undefined) source.processingVersion = Number(fields['处理版本']) || source.processingVersion; if (fields['最近提取批次ID'] !== undefined) source.lastBatchId = fields['最近提取批次ID'] || '' } }
-  if (tableId === config.feishu.tables.evidenceItems) { const evidence = activeDatabase._allEvidenceItems.find((item) => item._recordId === recordId); if (evidence && fields['审核状态']) evidence.reviewStatus = fields['审核状态'] }
+  if (tableId === config.feishu.tables.evidenceItems) { const evidence = activeDatabase._allEvidenceItems.find((item) => item._recordId === recordId); if (evidence && fields['审核状态']) evidence.reviewStatus = fields['审核状态']; if (evidence && fields['核实状态']) evidence.verificationStatus = fields['核实状态'] }
   if (tableId === config.feishu.tables.profileUpdateProposals) { const proposal = activeDatabase.profileUpdateProposals.find((item) => item._recordId === recordId); if (proposal && fields['审核状态']) proposal.reviewStatus = fields['审核状态'] }
   if (tableId === config.feishu.tables.evidenceConflicts) { const conflict = activeDatabase.evidenceConflicts.find((item) => item._recordId === recordId); if (conflict) { if (fields['状态']) conflict.status = fields['状态']; if (fields['解决结果']) conflict.resolution = fields['解决结果'] } }
   return { record: { record_id: recordId } }
@@ -102,6 +102,7 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     await repository.resolveConflict('MENTOR-A', conflict.id, 'USE_NEW')
     expect(activeDatabase.customers[0].profileFields.city).toBe('深圳')
     expect(activeDatabase.customers[0].profileFieldMeta.city).toMatchObject({ source: 'MENTOR_CONFIRMED', confirmed: true })
+    expect(activeDatabase._allEvidenceItems.find((item) => item.id === conflict.newEvidenceId).verificationStatus).toBe('SOURCE_SUPPORTED')
     expect(activeDatabase.profileChanges.length).toBe(beforeChanges + 1)
     expect(activeDatabase.evidenceConflicts[0].status).toBe('RESOLVED')
     await repository.resolveConflict('MENTOR-A', conflict.id, 'USE_NEW')
@@ -264,5 +265,15 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     expect(current.evidenceItems.some((item) => item.id === firstEvidenceId)).toBe(false)
     expect(current.profileUpdateProposals.every((item) => current.evidenceItems.some((evidence) => evidence.id === item.evidenceId))).toBe(true)
     expect(current.evidenceConflicts.every((item) => current.evidenceItems.some((evidence) => evidence.id === item.newEvidenceId || evidence.id === item.currentEvidenceId))).toBe(true)
+  })
+
+  it('persists explicit provenance and rejects a cross-customer candidate', async () => {
+    const repository = setupRepository(async () => [{ evidence_type: 'SELF_MEANING', semantic_kind: 'NEED', field_key: 'current_goal', value: '先稳定作息', display_text: '客户希望先稳定作息', source_excerpt: '她说想先稳定作息', content_source: 'CUSTOMER_DIRECT', information_nature: 'PERSONAL_STATEMENT', verification_status: 'HUMAN_VERIFIED', confidence: 0.91, customer_id: 'CUS-SYNTH-1', locator: { paragraph_index: 0 } }, { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '上海', display_text: '另一客户现居上海', source_excerpt: '另一客户现居上海', content_source: 'CUSTOMER_DIRECT', information_nature: 'OBJECTIVE_RECORD', verification_status: 'SOURCE_SUPPORTED', confidence: 0.99, customer_id: 'CUS-OTHER', locator: { paragraph_index: 0 } }])
+    activeDatabase.sourceRecords[0].rawText = '她说想先稳定作息。另一客户现居上海'
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const stored = activeDatabase._allEvidenceItems.find((item) => item.informationNature === 'PERSONAL_STATEMENT')
+    expect(stored).toMatchObject({ contentSource: 'UNKNOWN', informationNature: 'PERSONAL_STATEMENT', verificationStatus: 'SOURCE_SUPPORTED', customerId: 'CUS-SYNTH-1' })
+    expect(activeDatabase._allEvidenceItems.some((item) => item.displayText === '另一客户现居上海')).toBe(false)
+    expect(repository.evidenceTraces[0].cross_customer_rejected_count).toBe(1)
   })
 })

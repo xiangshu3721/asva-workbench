@@ -613,18 +613,25 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad }: 
   const materialization = hydratedCustomer.profileMaterialization
   const coverage = materialization?.coverage.percentage ?? 0
   const coverageLabel = loading ? '正在读取档案' : error ? '档案读取失败' : profile ? (coverage >= 80 ? '资料较完整' : coverage >= 45 ? '已有部分可靠资料' : '资料仍在补充中') : '按需读取'
+  const provisionalItems = (materialization?.provisionalItems || []).map((item) => ({ ...item, label: sanitizeUserVisibleText(item.label), text: sanitizeUserVisibleText(item.text), basis: dedupeEvidenceDisplay(item.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))) }))
+  const provisionalForSection = (title: string) => provisionalItems.filter((item) => item.sectionTitle === title)
+  const displaySections = [...sections, ...[...new Set(provisionalItems.map((item) => item.sectionTitle))].filter((title) => !sections.some((section) => section.title === title)).map((title) => ({ title, emptyLabel: '待补充', items: [] }))]
   const lifeEvents = materialization?.lifeEvents || []
-  const itemCount = sections.reduce((count, section) => count + section.items.length, 0) + lifeEvents.length
+  const itemCount = displaySections.reduce((count, section) => count + section.items.length + provisionalForSection(section.title).length, 0) + lifeEvents.length
   const profileContent = loading ? <p className="detail-empty-line">正在读取该客户的确认档案…</p>
     : error ? <div className="detail-empty-line"><p>档案暂时读取失败，客户基础资料不受影响。</p><button className="secondary-button small" type="button" onClick={() => void onLoad()}>重新读取档案</button></div>
       : !profile ? <p className="detail-empty-line">展开后按需读取该客户的确认档案。</p>
         : itemCount === 0 ? <p className="detail-empty-line">当前没有已确认的档案资料。</p>
           : <>
             <div className="portrait-grid">
-              {sections.filter((section) => section.items.length > 0).map((section) => <article className="portrait-card" key={section.title}>
+              {displaySections.filter((section) => section.items.length > 0 || provisionalForSection(section.title).length > 0).map((section) => <article className="portrait-card" key={section.title}>
                 <h3>{section.title}</h3>
                 <div className="portrait-facts">
                   {section.items.map((item) => <div className="profile-renderer-fact" key={`${item.label}-${item.text}`}>
+                    <span>{item.label}</span><strong>{item.text}</strong>
+                    {item.basis.length > 0 && <details><summary>查看依据</summary><div className="profile-basis">{item.basis.map((reference) => <p key={reference.evidenceIds.join('|')} data-evidence-ids={reference.evidenceIds.join(',')}>{reference.displayText}{reference.excerpt && <small>{reference.excerpt}</small>}</p>)}</div></details>}
+                  </div>)}
+                  {provisionalForSection(section.title).map((item) => <div className="profile-renderer-fact profile-renderer-provisional" key={`provisional-${item.evidenceId}`}>
                     <span>{item.label}</span><strong>{item.text}</strong>
                     {item.basis.length > 0 && <details><summary>查看依据</summary><div className="profile-basis">{item.basis.map((reference) => <p key={reference.evidenceIds.join('|')} data-evidence-ids={reference.evidenceIds.join(',')}>{reference.displayText}{reference.excerpt && <small>{reference.excerpt}</small>}</p>)}</div></details>}
                   </div>)}

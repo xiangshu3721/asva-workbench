@@ -179,6 +179,20 @@ export interface ProfileMaterializationItem {
   basis: ProfileEvidenceReference[]
 }
 
+export interface ProfileProvisionalItem extends ProfileMaterializationItem {
+  fieldKey: string | null
+  value: ProfileValue
+  displayText: string
+  sourceId: string
+  evidenceId: string
+  contentSource: string | null
+  informationNature: string | null
+  verificationStatus: string
+  occurredAt: string | null
+  conflictState: string
+  sectionTitle: string
+}
+
 export interface ProfileMaterializationSection {
   title: string
   emptyLabel: string
@@ -189,6 +203,7 @@ export interface ProfileMaterialization {
   schemaVersion: string
   currentSnapshot: Record<string, { value: ProfileValue; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
   sections: ProfileMaterializationSection[]
+  provisionalItems: ProfileProvisionalItem[]
   lifeEvents: Array<{ id: string; title: string; detail: string; occurredAt: string | null; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
   coverage: { percentage: number; domains: Array<{ name: string; status: 'KNOWN' | 'PARTIAL' | 'UNKNOWN'; signalCount: number }> }
   aiSummaryStatus: SummaryStatus

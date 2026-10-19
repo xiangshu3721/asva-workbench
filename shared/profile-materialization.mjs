@@ -25,6 +25,7 @@ const SECTION_DEFINITIONS = [
 const CAREER_TERMS = /职业|工作|销售|销冠|互联网|产品|运营|社交|电商|直播|内容|后台|创业|咨询|课程|事业|转型|大学|读书|毕业|房地产|心理成长|艺术疗愈/
 const INTEREST_TERMS = /创作|小说|作词|作曲|写作|音乐|绘画|艺术|阅读|旅行|摄影|运动|表达/
 const SUMMARY_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
+const PROVISIONAL_EXCLUDED_STATUSES = new Set(['CONFIRMED', 'SUPERSEDED', 'REJECTED'])
 
 function present(value) {
   return value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
@@ -57,6 +58,56 @@ function itemFromEvidence(evidence, label = '资料线索') {
   return { label, text: evidence.displayText, evidenceIds: [evidence.id], basis: [basis(evidence)] }
 }
 
+function provisionalSourceLabel(evidence) {
+  if (evidence?.informationNature === 'AI_INFERENCE' || evidence?.evidenceType === 'HYPOTHESIS') return '待验证洞察'
+  if (evidence?.contentSource === 'MENTOR_OBSERVATION' || evidence?.informationNature === 'BEHAVIOR_OBSERVATION') return '导师观察 · 待核实'
+  if (evidence?.contentSource === 'MENTOR_REPORTED') return '导师转述 · 待核实'
+  if (evidence?.contentSource === 'STAFF_TRANSCRIBED_CUSTOMER') return '客户表达（转录）· 待核实'
+  if (evidence?.contentSource === 'CUSTOMER_DIRECT' || evidence?.informationNature === 'PERSONAL_STATEMENT') return '客户表达 · 待核实'
+  if (evidence?.contentSource === 'THIRD_PARTY_REPORTED') return '第三方说法 · 待核实'
+  return '资料线索 · 待核实'
+}
+
+function sectionTitleForEvidence(evidence) {
+  const direct = SECTION_DEFINITIONS.find((definition) => definition.fields.includes(evidence?.fieldKey))
+  if (direct) return direct.title
+  if (evidence?.semanticKind === 'RELATIONSHIP') return '家庭与关系'
+  if (evidence?.semanticKind === 'PREFERENCE' || INTEREST_TERMS.test(evidenceText(evidence))) return '兴趣偏好'
+  if (evidence?.semanticKind === 'RESOURCE') return '当前资源'
+  if (evidence?.semanticKind === 'GOAL' || evidence?.semanticKind === 'NEED') return '目标与需要'
+  if (evidence?.semanticKind === 'OBSERVATION' || evidence?.evidenceType === 'OBSERVATION') return '咨询观察'
+  if (evidence?.semanticKind === 'EVENT' && CAREER_TERMS.test(evidenceText(evidence))) return '职业与事业'
+  if (evidence?.semanticKind === 'EVENT') return '人生经历与变化'
+  return '当前状态'
+}
+
+function isProvisionalEvidence(evidence) {
+  if (!evidence || PROVISIONAL_EXCLUDED_STATUSES.has(evidence.reviewStatus)) return false
+  if (!evidence.displayText || !evidence.sourceId || !evidence.customerId) return false
+  return true
+}
+
+function provisionalItemFromEvidence(evidence) {
+  const label = provisionalSourceLabel(evidence)
+  return {
+    fieldKey: evidence.fieldKey || null,
+    value: evidence.standardValue,
+    displayText: evidence.displayText,
+    label,
+    text: evidence.displayText,
+    sourceId: evidence.sourceId,
+    evidenceId: evidence.id,
+    contentSource: evidence.contentSource || null,
+    informationNature: evidence.informationNature || null,
+    verificationStatus: evidence.verificationStatus || 'UNKNOWN',
+    occurredAt: evidence.occurredAt || null,
+    conflictState: evidence.verificationStatus === 'CONFLICTED' ? 'CONFLICTED' : 'UNCONFIRMED',
+    sectionTitle: sectionTitleForEvidence(evidence),
+    evidenceIds: [evidence.id],
+    basis: [basis(evidence)],
+  }
+}
+
 function uniqueItems(items) {
   const seen = new Set()
   return items.filter((item) => {
@@ -65,6 +116,20 @@ function uniqueItems(items) {
     seen.add(key)
     return true
   })
+}
+
+function uniqueProvisionalItems(items) {
+  const result = []
+  for (const item of items) {
+    const existing = result.find((candidate) => candidate.label === item.label && candidate.text === item.text)
+    if (!existing) {
+      result.push(item)
+      continue
+    }
+    for (const evidenceId of item.evidenceIds || []) if (!existing.evidenceIds.includes(evidenceId)) existing.evidenceIds.push(evidenceId)
+    for (const reference of item.basis || []) if (!existing.basis.some((candidate) => candidate.evidenceId === reference.evidenceId)) existing.basis.push(reference)
+  }
+  return result
 }
 
 function evidenceText(evidence) { return `${evidence.displayText || ''} ${evidence.sourceExcerpt || ''}` }
@@ -102,6 +167,9 @@ export function isSnapshotEvidence(evidence) {
 }
 
 export function shouldAutoConfirmEvidence(evidence) {
+  if (evidence?.contentSource && ['UNKNOWN', 'MIXED'].includes(evidence.contentSource)) return false
+  if (evidence?.informationNature === 'AI_INFERENCE') return false
+  if (evidence?.verificationStatus === 'UNKNOWN' || evidence?.verificationStatus === 'CONFLICTED') return false
   return isHighConfidenceFact(evidence) && evidence.semanticKind === 'EVENT'
 }
 
@@ -132,6 +200,7 @@ function coverageFor(customer, evidenceItems) {
 
 export function materializeCustomerProfile({ customer, evidenceItems = [], summaryMeta = null }) {
   const confirmedEvidence = evidenceItems.filter(confirmed)
+  const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).map(provisionalItemFromEvidence))
   const fingerprint = summaryInputFingerprint({ customer, evidenceItems })
   const fields = customer?.profileFields || {}
   const currentSnapshot = Object.fromEntries(Object.entries(fields).filter(([, value]) => present(value)).map(([field, value]) => {
@@ -153,5 +222,5 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
   })
 
   const lifeEvents = confirmedEvidence.filter((item) => item.semanticKind === 'EVENT').map((item) => ({ id: item.id, title: item.displayText, detail: item.sourceExcerpt, occurredAt: item.occurredAt || null, evidenceIds: [item.id], basis: [basis(item)] }))
-  return { schemaVersion: 'profile-materialization-v1', currentSnapshot, sections, lifeEvents, coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
+  return { schemaVersion: 'profile-materialization-v2', currentSnapshot, sections, provisionalItems, lifeEvents, coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
 }

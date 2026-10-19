@@ -241,7 +241,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .course-tag { display: inline-flex; padding: 7px 10px; border-radius: 999px; color: var(--blue-dark); background: var(--blue-pale); font-size: 11px; }
 
 /* V1 customer service workspace */
-.customer-detail-page { display: grid; gap: 15px; width: 100%; min-width: 0; }
+.customer-detail-page { display: grid; align-self: start; align-content: start; gap: 15px; width: 100%; min-width: 0; }
 .customer-detail-header, .customer-detail-section { border: 1px solid #e5ebf5; border-radius: 16px; background: #fff; box-shadow: 0 8px 24px rgba(47, 75, 129, .035); }
 .customer-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 17px 22px; padding: 22px; }
 .customer-detail-identity { display: flex; align-items: center; gap: 14px; min-width: 0; }
@@ -626,7 +626,7 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 }
 
 /* Customer relationship overview: business context first, technical metadata out of the way. */
-.customer-detail-header { gap: 0; padding: 22px 24px 20px; }
+.customer-detail-header { align-content: start; gap: 0; padding: 22px 24px 20px; }
 .customer-detail-identity { align-items: flex-start; }
 .customer-detail-name-row h1 { font-size: 26px; }
 .customer-identity-facts { margin: 7px 0 0; color: #6a8981; font-size: 14px; line-height: 1.55; }
@@ -833,3 +833,4 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
   .customer-detail-v2 .consultation-card { padding-bottom: 14px; }
   .customer-detail-v2 .consultation-card + .consultation-card { padding-top: 14px; }
 }
+.profile-renderer-provisional { background: #fffaf0; border: 1px solid #f3dfb5; border-radius: 9px; padding: 10px; }
