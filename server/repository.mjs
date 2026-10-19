@@ -478,8 +478,16 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
 
 const stage2Table = (name) => config.feishu.tables[name]
 const stage2RequiredTables = ['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']
+const SOURCE_RAW_TEXT_MAX_CHARS = 500_000
 function requireStage2Tables() { const missing = stage2RequiredTables.filter((name) => !stage2Table(name)); if (missing.length) throw Object.assign(new Error('Stage 2 资料表尚未配置'), { code: 'STAGE2_TABLES_NOT_CONFIGURED', status: 503, missing }) }
 function stage2Json(value) { return JSON.stringify(value ?? null) }
+function normalizeSourceRawText(value) {
+  const normalized = String(value ?? '').replace(/\r\n/g, '\n').trim()
+  if (normalized.length > SOURCE_RAW_TEXT_MAX_CHARS) {
+    throw Object.assign(new Error(`原始资料过长，最多支持 ${SOURCE_RAW_TEXT_MAX_CHARS.toLocaleString()} 个字符。请保留完整资料后分段保存。`), { code: 'SOURCE_TEXT_TOO_LARGE', status: 413, maxChars: SOURCE_RAW_TEXT_MAX_CHARS, actualChars: normalized.length })
+  }
+  return normalized
+}
 async function waitForSourceVisibility(sourceId) {
   const result = await boundedReadAfterWrite(async () => {
     const rows = await listRecords(stage2Table('sourceRecords'))
@@ -519,7 +527,7 @@ async function updateMappedRecord(tableKey, operation, recordId, values) {
 }
 function sourceInput(input, actorId) {
   const sourceType = String(input?.sourceType || '').trim().toUpperCase()
-  const rawText = normalizeText(input?.rawText, 500_000)
+  const rawText = normalizeSourceRawText(input?.rawText)
   if (!SOURCE_TYPES.has(sourceType)) throw Object.assign(new Error('不支持的资料类型'), { code: 'INVALID_SOURCE_TYPE', status: 400 })
   if (!rawText && sourceType !== 'FILE_UPLOAD') throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
   const customerId = text(input?.customerId).trim()
@@ -1240,11 +1248,18 @@ export class FeishuRepository {
       database = await this.loadAfterWrite(undefined, requestedCustomerId, { allowMissingCustomerRetry: true })
       visibleDatabase = scope(database, actorId)
     }
+    const requestedOperationId = text(input?.operationId).trim()
+    const requestedSourceId = text(input?.sourceId).trim() || (requestedOperationId ? stableId('SRC', `${requestedCustomerId}:${requestedOperationId}`) : '')
+    const existingByOperation = requestedSourceId ? database.sourceRecords.find((item) => item.id === requestedSourceId) : null
+    if (existingByOperation) {
+      if (existingByOperation.customerId !== requestedCustomerId) throw Object.assign(new Error('资料操作与客户不匹配'), { code: 'SOURCE_OPERATION_CUSTOMER_MISMATCH', status: 409 })
+      return existingByOperation
+    }
     let sourceInputValue = input
     if (String(input?.sourceType || '').trim().toUpperCase() === 'FILE_UPLOAD') {
       const document = input?.document || {}
       const fileHash = text(document.fileHash || document.file_hash)
-      const extractedText = normalizeText(document.extractedText || document.extracted_text, 500_000)
+      const extractedText = normalizeSourceRawText(document.extractedText || document.extracted_text)
       if (!fileHash || !extractedText) throw Object.assign(new Error('资料读取失败，请检查文件后重新上传。'), { code: 'DOCUMENT_TEXT_EMPTY', status: 422 })
       const duplicate = database.sourceRecords.find((item) => item.customerId === requestedCustomerId && parseDocumentFileRef(item.fileRef)?.file_hash === fileHash)
       if (duplicate) throw Object.assign(new Error('这份资料已经记录过了'), { code: 'SOURCE_DUPLICATE', status: 409, sourceId: duplicate.id })
@@ -1255,7 +1270,9 @@ export class FeishuRepository {
     if (!visibleDatabase.customers.some((item) => item.id === normalized.customerId)) throw new Error('客户不存在')
     const duplicate = database.sourceRecords.find((item) => item.customerId === normalized.customerId && item.contentHash === normalized.contentHash)
     if (duplicate) throw Object.assign(new Error('这份资料已经记录过了'), { code: 'SOURCE_DUPLICATE', status: 409, sourceId: duplicate.id })
-    const sourceId = text(input?.sourceId) || (normalized.operationId ? stableId('SRC', `${normalized.customerId}:${normalized.operationId}`) : stableId('SRC', `${normalized.customerId}:${normalized.contentHash}`))
+    const sourceId = requestedSourceId || (normalized.operationId ? stableId('SRC', `${normalized.customerId}:${normalized.operationId}`) : stableId('SRC', `${normalized.customerId}:${normalized.contentHash}`))
+    const existingSource = database.sourceRecords.find((item) => item.id === sourceId)
+    if (existingSource) return existingSource
     const recentSourceWriteAt = this.recentSourceWrites.get(sourceId) || 0
     if (recentSourceWriteAt && Date.now() - recentSourceWriteAt <= RECENT_WRITE_WINDOW_MS) {
       const existingRecentSource = await waitForSourceVisibility(sourceId)
@@ -1296,6 +1313,20 @@ export class FeishuRepository {
     if (!source) throw new Error('资料不存在')
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { source: publicSource(source, { includeRaw }), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && visibleDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === source.customerId)?.profileMaterialization }
+  }
+  async sourceStatus(actorId, customerId, operationId) {
+    requireStage2Tables()
+    const requestedCustomerId = text(customerId).trim()
+    const requestedOperationId = text(operationId).trim()
+    if (!requestedCustomerId || !requestedOperationId) throw Object.assign(new Error('保存状态查询参数不完整'), { code: 'SOURCE_STATUS_QUERY_REQUIRED', status: 400 })
+    const database = await this.load()
+    const visibleDatabase = scope(database, actorId)
+    if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const sourceId = stableId('SRC', `${requestedCustomerId}:${requestedOperationId}`)
+    const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
+    if (!source) return { status: 'NOT_FOUND', source: null }
+    const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
+    return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
   async processSource(actorId, sourceId, { force = false } = {}) {
     const inFlight = this.sourceProcessingLocks.get(sourceId)

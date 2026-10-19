@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createHttpApi } from './clientApi'
+import { CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, createHttpApi } from './clientApi'
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('HTTP environment diagnostics', () => {
   it('classifies HTTP auth failures while preserving the server error code', async () => {
@@ -44,5 +44,29 @@ describe('HTTP environment diagnostics', () => {
     const api = createHttpApi('http://127.0.0.1:8788')
     await Promise.all([api.processSource('STAFF-1', 'SRC-1', true), api.processSource('STAFF-1', 'SRC-1', true), api.processSource('STAFF-1', 'SRC-1', true)])
     expect(fetchMock.mock.calls.filter((call) => (call as unknown as [string, RequestInit])[0].endsWith('/api/sources')).length).toBe(0)
+  })
+
+  it('CLIENT_TIMEOUT_BOUNDED uses the longer source-save budget and reports UNKNOWN-compatible timeout', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').createSource('STAFF-1', { customerId: 'CUS-1', sourceType: 'TEXT_INPUT', rawText: 'slow', operationId: 'stable-operation-1' })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(CLIENT_SOURCE_SAVE_TIMEOUT_MS)
+    await pending
+    expect(CLIENT_SOURCE_SAVE_TIMEOUT_MS).toBeGreaterThan(CLIENT_DEFAULT_TIMEOUT_MS)
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: expect.any(AbortSignal) })
+  })
+
+  it('CLIENT_TIMEOUT_BOUNDED also covers a response body that never finishes', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((resolve) => {
+      resolve({ ok: true, status: 200, headers: new Headers(), json: () => new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))) } as Response)
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').health()).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(CLIENT_DEFAULT_TIMEOUT_MS)
+    await pending
   })
 })
