@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -105,6 +105,7 @@ export interface AssistantQueryResult { kind: string; answer: string; customerId
 export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
 export interface DocumentExtractionResult { document_type: string; extracted_text: string; extraction_method: string; char_count: number; warnings: string[]; duration_ms: number; file_hash: string; size: number }
 export interface DocumentUploadInput { filename: string; mimeType: string; extension: string; size: number; base64: string }
+export type CustomerCreateResult = Database & { createdCustomerId: string; customerCreated: boolean }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 
 export interface WorkbenchApi {
@@ -124,7 +125,7 @@ export interface WorkbenchApi {
   customer(actorId: string, id: string): Promise<Customer | undefined>
   createAppointment(input: NewAppointmentInput): Promise<Database>
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
-  createCustomer(actorId: string, input: ManualCustomerInput): Promise<Database>
+  createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<Database>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
@@ -151,9 +152,11 @@ export interface WorkbenchApi {
   brief(actorId: string, input: { name: string; need: string; expectation: string }): Promise<string>
   saveBrief(actorId: string, customerId: string, brief: string): Promise<Customer | undefined>
   extractDocument(actorId: string, input: DocumentUploadInput): Promise<DocumentExtractionResult>
+  identifyDialogue(actorId: string, input: { text: string; targetCustomerId?: string; customerOperationId?: string }): Promise<DialogueAssessment>
+  confirmDialogue(actorId: string, input: { analysisToken: string; contentHash: string; targetCustomerId?: string; customerOperationId?: string; speakerId?: string }): Promise<DialogueConfirmation>
   sourceWorkspace(actorId: string, customerId: string): Promise<SourceWorkspace>
   sourceStatus(actorId: string, customerId: string, operationId: string): Promise<SourceSaveStatus>
-  createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
+  createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
   reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
@@ -236,6 +239,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     brief: async (_actorId, input) => `已知：${input.need || '暂无当前困扰描述'}。接待时先确认客户最想解决的具体问题，再确认希望获得的帮助和当前可行动的一步。`,
     saveBrief: async (actorId, customerId) => api.customer(actorId, customerId),
     extractDocument: async () => { throw new Error('本地 Demo 不支持文件读取') },
+    identifyDialogue: async () => { throw new Error('本地 Demo 不支持对话资料识别') },
+    confirmDialogue: async () => { throw new Error('本地 Demo 不支持对话资料确认') },
     sourceWorkspace: async () => ({ sources: [], evidenceItems: [], proposals: [], conflicts: [] }),
     sourceStatus: async () => ({ status: 'NOT_FOUND', source: null }),
     createSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
@@ -315,7 +320,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
     createAppointment: (input) => request<Database>('/api/appointments', undefined, { method: 'POST', body: JSON.stringify(input) }),
     previewCustomer: (actorId, input) => request<CustomerDraftPreview>('/api/customers/preview', actorId, { method: 'POST', body: JSON.stringify(input) }),
-    createCustomer: (actorId, input) => request<Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input) }),
+    createCustomer: (actorId, input) => request<CustomerCreateResult>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input) }),
     updateCustomer: (actorId, customerId, input) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers: input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined }),
     updateCustomerEnrollments: (actorId, customerId, enrollments) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/enrollments`, actorId, { method: 'PUT', body: JSON.stringify({ enrollments, operationId: `enrollments-${customerId}-${Date.now()}` }) }),
     assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
@@ -342,6 +347,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     brief: async (actorId, input) => (await request<{ brief: string }>('/api/ai/brief', actorId, { method: 'POST', body: JSON.stringify(input) })).brief,
     saveBrief: (actorId, customerId, brief) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/brief`, actorId, { method: 'POST', body: JSON.stringify({ brief }) }),
     extractDocument: (actorId, input) => request<DocumentExtractionResult>('/api/documents/extract', actorId, { method: 'POST', body: JSON.stringify({ document: input }) }),
+    identifyDialogue: (actorId, input) => request<DialogueAssessment>('/api/dialogue/identify', actorId, { method: 'POST', body: JSON.stringify(input) }).then((result) => ({ ...result, contentHash: result.contentHash || '' })),
+    confirmDialogue: (actorId, input) => request<DialogueConfirmation>('/api/dialogue/confirm', actorId, { method: 'POST', body: JSON.stringify(input) }),
     sourceWorkspace: (actorId, customerId) => request<SourceWorkspace>(`/api/customers/${encodeURIComponent(customerId)}/sources`, actorId),
     sourceStatus: (actorId, customerId, operationId) => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}`, actorId),
     createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),

@@ -13,11 +13,11 @@ function setupStorage() {
 beforeEach(() => setupStorage())
 
 describe('Stage 1 Customer Foundation V1', () => {
-  it('requires at least one contact and accepts normalized international phones', () => {
+  it('requires at least one contact and accepts normalized mainland phones', () => {
     const api = createLocalApi(createLocalRepository())
     expect(() => api.createCustomer('staff-admin', { nickname: '无联系方式', situation: '', needsFollowup: false })).toThrow('至少填写一个')
-    const database = api.createCustomer('staff-admin', { nickname: '国际客户', phone: '+1 (415) 555-0100', situation: '', needsFollowup: false })
-    expect(database.customers.find((item) => item.name === '国际客户')?.phone).toBe('+14155550100')
+    const database = api.createCustomer('staff-admin', { nickname: '手机号客户', phone: '138 1234 5678', situation: '', needsFollowup: false })
+    expect(database.customers.find((item) => item.name === '手机号客户')?.phone).toBe('13812345678')
   })
 
   it('blocks exact phone, exact WeChat, and cross-record contact conflicts', () => {

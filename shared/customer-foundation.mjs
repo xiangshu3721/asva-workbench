@@ -22,6 +22,36 @@ export function contactRequired({ phone, wechat }) {
   return Boolean(normalizePhone(phone) || normalizeWechat(wechat))
 }
 
+export function validateCustomerContactField(field, value) {
+  const rawValue = String(value || '').trim()
+  if (!rawValue) return { ok: true, field, message: '' }
+  if (field === 'phone') {
+    return /^1[3-9]\d{9}$/.test(normalizePhone(rawValue))
+      ? { ok: true, field, message: '' }
+      : { ok: false, field, message: '请输入有效的11位大陆手机号。' }
+  }
+  if (field === 'wechat') {
+    return /^[A-Za-z][A-Za-z0-9_-]{5,19}$/.test(rawValue)
+      ? { ok: true, field, message: '' }
+      : { ok: false, field, message: '微信号需为6～20位、字母开头，可包含字母、数字、下划线或减号。' }
+  }
+  return { ok: false, field, message: '联系方式字段无效。' }
+}
+
+export function validateCustomerContacts({ phone, wechat } = {}) {
+  const rawPhone = String(phone || '').trim()
+  const rawWechat = String(wechat || '').trim()
+  const normalizedPhone = normalizePhone(rawPhone)
+  const phoneValidation = validateCustomerContactField('phone', rawPhone)
+  if (!phoneValidation.ok) return { ...phoneValidation, phone: normalizedPhone, wechat: rawWechat }
+  const wechatValidation = validateCustomerContactField('wechat', rawWechat)
+  if (!wechatValidation.ok) return { ...wechatValidation, phone: normalizedPhone, wechat: rawWechat }
+  if (!rawPhone && !rawWechat) {
+    return { ok: false, field: 'contact', message: '手机号或微信号至少填写一个联系方式。', phone: '', wechat: '' }
+  }
+  return { ok: true, field: '', message: '', phone: normalizedPhone, wechat: rawWechat }
+}
+
 function candidateMatches(customers, field, value, normalizer) {
   if (!value) return []
   return customers.filter((customer) => normalizer(customer[field]) === value)

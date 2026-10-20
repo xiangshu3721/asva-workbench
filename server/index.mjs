@@ -133,6 +133,8 @@ async function handle(request, response, requestId) {
   const customerProfilePath = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile$/)
   if (request.method === 'GET' && customerProfilePath) return send(request, response, 200, await repository.customerProfile(await guard(request), decodeURIComponent(customerProfilePath[1])), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/me') return send(request, response, 200, await repository.staff(await guard(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/dialogue/identify') return send(request, response, 200, await repository.identifyDialogue(await guard(request), await readBody(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/dialogue/confirm') return send(request, response, 200, await repository.confirmDialogue(await guard(request), await readBody(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/staff/mentors') {
     const filter = url.searchParams.get('status') || ''
     if (filter && !['ACTIVE', 'INACTIVE'].includes(filter)) fail('status 只支持 ACTIVE 或 INACTIVE', 'INVALID_STATUS', 400)

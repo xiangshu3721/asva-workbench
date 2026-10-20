@@ -235,6 +235,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .multi-select-option input { width: auto !important; margin: 0; }
 .voice-button { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 47px; margin-top: 2px; font-size: 12px; }
 .voice-button span { font-size: 16px; line-height: 1; }
+.customer-document-upload { display: grid; gap: 8px; margin-bottom: 17px; }
+.customer-document-upload-button { position: relative; margin-top: 0; cursor: pointer; }
+.customer-document-upload-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+.dialogue-review { display: grid; gap: 10px; padding: 14px; margin: 12px 0; border: 1px solid rgba(211, 153, 61, .35); border-radius: 14px; background: rgba(255, 248, 232, .72); }
+.dialogue-review p { margin: 0; }
+.dialogue-speaker-options { display: grid; gap: 8px; }
+.dialogue-speaker-options label, .dialogue-confirm-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.55; }
+.dialogue-speaker-options input, .dialogue-confirm-check input { margin-top: 3px; flex: 0 0 auto; }
 .form-actions { display: flex; gap: 9px; margin-top: 19px; }
 .form-actions button { flex: 1; }
 .course-tags { display: flex; flex-wrap: wrap; gap: 8px; }
