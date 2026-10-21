@@ -18,9 +18,19 @@ vi.mock('./feishu.mjs', async () => {
 
 const { FeishuRepository } = await import('./repository.mjs')
 const { config } = await import('./config.mjs')
+const { createDialogueAnalysisToken, finalizeDialogueConfirmation } = await import('../shared/dialogue-gate.mjs')
+const { contentHash } = await import('../shared/evidence-contract.mjs')
 
 let activeDatabase
 let sourceRow
+
+function withDialogueConfirmation(input) {
+  const hash = contentHash(input.rawText)
+  const assessment = { classification: 'NOT_DIALOGUE', speakers: [], summary: 'synthetic non-dialogue', sourceCharCount: input.rawText.length, requiresHumanConfirmation: false }
+  const analysisToken = createDialogueAnalysisToken({ contentHash: hash, targetCustomerId: input.customerId, customerOperationId: input.customerOperationId || '', assessment, secret: config.authSecret })
+  const confirmation = finalizeDialogueConfirmation({ analysisToken, contentHash: hash, targetCustomerId: input.customerId, customerOperationId: input.customerOperationId || '', secret: config.authSecret })
+  return { ...input, dialogueConfirmation: confirmation.dialogueConfirmation }
+}
 
 beforeEach(() => {
   activeDatabase = {
@@ -42,10 +52,41 @@ beforeEach(() => {
 })
 
 describe('source save idempotency', () => {
+  it('allows a legacy client to save only after server-side NOT_DIALOGUE classification', async () => {
+    const repository = new FeishuRepository({ dialogueClassifier: async () => ({ classification: 'NOT_DIALOGUE', speakers: [], summary: 'synthetic plain note' }) })
+    repository.load = async () => activeDatabase
+
+    const source = await repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'synthetic plain note', operationId: 'legacy-plain-operation' })
+
+    expect(source.customerId).toBe('CUS-SAVE-1')
+    expect(createRecordMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a legacy client when server-side classification finds dialogue', async () => {
+    const repository = new FeishuRepository({ dialogueClassifier: async () => ({ classification: 'ONE_SPEAKER', speakers: [{ id: 'A', excerpt: '我最近很困惑' }], summary: 'speaker requires confirmation' }) })
+    repository.load = async () => activeDatabase
+
+    await expect(repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: '我最近很困惑', operationId: 'legacy-dialogue-operation' })).rejects.toMatchObject({ code: 'DIALOGUE_CONFIRMATION_REQUIRED', status: 409 })
+    expect(createRecordMock).not.toHaveBeenCalled()
+  })
+
+  it('returns a persisted legacy operation before re-running dialogue classification', async () => {
+    const repository = new FeishuRepository({ dialogueClassifier: async () => { throw new Error('must not classify persisted operation') } })
+    repository.load = async () => activeDatabase
+    const input = withDialogueConfirmation({ customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'persisted source', operationId: 'legacy-retry-operation' })
+    const source = await repository.createSource('ADMIN-1', input)
+    activeDatabase.sourceRecords.push(source)
+
+    const result = await repository.createSource('ADMIN-1', { ...input, dialogueConfirmation: 'expired-or-invalid-token' })
+
+    expect(result.id).toBe(source.id)
+    expect(createRecordMock).toHaveBeenCalledTimes(1)
+  })
+
   it('returns the existing source for a repeated operationId even after the first response succeeded', async () => {
     const repository = new FeishuRepository()
     repository.load = async () => activeDatabase
-    const input = { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'synthetic source content', operationId: 'stable-save-operation-1' }
+    const input = withDialogueConfirmation({ customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'synthetic source content', operationId: 'stable-save-operation-1' })
 
     const first = await repository.createSource('ADMIN-1', input)
     activeDatabase.sourceRecords.push(first)
@@ -76,7 +117,7 @@ describe('source save idempotency', () => {
   it('recovers a persisted source by customer and operationId within authorization scope', async () => {
     const repository = new FeishuRepository()
     repository.load = async () => activeDatabase
-    const input = { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'operation lookup source', operationId: 'operation-status-1' }
+    const input = withDialogueConfirmation({ customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'operation lookup source', operationId: 'operation-status-1' })
     const source = await repository.createSource('ADMIN-1', input)
     activeDatabase.sourceRecords.push(source)
 

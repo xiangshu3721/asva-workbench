@@ -471,6 +471,12 @@ export interface ManualCustomerInput {
   enrollments?: EnrollmentDraft[]
 }
 
+export type DialogueClassification = 'NOT_DIALOGUE' | 'ONE_SPEAKER' | 'TWO_SPEAKERS' | 'OVER_TWO_SPEAKERS' | 'UNCERTAIN'
+export type DialogueSpeakerRole = 'CUSTOMER' | 'MENTOR' | 'OTHER' | 'UNKNOWN'
+export interface DialogueSpeaker { id: string; excerpt: string; suggestedRole: DialogueSpeakerRole; confidence: number }
+export interface DialogueAssessment { classification: DialogueClassification; speakers: DialogueSpeaker[]; summary: string; sourceCharCount: number; requiresHumanConfirmation: boolean; contentHash: string; analysisToken: string }
+export interface DialogueConfirmation { dialogueConfirmation: string; classification: DialogueClassification; currentCustomerSpeakerId: string; targetCustomerId: string; customerOperationId: string }
+
 export interface CustomerDuplicateMatch {
   customer: Customer
   matchedBy: 'phone' | 'wechat' | 'nickname_exact' | 'nickname_fuzzy'

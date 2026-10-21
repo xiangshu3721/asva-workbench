@@ -1,12 +1,12 @@
 import { config } from './config.mjs'
 import { createRecord, deleteRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
-import { createCustomerIntelligence, createCustomerUnderstanding, createCustomerSalesUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
+import { classifyDialogue, createCustomerIntelligence, createCustomerUnderstanding, createCustomerSalesUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
 import { parseDateFromFeishu, serializeDateForFeishu } from './date-contract.mjs'
 import crypto from 'node:crypto'
 import { LoginRateLimiter } from './login-rate-limit.mjs'
-import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity } from '../shared/customer-foundation.mjs'
+import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, provenance, resolveCustomerIdentity, validateCustomerContactField, validateCustomerContacts } from '../shared/customer-foundation.mjs'
 import { customerHistoryPolicy } from './schema-contract.mjs'
 import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, PASSWORD_POLICY_CODES, dummyPasswordHash, generateInitialPassword, hashPassword, validatePassword, verifyPassword } from './password-auth.mjs'
 import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
@@ -23,6 +23,7 @@ import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
+import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -37,7 +38,7 @@ export const partialEnrollmentFailureMessage = () => '客户已保存，但课�
 const mentorCreateLocks = new Map()
 const publicSource = (source, { includeRaw = false } = {}) => {
   const { rawText, _recordId, processingError, ...safe } = source || {}
-  return { ...safe, ...(includeRaw ? { rawText: rawText || '' } : {}), processingError: processingErrorMessage(processingError) || null }
+  return { ...safe, notes: stripDialogueContext(safe.notes), ...(includeRaw ? { rawText: rawText || '' } : {}), processingError: processingErrorMessage(processingError) || null }
 }
 const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const pickDefined = (item, keys) => Object.fromEntries(keys.filter((key) => item?.[key] !== undefined).map((key) => [key, item[key]]))
@@ -388,12 +389,10 @@ function serializeCustomerDerivedMeta(customerRecord, overrides = {}) {
 
 function validateManualCustomer(input) {
   const nickname = text(input?.nickname).trim()
-  const phone = normalizePhone(input?.phone)
-  const wechat = text(input?.wechat).trim()
   if (!nickname) throw new Error('客户昵称不能为空')
-  if (phone && !/^1\d{10}$/.test(phone) && !phone.startsWith('+')) throw new Error('请输入有效手机号')
-  if (!contactRequired({ phone, wechat })) throw Object.assign(new Error('手机号或微信号至少填写一个'), { code: 'CUSTOMER_CONTACT_REQUIRED', status: 400 })
-  return { nickname, phone, wechat, introducer: text(input?.introducer).trim(), situation: text(input?.situation).trim() }
+  const contacts = validateCustomerContacts({ phone: input?.phone, wechat: input?.wechat })
+  if (!contacts.ok) throw Object.assign(new Error(contacts.message), { code: contacts.field === 'contact' ? 'CUSTOMER_CONTACT_REQUIRED' : 'CUSTOMER_CONTACT_INVALID', status: 400, field: contacts.field })
+  return { nickname, phone: contacts.phone, wechat: contacts.wechat, introducer: text(input?.introducer).trim(), situation: text(input?.situation).trim() }
 }
 
 function duplicateMatches(database, input) {
@@ -550,16 +549,19 @@ function sourceInput(input, actorId) {
   const customerId = text(input?.customerId).trim()
   if (!customerId) throw Object.assign(new Error('客户ID不能为空'), { code: 'SOURCE_CUSTOMER_REQUIRED', status: 400 })
   const legacyRole = text(input?.sourceRole)
+  const dialogueConfirmation = verifyDialogueConfirmation({ token: input?.dialogueConfirmation, contentHash: contentHash(rawText), targetCustomerId: customerId, customerOperationId: text(input?.customerOperationId), secret: config.authSecret })
+  const dialogueContext = { classification: dialogueConfirmation.classification, currentCustomerSpeakerId: dialogueConfirmation.currentCustomerSpeakerId, targetCustomerId: dialogueConfirmation.targetCustomerId, customerOperationId: dialogueConfirmation.customerOperationId }
   const sourcePerspective = input?.sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER_FIRST_PARTY' : input?.sourcePerspective === 'STAFF_REPORTED' ? 'STAFF_REPORTED' : legacyRole ? sourcePerspectiveFromRole(legacyRole) : 'STAFF_REPORTED'
   const sourceRole = legacyRole === 'MENTOR' ? 'MENTOR' : sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER' : 'ADMIN'
-  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: normalizeText(input?.notes, 1000), uploadedBy: actorId, operationId: text(input?.operationId), contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
+  const userNotes = normalizeText(input?.notes, 700)
+  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: `${userNotes}${userNotes ? '\n' : ''}${serializeDialogueContext(dialogueContext)}`, dialogueContext, uploadedBy: actorId, operationId: text(input?.operationId), contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
 }
 function evidenceWriteFields(item, source, sourceId) {
   return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: item.contentSource, information_nature: item.informationNature, verification_status: item.verificationStatus, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -1176,7 +1178,7 @@ export class FeishuRepository {
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
       const latest = await this.loadAfterWrite(undefined, customerId)
       if (!existing) this.recentCustomerWrites.set(customerId, Date.now())
-      return scope(latest, actorId)
+      return Object.assign(scope(latest, actorId), { createdCustomerId: customerId, customerCreated: !existing })
     } finally {
       const total = Date.now() - startedAt
       const measured = timings.identity_resolution_ms + timings.customer_write_ms + timings.enrollment_write_ms + timings.profile_change_ms + timings.ai_ms
@@ -1197,7 +1199,23 @@ export class FeishuRepository {
     if (!current || !row) throw new Error('客户不存在')
     assertMentorAssignmentAuthority(database, actorId, input.profileUpdates)
     validateEnrollmentDrafts(database, input.enrollments)
-    const normalized = validateManualCustomer({ ...input, nickname: input.nickname || current.name, phone: input.phone || current.phone, wechat: input.wechat || current.wechat })
+    const phoneProvided = Object.prototype.hasOwnProperty.call(input || {}, 'phone')
+    const wechatProvided = Object.prototype.hasOwnProperty.call(input || {}, 'wechat')
+    const phoneChanged = phoneProvided && String(input.phone || '').trim() !== String(current.phone || '').trim()
+    const wechatChanged = wechatProvided && String(input.wechat || '').trim() !== String(current.wechat || '').trim()
+    const nextPhone = phoneProvided ? input.phone : current.phone
+    const nextWechat = wechatProvided ? input.wechat : current.wechat
+    if (phoneChanged || wechatChanged) {
+      const changedFields = [phoneChanged ? ['phone', nextPhone] : null, wechatChanged ? ['wechat', nextWechat] : null].filter(Boolean)
+      for (const [field, value] of changedFields) {
+        const validation = validateCustomerContactField(field, value)
+        if (!validation.ok) throw Object.assign(new Error(validation.message), { code: 'CUSTOMER_CONTACT_INVALID', status: 400, field })
+      }
+      if (!String(nextPhone || '').trim() && !String(nextWechat || '').trim()) {
+        throw Object.assign(new Error('手机号或微信号至少填写一个联系方式。'), { code: 'CUSTOMER_CONTACT_REQUIRED', status: 400, field: 'contact' })
+      }
+    }
+    const normalized = { nickname: text(input.nickname || current.name).trim(), phone: normalizePhone(nextPhone), wechat: text(nextWechat).trim(), introducer: text(input.introducer).trim(), situation: text(input.situation).trim() }
     const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), normalized)
     if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT' })
     if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已绑定其他客户，不能覆盖。'), { status: 409, code: 'CUSTOMER_DUPLICATE' })
@@ -1242,6 +1260,47 @@ export class FeishuRepository {
     const latest = await this.loadAfterWrite(undefined, customerId)
     return latest.customers.find((item) => item.id === customerId) || current
   }
+  async identifyDialogue(actorId, input) {
+    const rawText = normalizeSourceRawText(input?.text)
+    const targetCustomerId = text(input?.targetCustomerId)
+    if (targetCustomerId) {
+      const database = await this.load()
+      if (!scope(database, actorId).customers.some((item) => item.id === targetCustomerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    }
+    const raw = await this.dialogueClassifier({ text: rawText })
+    const { normalizeDialogueAssessment } = await import('../shared/dialogue-gate.mjs')
+    const assessment = normalizeDialogueAssessment(raw, rawText)
+    return { contentHash: contentHash(rawText), ...assessment, analysisToken: createDialogueAnalysisToken({ contentHash: contentHash(rawText), targetCustomerId, customerOperationId: text(input?.customerOperationId), assessment, secret: config.authSecret }) }
+  }
+  async confirmDialogue(actorId, input) {
+    const targetCustomerId = text(input?.targetCustomerId)
+    if (targetCustomerId) {
+      const database = await this.load()
+      if (!scope(database, actorId).customers.some((item) => item.id === targetCustomerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    }
+    return finalizeDialogueConfirmation({ analysisToken: input?.analysisToken, contentHash: text(input?.contentHash), targetCustomerId, customerOperationId: text(input?.customerOperationId), speakerId: text(input?.speakerId), secret: config.authSecret })
+  }
+  async prepareLegacySourceInput(actorId, input) {
+    const sourceType = String(input?.sourceType || '').trim().toUpperCase()
+    const rawText = normalizeSourceRawText(input?.rawText || input?.document?.extractedText || input?.document?.extracted_text)
+    let rawAssessment
+    try {
+      rawAssessment = await this.dialogueClassifier({ text: rawText })
+    } catch (error) {
+      const unavailable = Object.assign(new Error('资料人物归属暂时无法确认，请刷新页面后重试。'), { code: 'DIALOGUE_GATE_UNAVAILABLE', status: 503, cause: error })
+      this.audit('IDENTIFY_SOURCE_DIALOGUE', text(input?.customerId), actorId, 'FAIL', error?.code || 'DIALOGUE_GATE_UNAVAILABLE')
+      throw unavailable
+    }
+    const assessment = normalizeDialogueAssessment(rawAssessment, rawText)
+    if (assessment.classification !== 'NOT_DIALOGUE') {
+      throw Object.assign(new Error('检测到对话式资料，请刷新页面后确认人物身份，再重新提交。'), { code: 'DIALOGUE_CONFIRMATION_REQUIRED', status: 409, classification: assessment.classification })
+    }
+    const customerId = text(input?.customerId)
+    const customerOperationId = text(input?.customerOperationId)
+    const analysisToken = createDialogueAnalysisToken({ contentHash: contentHash(rawText), targetCustomerId: customerId, customerOperationId, assessment, secret: config.authSecret })
+    const confirmation = finalizeDialogueConfirmation({ analysisToken, contentHash: contentHash(rawText), targetCustomerId: customerId, customerOperationId, secret: config.authSecret })
+    return { ...input, ...(sourceType === 'FILE_UPLOAD' ? { rawText } : {}), dialogueConfirmation: confirmation.dialogueConfirmation }
+  }
   async extractDocument(actorId, input) {
     await this.staff(actorId)
     const document = input?.document || input || {}
@@ -1250,7 +1309,30 @@ export class FeishuRepository {
     if (!extracted.extracted_text) throw Object.assign(new Error('资料读取失败，请检查文件后重新上传。'), { code: 'DOCUMENT_TEXT_EMPTY', status: 422 })
     return extracted
   }
-  async createSource(actorId, input) { return this.customerWriteQueue.run(text(input?.customerId), () => this.createSourceUnsafe(actorId, input)) }
+  async createSource(actorId, input) {
+    const customerId = text(input?.customerId)
+    return this.customerWriteQueue.run(customerId, async () => {
+      const operationId = text(input?.operationId)
+      if (operationId) {
+        const database = await this.load()
+        const visibleDatabase = scope(database, actorId)
+        const sourceId = stableId('SRC', `${customerId}:${operationId}`)
+        const persisted = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
+        if (persisted) return persisted
+      }
+      let sourceInputValue = input
+      const rawText = normalizeSourceRawText(input?.rawText || input?.document?.extractedText || input?.document?.extracted_text)
+      let hasValidConfirmation = false
+      if (typeof input?.dialogueConfirmation === 'string' && input.dialogueConfirmation) {
+        try {
+          verifyDialogueConfirmation({ token: input.dialogueConfirmation, contentHash: contentHash(rawText), targetCustomerId: customerId, customerOperationId: text(input?.customerOperationId), secret: config.authSecret })
+          hasValidConfirmation = true
+        } catch {}
+      }
+      if (!hasValidConfirmation) sourceInputValue = await this.prepareLegacySourceInput(actorId, input)
+      return this.createSourceUnsafe(actorId, sourceInputValue)
+    })
+  }
   async createSourceUnsafe(actorId, input) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
@@ -1365,6 +1447,7 @@ export class FeishuRepository {
     let source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     const sourceRow = database._rows.sourceRecords.find((item) => item.record_id === source?._recordId)
     if (!source || !sourceRow) throw new Error('资料不存在')
+    const dialogueContext = parseDialogueContext(source.notes)
     const allExistingEvidence = (database._allEvidenceItems || database.evidenceItems).filter((item) => item.sourceId === sourceId)
     const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
     if (!force && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length) return this.sourceDetail(actorId, sourceId)
@@ -1381,7 +1464,7 @@ export class FeishuRepository {
       if (!resumeExistingEvidence) {
         const chunks = chunkText(source.rawText)
         for (const chunk of chunks) {
-          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
+          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, dialogueContext, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
           processingDiagnostics.extracted_candidate_count += rawItems.length
           for (const rawItem of rawItems) {
             if (rawItem?.customer_id && String(rawItem.customer_id) !== String(source.customerId)) {
@@ -1389,6 +1472,14 @@ export class FeishuRepository {
               continue
             }
             if (String(rawItem?.evidence_type || '').toUpperCase() === 'OBSERVATION' && source.sourceRole !== 'MENTOR' && String(rawItem?.content_source || '').toUpperCase() !== 'MENTOR_OBSERVATION') continue
+            if (dialogueContext && dialogueContext.classification !== 'NOT_DIALOGUE') {
+              const speakerId = String(rawItem?.speaker_id || rawItem?.speakerId || '').trim()
+              const subjectScope = String(rawItem?.subject_scope || rawItem?.subjectScope || '').trim().toUpperCase()
+              if (speakerId !== dialogueContext.currentCustomerSpeakerId || subjectScope !== 'CURRENT_CUSTOMER') {
+                processingDiagnostics.cross_customer_rejected_count += 1
+                continue
+              }
+            }
             // The current mentor/admin write path has no authenticated
             // customer-submission proof. Keep CUSTOMER_DIRECT unavailable
             // here even when the model sees first-person or quoted wording.

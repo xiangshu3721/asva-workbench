@@ -18,6 +18,7 @@ vi.mock('./feishu.mjs', async () => {
 
 const { config } = await import('./config.mjs')
 const { FeishuRepository } = await import('./repository.mjs')
+const { serializeDialogueContext } = await import('../shared/dialogue-gate.mjs')
 
 let activeDatabase
 let recordSequence = 0
@@ -275,5 +276,20 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     expect(stored).toMatchObject({ contentSource: 'UNKNOWN', informationNature: 'PERSONAL_STATEMENT', verificationStatus: 'SOURCE_SUPPORTED', customerId: 'CUS-SYNTH-1' })
     expect(activeDatabase._allEvidenceItems.some((item) => item.displayText === '另一客户现居上海')).toBe(false)
     expect(repository.evidenceTraces[0].cross_customer_rejected_count).toBe(1)
+  })
+
+  it('keeps only the confirmed current-customer speaker from a mixed dialogue', async () => {
+    activeDatabase.sourceRecords[0].rawText = 'A：我住在杭州。\nB：我住在深圳。'
+    activeDatabase.sourceRecords[0].notes = serializeDialogueContext({ classification: 'TWO_SPEAKERS', currentCustomerSpeakerId: 'A', targetCustomerId: 'CUS-SYNTH-1', customerOperationId: '' })
+    const repository = setupRepository(async (_input) => [
+      { speaker_id: 'A', subject_scope: 'CURRENT_CUSTOMER', evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '杭州', display_text: '客户住在杭州', source_excerpt: 'A：我住在杭州', confidence: 0.95, locator: { paragraph_index: 0 } },
+      { speaker_id: 'B', subject_scope: 'MENTOR_SELF', evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'city', value: '深圳', display_text: '导师住在深圳', source_excerpt: 'B：我住在深圳', confidence: 0.95, locator: { paragraph_index: 1 } },
+    ])
+
+    const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+    expect(result.evidenceItems).toHaveLength(1)
+    expect(result.evidenceItems[0].sourceExcerpt).toBe('A：我住在杭州')
+    expect(result.source.notes).not.toContain('[ASVA_DIALOGUE_CONTEXT]')
   })
 })

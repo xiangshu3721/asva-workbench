@@ -5,5 +5,8 @@ export function normalizePhone(value: unknown): string
 export function normalizeWechat(value: unknown): string
 export function normalizeNickname(value: unknown): string
 export function contactRequired(input: { phone?: unknown; wechat?: unknown }): boolean
+export function validateCustomerContactField(field: 'phone' | 'wechat', value: unknown): { ok: boolean; field: 'phone' | 'wechat'; message: string }
+export interface CustomerContactValidation { ok: boolean; field: 'phone' | 'wechat' | 'contact' | ''; message: string; phone: string; wechat: string }
+export function validateCustomerContacts(input: { phone?: unknown; wechat?: unknown }): CustomerContactValidation
 export function resolveCustomerIdentity(customers: IdentityCustomer[], input: { customerId?: unknown; phone?: unknown; wechat?: unknown; nickname?: unknown }): IdentityResolution
 export function provenance(source: string | undefined, confirmed?: boolean): string

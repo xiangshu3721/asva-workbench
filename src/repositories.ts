@@ -1,7 +1,7 @@
 import { seedDatabase } from './data'
 import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerDraftPreview, CustomerDuplicateMatch, CustomerProfileState, Database, Enrollment, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, NewAppointmentInput, Product, ProfileChange, ProfileDraft, ProfileUpdate, Staff } from './domain'
 import { extractLocalProfile, PROFILE_FIELD_KEYS, profileUpdateLabel, updateValue } from './profile'
-import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, resolveCustomerIdentity } from '../shared/customer-foundation'
+import { contactRequired, normalizePhone as foundationNormalizePhone, normalizeWechat, resolveCustomerIdentity, validateCustomerContactField, validateCustomerContacts } from '../shared/customer-foundation'
 
 const STORAGE_KEY = 'asva-workbench-demo-db-v9'
 const LEGACY_STORAGE_KEY = 'asva-workbench-demo-db-v8'
@@ -63,12 +63,10 @@ function writeDatabase(database: Database) {
 
 function validateManualCustomer(input: ManualCustomerInput) {
   const nickname = input.nickname.trim()
-  const phone = normalizePhone(input.phone ?? '')
-  const wechat = input.wechat?.trim() ?? ''
   if (!nickname) throw new Error('客户昵称不能为空')
-  if (phone && !/^1\d{10}$/.test(phone) && !phone.startsWith('+')) throw new Error('请输入有效手机号')
-  if (!contactRequired({ phone, wechat })) throw Object.assign(new Error('手机号或微信号至少填写一个'), { code: 'CUSTOMER_CONTACT_REQUIRED' })
-  return { nickname, phone, wechat, introducer: input.introducer?.trim() ?? '' }
+  const contacts = validateCustomerContacts({ phone: input.phone, wechat: input.wechat })
+  if (!contacts.ok) throw Object.assign(new Error(contacts.message), { code: contacts.field === 'contact' ? 'CUSTOMER_CONTACT_REQUIRED' : 'CUSTOMER_CONTACT_INVALID' })
+  return { nickname, phone: contacts.phone, wechat: contacts.wechat, introducer: input.introducer?.trim() ?? '' }
 }
 
 function customerDuplicates(database: Database, input: ManualCustomerInput): CustomerDuplicateMatch[] {
@@ -259,7 +257,7 @@ export interface AsvaRepository {
   authenticate(phone: string, code: string): Staff
   createAppointment(input: NewAppointmentInput): Database
   previewCustomer(actorId: string, input: ManualCustomerInput): CustomerDraftPreview
-  createCustomer(actorId: string, input: ManualCustomerInput): Database
+  createCustomer(actorId: string, input: ManualCustomerInput): Database & { createdCustomerId: string; customerCreated: boolean }
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Database
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Database
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Database
@@ -332,7 +330,7 @@ export function createLocalRepository(): AsvaRepository {
       mergeEnrollments(database, customer.id, input.enrollments, actor.id)
       // Stage 1 Customer creation never creates an Appointment.
       writeDatabase(database)
-      return scopedDatabase(database, actor)
+      return Object.assign(scopedDatabase(database, actor), { createdCustomerId: customer.id, customerCreated: true })
     },
     updateCustomer(actorId, customerId, input) {
       const database = readDatabase()
@@ -344,7 +342,19 @@ export function createLocalRepository(): AsvaRepository {
       if (!customer) throw new Error('客户不存在')
       const introducerProvided = Object.prototype.hasOwnProperty.call(input, 'introducer')
       if (introducerProvided) assertAdminIntroducerEditor(actor)
-      const { nickname, phone, wechat } = validateManualCustomer({ ...input, nickname: input.nickname || customer.name, phone: input.phone || customer.phone, wechat: input.wechat || customer.wechat })
+      const nextPhone = Object.prototype.hasOwnProperty.call(input, 'phone') ? input.phone : customer.phone
+      const nextWechat = Object.prototype.hasOwnProperty.call(input, 'wechat') ? input.wechat : customer.wechat
+      const phoneChanged = String(nextPhone || '').trim() !== String(customer.phone || '').trim()
+      const wechatChanged = String(nextWechat || '').trim() !== String(customer.wechat || '').trim()
+      if (phoneChanged || wechatChanged) {
+        const changedContacts = [phoneChanged ? ['phone', nextPhone] as [string, unknown] : null, wechatChanged ? ['wechat', nextWechat] as [string, unknown] : null].filter((entry): entry is [string, unknown] => Boolean(entry))
+        for (const [field, value] of changedContacts) {
+          const validation = validateCustomerContactField(field as 'phone' | 'wechat', value)
+          if (!validation.ok) throw Object.assign(new Error(validation.message), { code: 'CUSTOMER_CONTACT_INVALID' })
+        }
+        if (!String(nextPhone || '').trim() && !String(nextWechat || '').trim()) throw Object.assign(new Error('手机号或微信号至少填写一个联系方式'), { code: 'CUSTOMER_CONTACT_REQUIRED' })
+      }
+      const { nickname, phone, wechat } = { nickname: (input.nickname || customer.name).trim(), phone: foundationNormalizePhone(nextPhone), wechat: String(nextWechat || '').trim() }
       const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), { ...input, nickname, phone, wechat })
       if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { code: 'IDENTITY_CONFLICT' })
       if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已绑定其他客户，不能覆盖。'), { code: 'CUSTOMER_DUPLICATE' })

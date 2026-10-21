@@ -13,7 +13,7 @@ export function createLocalApi(repository: AsvaRepository) {
     customer(actorId: string, id: string): Customer | undefined { return repository.getDatabaseForUser(actorId).customers.find((item) => item.id === id) },
     createAppointment(input: NewAppointmentInput): Database { return repository.createAppointment(input) },
     previewCustomer(actorId: string, input: ManualCustomerInput) { return repository.previewCustomer(actorId, input) },
-    createCustomer(actorId: string, input: ManualCustomerInput): Database { return repository.createCustomer(actorId, input) },
+    createCustomer(actorId: string, input: ManualCustomerInput) { return repository.createCustomer(actorId, input) },
     updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Database { return repository.updateCustomer(actorId, customerId, input) },
     updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Database { return repository.updateCustomerEnrollments(actorId, customerId, enrollments) },
     assignAppointment(actorId: string, appointmentId: string, mentorId: string): Database { return repository.assignAppointment(actorId, appointmentId, mentorId) },
