@@ -52,21 +52,23 @@ beforeEach(() => {
 })
 
 describe('source save idempotency', () => {
-  it('allows a legacy client to save only after server-side NOT_DIALOGUE classification', async () => {
-    const repository = new FeishuRepository({ dialogueClassifier: async () => ({ classification: 'NOT_DIALOGUE', speakers: [], summary: 'synthetic plain note' }) })
+  it('allows manual text clients to save without a dialogue gate', async () => {
+    const dialogueClassifier = vi.fn(async () => { throw new Error('manual text must not call dialogue identify') })
+    const repository = new FeishuRepository({ dialogueClassifier })
     repository.load = async () => activeDatabase
 
-    const source = await repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'synthetic plain note', operationId: 'legacy-plain-operation' })
+    const source = await repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: '我最近很困惑', operationId: 'legacy-plain-operation' })
 
     expect(source.customerId).toBe('CUS-SAVE-1')
     expect(createRecordMock).toHaveBeenCalledTimes(1)
+    expect(dialogueClassifier).not.toHaveBeenCalled()
   })
 
-  it('rejects a legacy client when server-side classification finds dialogue', async () => {
+  it('keeps the file upload gate fail-closed for legacy clients', async () => {
     const repository = new FeishuRepository({ dialogueClassifier: async () => ({ classification: 'ONE_SPEAKER', speakers: [{ id: 'A', excerpt: '我最近很困惑' }], summary: 'speaker requires confirmation' }) })
     repository.load = async () => activeDatabase
 
-    await expect(repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: '我最近很困惑', operationId: 'legacy-dialogue-operation' })).rejects.toMatchObject({ code: 'DIALOGUE_CONFIRMATION_REQUIRED', status: 409 })
+    await expect(repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'FILE_UPLOAD', rawText: '我最近很困惑', operationId: 'legacy-dialogue-operation', document: { extractedText: '我最近很困惑' } })).rejects.toMatchObject({ code: 'DIALOGUE_CONFIRMATION_REQUIRED', status: 409 })
     expect(createRecordMock).not.toHaveBeenCalled()
   })
 

@@ -38,9 +38,11 @@ if (apiBase) {
   }
 }
 
-const versionCompatible = Number.isFinite(Number(frontendMeta.releaseCounter)) && Number.isFinite(Number(backend?.releaseCounter))
-  ? Number(frontendMeta.releaseCounter) === Number(backend.releaseCounter)
-  : null
+const versionCompatible = frontendMeta.release && backend?.release
+  ? frontendMeta.release === backend.release
+  : Number.isFinite(Number(frontendMeta.releaseCounter)) && Number.isFinite(Number(backend?.releaseCounter))
+    ? Number(frontendMeta.releaseCounter) === Number(backend.releaseCounter)
+    : null
 
 console.log(`Frontend Environment: ${appEnv}`)
 console.log(`Frontend Release: ${frontendMeta.release || 'UNKNOWN'}`)

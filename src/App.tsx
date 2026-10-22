@@ -10,11 +10,12 @@ import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdat
 import { humanizeEvidenceType, humanizeLevel, humanizeProcessingStatus, humanizeStrategy, humanizeTiming, sanitizeUserVisibleText } from './presentationCopy'
 import { clearAssistantHistory, GlobalAIAssistant } from './GlobalAIAssistant'
 import { DebugPanel, ReleaseIndicator } from './DebugPanel'
-import { applySpeechResults, emptySpeechTranscript, joinSpeechText, shouldRecoverSpeech, speechErrorMessage, speechTranscriptText, type SpeechTranscriptState } from './speech'
+import { useSpeechInput } from './use-speech-input'
 import { canStartCustomerSave } from './save-contract'
 import { createEvidenceWorkspaceCache } from './evidence-workspace-cache'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { isStaleProcessing, shouldResumeSource } from './processing-contract'
+import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
 import { canCommitCustomerResponse, createCustomerScopedState, isCustomerScopedStateFor, type CustomerScopedState } from './customer-switch-safety'
@@ -62,9 +63,6 @@ const statusLabel: Record<AppointmentWorkflowStatus, string> = { WAIT_ASSIGN: '�
 const statusTone: Record<AppointmentWorkflowStatus, 'amber' | 'blue' | 'rose' | 'green'> = { WAIT_ASSIGN: 'amber', WAIT_FOLLOW_UP: 'blue', WAIT_FEEDBACK: 'rose', COMPLETED: 'green' }
 const statusRank: Record<AppointmentWorkflowStatus, number> = { WAIT_ASSIGN: 0, WAIT_FOLLOW_UP: 1, WAIT_FEEDBACK: 2, COMPLETED: 3 }
 const MAX_DOCUMENT_SIZE_MB = Number(import.meta.env.VITE_MAX_DOCUMENT_SIZE_MB || '20') || 20
-type BrowserSpeechResult = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
-type BrowserSpeechRecognitionInstance = { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: ((event: { results: ArrayLike<BrowserSpeechResult>; resultIndex?: number }) => void) | null; onerror: ((event?: { error?: string }) => void) | null; onend: (() => void) | null }
-type BrowserSpeechRecognition = new () => BrowserSpeechRecognitionInstance
 type SourceCreateInput = { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }
 type CustomerSourceUpload = { operationId: string; filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string; dialogueConfirmation?: string }
 
@@ -240,9 +238,7 @@ function WorkbenchApp() {
       if (cancelled) return
       const frontendRelease = frontend?.release || 'UNKNOWN'
       const backendRelease = backend.release || 'UNKNOWN'
-      const versionCompatible = Number.isFinite(Number(frontend?.releaseCounter)) && Number.isFinite(Number(backend.releaseCounter))
-        ? Number(frontend.releaseCounter) === Number(backend.releaseCounter)
-        : null
+      const versionCompatible = releasesMatch(frontend, backend)
       const handshake = {
         'Frontend Environment': appEnv,
         'Frontend Release': frontendRelease,
@@ -1003,7 +999,6 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
   const [attachedFile, setAttachedFile] = useState<File | null>(null)
   const [attachedDocument, setAttachedDocument] = useState<DocumentExtractionResult | null>(null)
   const [composerOpen, setComposerOpen] = useState(true)
-  const [recording, setRecording] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveState, setSaveState] = useState<SourceSaveState>('IDLE')
   const [message, setMessage] = useState('')
@@ -1012,11 +1007,12 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
   const [dialogueReview, setDialogueReview] = useState<DialogueAssessment | null>(null)
   const [dialogueSpeakerId, setDialogueSpeakerId] = useState('')
   const [dialogueConfirmed, setDialogueConfirmed] = useState(false)
+  const [dialogueOwnership, setDialogueOwnership] = useState<'UNSET' | 'YES' | 'NO'>('UNSET')
   const saveStateRef = useRef<SourceSaveState>('IDLE')
   const pendingSaveRef = useRef<{ operationId: string; input: SourceCreateInput; startedAt: number } | null>(null)
   const pendingDialogueRef = useRef<{ input: SourceCreateInput; startedAt: number; assessment: DialogueAssessment } | null>(null)
   const processingRef = useRef(new Set<string>())
-  const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
+  const speech = useSpeechInput({ value: rawText, onChange: setRawText })
   const workspaceRequestSequenceRef = useRef(0)
   const setWorkspaceSnapshot = (next: SourceWorkspace) => {
     workspaceRef.current = next
@@ -1049,7 +1045,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
       }
     }
   }
-  useEffect(() => () => { recognitionRef.current?.stop(); processingRef.current.clear() }, [customer.id])
+  useEffect(() => () => { processingRef.current.clear() }, [customer.id])
   useEffect(() => { const open = () => setComposerOpen(true); window.addEventListener('asva-open-source-composer', open); return () => window.removeEventListener('asva-open-source-composer', open) }, [])
   useEffect(() => {
     const shouldWarn = isSourceSavePending(saveState) || saveState === 'UNKNOWN'
@@ -1058,17 +1054,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [saveState])
-  const toggleVoice = () => {
-    if (recording) { recognitionRef.current?.stop(); recognitionRef.current = null; setRecording(false); return }
-    const speechApi = window as Window & { SpeechRecognition?: BrowserSpeechRecognition; webkitSpeechRecognition?: BrowserSpeechRecognition }
-    const Recognition = speechApi.SpeechRecognition || speechApi.webkitSpeechRecognition
-    if (!Recognition) { setError('当前浏览器不支持语音输入，请改用文字或粘贴资料。'); return }
-    const recognition = new Recognition(); recognition.lang = 'zh-CN'; recognition.continuous = true; recognition.interimResults = true
-    recognition.onresult = (event) => { let next = ''; for (let index = 0; index < event.results.length; index += 1) next += `${next ? ' ' : ''}${event.results[index]?.[0]?.transcript || ''}`; if (next.trim()) setRawText(next.trim()) }
-    recognition.onerror = () => { setError('没有识别到清晰语音，请继续说或直接编辑文字。'); setRecording(false) }
-    recognition.onend = () => setRecording(false)
-    recognitionRef.current = recognition; setError(''); setRecording(true); recognition.start()
-  }
+  const toggleVoice = speech.toggle
   const attachDocument = async (file: File) => {
     if (file.size > MAX_DOCUMENT_SIZE_MB * 1024 * 1024) { setAttachedFile(null); setAttachedDocument(null); setError('文件较大，请压缩后再上传。'); return }
     setAttachedFile(file); setAttachedDocument(null); setError(''); setMessage('正在读取资料…')
@@ -1123,6 +1109,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
     setDialogueReview(null)
     setDialogueSpeakerId('')
     setDialogueConfirmed(false)
+    setDialogueOwnership('UNSET')
     void onProcess(source.id).then(mergeProcessed).then(() => setMessage('已确认保存并完成整理')).catch(async (processError) => { await load({ refresh: true }); setMessage(sourceFailureMessage(processError)) })
   }
   const recoverPendingSave = async (pending: { operationId: string; input: SourceCreateInput; startedAt: number }) => {
@@ -1142,12 +1129,27 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
     const source = await onCreate(input)
     confirmSourceSave(source, startedAt)
   }
+  const rejectDialogue = () => {
+    pendingDialogueRef.current = null
+    setDialogueReview(null)
+    setDialogueSpeakerId('')
+    setDialogueConfirmed(false)
+    setDialogueOwnership('UNSET')
+    setMessage('已取消保存，资料仍保留，请修改后重试。')
+  }
+  useEffect(() => { if (dialogueOwnership === 'NO') rejectDialogue() }, [dialogueOwnership])
   const confirmDialogueAndSave = async () => {
     const pending = pendingDialogueRef.current
-    if (!pending || !dialogueReview || !dialogueConfirmed || !dialogueSpeakerId) return
+    const oneSpeaker = dialogueReview?.classification === 'ONE_SPEAKER'
+    if (!pending || !dialogueReview || (oneSpeaker ? dialogueOwnership === 'UNSET' : (!dialogueConfirmed || !dialogueSpeakerId))) return
     setSaving(true); setError('')
     try {
-      const confirmation = await requireDialogueGateHandlers().confirm({ analysisToken: dialogueReview.analysisToken, contentHash: dialogueReview.contentHash, targetCustomerId: customer.id, speakerId: dialogueSpeakerId })
+      if (oneSpeaker && dialogueOwnership === 'NO') {
+        rejectDialogue()
+        setSaving(false)
+        return
+      }
+      const confirmation = await requireDialogueGateHandlers().confirm({ analysisToken: dialogueReview.analysisToken, contentHash: dialogueReview.contentHash, targetCustomerId: customer.id, speakerId: oneSpeaker ? undefined : dialogueSpeakerId })
       pendingDialogueRef.current = null
       await persistAfterDialogueConfirmation({ ...pending.input, dialogueConfirmation: confirmation.dialogueConfirmation }, pending.startedAt)
     } catch (confirmError) {
@@ -1164,20 +1166,27 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
       const document = attachedFile && attachedDocument ? { filename: attachedFile.name, mimeType: attachedFile.type, extension: `.${attachedFile.name.toLowerCase().split('.').pop() || ''}`, size: attachedFile.size, fileHash: attachedDocument.file_hash, charCount: attachedDocument.char_count, extractedText: attachedDocument.extracted_text } : undefined
       const input = pendingSaveRef.current?.input || { operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: attachedFile ? 'FILE_UPLOAD' : 'TEXT_INPUT', rawText: attachedFile ? attachedDocument?.extracted_text || '' : rawText.trim(), sourcePerspective, notes: attachedFile ? rawText.trim() : undefined, document, dialogueConfirmation: '' }
       if (!pendingSaveRef.current) {
-        const assessment = await requireDialogueGateHandlers().identify({ text: input.rawText, targetCustomerId: customer.id })
-        if (assessment.classification !== 'NOT_DIALOGUE') {
-          pendingDialogueRef.current = { input, startedAt: saveStartedAt, assessment }
-          setDialogueReview(assessment)
-          setDialogueSpeakerId('')
-          setDialogueConfirmed(false)
-          setSaving(false)
-          saveStateRef.current = 'IDLE'
-          setSaveState('IDLE')
-          setMessage('请先确认资料中的说话人是否为当前客户。')
-          return
+        if (attachedFile && attachedDocument) {
+          const assessment = await requireDialogueGateHandlers().identify({ text: input.rawText, targetCustomerId: customer.id })
+          if (assessment.classification !== 'NOT_DIALOGUE') {
+            pendingDialogueRef.current = { input, startedAt: saveStartedAt, assessment }
+            setDialogueReview(assessment)
+            setDialogueSpeakerId('')
+            setDialogueConfirmed(false)
+          setDialogueOwnership('UNSET')
+            setSaving(false)
+            saveStateRef.current = 'IDLE'
+            setSaveState('IDLE')
+            setMessage('请先确认资料中的说话人是否为当前客户。')
+            return
+          }
+          const confirmation = await requireDialogueGateHandlers().confirm({ analysisToken: assessment.analysisToken, contentHash: assessment.contentHash, targetCustomerId: customer.id })
+          await persistAfterDialogueConfirmation({ ...input, dialogueConfirmation: confirmation.dialogueConfirmation }, saveStartedAt)
+        } else {
+          pendingSaveRef.current = { operationId: input.operationId || '', input, startedAt: saveStartedAt }
+          const source = await onCreate(input)
+          confirmSourceSave(source, saveStartedAt)
         }
-        const confirmation = await requireDialogueGateHandlers().confirm({ analysisToken: assessment.analysisToken, contentHash: assessment.contentHash, targetCustomerId: customer.id })
-        await persistAfterDialogueConfirmation({ ...input, dialogueConfirmation: confirmation.dialogueConfirmation }, saveStartedAt)
       } else {
         const source = await onCreate(pendingSaveRef.current.input)
         confirmSourceSave(source, pendingSaveRef.current.startedAt)
@@ -1204,18 +1213,19 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
   return <section className="customer-detail-section profile-supplement" id="profile-supplement" aria-busy={workspaceLoading} data-refreshing={workspaceRefreshing ? 'true' : undefined}>
     <SectionHeading title="档案记录" meta={`已记录 ${workspace.sources.length} 份 · 待确认 ${workspace.conflicts.filter((item) => item.status === 'OPEN').length} 项`} icon="＋" action={<button className="secondary-button small" type="button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? '收起' : '＋ 补充档案'}</button>} />
     {workspaceLoading && <p className="understanding-empty evidence-workspace-loading">正在加载相关依据…</p>}
-    {dialogueReview && <div className="dialogue-review" role="alert"><strong>保存前确认资料人物归属</strong><p>{dialogueReview.summary}</p>{dialogueNeedsRestructure ? <p>{dialogueReview.classification === 'OVER_TWO_SPEAKERS' ? '识别到超过两位实际说话人，请拆分资料后重新识别。' : '暂时无法可靠识别实际说话人，请标注说话人或整理文本后重新识别。'}</p> : <p>识别结果：{dialogueReview.classification === 'ONE_SPEAKER' ? '1 位说话人' : '2 位说话人'}。请选择哪位是当前客户：</p>}<div className="dialogue-speaker-options">{dialogueReview.speakers.map((speaker) => <label key={speaker.id}><input type="radio" name={`dialogue-speaker-${customer.id}`} value={speaker.id} checked={dialogueSpeakerId === speaker.id} onChange={() => setDialogueSpeakerId(speaker.id)} disabled={Boolean(dialogueNeedsRestructure)} />说话人 {speaker.id}：{speaker.excerpt || '暂无代表性原文'}（AI建议：{speaker.suggestedRole === 'CUSTOMER' ? '客户' : speaker.suggestedRole === 'MENTOR' ? '导师' : speaker.suggestedRole === 'OTHER' ? '其他参与者' : '未知'}）</label>)}</div>{!dialogueNeedsRestructure && <label className="dialogue-confirm-check"><input type="checkbox" checked={dialogueConfirmed} onChange={(event) => setDialogueConfirmed(event.target.checked)} />确认所选说话人为当前客户</label>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => { pendingDialogueRef.current = null; setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setMessage('请修改资料后重新识别。') }}>返回修改</button><button type="button" className="primary-button" disabled={Boolean(dialogueNeedsRestructure) || !dialogueSpeakerId || !dialogueConfirmed || saving} onClick={() => void confirmDialogueAndSave()}>{saving ? '确认中…' : '确认人物并保存'}</button></div></div>}
+    {dialogueReview && <div className="dialogue-review" role="alert"><strong>保存前确认资料人物归属</strong><p>{dialogueReview.summary}</p>{dialogueReview.classification === 'ONE_SPEAKER' ? <><p>这段内容是否属于当前客户的档案信息？</p><div className="dialogue-ownership-options"><button type="button" className={dialogueOwnership === 'YES' ? 'selected' : 'secondary-button'} onClick={() => { setDialogueOwnership('YES'); setDialogueConfirmed(true); setDialogueSpeakerId(dialogueReview.speakers[0]?.id || '') }}>是，属于当前客户</button><button type="button" className={dialogueOwnership === 'NO' ? 'selected' : 'secondary-button'} onClick={() => setDialogueOwnership('NO')}>否，录入错误</button></div></> : dialogueNeedsRestructure ? <p>{dialogueReview.classification === 'OVER_TWO_SPEAKERS' ? '识别到超过两位实际说话人，请拆分资料后重新识别。' : '暂时无法可靠识别实际说话人，请标注说话人或整理文本后重新识别。'}</p> : <p>识别结果：2 位说话人。请选择哪位是当前客户：</p>}{dialogueReview.classification !== 'ONE_SPEAKER' && <div className="dialogue-speaker-options">{dialogueReview.speakers.map((speaker) => <label key={speaker.id}><input type="radio" name={`dialogue-speaker-${customer.id}`} value={speaker.id} checked={dialogueSpeakerId === speaker.id} onChange={() => setDialogueSpeakerId(speaker.id)} disabled={Boolean(dialogueNeedsRestructure)} />说话人 {speaker.id}：{speaker.excerpt || '暂无代表性原文'}（AI建议：{speaker.suggestedRole === 'CUSTOMER' ? '客户' : speaker.suggestedRole === 'MENTOR' ? '导师' : speaker.suggestedRole === 'OTHER' ? '其他参与者' : '未知'}）</label>)}</div>}{dialogueReview.classification === 'TWO_SPEAKERS' && <label className="dialogue-confirm-check"><input type="checkbox" checked={dialogueConfirmed} onChange={(event) => setDialogueConfirmed(event.target.checked)} />确认所选说话人为当前客户</label>}{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => { pendingDialogueRef.current = null; setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setDialogueOwnership('UNSET'); setMessage('请修改资料后重新识别。') }}>返回修改</button><button type="button" className="primary-button" disabled={Boolean(dialogueNeedsRestructure) || (dialogueReview.classification === 'ONE_SPEAKER' ? dialogueOwnership !== 'YES' : !dialogueSpeakerId || !dialogueConfirmed) || saving} onClick={() => void confirmDialogueAndSave()}>{saving ? '确认中…' : dialogueReview.classification === 'ONE_SPEAKER' ? '确认归属并保存' : '确认人物并保存'}</button></div></div>}
     {workspaceLoadError && !workspaceLoading && !workspaceLoaded && <div className="evidence-load-error"><p>{workspaceLoadError}</p><button className="secondary-button small" type="button" onClick={() => void load()}>重试</button></div>}
     {composerOpen && <>
       <p className="supplement-note">写下补充说明，或上传一份资料；保存后系统会在后台读取并整理。</p>
       <textarea value={rawText} disabled={isSourceSavePending(saveState) || saveState === 'UNKNOWN' || Boolean(dialogueReview)} onChange={(event) => setRawText(event.target.value)} placeholder="可选：补充资料背景，例如：这是客户上周咨询后的整理资料。" />
       <label className="perspective-toggle"><input type="checkbox" disabled={isSourceSavePending(saveState) || saveState === 'UNKNOWN' || Boolean(dialogueReview)} checked={sourcePerspective === 'CUSTOMER_FIRST_PARTY'} onChange={(event) => setSourcePerspective(event.target.checked ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED')} /> 这是客户本人原话 / 原始资料</label>
       <div className="source-tools">
-        <button className="secondary-button" type="button" onClick={toggleVoice}>{recording ? '结束录音' : '语音输入'}</button>
+        <button className="secondary-button" type="button" onClick={toggleVoice}>{speech.isRecording ? '结束录音' : '语音输入'}</button>
         <label className="secondary-button file-button">上传资料<input type="file" disabled={isSourceSavePending(saveState) || saveState === 'UNKNOWN' || Boolean(dialogueReview)} accept=".txt,.md,.markdown,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; void attachDocument(file) }} /></label>
         <button className="primary-button" type="button" disabled={(!rawText.trim() && !(attachedFile && attachedDocument)) || saving || isSourceSavePending(saveState) || Boolean(attachedFile && !attachedDocument) || Boolean(dialogueReview)} onClick={() => void save()}>{saving ? '保存中…' : saveState === 'UNKNOWN' ? '重新确认保存' : saveState === 'FAILED' ? '重试保存' : '保存'}</button>
       </div>
       {attachedFile && <small className="voice-note">📄 {attachedFile.name} · {attachedDocument ? `已读取 ${attachedDocument.char_count.toLocaleString()} 字` : '正在读取资料…'}</small>}
+      {speech.voiceHint && <small className="voice-note">{speech.voiceHint}</small>}
       {message && <small className="voice-note">{message}</small>}
       {error && <p className="form-error">{error}</p>}
     </>}
@@ -1259,32 +1269,10 @@ function ProfileSupplement({ customer, onGenerate, onConfirm }: { customer: Cust
   const [draft, setDraft] = useState<ProfileDraft | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
-  const [voiceError, setVoiceError] = useState('')
-  const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
-  const voiceBaseTextRef = useRef('')
-  const toggleVoice = () => {
-    if (isRecording) { recognitionRef.current?.stop(); recognitionRef.current = null; setIsRecording(false); return }
-    const speechApi = window as Window & { SpeechRecognition?: BrowserSpeechRecognition; webkitSpeechRecognition?: BrowserSpeechRecognition }
-    const SpeechRecognition = speechApi.SpeechRecognition || speechApi.webkitSpeechRecognition
-    if (!SpeechRecognition) { setVoiceError('当前浏览器不支持语音录入，请直接输入文字。'); return }
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.onresult = (event) => { let transcript = ''; for (let index = 0; index < event.results.length; index += 1) { const part = event.results[index]?.[0]?.transcript?.trim(); if (part) transcript += `${transcript ? ' ' : ''}${part}` }; if (transcript) setText(`${voiceBaseTextRef.current.trim()}${voiceBaseTextRef.current.trim() ? ' ' : ''}${transcript}`) }
-    recognition.onerror = () => setVoiceError('没有识别到清晰语音，请继续说或直接修改文字。')
-    recognition.onend = () => { if (recognitionRef.current === recognition) recognitionRef.current = null; setIsRecording(false) }
-    voiceBaseTextRef.current = text
-    setVoiceError('')
-    recognitionRef.current = recognition
-    setIsRecording(true)
-    try { recognition.start() } catch { recognitionRef.current = null; setIsRecording(false); setVoiceError('语音录入启动失败，请直接输入文字。') }
-  }
-  useEffect(() => () => { recognitionRef.current?.stop() }, [])
+  const speech = useSpeechInput({ value: text, onChange: setText })
   const analyze = async () => { if (!text.trim() || loading) return; setLoading(true); try { setDraft(await onGenerate(customer.id, text.trim())) } finally { setLoading(false) } }
   const confirm = async () => { if (!draft?.updates.length || saving) return; setSaving(true); try { await onConfirm(customer.id, draft.updates); setDraft(null); setText('') } finally { setSaving(false) } }
-  return <section className="customer-detail-section profile-supplement" id="profile-supplement"><SectionHeading title="补充客户档案" meta="语音或文字补充，AI先整理建议" icon="＋" /><p className="supplement-note">先记录新的事实，AI 会拆成字段更新建议；冲突信息会在确认前单独标记。</p><textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="例如：客户最近已经离职，开始考虑自由职业，平时恢复了瑜伽。" /><div className="supplement-actions"><button className="secondary-button" type="button" onClick={toggleVoice}>{isRecording ? '结束录音' : '语音录入'}</button><button className="primary-button" type="button" disabled={!text.trim() || loading} onClick={() => void analyze()}>{loading ? 'AI分析中…' : '文字补充'}</button></div>{voiceError && <small className="voice-note">{voiceError}</small>}{draft && <div className="profile-draft"><strong>AI更新建议</strong>{draft.updates.length ? draft.updates.map((update) => <div className={`profile-draft-row ${update.conflict ? 'conflict' : ''}`} key={update.field}><span>{profileUpdateLabel(update)}</span><b>{update.conflict ? `${displayProfileValue(update.previousValue ?? null)} → ` : ''}{displayProfileValue(update.value)}</b><small>{sourceLabel(update.source)}{update.conflict ? ' · 与已有记录不同，确认后才覆盖' : ' · 待确认'}</small></div>) : <p>没有识别到新的档案信息，本次不写入。</p>}{draft.updates.length > 0 && <button className="primary-button" type="button" disabled={saving} onClick={() => void confirm()}>{saving ? '保存中…' : '确认更新档案'}</button>}</div>}</section>
+  return <section className="customer-detail-section profile-supplement" id="profile-supplement"><SectionHeading title="补充客户档案" meta="语音或文字补充，AI先整理建议" icon="＋" /><p className="supplement-note">先记录新的事实，AI 会拆成字段更新建议；冲突信息会在确认前单独标记。</p><textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="例如：客户最近已经离职，开始考虑自由职业，平时恢复了瑜伽。" /><div className="supplement-actions"><button className="secondary-button" type="button" onClick={speech.toggle}>{speech.isRecording ? '结束录音' : '语音录入'}</button><button className="primary-button" type="button" disabled={!text.trim() || loading} onClick={() => void analyze()}>{loading ? 'AI分析中…' : '文字补充'}</button></div>{speech.voiceHint && <small className="voice-note">{speech.voiceHint}</small>}{draft && <div className="profile-draft"><strong>AI更新建议</strong>{draft.updates.length ? draft.updates.map((update) => <div className={`profile-draft-row ${update.conflict ? 'conflict' : ''}`} key={update.field}><span>{profileUpdateLabel(update)}</span><b>{update.conflict ? `${displayProfileValue(update.previousValue ?? null)} → ` : ''}{displayProfileValue(update.value)}</b><small>{sourceLabel(update.source)}{update.conflict ? ' · 与已有记录不同，确认后才覆盖' : ' · 待确认'}</small></div>) : <p>没有识别到新的档案信息，本次不写入。</p>}{draft.updates.length > 0 && <button className="primary-button" type="button" disabled={saving} onClick={() => void confirm()}>{saving ? '保存中…' : '确认更新档案'}</button>}</div>}</section>
 }
 
 function ProfileOverview({ profile }: { profile: { fields: Record<string, ProfileValue> } }) {
@@ -1328,27 +1316,17 @@ function ManualCustomerDialog({ database, onClose, onPreview, onExtractDocument,
   const [dialogueReview, setDialogueReview] = useState<DialogueAssessment | null>(null)
   const [dialogueSpeakerId, setDialogueSpeakerId] = useState('')
   const [dialogueConfirmed, setDialogueConfirmed] = useState(false)
+  const [dialogueOwnership, setDialogueOwnership] = useState<'UNSET' | 'YES' | 'NO'>('UNSET')
   const [saving, setSaving] = useState(false)
-  const [voiceHint, setVoiceHint] = useState('')
-  const [voiceState, setVoiceState] = useState<'IDLE' | 'LISTENING' | 'RECOVERING' | 'ERROR'>('IDLE')
-  const [voiceSupported, setVoiceSupported] = useState<boolean | null>(null)
-  const [voicePermission, setVoicePermission] = useState<'UNKNOWN' | 'REQUESTED' | 'DENIED'>('UNKNOWN')
-  const [voiceLastEvent, setVoiceLastEvent] = useState('none')
-  const [voiceError, setVoiceError] = useState('')
   const operationIdRef = useRef(`customer-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const sourceOperationIdRef = useRef(`source-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const [attachedFile, setAttachedFile] = useState<File | null>(null)
   const [attachedDocument, setAttachedDocument] = useState<DocumentExtractionResult | null>(null)
   const [documentLoading, setDocumentLoading] = useState(false)
   const pendingDialogueRef = useRef<{ input: ManualCustomerInput; upload: CustomerSourceUpload; targetCustomerId?: string; mode: 'create' | 'update' } | null>(null)
-  const [isRecording, setIsRecording] = useState(false)
-  const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null)
-  const keepRecordingRef = useRef(false)
-  const existingTextRef = useRef('')
-  const voiceTextRef = useRef('')
-  const speechStateRef = useRef<SpeechTranscriptState>(emptySpeechTranscript())
-  const restartCountRef = useRef(0)
-  const restartTimerRef = useRef<number | null>(null)
+  const speech = useSpeechInput({ value: situation, onChange: setSituation })
+  const { isRecording, voiceHint, voiceState, voiceSupported, voicePermission, voiceLastEvent, voiceError } = speech
+  const toggleVoice = speech.toggle
   const resetSourceOperationId = () => { sourceOperationIdRef.current = `source-${Date.now()}-${Math.random().toString(36).slice(2)}` }
   const input = (): ManualCustomerInput => {
     const enrollments: EnrollmentDraft[] = selectedProductIds.map((productId) => ({ productId }))
@@ -1356,99 +1334,6 @@ function ManualCustomerDialog({ database, onClose, onPreview, onExtractDocument,
   }
   const toggleProduct = (productId: string) => setSelectedProductIds((ids) => ids.includes(productId) ? ids.filter((id) => id !== productId) : [...ids, productId])
   const visibleProducts = products.filter((product) => product.name.toLowerCase().includes(productQuery.trim().toLowerCase()))
-  useEffect(() => () => { keepRecordingRef.current = false; if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current); recognitionRef.current?.stop() }, [])
-  const toggleVoice = () => {
-    if (isRecording) {
-      keepRecordingRef.current = false
-      setVoiceLastEvent('manual-stop')
-      recognitionRef.current?.stop()
-      recognitionRef.current = null
-      setIsRecording(false)
-      setVoiceState('IDLE')
-      setVoiceHint('录音已结束。')
-      return
-    }
-    const speechApi = window as Window & { SpeechRecognition?: BrowserSpeechRecognition; webkitSpeechRecognition?: BrowserSpeechRecognition }
-    const SpeechRecognition = speechApi.SpeechRecognition || speechApi.webkitSpeechRecognition
-    setVoiceSupported(Boolean(SpeechRecognition))
-    if (!SpeechRecognition) { setVoiceState('ERROR'); setVoiceError('unsupported'); setVoiceLastEvent('unsupported'); setVoiceHint('当前浏览器不支持语音输入，请直接输入文字。'); return }
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.onresult = (event) => {
-      setVoiceLastEvent('result')
-      const nextSpeechState = applySpeechResults(speechStateRef.current, event.results, event.resultIndex || 0)
-      speechStateRef.current = nextSpeechState
-      const nextSituation = joinSpeechText(existingTextRef.current, speechTranscriptText(nextSpeechState))
-      voiceTextRef.current = nextSituation
-      setSituation(nextSituation)
-      setVoiceHint('正在录音，文字会实时显示，再次点击结束。')
-    }
-    recognition.onerror = (event) => {
-      const error = event?.error || ''
-      setVoiceLastEvent(`error:${error || 'unknown'}`)
-      setVoiceError(error)
-      setVoiceState('ERROR')
-      if (error === 'not-allowed' || error === 'service-not-allowed') {
-        setVoicePermission('DENIED')
-        keepRecordingRef.current = false
-        setIsRecording(false)
-        recognitionRef.current = null
-        setVoiceHint(speechErrorMessage(error))
-        return
-      }
-      setVoiceHint(speechErrorMessage(error))
-    }
-    recognition.onend = () => {
-      setVoiceLastEvent('end')
-      if (keepRecordingRef.current && recognitionRef.current === recognition) {
-        existingTextRef.current = joinSpeechText(existingTextRef.current, speechTranscriptText(speechStateRef.current, { finalOnly: true }))
-        voiceTextRef.current = existingTextRef.current
-        speechStateRef.current = emptySpeechTranscript()
-        restartCountRef.current += 1
-        if (!shouldRecoverSpeech({ keepListening: keepRecordingRef.current, manualStop: false, permissionDenied: false, restartCount: restartCountRef.current })) {
-          keepRecordingRef.current = false
-          recognitionRef.current = null
-          setIsRecording(false)
-          setVoiceState('ERROR')
-          setVoiceError('restart-limit')
-          setVoiceHint('语音识别多次中断，请再次点击开始或改用文字输入。')
-          return
-        }
-        setVoiceState('RECOVERING')
-        setVoiceHint('语音识别正在恢复，请继续说。')
-        restartTimerRef.current = window.setTimeout(() => {
-          if (!keepRecordingRef.current || recognitionRef.current !== recognition) return
-          try { recognition.start(); setVoiceState('LISTENING'); setVoiceLastEvent('restart') } catch { setVoiceLastEvent('restart-failed') }
-        }, 250)
-        return
-      }
-      if (recognitionRef.current === recognition) recognitionRef.current = null
-      setIsRecording(false)
-      setVoiceState('IDLE')
-    }
-    existingTextRef.current = situation
-    voiceTextRef.current = situation
-    speechStateRef.current = emptySpeechTranscript()
-    restartCountRef.current = 0
-    setVoicePermission('REQUESTED')
-    setVoiceError('')
-    keepRecordingRef.current = true
-    recognitionRef.current = recognition
-    setIsRecording(true)
-    setVoiceState('LISTENING')
-    setVoiceLastEvent('start')
-    setVoiceHint('正在录音，再次点击结束。')
-    try { recognition.start() } catch {
-      keepRecordingRef.current = false
-      recognitionRef.current = null
-      setIsRecording(false)
-      setVoiceState('ERROR')
-      setVoiceError('start-failed')
-      setVoiceHint('语音输入启动失败，请直接输入文字。')
-    }
-  }
   const validateContacts = (showRequired = true) => {
     const result = validateCustomerContacts({ phone, wechat }) as { ok: boolean; field: string; message: string }
     if (result.ok) { setContactErrors({}); return true }
@@ -1478,24 +1363,41 @@ function ManualCustomerDialog({ database, onClose, onPreview, onExtractDocument,
       return
     }
     pendingDialogueRef.current = { input: payload, upload, targetCustomerId, mode }
-    setDialogueReview(assessment); setDialogueSpeakerId(''); setDialogueConfirmed(false); setStep('dialogue'); setSaving(false)
+    setDialogueReview(assessment); setDialogueSpeakerId(''); setDialogueConfirmed(false); setDialogueOwnership('UNSET'); setStep('dialogue'); setSaving(false)
   }
+  const rejectManualDialogue = () => {
+    pendingDialogueRef.current = null
+    setDialogueReview(null)
+    setDialogueSpeakerId('')
+    setDialogueConfirmed(false)
+    setDialogueOwnership('UNSET')
+    setStep('form')
+    setError('已取消保存，资料仍保留，请修改后重试。')
+  }
+  useEffect(() => { if (dialogueOwnership === 'NO') rejectManualDialogue() }, [dialogueOwnership])
   const confirmManualDialogue = async () => {
     const pending = pendingDialogueRef.current
-    if (!pending || !dialogueReview || !dialogueConfirmed || !dialogueSpeakerId) return
+    const oneSpeaker = dialogueReview?.classification === 'ONE_SPEAKER'
+    if (!pending || !dialogueReview || (oneSpeaker ? dialogueOwnership !== 'YES' : (!dialogueConfirmed || !dialogueSpeakerId))) return
     setSaving(true); setError('')
     try {
-      const confirmation = await requireDialogueGateHandlers().confirm({ analysisToken: dialogueReview.analysisToken, contentHash: dialogueReview.contentHash, targetCustomerId: pending.targetCustomerId, customerOperationId: pending.targetCustomerId ? undefined : pending.input.operationId, speakerId: dialogueSpeakerId })
+      if (oneSpeaker && dialogueOwnership === 'NO') {
+        pendingDialogueRef.current = null
+        setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setDialogueOwnership('UNSET'); setStep('form'); setError('已取消保存，资料仍保留，请修改后重试。')
+        return
+      }
+      const confirmation = await requireDialogueGateHandlers().confirm({ analysisToken: dialogueReview.analysisToken, contentHash: dialogueReview.contentHash, targetCustomerId: pending.targetCustomerId, customerOperationId: pending.targetCustomerId ? undefined : pending.input.operationId, speakerId: oneSpeaker ? undefined : dialogueSpeakerId })
       const upload = { ...pending.upload, dialogueConfirmation: confirmation.dialogueConfirmation }
       pendingDialogueRef.current = null
       if (pending.mode === 'create') await onCreate(pending.input, upload); else if (pending.targetCustomerId) await onUpdate(pending.targetCustomerId, pending.input, upload)
-    } catch (confirmError) { setError(confirmError instanceof Error ? confirmError.message : '说话人确认失败') } finally { setSaving(false) }
+      setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setDialogueOwnership('UNSET')
+    } catch (confirmError) { setError(confirmError instanceof Error ? confirmError.message : '资料归属确认失败') } finally { setSaving(false) }
   }
   const preview = async (event: FormEvent) => { event.preventDefault(); if (!canStartCustomerSave(saving) || !validateContacts()) return; setError(''); setSaving(true); const payload = input(); try { const result = await onPreview(payload); setDraft({ duplicates: result.duplicates, identity: result.identity, updates: [] }); if (result.duplicates.length) setStep('duplicate'); else await saveWithDialogueGate(payload, uploadInput(), undefined, 'create') } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存客户失败') } finally { setSaving(false) } }
   const submit = async (payload = input()) => { if (!canStartCustomerSave(saving) || !validateContacts()) return; setSaving(true); setError(''); try { await saveWithDialogueGate(payload, uploadInput(), undefined, 'create') } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '保存客户失败') } finally { setSaving(false) } }
   const updateExisting = async () => { const match = draft.duplicates[0]; if (!match || !canStartCustomerSave(saving) || !validateContacts()) return; setSaving(true); setError(''); try { await saveWithDialogueGate(input(), uploadInput(), match.customer.id, 'update') } catch (submitError) { setError(submitError instanceof Error ? submitError.message : '更新客户失败') } finally { setSaving(false) } }
   const selectedProductNames = selectedProductIds.map((id) => products.find((product) => product.id === id)?.name).filter(Boolean)
-  return <div className="modal-backdrop"><form className="modal-card form-modal manual-customer-modal" onSubmit={preview}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button>{step === 'form' ? <><div className="eyebrow">NEW CUSTOMER</div><h2>新增客户</h2><p className="modal-lede">先录入客户基础信息，课程报名详情可在客户详情页继续维护；新增客户不会自动创建预约。</p><label>客户昵称 *<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如：阿布" autoFocus /></label><div className="form-two-col contact-row"><label>手机号<input value={phone} onChange={(event) => { setPhone(event.target.value); setContactErrors((current) => ({ ...current, phone: undefined, contact: undefined })) }} onBlur={() => validateContacts(false)} inputMode="numeric" />{contactErrors.phone && <span className="form-error">{contactErrors.phone}</span>}</label><label>微信号<input value={wechat} onChange={(event) => { setWechat(event.target.value); setContactErrors((current) => ({ ...current, wechat: undefined, contact: undefined })) }} onBlur={() => validateContacts(false)} />{contactErrors.wechat && <span className="form-error">{contactErrors.wechat}</span>}</label></div><p className="field-hint contact-hint">手机号和微信号至少填写一项，便于后续联系和客户去重。</p>{contactErrors.contact && <p className="form-error">{contactErrors.contact}</p>}<label>介绍人（选填）<input value={introducer} onChange={(event) => setIntroducer(event.target.value)} placeholder="例如：王老师" /></label><label>目前已报名课程<div className="multi-select"><button type="button" className="multi-select-trigger" aria-expanded={productMenuOpen} onClick={() => setProductMenuOpen((open) => !open)}>{selectedProductNames.length ? <span className="selected-tags">{selectedProductNames.map((name) => <span className="selected-tag" key={name}>{name}</span>)}</span> : <span className="multi-select-placeholder">请选择已报名课程</span>}<span className="multi-select-chevron">⌄</span></button>{productMenuOpen && <div className="multi-select-menu"><input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="搜索课程名称" aria-label="搜索课程名称" autoFocus />{visibleProducts.length ? <div className="multi-select-options">{visibleProducts.map((product) => <label className="multi-select-option" key={product.id}><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProduct(product.id)} /><span>{product.name}</span></label>)}</div> : <span className="inline-empty">没有找到匹配课程。</span>}</div>}</div>{!products.length && <span className="field-hint">暂无启用课程，请先在「ASVA 产品」中启用课程。</span>}</label><label>客户情况<textarea value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="描述客户当前的困扰、目标或背景。" /><button type="button" className={isRecording ? 'voice-button primary-button full-width recording' : 'voice-button primary-button full-width'} onClick={toggleVoice} aria-pressed={isRecording}><span aria-hidden="true">⌕</span> {isRecording ? '结束录音' : '语音转文字'}</button></label><div className="customer-document-upload"><label className="voice-button primary-button full-width customer-document-upload-button"><span aria-hidden="true">↑</span> 上传客户资料<input className="customer-document-upload-input" type="file" accept=".txt,.md,.markdown,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachDocument(file) }} disabled={saving || documentLoading} /></label>{attachedFile && <span className="field-hint">{attachedFile.name}</span>}</div>{documentLoading && <p className="ai-form-note">正在读取资料…</p>}{attachedFile && !documentLoading && <div className="source-file-status"><span>{attachedDocument ? `已读取 ${attachedDocument.char_count.toLocaleString()} 字` : '读取失败，请重新选择'}</span><button type="button" className="secondary-button small" onClick={removeDocument}>移除</button></div>}{voiceHint && <p className="ai-form-note">{voiceHint}</p>}{voiceSupported !== null && <p className="voice-debug" data-testid="voice-debug">语音调试：支持 {voiceSupported ? 'YES' : 'NO'} · 权限 {voicePermission} · 状态 {voiceState} · 最近事件 {voiceLastEvent}{voiceError ? ` · 错误 ${voiceError}` : ''}</p>}{error && <p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving || documentLoading}>{saving ? '保存中…' : '保存'}</button></div></> : step === 'dialogue' ? <><div className="eyebrow">DIALOGUE SAFETY</div><h2>确认资料人物归属</h2><p className="modal-lede">AI 已识别这份资料可能包含对话。请确认哪位说话人对应当前客户；未确认前不会保存资料。</p><p>{dialogueReview?.summary}</p><div className="dialogue-speaker-options">{dialogueReview?.speakers.map((speaker) => <label key={speaker.id}><input type="radio" name="manual-dialogue-speaker" value={speaker.id} checked={dialogueSpeakerId === speaker.id} onChange={() => setDialogueSpeakerId(speaker.id)} />说话人 {speaker.id}：{speaker.excerpt || '暂无代表性原文'}（AI建议：{speaker.suggestedRole === 'CUSTOMER' ? '客户' : speaker.suggestedRole === 'MENTOR' ? '导师' : speaker.suggestedRole === 'OTHER' ? '其他参与者' : '未知'}）</label>)}</div><label className="dialogue-confirm-check"><input type="checkbox" checked={dialogueConfirmed} onChange={(event) => setDialogueConfirmed(event.target.checked)} />确认所选说话人为当前客户</label>{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => { pendingDialogueRef.current = null; setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setStep('form') }}>返回修改</button><button type="button" className="primary-button" disabled={!dialogueSpeakerId || !dialogueConfirmed || saving} onClick={() => void confirmManualDialogue()}>{saving ? '确认中…' : '确认人物并保存'}</button></div></> : <><div className="eyebrow">POSSIBLE DUPLICATE</div><h2>发现可能重复客户</h2><p className="modal-lede">已选课程：{selectedProductNames.join('、') || '无'}。同名只做可能重复提醒；手机号或微信号命中现有客户时必须打开原档案更新。</p>{draft.duplicates.map((match) => <div className="review-block" key={match.customer.id}><strong>{match.customer.name}</strong><span>{match.matchedBy === 'phone' ? '手机号相同' : match.matchedBy === 'wechat' ? '微信号相同' : match.matchedBy === 'nickname_exact' ? '昵称相同' : '昵称相近'} · {match.customer.need || '暂无当前困扰'}</span><div className="review-actions"><button type="button" className="secondary-button small" onClick={() => onOpenCustomer(match.customer.id)}>查看客户</button><button type="button" className="secondary-button small" onClick={updateExisting}>更新已有客户</button></div></div>)}{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => setStep('form')}>返回修改</button>{draft.identity?.result === 'POSSIBLE_MATCH' && <button type="button" className="primary-button" disabled={saving} onClick={() => submit(input())}>确认不是同一人并保存</button>}</div></>}</form></div>
+  return <div className="modal-backdrop"><form className="modal-card form-modal manual-customer-modal" onSubmit={preview}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button>{step === 'form' ? <><div className="eyebrow">NEW CUSTOMER</div><h2>新增客户</h2><p className="modal-lede">先录入客户基础信息，课程报名详情可在客户详情页继续维护；新增客户不会自动创建预约。</p><label>客户昵称 *<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如：阿布" autoFocus /></label><div className="form-two-col contact-row"><label>手机号<input value={phone} onChange={(event) => { setPhone(event.target.value); setContactErrors((current) => ({ ...current, phone: undefined, contact: undefined })) }} onBlur={() => validateContacts(false)} inputMode="numeric" />{contactErrors.phone && <span className="form-error">{contactErrors.phone}</span>}</label><label>微信号<input value={wechat} onChange={(event) => { setWechat(event.target.value); setContactErrors((current) => ({ ...current, wechat: undefined, contact: undefined })) }} onBlur={() => validateContacts(false)} />{contactErrors.wechat && <span className="form-error">{contactErrors.wechat}</span>}</label></div><p className="field-hint contact-hint">手机号和微信号至少填写一项，便于后续联系和客户去重。</p>{contactErrors.contact && <p className="form-error">{contactErrors.contact}</p>}<label>介绍人（选填）<input value={introducer} onChange={(event) => setIntroducer(event.target.value)} placeholder="例如：王老师" /></label><label>目前已报名课程<div className="multi-select"><button type="button" className="multi-select-trigger" aria-expanded={productMenuOpen} onClick={() => setProductMenuOpen((open) => !open)}>{selectedProductNames.length ? <span className="selected-tags">{selectedProductNames.map((name) => <span className="selected-tag" key={name}>{name}</span>)}</span> : <span className="multi-select-placeholder">请选择已报名课程</span>}<span className="multi-select-chevron">⌄</span></button>{productMenuOpen && <div className="multi-select-menu"><input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="搜索课程名称" aria-label="搜索课程名称" autoFocus />{visibleProducts.length ? <div className="multi-select-options">{visibleProducts.map((product) => <label className="multi-select-option" key={product.id}><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProduct(product.id)} /><span>{product.name}</span></label>)}</div> : <span className="inline-empty">没有找到匹配课程。</span>}</div>}</div>{!products.length && <span className="field-hint">暂无启用课程，请先在「ASVA 产品」中启用课程。</span>}</label><label>客户情况<textarea value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="描述客户当前的困扰、目标或背景。" /><button type="button" className={isRecording ? 'voice-button primary-button full-width recording' : 'voice-button primary-button full-width'} onClick={toggleVoice} aria-pressed={isRecording}><span aria-hidden="true">⌕</span> {isRecording ? '结束录音' : '语音转文字'}</button></label><div className="customer-document-upload"><label className="voice-button primary-button full-width customer-document-upload-button"><span aria-hidden="true">↑</span> 上传客户资料<input className="customer-document-upload-input" type="file" accept=".txt,.md,.markdown,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachDocument(file) }} disabled={saving || documentLoading} /></label>{attachedFile && <span className="field-hint">{attachedFile.name}</span>}</div>{documentLoading && <p className="ai-form-note">正在读取资料…</p>}{attachedFile && !documentLoading && <div className="source-file-status"><span>{attachedDocument ? `已读取 ${attachedDocument.char_count.toLocaleString()} 字` : '读取失败，请重新选择'}</span><button type="button" className="secondary-button small" onClick={removeDocument}>移除</button></div>}{speech.voiceHint && <p className="ai-form-note">{speech.voiceHint}</p>}{speech.voiceSupported !== null && <p className="voice-debug" data-testid="voice-debug">语音调试：支持 {speech.voiceSupported ? 'YES' : 'NO'} · 权限 {speech.voicePermission} · 状态 {speech.voiceState} · 最近事件 {speech.voiceLastEvent}{speech.voiceError ? ` · 错误 ${speech.voiceError}` : ''}</p>}{error && <p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onClose} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving || documentLoading}>{saving ? '保存中…' : '保存'}</button></div></> : step === 'dialogue' ? <><div className="eyebrow">DIALOGUE SAFETY</div><h2>确认资料人物归属</h2><p className="modal-lede">AI 已识别这份资料可能包含对话。单人资料只需确认是否属于当前客户；多人资料仍需选择客户说话人。未确认前不会保存资料。</p><p>{dialogueReview?.summary}</p>{dialogueReview?.classification === 'ONE_SPEAKER' ? <><p>这段内容是否属于当前客户的档案信息？</p><div className="dialogue-ownership-options"><button type="button" className={`secondary-button ${dialogueOwnership === 'YES' ? 'selected' : ''}`} onClick={() => setDialogueOwnership('YES')}>是，属于当前客户</button><button type="button" className={`secondary-button ${dialogueOwnership === 'NO' ? 'selected' : ''}`} onClick={() => setDialogueOwnership('NO')}>否，录入错误</button></div></> : <><div className="dialogue-speaker-options">{dialogueReview?.speakers.map((speaker) => <label key={speaker.id}><input type="radio" name="manual-dialogue-speaker" value={speaker.id} checked={dialogueSpeakerId === speaker.id} onChange={() => setDialogueSpeakerId(speaker.id)} disabled={dialogueReview?.classification !== 'TWO_SPEAKERS'} />说话人 {speaker.id}：{speaker.excerpt || '暂无代表性原文'}（AI建议：{speaker.suggestedRole === 'CUSTOMER' ? '客户' : speaker.suggestedRole === 'MENTOR' ? '导师' : speaker.suggestedRole === 'OTHER' ? '其他参与者' : '未知'}）</label>)}</div>{dialogueReview?.classification === 'TWO_SPEAKERS' && <label className="dialogue-confirm-check"><input type="checkbox" checked={dialogueConfirmed} onChange={(event) => setDialogueConfirmed(event.target.checked)} />确认所选说话人为当前客户</label>}</>}{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => { pendingDialogueRef.current = null; setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setDialogueOwnership('UNSET'); setStep('form') }}>返回修改</button><button type="button" className="primary-button" disabled={dialogueReview?.classification === 'ONE_SPEAKER' ? dialogueOwnership !== 'YES' : dialogueReview?.classification !== 'TWO_SPEAKERS' || !dialogueSpeakerId || !dialogueConfirmed || saving} onClick={() => void confirmManualDialogue()}>{saving ? '确认中…' : dialogueReview?.classification === 'ONE_SPEAKER' ? '确认归属并保存' : '确认人物并保存'}</button></div></> : <><div className="eyebrow">POSSIBLE DUPLICATE</div><h2>发现可能重复客户</h2><p className="modal-lede">已选课程：{selectedProductNames.join('、') || '无'}。同名只做可能重复提醒；手机号或微信号命中现有客户时必须打开原档案更新。</p>{draft.duplicates.map((match) => <div className="review-block" key={match.customer.id}><strong>{match.customer.name}</strong><span>{match.matchedBy === 'phone' ? '手机号相同' : match.matchedBy === 'wechat' ? '微信号相同' : match.matchedBy === 'nickname_exact' ? '昵称相同' : '昵称相近'} · {match.customer.need || '暂无当前困扰'}</span><div className="review-actions"><button type="button" className="secondary-button small" onClick={() => onOpenCustomer(match.customer.id)}>查看客户</button><button type="button" className="secondary-button small" onClick={updateExisting}>更新已有客户</button></div></div>)}{error && <p className="form-error">{error}</p>}<div className="review-actions"><button type="button" className="secondary-button" onClick={() => setStep('form')}>返回修改</button>{draft.identity?.result === 'POSSIBLE_MATCH' && <button type="button" className="primary-button" disabled={saving} onClick={() => submit(input())}>确认不是同一人并保存</button>}</div></>}</form></div>
 }
 
 function AssignDialog({ appointment, database, staffId, api, onClose, onAssign }: { appointment: Appointment; database: Database; staffId: string; api: WorkbenchApi; onClose: () => void; onAssign: (appointment: Appointment, mentorId: string) => Promise<void> }) {
@@ -1746,23 +1648,11 @@ function FeedbackForm({ appointment, customer, database: _database, onClose, onS
   const [aiLoading, setAiLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
-  const [voiceError, setVoiceError] = useState('')
-  const startVoice = () => {
-    const speechApi = window as Window & { SpeechRecognition?: BrowserSpeechRecognition; webkitSpeechRecognition?: BrowserSpeechRecognition }
-    const SpeechRecognition = speechApi.SpeechRecognition || speechApi.webkitSpeechRecognition
-    if (!SpeechRecognition) { setVoiceError('当前浏览器暂不支持语音输入，请直接输入文字。'); return }
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'zh-CN'
-    recognition.onresult = (event) => setProfileText((value) => `${value}${value ? ' ' : ''}${event.results[0][0].transcript}`)
-    recognition.onerror = () => setVoiceError('没有识别到清晰语音，请改用文字补充。')
-    setVoiceError('正在听，请说说客户现在的情况…')
-    recognition.start()
-  }
+  const speech = useSpeechInput({ value: profileText, onChange: setProfileText })
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!situation.trim() && !profileText.trim()) return
     setAiLoading(true)
-    setVoiceError('')
     try {
       const input = { topic: situation.trim() || profileText.trim(), result, coreNeed: customer.need, paid: customer.paid, grade: customer.grade, intendedCourse: customer.intendedCourse, notes: situation.trim(), expectation: customer.helpExpectation }
       const [summary, profile] = await Promise.all([onGenerateSummary(input), profileText.trim() ? onGenerateProfile(customer.id, profileText.trim()) : Promise.resolve({ updates: [] })])
@@ -1772,7 +1662,7 @@ function FeedbackForm({ appointment, customer, database: _database, onClose, onS
     } finally { setAiLoading(false) }
   }
   const finish = async (updates: ProfileUpdate[]) => { if (saving) return; setSaving(true); setSaveError(''); try { await onSubmit({ appointmentId: appointment.id, topic: situation.trim() || profileText.trim() || '本次沟通', result, coreNeed: customer.need, paid: customer.paid, grade: customer.grade, intendedCourse: customer.intendedCourse, notes: situation.trim(), profileText: profileText.trim(), profileUpdates: updates, aiSummary: aiDraft?.summary, aiStatus: aiDraft?.currentStatus, aiNextStep: aiDraft?.nextStep }) } catch (saveErrorValue) { setSaveError(saveErrorValue instanceof Error ? saveErrorValue.message : '保存服务记录失败') } finally { setSaving(false) } }
-  return <div className="modal-backdrop"><form className="modal-card form-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button>{step === 'form' ? <><div className="eyebrow">SERVICE RECORD</div><h2>记录本次沟通</h2><p className="modal-lede">{customer.name} · 用几句话记录事实，AI 帮你整理。</p><label>本次主要聊了什么？<textarea value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="例如：客户说最近工作压力变大，想先把每天的节奏稳住。" autoFocus /></label><label>说说这个客户现在的情况<small className="field-hint">可以输入，也可以使用浏览器支持的语音输入。</small><textarea value={profileText} onChange={(event) => setProfileText(event.target.value)} placeholder="例如：36 岁，住在杭州，从事设计，已婚，有一个女儿，喜欢瑜伽和旅行。" /><button type="button" className="secondary-button small voice-button" onClick={startVoice} disabled={aiLoading || saving}>⌕ 语音输入</button>{voiceError && <small className="voice-note">{voiceError}</small>}</label><label>本次结果<div className="option-grid">{['继续跟进', '暂时结束', '有课程 / 服务意向', '需要转介'].map((item) => <button type="button" key={item} className={result === item ? 'option-button selected' : 'option-button'} disabled={aiLoading || saving} onClick={() => setResult(item)}>{item}</button>)}</div></label><button className="primary-button full-width" type="submit" disabled={aiLoading || saving || (!situation.trim() && !profileText.trim())} aria-busy={aiLoading}>{aiLoading && <ButtonSpinner />}{aiLoading ? '正在整理…' : '生成 AI 整理'} <span>→</span></button></> : <><div className="eyebrow">CONFIRM RECORD</div><h2>确认本次整理</h2><p className="modal-lede">AI 只提供整理建议；画像更新在你确认后才会写入客户档案。</p>{saveError && <p className="form-error">{saveError}</p>}<div className="review-block"><span>本次总结</span><p>{aiDraft?.summary}</p></div><div className="review-block"><span>当前客户状态</span><p>{aiDraft?.currentStatus}</p></div><div className="review-block"><span>下一步跟进建议</span><p>{aiDraft?.nextStep}</p></div><div className="review-block"><span>本次发现 · {profileDraft.updates.length} 项</span>{profileDraft.updates.length ? <div className="profile-update-list">{profileDraft.updates.map((update) => <div className={`profile-update ${update.conflict ? 'conflict' : ''}`} key={update.field}><strong>{profileUpdateLabel(update)}</strong><span>{update.conflict ? `${displayProfileValue(update.previousValue ?? null)} → ` : ''}{displayProfileValue(update.value)}</span><small>{profileSourceLabel(update.source || 'MENTOR_OBSERVATION')} · {update.conflict ? '与已有记录不同，请确认' : '待确认'}</small></div>)}</div> : <p>没有识别到新的画像信息，本次只保存服务记录。</p>}</div><div className="review-actions"><button type="button" className="secondary-button" onClick={() => setStep('form')} disabled={saving}>返回修改</button><button type="button" className="secondary-button" onClick={() => void finish([])} disabled={saving}>{saving && <ButtonSpinner />}忽略画像更新</button><button type="button" className="primary-button" onClick={() => void finish(profileDraft.updates)} disabled={saving} aria-busy={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '全部确认并完成'} <span>→</span></button></div></>}</form></div>
+  return <div className="modal-backdrop"><form className="modal-card form-modal" onSubmit={submit}><button type="button" className="modal-close" onClick={onClose} disabled={saving}>×</button>{step === 'form' ? <><div className="eyebrow">SERVICE RECORD</div><h2>记录本次沟通</h2><p className="modal-lede">{customer.name} · 用几句话记录事实，AI 帮你整理。</p><label>本次主要聊了什么？<textarea value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="例如：客户说最近工作压力变大，想先把每天的节奏稳住。" autoFocus /></label><label>说说这个客户现在的情况<small className="field-hint">可以输入，也可以使用浏览器支持的语音输入。</small><textarea value={profileText} onChange={(event) => setProfileText(event.target.value)} placeholder="例如：36 岁，住在杭州，从事设计，已婚，有一个女儿，喜欢瑜伽和旅行。" /><button type="button" className="secondary-button small voice-button" onClick={speech.toggle} disabled={aiLoading || saving}>{speech.isRecording ? '结束录音' : '⌕ 语音输入'}</button>{speech.voiceHint && <small className="voice-note">{speech.voiceHint}</small>}</label><label>本次结果<div className="option-grid">{['继续跟进', '暂时结束', '有课程 / 服务意向', '需要转介'].map((item) => <button type="button" key={item} className={result === item ? 'option-button selected' : 'option-button'} disabled={aiLoading || saving} onClick={() => setResult(item)}>{item}</button>)}</div></label><button className="primary-button full-width" type="submit" disabled={aiLoading || saving || (!situation.trim() && !profileText.trim())} aria-busy={aiLoading}>{aiLoading && <ButtonSpinner />}{aiLoading ? '正在整理…' : '生成 AI 整理'} <span>→</span></button></> : <><div className="eyebrow">CONFIRM RECORD</div><h2>确认本次整理</h2><p className="modal-lede">AI 只提供整理建议；画像更新在你确认后才会写入客户档案。</p>{saveError && <p className="form-error">{saveError}</p>}<div className="review-block"><span>本次总结</span><p>{aiDraft?.summary}</p></div><div className="review-block"><span>当前客户状态</span><p>{aiDraft?.currentStatus}</p></div><div className="review-block"><span>下一步跟进建议</span><p>{aiDraft?.nextStep}</p></div><div className="review-block"><span>本次发现 · {profileDraft.updates.length} 项</span>{profileDraft.updates.length ? <div className="profile-update-list">{profileDraft.updates.map((update) => <div className={`profile-update ${update.conflict ? 'conflict' : ''}`} key={update.field}><strong>{profileUpdateLabel(update)}</strong><span>{update.conflict ? `${displayProfileValue(update.previousValue ?? null)} → ` : ''}{displayProfileValue(update.value)}</span><small>{profileSourceLabel(update.source || 'MENTOR_OBSERVATION')} · {update.conflict ? '与已有记录不同，请确认' : '待确认'}</small></div>)}</div> : <p>没有识别到新的画像信息，本次只保存服务记录。</p>}</div><div className="review-actions"><button type="button" className="secondary-button" onClick={() => setStep('form')} disabled={saving}>返回修改</button><button type="button" className="secondary-button" onClick={() => void finish([])} disabled={saving}>{saving && <ButtonSpinner />}忽略画像更新</button><button type="button" className="primary-button" onClick={() => void finish(profileDraft.updates)} disabled={saving} aria-busy={saving}>{saving && <ButtonSpinner />}{saving ? '保存中…' : '全部确认并完成'} <span>→</span></button></div></>}</form></div>
 }
 
 function ProfileChangeHistory({ changes }: { changes: Database['profileChanges'] }) { const sorted = [...changes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); return <section className="customer-detail-section profile-change-history"><details className="record-disclosure"><summary><span><strong>档案变更历史</strong><small>{sorted.length ? `${sorted.length} 条人工与资料变更记录` : '还没有档案变更记录'}</small></span><b>查看历史</b></summary><div className="record-disclosure-body">{sorted.length ? <div className="history-timeline">{sorted.map((change) => <article className="history-event" key={change.id}><time>{detailDate(change.updatedAt)}</time><span className="history-dot" /><div><div className="history-event-title"><strong>{change.fieldName || change.field}</strong></div><small>{sourceLabel(change.source)} · {change.confirmed ? '已确认' : '待确认'}</small><p>{displayProfileValue(change.newValue) || '已清空'}</p></div></article>)}</div> : <div className="detail-empty-line">还没有档案变更记录。</div>}</div></details></section> }

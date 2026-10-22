@@ -243,6 +243,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .dialogue-speaker-options { display: grid; gap: 8px; }
 .dialogue-speaker-options label, .dialogue-confirm-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.55; }
 .dialogue-speaker-options input, .dialogue-confirm-check input { margin-top: 3px; flex: 0 0 auto; }
+.dialogue-ownership-options { display: grid; gap: 8px; }
+.dialogue-ownership-options .selected { border-color: var(--teal); background: #e8f7f2; color: var(--ink); }
 .form-actions { display: flex; gap: 9px; margin-top: 19px; }
 .form-actions button { flex: 1; }
 .course-tags { display: flex; flex-wrap: wrap; gap: 8px; }

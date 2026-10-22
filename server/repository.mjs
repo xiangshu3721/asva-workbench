@@ -549,12 +549,14 @@ function sourceInput(input, actorId) {
   const customerId = text(input?.customerId).trim()
   if (!customerId) throw Object.assign(new Error('客户ID不能为空'), { code: 'SOURCE_CUSTOMER_REQUIRED', status: 400 })
   const legacyRole = text(input?.sourceRole)
-  const dialogueConfirmation = verifyDialogueConfirmation({ token: input?.dialogueConfirmation, contentHash: contentHash(rawText), targetCustomerId: customerId, customerOperationId: text(input?.customerOperationId), secret: config.authSecret })
-  const dialogueContext = { classification: dialogueConfirmation.classification, currentCustomerSpeakerId: dialogueConfirmation.currentCustomerSpeakerId, targetCustomerId: dialogueConfirmation.targetCustomerId, customerOperationId: dialogueConfirmation.customerOperationId }
+  const dialogueConfirmation = sourceType === 'FILE_UPLOAD'
+    ? verifyDialogueConfirmation({ token: input?.dialogueConfirmation, contentHash: contentHash(rawText), targetCustomerId: customerId, customerOperationId: text(input?.customerOperationId), secret: config.authSecret })
+    : null
+  const dialogueContext = dialogueConfirmation ? { classification: dialogueConfirmation.classification, currentCustomerSpeakerId: dialogueConfirmation.currentCustomerSpeakerId, targetCustomerId: dialogueConfirmation.targetCustomerId, customerOperationId: dialogueConfirmation.customerOperationId } : null
   const sourcePerspective = input?.sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER_FIRST_PARTY' : input?.sourcePerspective === 'STAFF_REPORTED' ? 'STAFF_REPORTED' : legacyRole ? sourcePerspectiveFromRole(legacyRole) : 'STAFF_REPORTED'
   const sourceRole = legacyRole === 'MENTOR' ? 'MENTOR' : sourcePerspective === 'CUSTOMER_FIRST_PARTY' ? 'CUSTOMER' : 'ADMIN'
   const userNotes = normalizeText(input?.notes, 700)
-  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: `${userNotes}${userNotes ? '\n' : ''}${serializeDialogueContext(dialogueContext)}`, dialogueContext, uploadedBy: actorId, operationId: text(input?.operationId), contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
+  return { sourceType, rawText, customerId, subjectType: text(input?.subjectType) || 'PERSON', subjectId: text(input?.subjectId) || customerId, title: normalizeText(input?.title, 200) || '客户补充资料', occurredAt: null, sourceRole, sourcePerspective, serviceRecordId: text(input?.serviceRecordId), notes: `${userNotes}${userNotes ? '\n' : ''}${dialogueContext ? serializeDialogueContext(dialogueContext) : ''}`, dialogueContext, uploadedBy: actorId, operationId: text(input?.operationId), contentHash: text(input?.contentHash) || contentHash(rawText), fileRef: normalizeText(input?.fileRef, 2000) }
 }
 function evidenceWriteFields(item, source, sourceId) {
   return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: item.contentSource, information_nature: item.informationNature, verification_status: item.verificationStatus, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
@@ -1329,7 +1331,7 @@ export class FeishuRepository {
           hasValidConfirmation = true
         } catch {}
       }
-      if (!hasValidConfirmation) sourceInputValue = await this.prepareLegacySourceInput(actorId, input)
+      if (!hasValidConfirmation && String(input?.sourceType || '').trim().toUpperCase() === 'FILE_UPLOAD') sourceInputValue = await this.prepareLegacySourceInput(actorId, input)
       return this.createSourceUnsafe(actorId, sourceInputValue)
     })
   }

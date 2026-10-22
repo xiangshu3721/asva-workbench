@@ -17,6 +17,9 @@ describe('manual customer speech transcript handling', () => {
     expect(speechErrorMessage('not-allowed')).toContain('麦克风')
     expect(speechErrorMessage('no-speech')).toContain('清晰语音')
     expect(speechErrorMessage('network')).toContain('网络')
+    expect(speechErrorMessage('audio-capture')).toContain('麦克风')
+    expect(speechErrorMessage('start-failed')).toContain('启动失败')
+    expect(speechErrorMessage('restart-limit')).toContain('多次中断')
   })
 
   it('recovers unexpected onend only while listening and stops at the restart limit', () => {

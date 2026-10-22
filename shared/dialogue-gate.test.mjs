@@ -62,6 +62,18 @@ describe('R047 dialogue attribution gate', () => {
     expect(verifyDialogueConfirmation({ token: one.dialogueConfirmation, contentHash: hash, targetCustomerId: 'CUS-SYNTH-A', secret, now: 2_001 }).kind).toBe('DIALOGUE_CONFIRMATION')
   })
 
+  it('lets the one-speaker ownership confirmation use the only detected speaker', () => {
+    const one = finalizeDialogueConfirmation({
+      analysisToken: analysis('ONE_SPEAKER', [{ id: 'A', excerpt: '单人资料', suggested_role: 'UNKNOWN' }]),
+      contentHash: hash,
+      targetCustomerId: 'CUS-SYNTH-A',
+      secret,
+      now: 2_000,
+    })
+
+    expect(one.currentCustomerSpeakerId).toBe('A')
+  })
+
   it('rejects over-two-speaker and uncertain material before persistence', () => {
     expect(() => finalizeDialogueConfirmation({ analysisToken: analysis('OVER_TWO_SPEAKERS', [{ id: 'A' }, { id: 'B' }, { id: 'C' }]), contentHash: hash, targetCustomerId: 'CUS-SYNTH-A', secret, now: 2_000 })).toThrowError(/超过两位/)
     expect(() => finalizeDialogueConfirmation({ analysisToken: analysis('UNCERTAIN'), contentHash: hash, targetCustomerId: 'CUS-SYNTH-A', secret, now: 2_000 })).toThrowError(/无法确认/)

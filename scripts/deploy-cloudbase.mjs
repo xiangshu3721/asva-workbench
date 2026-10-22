@@ -83,6 +83,7 @@ const envVariables = {
   ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
   CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',
   ASVA_RELEASE_COUNTER: String(buildMetadata.releaseCounter),
+  ASVA_RELEASE_PATCH: String(buildMetadata.releasePatch || 0),
   ASVA_GIT_COMMIT: buildMetadata.gitCommit,
   ASVA_GIT_BRANCH: buildMetadata.gitBranch,
   ASVA_BUILD_TIME: buildMetadata.buildTime,

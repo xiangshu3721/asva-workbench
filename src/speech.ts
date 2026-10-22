@@ -50,6 +50,8 @@ export function speechErrorMessage(error = '') {
     network: '语音识别网络暂时不可用，请改用文字输入。',
     'no-speech': '没有听到清晰语音，请继续说或改用文字输入。',
     aborted: '语音输入已停止。',
+    'start-failed': '语音输入启动失败，请检查浏览器麦克风权限后重试。',
+    'restart-limit': '语音识别多次中断，请再次点击开始或改用文字输入。',
   }
   return messages[error] || '语音识别暂时不可用，请改用文字输入。'
 }

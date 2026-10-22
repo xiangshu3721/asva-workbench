@@ -4,10 +4,14 @@ import packageJson from '../package.json' with { type: 'json' }
 
 const release = JSON.parse(fs.readFileSync('release.json', 'utf8'))
 const run = (args) => { try { return execFileSync('git', args, { encoding: 'utf8' }).trim() } catch { return 'UNKNOWN' } }
+const releaseCounter = Number(release.releaseCounter || 0)
+const releasePatch = Number(release.releasePatch || 0)
+const releaseName = `R${String(releaseCounter).padStart(3, '0')}${releasePatch > 0 ? `.${releasePatch}` : ''}`
 const metadata = {
   appVersion: packageJson.version,
-  releaseCounter: Number(release.releaseCounter || 0),
-  release: `R${String(release.releaseCounter || 0).padStart(3, '0')}`,
+  releaseCounter,
+  releasePatch,
+  release: releaseName,
   gitCommit: run(['rev-parse', 'HEAD']),
   gitBranch: run(['branch', '--show-current']),
   buildTime: new Date().toISOString(),

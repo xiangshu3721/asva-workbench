@@ -9,4 +9,9 @@ describe('release metadata indicator', () => {
     expect(releaseVersion({ release: 'R002' })).toBe('R002')
     expect(releaseVersion({})).toBe('UNKNOWN')
   })
+
+  it('compares the complete release for patch versions', () => {
+    expect(releasesMatch({ release: 'R047.1', releaseCounter: 47, releasePatch: 1 }, { release: 'R047.1', releaseCounter: 47, releasePatch: 1 })).toBe(true)
+    expect(releasesMatch({ release: 'R047.1', releaseCounter: 47, releasePatch: 1 }, { release: 'R047', releaseCounter: 47, releasePatch: 0 })).toBe(false)
+  })
 })

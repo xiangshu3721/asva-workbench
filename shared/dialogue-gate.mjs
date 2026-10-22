@@ -56,11 +56,14 @@ export function finalizeDialogueConfirmation({ analysisToken, contentHash, targe
   const classification = analysis.assessment?.classification
   if (classification === 'OVER_TWO_SPEAKERS') throw Object.assign(new Error('资料包含超过两位说话人，请先拆分资料后再保存。'), { code: 'DIALOGUE_OVER_TWO_SPEAKERS', status: 422 })
   if (classification === 'UNCERTAIN') throw Object.assign(new Error('暂时无法确认说话人，请标注说话人或整理文本后重试。'), { code: 'DIALOGUE_UNCERTAIN', status: 422 })
+  const resolvedSpeakerId = classification === 'ONE_SPEAKER'
+    ? text(speakerId) || text(analysis.assessment?.speakers?.[0]?.id)
+    : classification === 'TWO_SPEAKERS' ? text(speakerId) : ''
   if (classification !== 'NOT_DIALOGUE') {
-    const speaker = (analysis.assessment?.speakers || []).find((item) => item.id === text(speakerId))
+    const speaker = (analysis.assessment?.speakers || []).find((item) => item.id === resolvedSpeakerId)
     if (!speaker) throw Object.assign(new Error('请明确选择对应当前客户的说话人。'), { code: 'DIALOGUE_SPEAKER_REQUIRED', status: 422 })
   }
-  const payload = { v: 1, kind: 'DIALOGUE_CONFIRMATION', contentHash: analysis.contentHash, targetCustomerId: analysis.targetCustomerId, customerOperationId: analysis.customerOperationId, classification, speakers: analysis.assessment.speakers, currentCustomerSpeakerId: classification === 'NOT_DIALOGUE' ? '' : text(speakerId), confirmedAt: now, expiresAt: now + 30 * 60 * 1000 }
+  const payload = { v: 1, kind: 'DIALOGUE_CONFIRMATION', contentHash: analysis.contentHash, targetCustomerId: analysis.targetCustomerId, customerOperationId: analysis.customerOperationId, classification, speakers: analysis.assessment.speakers, currentCustomerSpeakerId: classification === 'NOT_DIALOGUE' ? '' : resolvedSpeakerId, confirmedAt: now, expiresAt: now + 30 * 60 * 1000 }
   const encoded = base64url(JSON.stringify(payload))
   return { dialogueConfirmation: `${encoded}.${sign(encoded, secret)}`, ...payload }
 }
