@@ -238,6 +238,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .customer-document-upload { display: grid; gap: 8px; margin-bottom: 17px; }
 .customer-document-upload-button { position: relative; margin-top: 0; cursor: pointer; }
 .customer-document-upload-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+.manual-customer-modal .customer-document-upload-button,
+.manual-customer-modal .form-actions > button { min-height: 47px; }
+.input-method-voice-hint { margin-top: 14px; }
 .dialogue-review { display: grid; gap: 10px; padding: 14px; margin: 12px 0; border: 1px solid rgba(211, 153, 61, .35); border-radius: 14px; background: rgba(255, 248, 232, .72); }
 .dialogue-review p { margin: 0; }
 .dialogue-speaker-options { display: grid; gap: 8px; }
