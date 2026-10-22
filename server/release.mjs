@@ -15,12 +15,15 @@ const root = path.resolve(process.env.ASVA_APP_ROOT || process.cwd())
 const release = readJson(path.join(root, 'release.json'))
 const built = readJson(path.join(root, 'build-meta.json'))
 const counter = Number(process.env.ASVA_RELEASE_COUNTER || built.releaseCounter || release.releaseCounter || 0)
+const patch = Number(process.env.ASVA_RELEASE_PATCH ?? built.releasePatch ?? release.releasePatch ?? 0)
 const appEnv = process.env.APP_ENV || process.env.ASVA_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'production' : 'development')
+const releaseName = `R${String(counter).padStart(3, '0')}${patch > 0 ? `.${patch}` : ''}`
 
 export const releaseMetadata = {
   appVersion: packageJson.version,
   releaseCounter: counter,
-  release: `R${String(counter).padStart(3, '0')}`,
+  releasePatch: patch,
+  release: releaseName,
   gitCommit: process.env.ASVA_GIT_COMMIT || built.gitCommit || git(['rev-parse', 'HEAD']),
   gitBranch: process.env.ASVA_GIT_BRANCH || built.gitBranch || git(['branch', '--show-current']),
   buildTime: process.env.ASVA_BUILD_TIME || built.buildTime || null,
