@@ -105,7 +105,20 @@ export interface AssistantQueryResult { kind: string; answer: string; customerId
 export type FeedbackDraftInput = Omit<FeedbackInput, 'appointmentId' | 'aiSummary' | 'aiStatus' | 'aiNextStep'> & { appointmentId?: string; expectation?: string }
 export interface DocumentExtractionResult { document_type: string; extracted_text: string; extraction_method: string; char_count: number; warnings: string[]; duration_ms: number; file_hash: string; size: number }
 export interface DocumentUploadInput { filename: string; mimeType: string; extension: string; size: number; base64: string }
-export type CustomerCreateResult = Database & { createdCustomerId: string; customerCreated: boolean }
+export interface CustomerMutationResult {
+  customer: Customer
+  enrollments: Database['enrollments']
+  createdCustomerId: string
+  customerCreated: boolean
+  persistenceStatus?: 'COMMITTED' | 'DELAYED'
+}
+export type CustomerCreateResult = CustomerMutationResult
+
+function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
+  const customer = database.customers.find((item) => item.id === customerId)
+  if (!customer) throw new Error('保存后未找到客户')
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED' }
+}
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 
 export interface WorkbenchApi {
@@ -126,7 +139,7 @@ export interface WorkbenchApi {
   createAppointment(input: NewAppointmentInput): Promise<Database>
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
-  updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<Database>
+  updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<CustomerMutationResult>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
   markFollowupDone(actorId: string, appointmentId: string): Promise<Database>
@@ -212,8 +225,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     customer: async (actorId, id) => api.customer(actorId, id),
     createAppointment: async (input) => api.createAppointment(input),
     previewCustomer: async (actorId, input) => api.previewCustomer(actorId, input),
-    createCustomer: async (actorId, input) => api.createCustomer(actorId, input),
-    updateCustomer: async (actorId, customerId, input) => api.updateCustomer(actorId, customerId, input),
+    createCustomer: async (actorId, input) => customerMutationFromDatabase(await api.createCustomer(actorId, input) as Database & Partial<CustomerMutationResult>),
+    updateCustomer: async (actorId, customerId, input) => customerMutationFromDatabase(await api.updateCustomer(actorId, customerId, input) as Database, customerId, false),
     updateCustomerEnrollments: async (actorId, customerId, enrollments) => api.updateCustomerEnrollments(actorId, customerId, enrollments),
     assignAppointment: async (actorId, appointmentId, mentorId) => api.assignAppointment(actorId, appointmentId, mentorId),
     markFollowupDone: async (actorId, appointmentId) => api.markFollowupDone(actorId, appointmentId),
@@ -320,8 +333,18 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     customer: (actorId, id) => request<Customer>(`/api/customers/${encodeURIComponent(id)}`, actorId),
     createAppointment: (input) => request<Database>('/api/appointments', undefined, { method: 'POST', body: JSON.stringify(input) }),
     previewCustomer: (actorId, input) => request<CustomerDraftPreview>('/api/customers/preview', actorId, { method: 'POST', body: JSON.stringify(input) }),
-    createCustomer: (actorId, input) => request<CustomerCreateResult>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input) }),
-    updateCustomer: (actorId, customerId, input) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers: input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined }),
+    createCustomer: async (actorId, input) => {
+      const headers = new Headers(input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined)
+      headers.set('X-ASVA-Response-Mode', 'customer-mutation-v1')
+      const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers })
+      return 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
+    },
+    updateCustomer: async (actorId, customerId, input) => {
+      const headers = new Headers(input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined)
+      headers.set('X-ASVA-Response-Mode', 'customer-mutation-v1')
+      const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
+      return 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
+    },
     updateCustomerEnrollments: (actorId, customerId, enrollments) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/enrollments`, actorId, { method: 'PUT', body: JSON.stringify({ enrollments, operationId: `enrollments-${customerId}-${Date.now()}` }) }),
     assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
     markFollowupDone: (actorId, appointmentId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/complete-followup`, actorId, { method: 'POST', body: '{}' }),

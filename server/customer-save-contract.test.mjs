@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FeishuRepository, customerIdForOperation, partialEnrollmentFailureMessage } from './repository.mjs'
+import { FeishuRepository, customerIdForOperation, partialEnrollmentFailureMessage, publicCustomerMutationDto } from './repository.mjs'
 
 describe('customer save contracts', () => {
   it('keeps the same operation idempotent across retries', () => {
@@ -22,5 +22,21 @@ describe('customer save contracts', () => {
     const result = await repository.loadAfterWrite({ record: { record_id: 'rec-1' } }, 'CUS-1')
 
     expect(result).toMatchObject({ _dataFreshness: 'DELAYED', _persistenceStatus: 'COMMITTED' })
+  })
+
+  it('supports a compact customer mutation response without returning the whole database', () => {
+    const database = {
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      customers: [{ id: 'CUS-1', name: 'Synthetic Customer', profileFields: {}, profileFieldMeta: {} }],
+      enrollments: [{ id: 'ENR-1', customerId: 'CUS-1', productId: 'P-001', status: '学习中' }],
+      appointments: [{ id: 'APT-1', customerId: 'CUS-1' }],
+      sessions: [], followups: [], products: [], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {},
+    }
+    const result = publicCustomerMutationDto(database, 'ADMIN-1', 'CUS-1', true)
+
+    expect(result).toMatchObject({ createdCustomerId: 'CUS-1', customerCreated: true, customer: { id: 'CUS-1' } })
+    expect(result.enrollments).toHaveLength(1)
+    expect(result).not.toHaveProperty('appointments')
+    expect(result).not.toHaveProperty('sourceRecords')
   })
 })
