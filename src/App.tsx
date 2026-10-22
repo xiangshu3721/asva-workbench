@@ -106,8 +106,11 @@ const staffSnapshotKey = (staffId: string) => `asva:session:staff:${staffSession
 const basicDashboardSnapshotKey = (staffId: string) => `asva:session:dashboard:${staffSessionIdentity(staffId)}:scoped`
 const mentorSnapshotKey = (staffId: string) => `asva:session:mentors:${staffSessionIdentity(staffId)}:all`
 const customerDetailCacheKey = (staffId: string, customerId: string) => `customer-detail:${staffSessionIdentity(staffId)}:${customerId}`
-const customerProfileCacheKey = (staffId: string, customerId: string, dataVersion = 0) => `customer-profile:${staffSessionIdentity(staffId)}:${customerId}:v${dataVersion}`
-const sourceWorkspaceCacheKey = (staffId: string, customerId: string) => `source-workspace:${staffSessionIdentity(staffId)}:${customerId}`
+const customerResourceScope = (staffId: string, permissionRole: string) => `${staffSessionIdentity(staffId)}:${permissionRole || 'UNKNOWN'}`
+const customerUnderstandingCacheKey = (staffId: string, permissionRole: string, customerId: string) => `customer-understanding:${customerResourceScope(staffId, permissionRole)}:${customerId}`
+const customerSalesUnderstandingCacheKey = (staffId: string, permissionRole: string, customerId: string) => `customer-sales-understanding:${customerResourceScope(staffId, permissionRole)}:${customerId}`
+const customerProfileCacheKey = (staffId: string, permissionRole: string, customerId: string, dataVersion = 0) => `customer-profile:${customerResourceScope(staffId, permissionRole)}:${customerId}:v${dataVersion}`
+const sourceWorkspaceCacheKey = (staffId: string, permissionRole: string, customerId: string) => `source-workspace:${customerResourceScope(staffId, permissionRole)}:${customerId}`
 function mergeCustomerDetail(directory: Database, detail: Database, customerId: string): Database {
   const replaceCustomerScoped = <T extends { customerId: string }>(current: T[], next: T[]) => [...current.filter((item) => item.customerId !== customerId), ...next]
   const detailCustomer = detail.customers.find((item) => item.id === customerId)
@@ -572,7 +575,7 @@ function CustomersPage({ staff, database, directoryLoading, dataReady, directory
   const showDirectoryLoading = directoryLoading || !dataReady
   const normalizedQuery = query.trim().toLowerCase()
   const list = database.customers.filter((customer) => !normalizedQuery || `${customer.name} ${customer.phone} ${customer.wechat || ''} ${customer.need} ${customer.notes}`.toLowerCase().includes(normalizedQuery))
-  return <div className="customer-page"><div className="customer-list-column"><div className="page-heading"><div><div className="eyebrow">CUSTOMERS</div><h1>客户</h1><p>{canSeeAll ? '查看所有客户与客户档案。' : `${staff.name} 创建的客户档案。`}</p></div><button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button></div><label className="search-field"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索昵称、手机号或主要问题" disabled={showDirectoryLoading} /></label>{showDirectoryLoading ? <div className="customer-list customer-list-loading" aria-busy="true"><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /></div> : <div className="customer-list">{list.map((customer) => { const course = database.enrollments.find((item) => item.customerId === customer.id && item.status !== 'CANCELLED'); const product = course ? database.products.find((item) => item.id === course.productId) : undefined; const tags = [product?.name || ''].filter(Boolean).slice(0, 2); const coverage = customer.profileMaterialization?.coverage.percentage ?? 0; const helper = product?.name || (coverage < 50 ? '档案较少' : customer.profileUpdatedAt ? `最近更新 ${detailDate(customer.profileUpdatedAt).split(' ')[0]}` : '档案已建立'); return <button key={customer.id} className={`customer-list-item ${selectedCustomer?.id === customer.id ? 'selected' : ''}`} onClick={() => onSelect(customer.id)}><span className="customer-avatar">{customer.initials}</span><span className="customer-list-main"><strong>{customer.name}{tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}</strong><span>{customer.need || '尚未记录当前困扰'}</span><small>{helper}</small></span><span className="list-chevron">›</span></button> })}</div>}{!showDirectoryLoading && list.length === 0 && <div className="list-empty">{directoryError ? <><p>{directoryError}</p><button className="secondary-button small" type="button" onClick={onDirectoryRetry}>重新加载</button></> : '暂时没有匹配的客户。'}</div>}</div>{selectedCustomer ? <CustomerDetail customer={selectedCustomer} database={database} canSeeAll={canSeeAll} resourceCache={resourceCache} staffId={staff.id} profileRefreshRevision={profileRefreshRevision} onGenerateBrief={onGenerateBrief} onGenerateIntelligence={onGenerateIntelligence} onRefreshCustomerSummary={onRefreshCustomerSummary} onGetUnderstanding={onGetUnderstanding} onRefreshUnderstanding={onRefreshUnderstanding} onGetSalesUnderstanding={onGetSalesUnderstanding} onRefreshSalesUnderstanding={onRefreshSalesUnderstanding} onGetSafetyAssessment={onGetSafetyAssessment} onRefreshSafetyAssessment={onRefreshSafetyAssessment} onSaveBrief={onSaveBrief} onSaveReferrer={onSaveReferrer} onGenerateProfile={onGenerateProfile} onConfirmProfile={onConfirmProfile} onUpdateEnrollments={onUpdateEnrollments} onLoadCustomerProfile={onLoadCustomerProfile} onSourceWorkspace={onSourceWorkspace} onSourceStatus={onSourceStatus} onExtractDocument={onExtractDocument} onCreateSource={onCreateSource} onProcessSource={onProcessSource} onReviewProposal={onReviewProposal} onResolveConflict={onResolveConflict} onOverrideServiceNecessity={onOverrideServiceNecessity} /> : <div className="empty-detail"><span>客</span><h2>{showDirectoryLoading ? '正在准备客户列表' : '选择一位客户'}</h2><p>{showDirectoryLoading ? '客户列表会先显示，详细资料按需加载。' : '从左侧列表打开客户档案。'}</p></div>}</div>
+  return <div className="customer-page"><div className="customer-list-column"><div className="page-heading"><div><div className="eyebrow">CUSTOMERS</div><h1>客户</h1><p>{canSeeAll ? '查看所有客户与客户档案。' : `${staff.name} 创建的客户档案。`}</p></div><button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button></div><label className="search-field"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索昵称、手机号或主要问题" disabled={showDirectoryLoading} /></label>{showDirectoryLoading ? <div className="customer-list customer-list-loading" aria-busy="true"><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /></div> : <div className="customer-list">{list.map((customer) => { const course = database.enrollments.find((item) => item.customerId === customer.id && item.status !== 'CANCELLED'); const product = course ? database.products.find((item) => item.id === course.productId) : undefined; const tags = [product?.name || ''].filter(Boolean).slice(0, 2); const coverage = customer.profileMaterialization?.coverage.percentage ?? 0; const helper = product?.name || (coverage < 50 ? '档案较少' : customer.profileUpdatedAt ? `最近更新 ${detailDate(customer.profileUpdatedAt).split(' ')[0]}` : '档案已建立'); return <button key={customer.id} className={`customer-list-item ${selectedCustomer?.id === customer.id ? 'selected' : ''}`} onClick={() => onSelect(customer.id)}><span className="customer-avatar">{customer.initials}</span><span className="customer-list-main"><strong>{customer.name}{tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}</strong><span>{customer.need || '尚未记录当前困扰'}</span><small>{helper}</small></span><span className="list-chevron">›</span></button> })}</div>}{!showDirectoryLoading && list.length === 0 && <div className="list-empty">{directoryError ? <><p>{directoryError}</p><button className="secondary-button small" type="button" onClick={onDirectoryRetry}>重新加载</button></> : '暂时没有匹配的客户。'}</div>}</div>{selectedCustomer ? <CustomerDetail customer={selectedCustomer} database={database} canSeeAll={canSeeAll} resourceCache={resourceCache} staffId={staff.id} permissionRole={staff.permissionRole} profileRefreshRevision={profileRefreshRevision} onGenerateBrief={onGenerateBrief} onGenerateIntelligence={onGenerateIntelligence} onRefreshCustomerSummary={onRefreshCustomerSummary} onGetUnderstanding={onGetUnderstanding} onRefreshUnderstanding={onRefreshUnderstanding} onGetSalesUnderstanding={onGetSalesUnderstanding} onRefreshSalesUnderstanding={onRefreshSalesUnderstanding} onGetSafetyAssessment={onGetSafetyAssessment} onRefreshSafetyAssessment={onRefreshSafetyAssessment} onSaveBrief={onSaveBrief} onSaveReferrer={onSaveReferrer} onGenerateProfile={onGenerateProfile} onConfirmProfile={onConfirmProfile} onUpdateEnrollments={onUpdateEnrollments} onLoadCustomerProfile={onLoadCustomerProfile} onSourceWorkspace={onSourceWorkspace} onSourceStatus={onSourceStatus} onExtractDocument={onExtractDocument} onCreateSource={onCreateSource} onProcessSource={onProcessSource} onReviewProposal={onReviewProposal} onResolveConflict={onResolveConflict} onOverrideServiceNecessity={onOverrideServiceNecessity} /> : <div className="empty-detail"><span>客</span><h2>{showDirectoryLoading ? '正在准备客户列表' : '选择一位客户'}</h2><p>{showDirectoryLoading ? '客户列表会先显示，详细资料按需加载。' : '从左侧列表打开客户档案。'}</p></div>}</div>
 }
 
 function LegacyCustomerDetail({ customer, database, canSeeAll, onAssign, onComplete, onFeedback, onGenerateBrief, onSaveBrief, onSaveReferrer }: { customer: Customer; database: Database; canSeeAll: boolean; onAssign: (id: string) => void; onComplete: (id: string) => Promise<void>; onFeedback: (id: string) => void; onGenerateBrief: (input: { name: string; need: string; expectation: string }) => Promise<string>; onSaveBrief: (customerId: string, brief: string) => Promise<Customer | undefined>; onSaveReferrer: (customerId: string, referrerName: string) => Promise<Customer | undefined> }) {
@@ -661,12 +664,14 @@ function dedupeEvidenceDisplay(items: EvidenceDisplayInput[]): EvidenceDisplayIt
 function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, refreshKey = 0 }: { customer: Customer; profile?: CustomerProfileResponse; loading: boolean; error: string; onLoad: (force?: boolean) => Promise<void>; refreshKey?: number }) {
   const [open, setOpen] = useState(false)
   const lastLoadedRefreshKeyRef = useRef<number | null>(null)
+  const onLoadRef = useRef(onLoad)
+  useEffect(() => { onLoadRef.current = onLoad }, [onLoad])
   useEffect(() => {
     if (!open) return
-    const force = lastLoadedRefreshKeyRef.current !== null && refreshKey > lastLoadedRefreshKeyRef.current
+    const force = lastLoadedRefreshKeyRef.current !== null && refreshKey !== lastLoadedRefreshKeyRef.current
     lastLoadedRefreshKeyRef.current = refreshKey
-    void onLoad(force)
-  }, [onLoad, open, refreshKey])
+    void onLoadRef.current(force)
+  }, [open, refreshKey])
   const hydratedCustomer = profile ? { ...customer, profileFields: profile.profileFields, profileFieldMeta: profile.profileFieldMeta, profileUpdatedAt: profile.profileUpdatedAt, profileSchemaVersion: profile.profileSchemaVersion, profileVersion: profile.profileVersion, profileMaterialization: profile.profileMaterialization, profileMaterializationLoaded: true } : customer
   const sections = profileRendererSections(hydratedCustomer).map((section) => ({ ...section, title: sanitizeUserVisibleText(section.title), items: section.items.map((item) => ({ ...item, label: sanitizeUserVisibleText(item.label), text: sanitizeUserVisibleText(item.text), basis: dedupeEvidenceDisplay(item.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))) })) }))
   const materialization = hydratedCustomer.profileMaterialization
@@ -704,7 +709,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
               {event.basis.length > 0 && <details><summary>查看依据</summary><div className="profile-basis">{dedupeEvidenceDisplay(event.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))).map((reference) => <p key={reference.evidenceIds.join('|')} data-evidence-ids={reference.evidenceIds.join(',')}>{reference.displayText}{reference.excerpt && <small>{reference.excerpt}</small>}</p>)}</div></details>}
             </article>)}</div> : null}
           </>
-  return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => { setOpen(event.currentTarget.open); if (event.currentTarget.open) void onLoad() }}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{profileContent}{profile && loading && <p className="profile-refresh-note">正在后台更新档案，当前内容仍可查看。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
+  return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{profileContent}{profile && loading && <p className="profile-refresh-note">正在后台更新档案，当前内容仍可查看。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
 }
 function customerPaymentLabel(customer: Customer, enrollments: Database['enrollments']) {
   if (!enrollments.length) return customer.paid ? '已付费' : '暂未付费'
@@ -716,7 +721,7 @@ function customerPaymentLabel(customer: Customer, enrollments: Database['enrollm
 }
 function sourceLabel(source?: string) { return source === 'MANUAL' ? '人工修改' : source === 'AI_INFERENCE' ? 'AI推断' : source === 'AI_EXTRACTED_CONFIRMED' ? 'AI提取 · 人工确认' : source === 'MENTOR_OBSERVATION' ? '导师观察' : source === 'MENTOR_FACTUAL_INPUT' || source === 'MENTOR_CONFIRMED' ? '导师事实输入' : source === 'ADMIN_CONFIRMED' ? '管理员确认' : source === 'STRUCTURED_INPUT' ? '结构化录入' : source === 'IMPORTED_HISTORY' || source === 'LEGACY_MIGRATION' ? '历史导入' : '客户明确表达' }
 
-function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: number }) {
+function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: number; permissionRole: Staff['permissionRole'] }) {
   const { customer, database } = props
   const appointments = database.appointments.filter((item) => item.customerId === customer.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const sessions = database.sessions.filter((item) => item.customerId === customer.id).sort((a, b) => b.date.localeCompare(a.date))
@@ -765,12 +770,23 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   useEffect(() => { const openProfileComposer = () => { const root = document.querySelector<HTMLElement>('.customer-detail-page.customer-detail-v2'); const moreDetails = root?.querySelector<HTMLDetailsElement>('.customer-more-details'); const evidenceDetails = moreDetails?.querySelector<HTMLDetailsElement>('.evidence-disclosure'); if (!root || !moreDetails || !evidenceDetails) return; moreDetails.open = true; evidenceDetails.open = true; requestAnimationFrame(() => root.querySelector<HTMLElement>('#profile-supplement')?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }; window.addEventListener('asva-open-source-composer', openProfileComposer); return () => window.removeEventListener('asva-open-source-composer', openProfileComposer) }, [customer.id])
   const loadUnderstanding = async () => {
     const requestCustomerId = customer.id
-    if (understandingByCustomerId[requestCustomerId]?.loading || understandingByCustomerId[requestCustomerId]?.value) return
+    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
+    const current = understandingByCustomerId[requestCustomerId]
+    const cached = props.resourceCache.get<CustomerUnderstandingResponse>(cacheKey)
+    const cachedEntry = props.resourceCache.getEntry<CustomerUnderstandingResponse>(cacheKey)
+    const cachedFresh = Boolean(cachedEntry?.data !== undefined && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
+    if (current?.loading) return
+    if (cached && cachedFresh) {
+      setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, cached) }))
+      logAppPerformance('CUSTOMER_UNDERSTANDING_CACHE_HIT', { hit: true })
+      return
+    }
     const requestSequence = ++understandingSequenceRef.current
     const startedAt = performance.now()
-    setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId, null, true) }))
+    const previous = current?.value || null
+    setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, previous, true) }))
     try {
-      const result = await props.onGetUnderstanding(requestCustomerId)
+      const result = await props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId), { ttlMs: DATABASE_TTL_MS })
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: result, loading: false, error: '' } }))
       logAppPerformance('CUSTOMER_UNDERSTANDING_FETCH_MS', { duration_ms: Math.round(performance.now() - startedAt) })
@@ -784,14 +800,21 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const loadCustomerProfile = async (force = false) => {
     const requestCustomerId = customer.id
-    const cacheKey = customerProfileCacheKey(props.staffId, requestCustomerId, props.profileRefreshRevision)
+    const cacheKey = customerProfileCacheKey(props.staffId, props.permissionRole, requestCustomerId, customer.profileVersion ?? 0)
     const cachedProfile = props.resourceCache.get<CustomerProfileResponse>(cacheKey)
+    const cachedProfileEntry = props.resourceCache.getEntry<CustomerProfileResponse>(cacheKey)
+    const cachedProfileFresh = Boolean(cachedProfileEntry?.data !== undefined && Date.now() - cachedProfileEntry.updatedAt < DATABASE_TTL_MS)
     if (profileByCustomerId[requestCustomerId]?.loading && !force) return
-    if (!force && profileByCustomerId[requestCustomerId]?.value && cachedProfile) {
+    if (!force && profileByCustomerId[requestCustomerId]?.value && cachedProfileFresh) {
       logAppPerformance('CUSTOMER_PROFILE_CACHE_HIT', { hit: true })
       return
     }
-    logAppPerformance('CUSTOMER_PROFILE_CACHE_HIT', { hit: Boolean(cachedProfile && !force) })
+    if (!force && cachedProfile && cachedProfileFresh && !profileByCustomerId[requestCustomerId]?.value) {
+      setProfileByCustomerId((current) => ({ ...current, [requestCustomerId]: createCustomerScopedState(requestCustomerId, cachedProfile) }))
+      logAppPerformance('CUSTOMER_PROFILE_CACHE_HIT', { hit: true })
+      return
+    }
+    logAppPerformance('CUSTOMER_PROFILE_CACHE_HIT', { hit: Boolean(cachedProfile && cachedProfileFresh && !force) })
     const requestSequence = ++profileSequenceRef.current
     const previous = profileByCustomerId[requestCustomerId]?.value || cachedProfile
     setProfileByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...createCustomerScopedState<CustomerProfileResponse>(requestCustomerId, previous ?? null, true), value: previous ?? null } }))
@@ -809,23 +832,37 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       setProfileByCustomerId((current) => current[requestCustomerId] ? { ...current, [requestCustomerId]: { ...current[requestCustomerId], loading: false } } : current)
     }
   }
-  const cachedWorkspace = props.resourceCache.get<SourceWorkspace>(sourceWorkspaceCacheKey(props.staffId, customer.id))
+  const workspaceCacheKey = sourceWorkspaceCacheKey(props.staffId, props.permissionRole, customer.id)
+  const cachedWorkspace = props.resourceCache.get<SourceWorkspace>(workspaceCacheKey)
+  const cachedWorkspaceEntry = props.resourceCache.getEntry<SourceWorkspace>(workspaceCacheKey)
+  const cachedWorkspaceFresh = Boolean(cachedWorkspaceEntry?.data !== undefined && Date.now() - cachedWorkspaceEntry.updatedAt < DATABASE_TTL_MS)
   const loadWorkspace = async (customerId: string, options: { refresh?: boolean } = {}) => {
-    const cacheKey = sourceWorkspaceCacheKey(props.staffId, customerId)
+    const cacheKey = sourceWorkspaceCacheKey(props.staffId, props.permissionRole, customerId)
     const cached = props.resourceCache.get<SourceWorkspace>(cacheKey)
     const startedAt = performance.now()
     const result = await props.resourceCache.load(cacheKey, () => props.onSourceWorkspace(customerId), { ttlMs: DATABASE_TTL_MS, force: Boolean(options.refresh) })
     logAppPerformance('SOURCE_WORKSPACE_FETCH_MS', { duration_ms: Math.round(performance.now() - startedAt), from_cache: Boolean(cached && !options.refresh) })
     return result
   }
-  const setWorkspaceCache = (customerId: string, workspace: SourceWorkspace) => { props.resourceCache.set(sourceWorkspaceCacheKey(props.staffId, customerId), workspace) }
+  const setWorkspaceCache = (customerId: string, workspace: SourceWorkspace) => { props.resourceCache.set(sourceWorkspaceCacheKey(props.staffId, props.permissionRole, customerId), workspace) }
   const loadSalesUnderstanding = async () => {
     const requestCustomerId = customer.id
-    if (salesByCustomerId[requestCustomerId]?.loading || salesByCustomerId[requestCustomerId]?.value) return
+    const cacheKey = customerSalesUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
+    const current = salesByCustomerId[requestCustomerId]
+    const cached = props.resourceCache.get<CustomerSalesUnderstandingResponse>(cacheKey)
+    const cachedEntry = props.resourceCache.getEntry<CustomerSalesUnderstandingResponse>(cacheKey)
+    const cachedFresh = Boolean(cachedEntry?.data !== undefined && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
+    if (current?.loading) return
+    if (cached && cachedFresh) {
+      setSalesByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, cached) }))
+      logAppPerformance('CUSTOMER_SALES_UNDERSTANDING_CACHE_HIT', { hit: true })
+      return
+    }
     const requestSequence = ++salesSequenceRef.current
-    setSalesByCustomerId((current) => ({ ...current, [requestCustomerId]: createCustomerScopedState<CustomerSalesUnderstandingResponse>(requestCustomerId, null, true) }))
+    const previous = current?.value || null
+    setSalesByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, previous, true) }))
     try {
-      const result = await props.onGetSalesUnderstanding(requestCustomerId)
+      const result = await props.resourceCache.load(cacheKey, () => props.onGetSalesUnderstanding(requestCustomerId), { ttlMs: DATABASE_TTL_MS })
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: salesSequenceRef.current, responseCustomerId: result.customerId })) return
       setSalesByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: result, loading: false, error: '' } }))
     } catch (error) {
@@ -838,10 +875,12 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const refreshUnderstanding = async (force = false) => {
     const requestCustomerId = customer.id
+    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
     const requestSequence = ++understandingSequenceRef.current
     setUnderstandingRefreshingCustomerId(requestCustomerId)
     try {
       const result = await props.onRefreshUnderstanding(requestCustomerId, force)
+      props.resourceCache.set(cacheKey, result)
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)), value: result, loading: false, error: '' } }))
     } finally {
@@ -850,10 +889,12 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const refreshSalesUnderstanding = async (force = false) => {
     const requestCustomerId = customer.id
+    const cacheKey = customerSalesUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
     const requestSequence = ++salesSequenceRef.current
     setSalesRefreshingCustomerId(requestCustomerId)
     try {
       const result = await props.onRefreshSalesUnderstanding(requestCustomerId, force)
+      props.resourceCache.set(cacheKey, result)
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: salesSequenceRef.current, responseCustomerId: result.customerId })) return
       setSalesByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerSalesUnderstandingResponse>(requestCustomerId)), value: result, loading: false, error: '' } }))
     } finally {
@@ -891,9 +932,9 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       <section className="customer-service-block"><div className={`customer-service-facts ${sessions[0] ? '' : 'customer-service-facts-without-session'}`}>{sessions[0] && <div><span>最近服务</span><strong>{friendlyDetailDate(sessions[0].date).split(' ')[0] || '暂无'}</strong></div>}<div className="customer-service-suggestion"><span>当前建议</span><strong>{serviceSuggestion}</strong></div><div><span>最近更新</span><strong>{recentUpdate || '—'}</strong></div></div></section>
     </header>
     <CustomerUnderstandingOverview understanding={currentUnderstanding} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} />
-    <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={props.profileRefreshRevision} />
+    <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
     <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
-    <details className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onExtractDocument={props.onExtractDocument} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
+    <details className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onExtractDocument={props.onExtractDocument} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={sortProductsForSelection(database.products.filter(activeProductForManualEntry))} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
 }
@@ -1032,7 +1073,7 @@ function EnrollmentEditor({ customer, products, enrollments, onClose, onSave }: 
 
 function CustomerHistory({ appointments, sessions, database }: { appointments: Database['appointments']; sessions: Database['sessions']; database: Database }) { const events = [...appointments.map((item) => ({ id: item.id, date: item.createdAt, type: '预约', title: item.topic, body: item.description || item.expectation, mentorId: item.assignedMentorId })), ...sessions.map((item) => ({ id: item.id, date: item.date, type: '服务记录', title: item.topic, body: item.aiSummary || item.note, mentorId: item.mentorId }))].sort((a, b) => b.date.localeCompare(a.date)); return <section className="customer-detail-section"><SectionHeading title="历史记录" meta={`${events.length} 条`} icon="◷" action={<span className="history-filter">全部</span>} />{events.length ? <div className="history-timeline">{events.map((event) => { const mentor = database.staff.find((item) => item.id === event.mentorId); return <article className="history-event" key={event.id}><time>{detailDate(event.date)}</time><span className="history-dot" /><div><div className="history-event-title"><strong>{event.title}</strong></div><small>{event.type}{mentor ? ` · ${mentor.name}` : ''}</small><p>{event.body || '暂无详细记录。'}</p></div></article> })}</div> : <div className="detail-empty-line">还没有预约或服务记录。</div>}</section> }
 
-function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorkspaceChange, onSourceStatus, onExtractDocument, onCreate, onProcess, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
+function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, onLoad, onWorkspaceChange, onSourceStatus, onExtractDocument, onCreate, onProcess, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
   const emptyWorkspace: SourceWorkspace = { sources: [], evidenceItems: [], proposals: [], conflicts: [] }
   const [workspace, setWorkspace] = useState<SourceWorkspace>(() => cachedWorkspace || emptyWorkspace)
   const workspaceRef = useRef(cachedWorkspace || emptyWorkspace)
@@ -1068,9 +1109,10 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
     onWorkspaceChange?.(customer.id, next)
   }
   const load = async ({ refresh = false }: { refresh?: boolean } = {}) => {
-    if (!refresh && workspaceLoadedRef.current) return workspaceRef.current
+    if (!refresh && workspaceLoadedRef.current && cachedWorkspaceFresh) return workspaceRef.current
     const requestSequence = ++workspaceRequestSequenceRef.current
-    if (refresh) setWorkspaceRefreshing(true)
+    const backgroundRefresh = refresh || workspaceLoadedRef.current
+    if (backgroundRefresh) setWorkspaceRefreshing(true)
     else setWorkspaceLoading(true)
     try {
       const next = await onLoad(customer.id, { refresh })
@@ -1086,7 +1128,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, onLoad, onWorks
       return null
     } finally {
       if (requestSequence === workspaceRequestSequenceRef.current) {
-        if (refresh) setWorkspaceRefreshing(false)
+        if (backgroundRefresh) setWorkspaceRefreshing(false)
         else setWorkspaceLoading(false)
       }
     }
