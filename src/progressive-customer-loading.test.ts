@@ -48,4 +48,20 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain('const lifeEvents = materialization?.lifeEvents || []')
     expect(appSource).toContain('customer.profileMaterializationLoaded !== false')
   })
+
+  it('uses session- and permission-scoped resource caches for customer reads', () => {
+    expect(appSource).toContain('customerResourceScope')
+    expect(appSource).toContain('customerUnderstandingCacheKey')
+    expect(appSource).toContain('customerSalesUnderstandingCacheKey')
+    expect(appSource).toContain('customerProfileCacheKey(props.staffId, props.permissionRole, requestCustomerId, customer.profileVersion ?? 0)')
+    expect(appSource).toContain('sourceWorkspaceCacheKey(props.staffId, props.permissionRole, customer.id)')
+    expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId)')
+    expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetSalesUnderstanding(requestCustomerId)')
+    expect(appSource).toContain('onLoadRef.current(force)')
+  })
+
+  it('does not use the global directory refresh revision as the profile cache version', () => {
+    expect(appSource).not.toContain('customerProfileCacheKey(props.staffId, requestCustomerId, props.profileRefreshRevision)')
+    expect(appSource).toContain('refreshKey={customer.profileVersion ?? 0}')
+  })
 })

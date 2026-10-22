@@ -15,7 +15,7 @@ describe('R043 customer archive and understanding persistence', () => {
 
   it('restores persisted consultation understanding with a read on customer mount', () => {
     expect(appSource).toContain('useEffect(() => { void loadUnderstanding() }, [customer.id])')
-    expect(appSource).toContain('const result = await props.onGetUnderstanding(requestCustomerId)')
+    expect(appSource).toContain('const result = await props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId)')
     expect(appSource).not.toContain("setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: undefined")
   })
 

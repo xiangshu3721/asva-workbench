@@ -100,4 +100,23 @@ describe('R043 progressive read paths', () => {
     expect(mentorProfile.profileMaterialization.provisionalItems).toEqual(expect.arrayContaining([expect.objectContaining({ evidenceId: 'E-PENDING' })]))
     expect(JSON.stringify(mentorProfile.profileMaterialization)).not.toContain('高敏安全原文')
   })
+
+  it('reuses one permission-scoped database read across customer detail resources', async () => {
+    const repository = new FeishuRepository()
+    await Promise.all([
+      repository.customerProfile(mentor.id, 'CUS-1'),
+      repository.getCustomerUnderstanding(mentor.id, 'CUS-1'),
+      repository.getCustomerSalesUnderstanding(mentor.id, 'CUS-1'),
+      repository.sourceWorkspace(mentor.id, 'CUS-1'),
+    ])
+
+    expect(listRecordsMock).toHaveBeenCalledTimes(11)
+    await Promise.all([
+      repository.customerProfile(mentor.id, 'CUS-1'),
+      repository.getCustomerUnderstanding(mentor.id, 'CUS-1'),
+      repository.getCustomerSalesUnderstanding(mentor.id, 'CUS-1'),
+      repository.sourceWorkspace(mentor.id, 'CUS-1'),
+    ])
+    expect(listRecordsMock).toHaveBeenCalledTimes(11)
+  })
 })
