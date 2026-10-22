@@ -165,9 +165,15 @@ async function handle(request, response, requestId) {
   const conflictResolve = url.pathname.match(/^\/api\/evidence-conflicts\/([^/]+)\/resolve$/)
   if (request.method === 'POST' && conflictResolve) { const body = await readBody(request); return send(request, response, 200, await repository.resolveConflict(await guard(request), decodeURIComponent(conflictResolve[1]), body.resolution), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guard(request), await readBody(request)), requestId)
-  if (request.method === 'POST' && url.pathname === '/api/customers') return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/customers') {
+    const compactResponse = request.headers.get('x-asva-response-mode') === 'customer-mutation-v1'
+    return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
+  }
   const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
-  if (request.method === 'PATCH' && customerEdit) return send(request, response, 200, await repository.updateCustomer(await guard(request), decodeURIComponent(customerEdit[1]), await readBody(request)), requestId)
+  if (request.method === 'PATCH' && customerEdit) {
+    const compactResponse = request.headers.get('x-asva-response-mode') === 'customer-mutation-v1'
+    return send(request, response, 200, await repository.updateCustomer(await guard(request), decodeURIComponent(customerEdit[1]), await readBody(request), { compactResponse }), requestId)
+  }
   const customerEnrollments = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments$/)
   if (request.method === 'PUT' && customerEnrollments) { const body = await readBody(request); return send(request, response, 200, await repository.updateCustomerEnrollments(await guard(request), decodeURIComponent(customerEnrollments[1]), body.enrollments, body.operationId), requestId) }
   const understandingCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/understanding(?:\/refresh)?$/)

@@ -170,6 +170,7 @@ export function createFeishuGateway({
     request, getToken, providerStatus, metrics: () => ({ ...metrics }),
     findExistingRecord,
     listRecords: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId }),
+    getRecord: async (tableId, recordId) => { const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${encodeURIComponent(recordId)}`, {}, { operation: 'get_record', table: tableId }); return data?.record || data },
     listFields: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields?${query}`, 'list_fields', { table: tableId }),
     listTables: () => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables?${query}`, 'list_tables'),
     createTable: (name, fields = []) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables`, { method: 'POST', body: JSON.stringify({ table: { name, default_view_name: '默认视图', fields } }) }, { operation: 'create_table', retry: false }),
@@ -183,6 +184,7 @@ export function createFeishuGateway({
 const gateway = createFeishuGateway()
 export const feishuGateway = gateway
 export const listRecords = (tableId) => gateway.listRecords(tableId)
+export const getRecord = (tableId, recordId) => gateway.getRecord(tableId, recordId)
 export const listFields = (tableId) => gateway.listFields(tableId)
 export const listTables = () => gateway.listTables()
 export const createTable = (name, fields = []) => gateway.createTable(name, fields)
