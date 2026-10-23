@@ -534,6 +534,7 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .reading-mode-switch button { padding: 6px 10px; border-radius: 999px; color: #65817d; background: transparent; font-size: 10px; font-weight: 600; }
 .reading-mode-switch button.active { color: #0f655f; background: #fffefa; box-shadow: 0 2px 7px rgba(39, 116, 92, .09); }
 .understanding-overview { margin-top: 16px; }
+.understanding-overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .understanding-overview-label { margin-bottom: 7px; color: #397166; font-size: 12px; font-weight: 700; }
 .understanding-overview-label-summary { margin-top: 15px; }
 .understanding-basic-facts { display: flex; flex-wrap: wrap; gap: 7px; }

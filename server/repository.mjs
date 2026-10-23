@@ -88,6 +88,7 @@ export function publicCustomerMutationDto(database, actorId, customerId, custome
   return {
     customer: publicCustomerDetail(customerRecord),
     enrollments: visible.enrollments.filter((item) => item.customerId === customerId).map(publicEnrollment),
+    profileChanges: visible.profileChanges.filter((item) => item.customerId === customerId).map(publicProfileChange),
     createdCustomerId: customerId,
     customerCreated,
     persistenceStatus: database._persistenceStatus || 'COMMITTED',
@@ -441,6 +442,11 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
     if (draft.enrolledAt) fields.enrolled_at = draft.enrolledAt
     if (draft.paidAt) fields.paid_at = draft.paidAt
     if (existing?._recordId) {
+      const unchanged = existing.paymentStatus === paymentStatus
+        && (draft.amount === undefined || Number(existing.amount) === Number(draft.amount))
+        && (draft.enrolledAt === undefined || String(existing.enrolledAt || '') === String(draft.enrolledAt || ''))
+        && (draft.paidAt === undefined || String(existing.paidAt || '') === String(draft.paidAt || ''))
+      if (unchanged) continue
       await updateRecord(config.feishu.tables.enrollments, existing._recordId, mapFields('enrollments', fields))
       changed = true
       continue
@@ -463,6 +469,16 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
     }
   }
   return changed
+}
+
+async function createManualProfileChange(database, { customerId, field, fieldName, oldValue, newValue, operatorId, operationId = '' }) {
+  if (sameProfileValue(oldValue, newValue)) return null
+  const existing = (database.profileChanges || []).find((item) => item.customerId === customerId && item.field === field && sameProfileValue(item.oldValue, oldValue) && sameProfileValue(item.newValue, newValue) && item.operatorId === operatorId)
+  if (existing) return existing
+  const changedAt = feishuDate()
+  const changeId = operationId ? stableOperationId(`${operationId}:${field}`, 'PCH') : `PCH-${crypto.randomUUID()}`
+  await createMappedRecord('profileChanges', 'profile-change.manual-customer', { change_id: changeId, customer_id: customerId, field, field_key: field, field_name: fieldName || field, old_value: JSON.stringify(oldValue ?? null), new_value: JSON.stringify(newValue ?? null), source: 'MANUAL', confidence: 1, confirmed: true, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: '', source_record_id: '', evidence_id: '', update_batch_id: '' })
+  return { id: changeId, customerId, field, fieldName: fieldName || field, oldValue: oldValue ?? null, newValue: newValue ?? null, source: 'MANUAL', confidence: 1, confirmed: true, updatedAt: new Date().toISOString(), operatorId }
 }
 
 async function persistCustomerProfile(database, customerId, updates, serviceRecordId, operatorId, provenanceContext = {}) {
@@ -503,11 +519,15 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   if (changed.length) customerRecord.safetyMeta = { ...(customerRecord.safetyMeta || {}), status: 'STALE', inputFingerprint: '', updatedAt }
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
+  if (!changed.length) return { customerRecord, writeResult: null, changes: [] }
   const writeResult = await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
+  const persistedChanges = []
   for (const change of changed.filter((item) => customerHistoryPolicy(item.field) === 'TRACK' || (item.field === 'age' && !customerRecord.profileFields.birth_date))) {
-    await createMappedRecord('profileChanges', 'profile-change.provenance', { customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '', source_record_id: provenanceContext.sourceRecordId || '', evidence_id: provenanceContext.evidenceId || '', update_batch_id: provenanceContext.updateBatchId || '' })
+    const changeId = provenanceContext.updateBatchId ? stableOperationId(`${provenanceContext.updateBatchId}:${change.field}`, 'PCH') : `PCH-${crypto.randomUUID()}`
+    await createMappedRecord('profileChanges', 'profile-change.provenance', { change_id: changeId, customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '', source_record_id: provenanceContext.sourceRecordId || '', evidence_id: provenanceContext.evidenceId || '', update_batch_id: provenanceContext.updateBatchId || '' })
+    persistedChanges.push({ id: changeId, customerId, field: change.field, fieldName: mapField('customers', change.field), oldValue: change.oldValue ?? null, newValue: change.value ?? null, source: change.source, confidence: change.confidence, confirmed: change.confirmed, updatedAt: new Date().toISOString(), operatorId, serviceRecordId })
   }
-  return { customerRecord, writeResult }
+  return { customerRecord, writeResult, changes: persistedChanges }
 }
 
 const stage2Table = (name) => config.feishu.tables[name]
@@ -1207,18 +1227,20 @@ export class FeishuRepository {
         const profileStartedAt = Date.now()
         const profileWrite = await persistCustomerProfile(current, customerId, normalizeProfileUpdates(input.profileUpdates, current.customers.find((item) => item.id === customerId), true), undefined, actorId)
         current = await this.loadCustomerAfterWrite(profileWrite.writeResult, customerId, current)
+        if (profileWrite.changes?.length) current.profileChanges = [...(current.profileChanges || []), ...profileWrite.changes]
         timings.profile_change_ms = Date.now() - profileStartedAt
       }
       const enrollmentStartedAt = Date.now()
+      let enrollmentsChanged = false
       try {
-        await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
+        enrollmentsChanged = await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
       } catch (error) {
         throw Object.assign(new Error(partialEnrollmentFailureMessage()), { code: 'CUSTOMER_ENROLLMENT_PARTIAL_FAILURE', status: 502, cause: error })
       }
       timings.enrollment_write_ms = Date.now() - enrollmentStartedAt
       result = 'SUCCESS'
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
-      if (input.enrollments?.length) current = await this.loadAfterWrite(undefined, customerId)
+      if (enrollmentsChanged) current = await this.loadAfterWrite(undefined, customerId)
       const latest = current
       if (!existing) this.recentCustomerWrites.set(customerId, Date.now())
       return compactResponse
@@ -1260,7 +1282,8 @@ export class FeishuRepository {
         throw Object.assign(new Error('手机号或微信号至少填写一个联系方式。'), { code: 'CUSTOMER_CONTACT_REQUIRED', status: 400, field: 'contact' })
       }
     }
-    const normalized = { nickname: text(input.nickname || current.name).trim(), phone: normalizePhone(nextPhone), wechat: text(nextWechat).trim(), introducer: text(input.introducer).trim(), situation: text(input.situation).trim() }
+    const situationProvided = Object.prototype.hasOwnProperty.call(input || {}, 'situation')
+    const normalized = { nickname: text(input.nickname || current.name).trim(), phone: normalizePhone(nextPhone), wechat: text(nextWechat).trim(), introducer: introducerProvided ? text(input.introducer).trim() : text(current.introducer || current.referrerName).trim(), situation: situationProvided ? text(input.situation).trim() : text(current.notes).trim() }
     const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), normalized)
     if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT' })
     if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已绑定其他客户，不能覆盖。'), { status: 409, code: 'CUSTOMER_DUPLICATE' })
@@ -1268,20 +1291,34 @@ export class FeishuRepository {
     if (normalizePhone(current.phone) !== normalized.phone) identityUpdates.push({ field: 'phone', value: normalized.phone, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
     if (normalizeWechat(current.wechat) !== normalizeWechat(normalized.wechat)) identityUpdates.push({ field: 'wechat', value: normalized.wechat, source: 'USER_EXPLICIT', confidence: 1, confirmed: true })
     if (identityUpdates.length) await persistCustomerProfile(database, customerId, normalizeProfileUpdates(identityUpdates, current, true), undefined, actorId)
-    const customerValues = { nickname: normalized.nickname, source: input.source || current.source, notes: normalized.situation || current.notes }
+    const nicknameChanged = normalized.nickname !== current.name
+    const notesChanged = situationProvided && normalized.situation !== String(current.notes || '').trim()
     const previousIntroducer = current.referrerName || ''
-    if (introducerProvided) customerValues.referrer_name = normalized.introducer
-    const customerWriteResult = await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues))
-    if (introducerProvided && previousIntroducer !== normalized.introducer) {
-      const changedAt = feishuDate()
-      await createMappedRecord('profileChanges', 'profile-change.manual-introducer', { customer_id: customerId, field: 'introducer', field_key: 'introducer', field_name: '介绍人', old_value: JSON.stringify(previousIntroducer || null), new_value: JSON.stringify(normalized.introducer || null), source: 'MANUAL', confidence: 1, confirmed: true, updated_at: changedAt, changed_at: changedAt, operator_id: actorId, service_record_id: '', source_record_id: '', evidence_id: '', update_batch_id: '' })
-    }
-    let latest = await this.loadCustomerAfterWrite(customerWriteResult, customerId, database)
+    const introducerChanged = introducerProvided && previousIntroducer !== normalized.introducer
+    const customerValues = {}
+    if (nicknameChanged) customerValues.nickname = normalized.nickname
+    if (situationProvided && notesChanged) customerValues.notes = normalized.situation
+    if (input.source && input.source !== current.source) customerValues.source = input.source
+    if (introducerChanged) customerValues.referrer_name = normalized.introducer
+    const customerWriteResult = Object.keys(customerValues).length ? await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues)) : null
+    const manualChanges = []
+    if (nicknameChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'nickname', fieldName: '客户昵称', oldValue: current.name, newValue: normalized.nickname, operatorId: actorId, operationId: text(input?.operationId).trim() }))
+    if (notesChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'notes', fieldName: '客户情况', oldValue: current.notes || null, newValue: normalized.situation || null, operatorId: actorId, operationId: text(input?.operationId).trim() }))
+    if (introducerChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'introducer', fieldName: '介绍人', oldValue: previousIntroducer || null, newValue: normalized.introducer || null, operatorId: actorId, operationId: text(input?.operationId).trim() }))
+    let latest = customerWriteResult ? await this.loadCustomerAfterWrite(customerWriteResult, customerId, database) : database
+    latest = { ...latest, profileChanges: [...(latest.profileChanges || []), ...manualChanges.filter(Boolean)] }
     if (input.profileUpdates?.length) {
       const profileWrite = await persistCustomerProfile(latest, customerId, normalizeProfileUpdates(input.profileUpdates, latest.customers.find((item) => item.id === customerId), true), undefined, actorId)
-      latest = await this.loadCustomerAfterWrite(profileWrite.writeResult, customerId, latest)
+      if (profileWrite.writeResult) latest = await this.loadCustomerAfterWrite(profileWrite.writeResult, customerId, latest)
+      if (profileWrite.changes?.length) latest.profileChanges = [...(latest.profileChanges || []), ...profileWrite.changes]
     }
+    const previousEnrollmentIds = latest.enrollments.filter((item) => item.customerId === customerId && item.status !== 'CANCELLED').map((item) => item.productId).sort()
     const enrollmentsChanged = await mergeEnrollments(latest, customerId, input.enrollments, actorId, text(input?.operationId).trim(), { replace: Array.isArray(input.enrollments) })
+    if (enrollmentsChanged) {
+      const nextEnrollmentIds = (Array.isArray(input.enrollments) ? input.enrollments : []).map((item) => item.productId).filter(Boolean).sort()
+      const enrollmentChange = await createManualProfileChange(database, { customerId, field: 'enrollments', fieldName: '报名课程', oldValue: previousEnrollmentIds, newValue: nextEnrollmentIds, operatorId: actorId, operationId: text(input?.operationId).trim() })
+      if (enrollmentChange) latest = { ...latest, profileChanges: [...latest.profileChanges, enrollmentChange] }
+    }
     // Customer updates do not create or mutate Appointment in Stage 1.
     if (enrollmentsChanged) latest = await this.loadAfterWrite(undefined, customerId)
     return compactResponse ? publicCustomerMutationDto(latest, actorId, customerId, false) : scope(latest, actorId)
@@ -1293,8 +1330,14 @@ export class FeishuRepository {
     const database = await this.load()
     scope(database, actorId)
     if (!database.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
-    await mergeEnrollments(database, customerId, Array.isArray(drafts) ? drafts : [], actorId, text(operationId).trim(), { replace: true })
-    return scope(await this.loadAfterWrite(undefined, customerId), actorId)
+    const current = database.enrollments.filter((item) => item.customerId === customerId && item.status !== 'CANCELLED').map((item) => item.productId).sort()
+    const next = (Array.isArray(drafts) ? drafts : []).map((item) => item.productId).filter(Boolean).sort()
+    const changed = await mergeEnrollments(database, customerId, Array.isArray(drafts) ? drafts : [], actorId, text(operationId).trim(), { replace: true })
+    if (!changed) return scope(database, actorId)
+    const change = await createManualProfileChange(database, { customerId, field: 'enrollments', fieldName: '报名课程', oldValue: current, newValue: next, operatorId: actorId, operationId: text(operationId).trim() })
+    const latest = await this.loadAfterWrite(undefined, customerId)
+    if (change) latest.profileChanges = [...latest.profileChanges, change]
+    return scope(latest, actorId)
   }
   async confirmProfile(actorId, customerId, updates) { return this.customerWriteQueue.run(customerId, () => this.confirmProfileUnsafe(actorId, customerId, updates)) }
   async confirmProfileUnsafe(actorId, customerId, updates) {
