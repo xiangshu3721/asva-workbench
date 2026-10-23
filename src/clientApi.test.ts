@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, createHttpApi } from './clientApi'
+import { CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -16,6 +16,18 @@ describe('HTTP environment diagnostics', () => {
 
   it('does not turn an empty API base into a local fallback', async () => {
     await expect(createHttpApi('').health()).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR' })
+  })
+
+  it('does not misdiagnose a generic fetch failure as CORS', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await expect(createHttpApi('https://api.example.com').health()).rejects.toMatchObject({ code: 'NETWORK_UNREACHABLE', message: '请求未完成，请检查网络或稍后重试。' })
+    expect(classifyFetchFailure(new TypeError('Load failed')).code).toBe('NETWORK_UNREACHABLE')
+  })
+
+  it('reports CORS only when the browser error contains explicit CORS evidence', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Blocked by CORS policy: preflight request failed') }))
+    await expect(createHttpApi('https://api.example.com').health()).rejects.toMatchObject({ code: 'CORS_PREFLIGHT_FAILED' })
+    expect(classifyFetchFailure(new TypeError('preflight response is invalid')).code).toBe('CORS_PREFLIGHT_FAILED')
   })
 
   it('AI_RETRY_DOES_NOT_RESAVE_SOURCE', async () => {
