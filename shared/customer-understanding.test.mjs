@@ -18,6 +18,21 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(understandingInputFingerprint({ customer, evidenceItems: [fact()] })).not.toBe(understandingInputFingerprint({ customer, evidenceItems: [fact({ id: 'EVD-2' })] }))
   })
 
+  it('includes recorded customer notes and needs in the understanding context and fingerprint', () => {
+    const withNotes = { ...customer, notes: '最近睡眠变差，希望先理清工作安排。', need: '降低工作压力', goal: '恢复稳定节奏', helpExpectation: '先找到一小步' }
+    const context = buildCustomerUnderstandingContext({ customer: withNotes, evidenceItems: [] })
+    expect(context.recorded_context).toMatchObject({ notes: '最近睡眠变差，希望先理清工作安排。', current_need: '降低工作压力', current_goal: '恢复稳定节奏', help_expectation: '先找到一小步' })
+    expect(context.current_needs.map((item) => item.text)).toEqual(expect.arrayContaining(['降低工作压力', '恢复稳定节奏']))
+    expect(understandingInputFingerprint({ customer, evidenceItems: [] })).not.toBe(understandingInputFingerprint({ customer: withNotes, evidenceItems: [] }))
+  })
+
+  it('keeps a sparse customer understandable without inventing a confirmed fact', () => {
+    const local = createLocalCustomerUnderstanding({ generated_at: '2026-01-01T00:00:00.000Z', recorded_context: { current_need: '降低工作压力' }, current_needs: [], resources: [], top_life_events: [], coverage_gaps: [], evidence_refs: [] })
+    expect(local.one_line_understanding.text).toBe('降低工作压力')
+    expect(local.one_line_understanding.confidence).toBe('LOW')
+    expect(local.one_line_understanding.evidence_ids).toEqual([])
+  })
+
   it('rejects unsupported diagnosis and unknown evidence references', () => {
     const normalized = normalizeCustomerUnderstanding({ one_line_understanding: { text: '这是抑郁症', evidence_ids: ['NOPE'], confidence: 'HIGH', type: 'SYNTHESIS' }, knowledge_gaps: [{ text: '待确认' }] }, { evidenceIds: ['EVD-1'] })
     const result = qualityCheckCustomerUnderstanding(normalized, { evidenceIds: ['EVD-1'] })

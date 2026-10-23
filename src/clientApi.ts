@@ -108,6 +108,7 @@ export interface DocumentUploadInput { filename: string; mimeType: string; exten
 export interface CustomerMutationResult {
   customer: Customer
   enrollments: Database['enrollments']
+  profileChanges: Database['profileChanges']
   createdCustomerId: string
   customerCreated: boolean
   persistenceStatus?: 'COMMITTED' | 'DELAYED'
@@ -117,7 +118,7 @@ export type CustomerCreateResult = CustomerMutationResult
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
   if (!customer) throw new Error('保存后未找到客户')
-  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED' }
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED' }
 }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 

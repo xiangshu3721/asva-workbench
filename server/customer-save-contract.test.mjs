@@ -30,12 +30,14 @@ describe('customer save contracts', () => {
       customers: [{ id: 'CUS-1', name: 'Synthetic Customer', profileFields: {}, profileFieldMeta: {} }],
       enrollments: [{ id: 'ENR-1', customerId: 'CUS-1', productId: 'P-001', status: '学习中' }],
       appointments: [{ id: 'APT-1', customerId: 'CUS-1' }],
-      sessions: [], followups: [], products: [], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {},
+      profileChanges: [{ id: 'PC-1', customerId: 'CUS-1', field: 'notes', fieldName: '客户情况', oldValue: null, newValue: 'Synthetic change', source: 'MANUAL', confidence: 1, confirmed: true, updatedAt: '2026-01-01T00:00:00.000Z', operatorId: 'ADMIN-1' }],
+      sessions: [], followups: [], products: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {},
     }
     const result = publicCustomerMutationDto(database, 'ADMIN-1', 'CUS-1', true)
 
     expect(result).toMatchObject({ createdCustomerId: 'CUS-1', customerCreated: true, customer: { id: 'CUS-1' } })
     expect(result.enrollments).toHaveLength(1)
+    expect(result.profileChanges).toHaveLength(1)
     expect(result).not.toHaveProperty('appointments')
     expect(result).not.toHaveProperty('sourceRecords')
   })

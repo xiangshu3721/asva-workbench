@@ -60,6 +60,12 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain('onLoadRef.current(force)')
   })
 
+  it('keeps customer understanding retryable and removes the working-hypothesis panel', () => {
+    expect(appSource).toContain('重新理解')
+    expect(appSource).toContain('const previous = current?.value || cached || null')
+    expect(appSource).not.toContain('工作假设 · 仅供参考')
+  })
+
   it('does not use the global directory refresh revision as the profile cache version', () => {
     expect(appSource).not.toContain('customerProfileCacheKey(props.staffId, requestCustomerId, props.profileRefreshRevision)')
     expect(appSource).toContain('refreshKey={customer.profileVersion ?? 0}')
