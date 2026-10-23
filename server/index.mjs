@@ -153,12 +153,12 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && conflictResolve) { const body = await readBody(request); return send(request, response, 200, await repository.resolveConflict(await guard(request), decodeURIComponent(conflictResolve[1]), body.resolution), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guard(request), await readBody(request)), requestId)
   if (request.method === 'POST' && url.pathname === '/api/customers') {
-    const compactResponse = request.headers.get('x-asva-response-mode') === 'customer-mutation-v1'
+    const compactResponse = request.headers['x-asva-response-mode'] === 'customer-mutation-v1'
     return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
   }
   const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
   if (request.method === 'PATCH' && customerEdit) {
-    const compactResponse = request.headers.get('x-asva-response-mode') === 'customer-mutation-v1'
+    const compactResponse = request.headers['x-asva-response-mode'] === 'customer-mutation-v1'
     return send(request, response, 200, await repository.updateCustomer(await guard(request), decodeURIComponent(customerEdit[1]), await readBody(request), { compactResponse }), requestId)
   }
   const customerEnrollments = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments$/)
@@ -201,7 +201,7 @@ async function handle(request, response, requestId) {
   fail('接口不存在', 'NOT_FOUND', 404)
 }
 
-http.createServer((request, response) => {
+export const server = http.createServer((request, response) => {
   const requestId = typeof request.headers['x-request-id'] === 'string' && request.headers['x-request-id'].length < 100 ? request.headers['x-request-id'] : crypto.randomUUID()
   const startedAt = Date.now()
   request.__asvaStartedAt = startedAt
