@@ -1,28 +1,15 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
-import { config, configurationStatus, isCorsOriginAllowed } from './config.mjs'
+import { config, configurationStatus } from './config.mjs'
 import { createBrief, createCustomerIntelligence, createServiceSummary, DeepSeekUnavailableError } from './deepseek.mjs'
 import { FeishuRepository } from './repository.mjs'
 import { FeishuUnavailableError, feishuGateway } from './feishu.mjs'
 import { AuthError, bearerToken, issueSession, verifySession } from './auth.mjs'
 import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
+import { responseHeaders } from './cors.mjs'
 
 const repository = new FeishuRepository()
-
-function responseHeaders(request, requestId) {
-  const requestedOrigin = request.headers.origin
-  const origin = requestedOrigin && isCorsOriginAllowed(requestedOrigin) ? requestedOrigin : ''
-  return {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    Vary: 'Origin',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Staff-Id, X-Operation-Id, X-Idempotency-Key',
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-    'X-Request-Id': requestId,
-    ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
-  }
-}
 
 function send(request, response, statusCode, body, requestId) {
   if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|customers(?:\/directory|\/[^/]+\/detail)?|staff\/mentors)/.test(request.url || '')) {

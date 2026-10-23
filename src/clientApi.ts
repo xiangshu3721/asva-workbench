@@ -193,6 +193,15 @@ export function clearApiRequestTraces() { requestTraces.splice(0, requestTraces.
 export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
 
+export function classifyFetchFailure(error: unknown, timedOut = false): { code: 'REQUEST_TIMEOUT' | 'NETWORK_UNREACHABLE' | 'CORS_PREFLIGHT_FAILED'; message: string } {
+  if (timedOut) return { code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认保存结果。' }
+  const errorText = error instanceof Error ? `${error.name} ${error.message}` : String(error || '')
+  if (/cors|cross[- ]origin|preflight|access[- ]control|blocked by cors policy/i.test(errorText)) {
+    return { code: 'CORS_PREFLIGHT_FAILED', message: 'CORS_PREFLIGHT_FAILED：浏览器拒绝跨域预检，请检查网络或稍后重试。' }
+  }
+  return { code: 'NETWORK_UNREACHABLE', message: '请求未完成，请检查网络或稍后重试。' }
+}
+
 type LocalApi = ReturnType<typeof createLocalApi>
 
 export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
@@ -291,15 +300,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       clearTimeout(timeoutHandle)
       requestTraces.unshift({ time: new Date().toISOString(), method, path, status: null, duration: Math.round(performance.now() - startedAt), result: 'ERROR' })
       requestTraces.splice(20)
-      if (timedOut) throw new ApiError({ code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认保存结果。' })
-      const online = typeof navigator === 'undefined' || navigator.onLine !== false
-      const pageOrigin = typeof window === 'undefined' ? '' : window.location.origin
-      const apiOrigin = typeof window === 'undefined' ? '' : new URL(base, window.location.href).origin
-      const code = !online ? 'NETWORK_UNREACHABLE' : pageOrigin && apiOrigin !== pageOrigin ? 'CORS_ERROR' : 'NETWORK_UNREACHABLE'
-      const message = code === 'CORS_ERROR'
-        ? 'CORS_ERROR：浏览器拒绝访问 API，请检查 CORS_ALLOWED_ORIGINS 是否包含当前前端地址。'
-        : 'NETWORK_UNREACHABLE：无法连接开发 API，请确认 asva-api 已启动且地址可访问。'
-      throw new ApiError({ code, message })
+      const failure = classifyFetchFailure(error, timedOut)
+      throw new ApiError(failure)
     }
     clearTimeout(timeoutHandle)
     const requestId = response.headers.get('X-Request-Id') || payload?.request_id || undefined
