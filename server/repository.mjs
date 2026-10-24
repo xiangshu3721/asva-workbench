@@ -807,6 +807,13 @@ export class FeishuRepository {
     const refreshed = await this.loadCustomerMutationContext({ scene })
     return { ...refreshed, profileChanges: current.profileChanges || [] }
   }
+  async loadSourceMutationContext(customerId, scene = 'A3_SOURCE') {
+    if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
+    if (this.databaseCache.promise || this.databaseCache.data) return this.load()
+    const base = await this.loadCustomerMutationContext({ scene })
+    const sourceRows = await this.readFilteredTable('sourceRecords', stage2Table('sourceRecords'), mapField('sourceRecords', 'customer_id'), customerId, { scene })
+    return { ...base, sourceRecords: sourceRows.map(sourceRecord), _rows: { ...(base._rows || {}), sourceRecords: sourceRows } }
+  }
   async loadSourceContext(actorId, customerId, scene = 'A3_SOURCE') {
     if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
     // Reuse an already active permission-scoped database read in a shared request
@@ -1781,7 +1788,7 @@ export class FeishuRepository {
     requireStage2Tables()
     const startedAt = Date.now()
     const requestedCustomerId = text(input?.customerId).trim()
-    let database = await this.loadSourceContext(actorId, requestedCustomerId, 'A3_SOURCE')
+    let database = await this.loadSourceMutationContext(requestedCustomerId, 'A3_SOURCE')
     let visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) {
       const recentWriteAt = this.recentCustomerWrites.get(requestedCustomerId) || 0

@@ -130,6 +130,15 @@ describe('R043 progressive read paths', () => {
     ]))
   })
 
+  it('keeps Source save context narrower than Source workspace context', async () => {
+    const repository = new FeishuRepository()
+    const context = await repository.loadSourceMutationContext('CUS-1')
+
+    expect(context.sourceRecords.map((item) => item.id)).toEqual(['SRC-1'])
+    expect(listRecordsMock).toHaveBeenCalledTimes(4)
+    expect(findRecordsByFieldMock).toHaveBeenCalledTimes(1)
+  })
+
   it('fails closed when a source-scoped query fails instead of treating it as missing', async () => {
     findRecordsByFieldMock.mockRejectedValueOnce(Object.assign(new Error('synthetic read failure'), { code: 'FEISHU_TIMEOUT', retryable: true }))
     const repository = new FeishuRepository()
