@@ -176,10 +176,12 @@ export function publicCustomerMutationDto(database, actorId, customerId, custome
   if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
   const mutation = operationId ? publicMutationState(customerRecord.mutationStates?.[operationId]) : null
   const persistenceStatus = mutation?.status === 'PERSISTED' ? 'PERSISTED' : database._persistenceStatus || 'COMMITTED'
+  const profileChangesComplete = !database._partialReadContext || database._profileChangesLoadedFor?.includes(customerId) === true
   return {
     customer: publicCustomerDetail(customerRecord),
     enrollments: visible.enrollments.filter((item) => item.customerId === customerId).map(publicEnrollment),
     profileChanges: visible.profileChanges.filter((item) => item.customerId === customerId).map(publicProfileChange),
+    profileChangesComplete,
     createdCustomerId: customerId,
     customerCreated,
     persistenceStatus,
@@ -786,26 +788,43 @@ export class FeishuRepository {
     }
   }
   readMetricsSnapshot() { return this.readMetrics.snapshot() }
-  async loadCustomerMutationContext({ scene = 'A1' } = {}) {
+  async loadCustomerMutationContext({ scene = 'A1', customerId = '' } = {}) {
     if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
     const entries = [['customers', config.feishu.tables.customers], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments]]
     const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? this.readTable(table, tableId, { scene, mode: 'FULL' }) : []))
     const [customerRows, staffRows, productRows, enrollmentRows] = rows
+    const profileChangeRows = customerId
+      ? await this.readFilteredTable('profileChanges', config.feishu.tables.profileChanges, mapField('profileChanges', 'customer_id'), customerId, { scene })
+      : []
     return {
       staff: staffRows.map(staff),
       customers: customerRows.map(customer),
       appointments: [], sessions: [], followups: [],
       products: productRows.map(product),
       enrollments: enrollmentRows.map(enrollment),
-      profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
+      profileChanges: profileChangeRows.map(profileChange), sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
-      _rows: { customers: customerRows, staff: staffRows, products: productRows, enrollments: enrollmentRows },
+      _partialReadContext: true,
+      _profileChangesLoadedFor: customerId ? [customerId] : [],
+      _readCoverage: { customers: 'FULL', staff: 'FULL', products: 'FULL', enrollments: 'FULL', profileChanges: customerId ? 'CUSTOMER_FILTERED' : 'NOT_LOADED' },
+      _rows: { customers: customerRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows },
     }
+  }
+  mergeProfileChanges(current, refreshed, customerId) {
+    const byId = new Map()
+    for (const item of [...(current?.profileChanges || []), ...(refreshed?.profileChanges || [])]) {
+      if (item?.customerId === customerId && item.id) byId.set(item.id, item)
+    }
+    return [...byId.values()]
   }
   async reloadAfterEnrollmentMutation(current, customerId, compactResponse, scene) {
     if (!compactResponse) return this.loadAfterWrite(undefined, customerId)
-    const refreshed = await this.loadCustomerMutationContext({ scene })
-    return { ...refreshed, profileChanges: current.profileChanges || [] }
+    const refreshed = await this.loadCustomerMutationContext({ scene, customerId })
+    return {
+      ...refreshed,
+      profileChanges: this.mergeProfileChanges(current, refreshed, customerId),
+      _profileChangesLoadedFor: [customerId],
+    }
   }
   async loadSourceMutationContext(customerId, scene = 'A3_SOURCE') {
     if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
@@ -848,7 +867,8 @@ export class FeishuRepository {
       profileUpdateProposals: proposals,
       evidenceConflicts: conflicts,
       _allEvidenceItems: allEvidenceItems,
-      _rows: { ...(base._rows || {}), sourceRecords: sourceRows, evidenceItems, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
+      _readCoverage: { ...(base._readCoverage || {}), sourceRecords: 'CUSTOMER_FILTERED', evidenceItems: 'CUSTOMER_FILTERED_ACTIVE', profileUpdateProposals: 'CUSTOMER_FILTERED_ACTIVE', evidenceConflicts: 'CUSTOMER_FILTERED_ACTIVE' },
+      _rows: { ...(base._rows || {}), sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
     }
   }
   async loadSourceProcessingContext(sourceId, scene = 'A3_SOURCE') {
@@ -857,17 +877,27 @@ export class FeishuRepository {
     const source = sourceRows[0] ? sourceRecord(sourceRows[0]) : null
     if (!source) return null
     const base = await this.loadCustomerMutationContext({ scene })
-    const evidenceRows = await this.readFilteredTable('evidenceItems', stage2Table('evidenceItems'), mapField('evidenceItems', 'source_id'), sourceId, { scene })
+    const [evidenceRows, proposalRows, conflictRows] = await Promise.all([
+      this.readFilteredTable('evidenceItems', stage2Table('evidenceItems'), mapField('evidenceItems', 'source_id'), sourceId, { scene }),
+      this.readFilteredTable('profileUpdateProposals', stage2Table('profileUpdateProposals'), mapField('profileUpdateProposals', 'source_id'), sourceId, { scene }),
+      this.readFilteredTable('evidenceConflicts', stage2Table('evidenceConflicts'), mapField('evidenceConflicts', 'customer_id'), source.customerId, { scene }),
+    ])
     const allEvidenceItems = evidenceRows.map(evidenceItem)
     const evidenceItems = allEvidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' || (item.reviewStatus === 'PENDING_REVIEW' && (!source.lastBatchId || source.lastBatchId === item.extractionBatchId)))
+    const activeEvidenceIds = new Set(evidenceItems.map((item) => item.id))
+    const allProposals = proposalRows.map(proposalRecord)
+    const allConflicts = conflictRows.map(conflictRecord)
     return {
       ...base,
       sourceRecords: [source],
       evidenceItems,
-      profileUpdateProposals: [],
-      evidenceConflicts: [],
+      profileUpdateProposals: allProposals.filter((item) => activeEvidenceIds.has(item.evidenceId)),
+      evidenceConflicts: allConflicts.filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId)),
       _allEvidenceItems: allEvidenceItems,
-      _rows: { ...(base._rows || {}), sourceRecords: sourceRows, evidenceItems: evidenceRows },
+      _allProfileUpdateProposals: allProposals,
+      _allEvidenceConflicts: allConflicts,
+      _readCoverage: { ...(base._readCoverage || {}), sourceRecords: 'SOURCE_FILTERED', evidenceItems: 'SOURCE_FILTERED_ALL', profileUpdateProposals: 'SOURCE_FILTERED_ALL', evidenceConflicts: 'SOURCE_FILTERED_ALL' },
+      _rows: { ...(base._rows || {}), sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
     }
   }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
@@ -1471,7 +1501,8 @@ export class FeishuRepository {
   async customerSaveStatus(actorId, customerId, operationId) {
     const normalizedOperationId = text(operationId).trim()
     if (!normalizedOperationId) throw Object.assign(new Error('缺少操作编号'), { code: 'CUSTOMER_SAVE_OPERATION_REQUIRED', status: 400 })
-    const database = await this.loadCustomerMutationContext({ scene: 'A1' })
+    const lookupCustomerId = text(customerId).trim() || customerIdForOperation(normalizedOperationId)
+    const database = await this.loadCustomerMutationContext({ scene: 'A1', customerId: lookupCustomerId })
     const visible = scope(database, actorId)
     const customerRecord = customerId
       ? visible.customers.find((item) => item.id === customerId)
@@ -1501,10 +1532,10 @@ export class FeishuRepository {
     let result = 'ERROR'
     try {
       const identityStartedAt = Date.now()
-      const database = await this.loadCustomerMutationContext({ scene: 'A1' })
+      const existingId = operationId ? customerIdForOperation(operationId) : ''
+      const database = await this.loadCustomerMutationContext({ scene: 'A1', customerId: existingId })
       scope(database, actorId)
       const normalized = validateManualCustomer(input)
-      const existingId = operationId ? customerIdForOperation(operationId) : ''
       const existing = existingId ? database.customers.find((item) => item.id === existingId) : null
       const inputHash = mutationPayloadHash(input)
       if (existing && operationId) {
@@ -1545,6 +1576,7 @@ export class FeishuRepository {
         current = input.profileUpdates?.length && !compactResponse
           ? await this.loadAfterWrite(writeResult, customerId)
           : await this.loadCustomerAfterWrite(writeResult, customerId, current)
+        current._profileChangesLoadedFor = [...new Set([...(current._profileChangesLoadedFor || []), customerId])]
         timings.customer_write_ms = Date.now() - customerWriteStartedAt
       }
       if (input.profileUpdates?.length) {
@@ -1584,7 +1616,7 @@ export class FeishuRepository {
   async updateCustomer(actorId, customerId, input, { compactResponse = false } = {}) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerUnsafe(actorId, customerId, input, { compactResponse })) }
   async updateCustomerUnsafe(actorId, customerId, input, { compactResponse = false } = {}) {
     this.invalidateDatabaseCache()
-    const database = await this.loadCustomerMutationContext({ scene: 'A2' })
+    const database = await this.loadCustomerMutationContext({ scene: 'A2', customerId })
     const visibleDatabase = scope(database, actorId)
     const actor = database.staff.find((item) => item.id === actorId)
     const introducerProvided = Object.prototype.hasOwnProperty.call(input || {}, 'introducer')

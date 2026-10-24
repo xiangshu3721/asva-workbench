@@ -109,6 +109,7 @@ export interface CustomerMutationResult {
   customer: Customer
   enrollments: Database['enrollments']
   profileChanges: Database['profileChanges']
+  profileChangesComplete?: boolean
   createdCustomerId: string
   customerCreated: boolean
   persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'
@@ -117,12 +118,12 @@ export interface CustomerMutationResult {
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
 export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; updatedAt?: string | null }
-export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
+export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; profileChangesComplete?: boolean; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
 
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
   if (!customer) throw new Error('保存后未找到客户')
-  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), profileChangesComplete: true, createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
 }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 
@@ -366,7 +367,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
         if (status.status === 'FAILED') throw new ApiError({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', serverCode: 'CUSTOMER_SAVE_CONFIRMED_FAILED', message: '客户保存已确认失败，填写内容仍保留。' })
         if (status.status === 'COMMITTED' && status.customer) {
           emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)
-          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation }
+          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], profileChangesComplete: status.profileChangesComplete !== false, createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation }
         }
         if (status.status === 'COMMITTED' && !status.customer) {
           emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)

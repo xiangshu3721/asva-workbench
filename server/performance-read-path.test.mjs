@@ -17,6 +17,7 @@ const row = (table, recordId, values) => ({ record_id: recordId, fields: fields(
 
 const admin = { id: 'STAFF-ADMIN', name: '管理员', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }
 const mentor = { id: 'STAFF-MENTOR', name: '导师', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }
+let activeRows
 const fixtureRows = () => ({
   [tableId('customers')]: [
     row('customers', 'rec-c1', { customer_id: 'CUS-1', nickname: '客户一', current_mentor_id: mentor.id, city: '杭州' }),
@@ -36,9 +37,9 @@ const fixtureRows = () => ({
 
 beforeEach(() => {
   for (const name of Object.keys(originalTables)) config.feishu.tables[name] = tableId(name)
-  const rows = fixtureRows()
-  listRecordsMock.mockReset().mockImplementation(async (id) => rows[id] || [])
-  findRecordsByFieldMock.mockReset().mockImplementation(async (id, fieldName, value) => (rows[id] || []).filter((item) => String(item?.fields?.[fieldName] ?? '') === String(value)))
+  activeRows = fixtureRows()
+  listRecordsMock.mockReset().mockImplementation(async (id) => activeRows[id] || [])
+  findRecordsByFieldMock.mockReset().mockImplementation(async (id, fieldName, value) => (activeRows[id] || []).filter((item) => String(item?.fields?.[fieldName] ?? '') === String(value)))
 })
 
 afterEach(() => {
@@ -95,6 +96,26 @@ describe('R043 progressive read paths', () => {
     ]))
   })
 
+  it('loads complete customer profile history for compact mutation responses', async () => {
+    activeRows[tableId('profileChanges')] = Array.from({ length: 10 }, (_, index) => row('profileChanges', `rec-history-${index + 1}`, {
+      change_id: `PC-${index + 1}`, customer_id: 'CUS-1', field_key: `field_${index + 1}`, field_name: `字段${index + 1}`,
+      old_value: '', new_value: `值${index + 1}`, source: 'MANUAL', confidence: 1, confirmed: true,
+      changed_at: `2026-01-${String(index + 1).padStart(2, '0')}`,
+    }))
+    const repository = new FeishuRepository()
+    const current = await repository.loadCustomerMutationContext({ scene: 'A2', customerId: 'CUS-1' })
+    expect(current.profileChanges).toHaveLength(10)
+    expect(current._readCoverage.profileChanges).toBe('CUSTOMER_FILTERED')
+
+    activeRows[tableId('profileChanges')].push(row('profileChanges', 'rec-history-11', {
+      change_id: 'PC-11', customer_id: 'CUS-1', field_key: 'field_11', field_name: '字段11',
+      old_value: '', new_value: '值11', source: 'MANUAL', confidence: 1, confirmed: true, changed_at: '2026-01-11',
+    }))
+    const refreshed = await repository.reloadAfterEnrollmentMutation(current, 'CUS-1', true, 'A2')
+    expect(refreshed.profileChanges).toHaveLength(11)
+    expect(refreshed._profileChangesLoadedFor).toEqual(['CUS-1'])
+  })
+
   it('loads the customer profile materialization on demand without returning raw workspace tables', async () => {
     const repository = new FeishuRepository()
     const profile = await repository.customerProfile(mentor.id, 'CUS-1')
@@ -137,6 +158,36 @@ describe('R043 progressive read paths', () => {
     expect(context.sourceRecords.map((item) => item.id)).toEqual(['SRC-1'])
     expect(listRecordsMock).toHaveBeenCalledTimes(4)
     expect(findRecordsByFieldMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads source-scoped proposals and conflicts before processing', async () => {
+    activeRows[tableId('profileUpdateProposals')] = [row('profileUpdateProposals', 'rec-proposal-1', {
+      proposal_id: 'PROP-1', customer_id: 'CUS-1', subject_id: 'CUS-1', evidence_id: 'E-1', source_id: 'SRC-1',
+      field_key: 'city', field_name: '所在城市', current_value: '杭州', proposed_value: '杭州', action: 'REVIEW_REQUIRED', change_type: 'NO_CHANGE',
+      review_status: 'PENDING_REVIEW', reason: '已有建议', confidence: 0.8, extraction_batch_id: 'EXT-1',
+    })]
+    activeRows[tableId('evidenceConflicts')] = [row('evidenceConflicts', 'rec-conflict-1', {
+      conflict_id: 'CONFLICT-1', subject_id: 'CUS-1', customer_id: 'CUS-1', field_key: 'city', conflict_type: 'VALUE_CONFLICT',
+      current_value: '杭州', new_value: '上海', current_evidence_id: 'E-1', new_evidence_id: 'E-PENDING', status: 'OPEN',
+    })]
+    const repository = new FeishuRepository()
+    const context = await repository.loadSourceProcessingContext('SRC-1')
+
+    expect(context.profileUpdateProposals).toHaveLength(1)
+    expect(context.evidenceConflicts).toHaveLength(1)
+    expect(context._allProfileUpdateProposals).toHaveLength(1)
+    expect(context._allEvidenceConflicts).toHaveLength(1)
+    expect(context._readCoverage).toMatchObject({ profileUpdateProposals: 'SOURCE_FILTERED_ALL', evidenceConflicts: 'SOURCE_FILTERED_ALL' })
+    expect(findRecordsByFieldMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('fails closed when a source processing dependency is incomplete', async () => {
+    findRecordsByFieldMock.mockImplementation(async (id, fieldName, value) => {
+      if (id === tableId('profileUpdateProposals')) throw Object.assign(new Error('synthetic proposal read failure'), { code: 'FEISHU_TIMEOUT', retryable: true })
+      return (activeRows[id] || []).filter((item) => String(item?.fields?.[fieldName] ?? '') === String(value))
+    })
+    const repository = new FeishuRepository()
+    await expect(repository.loadSourceProcessingContext('SRC-1')).rejects.toMatchObject({ code: 'FEISHU_TIMEOUT' })
   })
 
   it('fails closed when a source-scoped query fails instead of treating it as missing', async () => {

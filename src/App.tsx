@@ -459,7 +459,9 @@ function WorkbenchApp() {
         ? current.customers.map((item) => item.id === result.customer.id ? result.customer : item)
         : [...current.customers, result.customer]
       const enrollments = [...current.enrollments.filter((item) => item.customerId !== result.customer.id), ...result.enrollments]
-      const profileChanges = [...current.profileChanges.filter((item) => item.customerId !== result.customer.id), ...(result.profileChanges || [])]
+      const profileChanges = result.profileChangesComplete === false
+        ? current.profileChanges
+        : [...current.profileChanges.filter((item) => item.customerId !== result.customer.id), ...(result.profileChanges || [])]
       const next = { ...current, customers, enrollments, profileChanges }
       dataCache.set(dashboardCacheKey(activeStaff.id), next)
       return next

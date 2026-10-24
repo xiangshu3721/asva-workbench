@@ -61,6 +61,7 @@ describe('customer save contracts', () => {
     expect(result).toMatchObject({ createdCustomerId: 'CUS-1', customerCreated: true, customer: { id: 'CUS-1' } })
     expect(result.enrollments).toHaveLength(1)
     expect(result.profileChanges).toHaveLength(1)
+    expect(result.profileChangesComplete).toBe(true)
     expect(result).not.toHaveProperty('appointments')
     expect(result).not.toHaveProperty('sourceRecords')
   })
