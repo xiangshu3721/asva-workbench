@@ -80,6 +80,20 @@ describe('R043 progressive read paths', () => {
     expect(listRecordsMock).toHaveBeenCalledWith(tableId('staff'), expect.objectContaining({ readContext: expect.any(Object) }))
   })
 
+  it('records the reduced customer-save context without loading unrelated tables', async () => {
+    const repository = new FeishuRepository()
+    const context = await repository.loadCustomerMutationContext({ scene: 'A1' })
+
+    expect(context.customers).toHaveLength(2)
+    expect(listRecordsMock).toHaveBeenCalledTimes(4)
+    expect(repository.readMetricsSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scene: 'A1', mode: 'FULL', table: 'customers', logicalReads: 1, providerRequests: 1 }),
+      expect.objectContaining({ scene: 'A1', mode: 'FULL', table: 'staff', logicalReads: 1, providerRequests: 1 }),
+      expect.objectContaining({ scene: 'A1', mode: 'FULL', table: 'products', logicalReads: 1, providerRequests: 1 }),
+      expect.objectContaining({ scene: 'A1', mode: 'FULL', table: 'enrollments', logicalReads: 1, providerRequests: 1 }),
+    ]))
+  })
+
   it('loads the customer profile materialization on demand without returning raw workspace tables', async () => {
     const repository = new FeishuRepository()
     const profile = await repository.customerProfile(mentor.id, 'CUS-1')
