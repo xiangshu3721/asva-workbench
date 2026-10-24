@@ -113,11 +113,26 @@ describe('customer save contracts', () => {
     expect(publicCustomerMutationDto(database, 'ADMIN-1', 'CUS-1', false, 'op-1')).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
   })
 
+  it('does not report an in-progress mutation as committed persistence', () => {
+    const database = customerDatabase({ id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { 'op-processing': { operationId: 'op-processing', customerId: 'CUS-1', kind: 'UPDATE', status: 'PROCESSING', updatedAt: '2026-01-01T00:00:00.000Z' } } })
+    expect(publicCustomerMutationDto(database, 'ADMIN-1', 'CUS-1', false, 'op-processing')).toMatchObject({ persistenceStatus: 'UNKNOWN', mutation: { status: 'PROCESSING' } })
+  })
+
   it('keeps durable profile history evidence attached to a partial mutation', () => {
     const plan = [{ changeId: 'PCH-1', customerId: 'CUS-1', field: 'occupation', fieldName: '当前职业', oldValue: null, newValue: '设计师', source: 'MANUAL', confidence: 1, confirmed: true, operatorId: 'ADMIN-1', changedAt: '2026-01-01T00:00:00.000Z' }]
     const customer = { id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { 'op-history': { operationId: 'op-history', customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED', historyStatus: 'PENDING', historyPlan: plan, enrollmentStatus: 'COMPLETE', updatedAt: '2026-01-01T00:00:00.000Z' } } }
     const result = publicCustomerMutationDto(customerDatabase(customer), 'ADMIN-1', 'CUS-1', false, 'op-history')
     expect(result).toMatchObject({ persistenceStatus: 'PERSISTED', historyStatus: 'PENDING', mutation: { historyStatus: 'PENDING', historyPendingCount: 1, enrollmentStatus: 'COMPLETE' } })
+  })
+
+  it('does not accept a caller-supplied COMMITTED state without durable history evidence', async () => {
+    const operationId = 'op-commit-without-history'
+    const historyPlan = [{ changeId: 'PCH-MISSING', customerId: 'CUS-1', field: 'occupation', fieldName: '当前职业', oldValue: null, newValue: '设计师', source: 'MANUAL', confidence: 1, confirmed: true, operatorId: 'ADMIN-1' }]
+    const database = customerDatabase({ id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { [operationId]: { operationId, customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED', historyStatus: 'PENDING', historyPlan, enrollmentStatus: 'COMPLETE' } } })
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.loadCustomerMutationContext = async () => ({ ...database, _partialReadContext: true, _readCoverage: { profileChanges: 'CUSTOMER_FILTERED' }, profileChanges: [] })
+    await expect(repository.persistCustomerMutationState(database, 'CUS-1', operationId, { kind: 'UPDATE', status: 'COMMITTED' })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_HISTORY_UNVERIFIED', mutationStatus: 'PERSISTED' })
+    await expect(repository.persistCustomerMutationState(database, 'CUS-1', operationId, { kind: 'UPDATE', status: 'COMMITTED', historyPlan: [] })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_HISTORY_UNVERIFIED', mutationStatus: 'PERSISTED' })
   })
 
   it('does not replay an incomplete PATCH and rejects a changed payload', async () => {
