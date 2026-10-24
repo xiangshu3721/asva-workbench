@@ -112,13 +112,17 @@ export interface CustomerMutationResult {
   createdCustomerId: string
   customerCreated: boolean
   persistenceStatus?: 'COMMITTED' | 'DELAYED'
+  mutation?: CustomerMutationState
 }
 export type CustomerCreateResult = CustomerMutationResult
+export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
+export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; updatedAt?: string | null }
+export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'COMMITTED' | 'DELAYED'; mutation?: CustomerMutationState }
 
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
   if (!customer) throw new Error('保存后未找到客户')
-  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED' }
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
 }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 
@@ -141,6 +145,7 @@ export interface WorkbenchApi {
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<CustomerMutationResult>
+  customerSaveStatus(actorId: string, operationId: string, customerId?: string): Promise<CustomerSaveStatusResponse>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
   markFollowupDone(actorId: string, appointmentId: string): Promise<Database>
@@ -190,9 +195,37 @@ export class ApiError extends Error {
 const requestTraces: ApiRequestTrace[] = []
 export function getApiRequestTraces() { return [...requestTraces] }
 export function clearApiRequestTraces() { requestTraces.splice(0, requestTraces.length) }
+export interface PendingCustomerMutation { actorId: string; operationId: string; customerId?: string; kind: 'CREATE' | 'UPDATE'; startedAt: string }
+const PENDING_CUSTOMER_MUTATION_KEY = 'asva:pending-customer-mutation-v1'
+export function rememberPendingCustomerMutation(value: PendingCustomerMutation) {
+  if (typeof window === 'undefined') return
+  window.sessionStorage.setItem(PENDING_CUSTOMER_MUTATION_KEY, JSON.stringify(value))
+}
+export function readPendingCustomerMutation(): PendingCustomerMutation | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(PENDING_CUSTOMER_MUTATION_KEY) || 'null')
+    return value && typeof value.actorId === 'string' && typeof value.operationId === 'string' && (value.kind === 'CREATE' || value.kind === 'UPDATE') ? value as PendingCustomerMutation : null
+  } catch { return null }
+}
+export function clearPendingCustomerMutation(operationId?: string) {
+  if (typeof window === 'undefined') return
+  const current = readPendingCustomerMutation()
+  if (!operationId || current?.operationId === operationId) window.sessionStorage.removeItem(PENDING_CUSTOMER_MUTATION_KEY)
+}
 
 export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
+const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
+
+function emitCustomerSaveState(operationId: string, status: CustomerMutationStateStatus, customerId?: string) {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('asva-customer-save-state', { detail: { operationId, status, customerId: customerId || '' } }))
+}
+
+function isRecoverableCustomerSaveError(error: unknown) {
+  const value = error as { code?: string; serverCode?: string }
+  return value?.code === 'REQUEST_TIMEOUT' || value?.code === 'NETWORK_UNREACHABLE' || value?.code === 'CORS_PREFLIGHT_FAILED' || (value?.code === 'HTTP_502' && String(value?.serverCode || '').startsWith('FEISHU_'))
+}
 
 export function classifyFetchFailure(error: unknown, timedOut = false): { code: 'REQUEST_TIMEOUT' | 'NETWORK_UNREACHABLE' | 'CORS_PREFLIGHT_FAILED'; message: string } {
   if (timedOut) return { code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认保存结果。' }
@@ -237,6 +270,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     previewCustomer: async (actorId, input) => api.previewCustomer(actorId, input),
     createCustomer: async (actorId, input) => customerMutationFromDatabase(await api.createCustomer(actorId, input) as Database & Partial<CustomerMutationResult>),
     updateCustomer: async (actorId, customerId, input) => customerMutationFromDatabase(await api.updateCustomer(actorId, customerId, input) as Database, customerId, false),
+    customerSaveStatus: async (_actorId, operationId, customerId) => ({ operationId, customerId: customerId || '', status: 'UNKNOWN', customer: null }),
     updateCustomerEnrollments: async (actorId, customerId, enrollments) => api.updateCustomerEnrollments(actorId, customerId, enrollments),
     assignAppointment: async (actorId, appointmentId, mentorId) => api.assignAppointment(actorId, appointmentId, mentorId),
     markFollowupDone: async (actorId, appointmentId) => api.markFollowupDone(actorId, appointmentId),
@@ -319,6 +353,30 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     if ((path === '/api/auth/login' || path === '/api/auth/change-password') && payload?.token) writeAccessToken(payload.token)
     return payload as T
   }
+  async function recoverCustomerMutation(actorId: string, operationId: string, customerId?: string): Promise<CustomerMutationResult> {
+    emitCustomerSaveState(operationId, 'VERIFYING', customerId)
+    let lastError: unknown = null
+    for (const delayMs of CUSTOMER_SAVE_STATUS_DELAYS_MS) {
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs))
+      try {
+        const path = customerId
+          ? `/api/customers/${encodeURIComponent(customerId)}/save-status?operationId=${encodeURIComponent(operationId)}`
+          : `/api/customer-save-status?operationId=${encodeURIComponent(operationId)}`
+        const status = await request<CustomerSaveStatusResponse>(path, actorId)
+        if (status.status === 'FAILED') throw new ApiError({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', serverCode: 'CUSTOMER_SAVE_CONFIRMED_FAILED', message: '客户保存已确认失败，填写内容仍保留。' })
+        if ((status.status === 'PERSISTED' || status.status === 'COMMITTED') && status.customer) {
+          emitCustomerSaveState(operationId, status.status, status.customerId)
+          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation }
+        }
+        lastError = new ApiError({ code: 'CUSTOMER_SAVE_UNKNOWN', serverCode: 'CUSTOMER_SAVE_UNKNOWN', message: '保存结果暂时无法确认，原内容仍保留。' })
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'CUSTOMER_SAVE_CONFIRMED_FAILED') throw error
+        lastError = error
+      }
+    }
+    emitCustomerSaveState(operationId, 'UNKNOWN', customerId)
+    throw new ApiError({ code: 'CUSTOMER_SAVE_UNKNOWN', serverCode: 'CUSTOMER_SAVE_UNKNOWN', message: '保存结果暂时无法确认，原内容仍保留。请稍后查询或重试。', request_id: lastError instanceof ApiError ? lastError.request_id : undefined })
+  }
   return {
     login: (phone, password) => request<Staff & { mustChangePassword?: boolean }>('/api/auth/login', undefined, { method: 'POST', body: JSON.stringify({ phone, password }) }),
     changePassword: (currentPassword, newPassword) => request<{ ok: boolean; mustChangePassword: boolean; token?: string }>('/api/auth/change-password', undefined, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
@@ -339,15 +397,34 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     createCustomer: async (actorId, input) => {
       const headers = new Headers(input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined)
       headers.set('X-ASVA-Response-Mode', 'customer-mutation-v1')
-      const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers })
-      return 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
+      const operationId = input.operationId || ''
+      emitCustomerSaveState(operationId, 'PROCESSING')
+      try {
+        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers })
+        const mutation = 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
+        if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', mutation.createdCustomerId)
+        return mutation
+      } catch (error) {
+        if (operationId && isRecoverableCustomerSaveError(error)) return recoverCustomerMutation(actorId, operationId)
+        throw error
+      }
     },
     updateCustomer: async (actorId, customerId, input) => {
       const headers = new Headers(input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined)
       headers.set('X-ASVA-Response-Mode', 'customer-mutation-v1')
-      const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
-      return 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
+      const operationId = input.operationId || ''
+      emitCustomerSaveState(operationId, 'PROCESSING', customerId)
+      try {
+        const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
+        const mutation = 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
+        if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', customerId)
+        return mutation
+      } catch (error) {
+        if (operationId && isRecoverableCustomerSaveError(error)) return recoverCustomerMutation(actorId, operationId, customerId)
+        throw error
+      }
     },
+    customerSaveStatus: (actorId, operationId, customerId) => request<CustomerSaveStatusResponse>(customerId ? `/api/customers/${encodeURIComponent(customerId)}/save-status?operationId=${encodeURIComponent(operationId)}` : `/api/customer-save-status?operationId=${encodeURIComponent(operationId)}`, actorId),
     updateCustomerEnrollments: (actorId, customerId, enrollments) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/enrollments`, actorId, { method: 'PUT', body: JSON.stringify({ enrollments, operationId: `enrollments-${customerId}-${Date.now()}` }) }),
     assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
     markFollowupDone: (actorId, appointmentId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/complete-followup`, actorId, { method: 'POST', body: '{}' }),
