@@ -6,14 +6,15 @@ process.env.FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID ||= 'tbl-proposal-test'
 process.env.FEISHU_EVIDENCE_CONFLICTS_TABLE_ID ||= 'tbl-conflict-test'
 process.env.FEISHU_PROFILE_CHANGES_TABLE_ID ||= 'tbl-profile-change-test'
 
-const { createRecordMock, updateRecordMock } = vi.hoisted(() => ({
+const { createRecordMock, updateRecordMock, getRecordMock } = vi.hoisted(() => ({
   createRecordMock: vi.fn(),
   updateRecordMock: vi.fn(),
+  getRecordMock: vi.fn(),
 }))
 
 vi.mock('./feishu.mjs', async () => {
   const actual = await vi.importActual('./feishu.mjs')
-  return { ...actual, createRecord: createRecordMock, updateRecord: updateRecordMock }
+  return { ...actual, createRecord: createRecordMock, updateRecord: updateRecordMock, getRecord: getRecordMock }
 })
 
 const { config } = await import('./config.mjs')
@@ -58,6 +59,22 @@ beforeEach(() => {
   recordSequence = 0
   createRecordMock.mockReset().mockImplementation((tableId, fields) => appendCreated(tableId, fields))
   updateRecordMock.mockReset().mockImplementation((tableId, recordId, fields) => updateExisting(tableId, recordId, fields))
+  getRecordMock.mockReset().mockImplementation(async (tableId, recordId) => {
+    if (tableId !== config.feishu.tables.customers) return null
+    const customer = activeDatabase.customers.find((item) => item.id === activeDatabase._rows.customers.find((row) => row.record_id === recordId)?.fields?.['客户ID'])
+    if (!customer) return null
+    return { record_id: recordId, fields: {
+      客户ID: customer.id,
+      客户昵称: customer.name,
+      手机号: customer.phone || '',
+      微信号: customer.wechat || '',
+      客户情况: customer.notes || '',
+      档案字段元数据: JSON.stringify({ _profile_version: customer.profileVersion || 0, _fields: customer.profileFieldMeta || {} }),
+      档案版本: customer.profileSchemaVersion || 'v1.0',
+      档案更新时间: customer.profileUpdatedAt || null,
+      所在城市: customer.profileFields?.city || '',
+    } }
+  })
 })
 
 function setupRepository(extractor = async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }]) {

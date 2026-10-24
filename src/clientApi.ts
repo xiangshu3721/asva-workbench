@@ -111,13 +111,13 @@ export interface CustomerMutationResult {
   profileChanges: Database['profileChanges']
   createdCustomerId: string
   customerCreated: boolean
-  persistenceStatus?: 'COMMITTED' | 'DELAYED'
+  persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'
   mutation?: CustomerMutationState
 }
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
 export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; updatedAt?: string | null }
-export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'COMMITTED' | 'DELAYED'; mutation?: CustomerMutationState }
+export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
 
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
@@ -224,7 +224,7 @@ function emitCustomerSaveState(operationId: string, status: CustomerMutationStat
 
 function isRecoverableCustomerSaveError(error: unknown) {
   const value = error as { code?: string; serverCode?: string }
-  return value?.code === 'REQUEST_TIMEOUT' || value?.code === 'NETWORK_UNREACHABLE' || value?.code === 'CORS_PREFLIGHT_FAILED' || (value?.code === 'HTTP_502' && String(value?.serverCode || '').startsWith('FEISHU_'))
+  return value?.code === 'REQUEST_TIMEOUT' || value?.code === 'NETWORK_UNREACHABLE' || value?.code === 'CORS_PREFLIGHT_FAILED' || (value?.code === 'HTTP_502' && String(value?.serverCode || '').startsWith('FEISHU_')) || (value?.code === 'HTTP_409' && ['CUSTOMER_SAVE_UNKNOWN', 'CUSTOMER_SAVE_INCOMPLETE'].includes(String(value?.serverCode || '')))
 }
 
 export function classifyFetchFailure(error: unknown, timedOut = false): { code: 'REQUEST_TIMEOUT' | 'NETWORK_UNREACHABLE' | 'CORS_PREFLIGHT_FAILED'; message: string } {
@@ -364,13 +364,18 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
           : `/api/customer-save-status?operationId=${encodeURIComponent(operationId)}`
         const status = await request<CustomerSaveStatusResponse>(path, actorId)
         if (status.status === 'FAILED') throw new ApiError({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', serverCode: 'CUSTOMER_SAVE_CONFIRMED_FAILED', message: '客户保存已确认失败，填写内容仍保留。' })
-        if ((status.status === 'PERSISTED' || status.status === 'COMMITTED') && status.customer) {
-          emitCustomerSaveState(operationId, status.status, status.customerId)
+        if (status.status === 'COMMITTED' && status.customer) {
+          emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)
           return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation }
         }
+        if (status.status === 'COMMITTED' && !status.customer) {
+          emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)
+          throw new ApiError({ code: 'CUSTOMER_SAVE_COMMITTED_RESULT_UNAVAILABLE', serverCode: 'CUSTOMER_SAVE_COMMITTED_RESULT_UNAVAILABLE', message: '客户保存已确认，但客户已有后续更新，请刷新后查看。' })
+        }
+        if (status.status === 'PERSISTED') emitCustomerSaveState(operationId, 'PERSISTED', status.customerId)
         lastError = new ApiError({ code: 'CUSTOMER_SAVE_UNKNOWN', serverCode: 'CUSTOMER_SAVE_UNKNOWN', message: '保存结果暂时无法确认，原内容仍保留。' })
       } catch (error) {
-        if (error instanceof ApiError && error.code === 'CUSTOMER_SAVE_CONFIRMED_FAILED') throw error
+        if (error instanceof ApiError && (error.code === 'CUSTOMER_SAVE_CONFIRMED_FAILED' || error.code === 'CUSTOMER_SAVE_COMMITTED_RESULT_UNAVAILABLE')) throw error
         lastError = error
       }
     }
@@ -402,6 +407,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       try {
         const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
+        if (operationId && mutation.mutation && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, mutation.createdCustomerId)
         if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', mutation.createdCustomerId)
         return mutation
       } catch (error) {
@@ -417,6 +423,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       try {
         const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
+        if (operationId && mutation.mutation && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, customerId)
         if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', customerId)
         return mutation
       } catch (error) {

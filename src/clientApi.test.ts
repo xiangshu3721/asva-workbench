@@ -94,4 +94,17 @@ describe('HTTP environment diagnostics', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=stable-customer-save-1')
   })
+
+  it('does not treat PERSISTED as a final successful save', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'PERSISTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'COMMITTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'COMMITTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'COMMITTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-then-committed', nickname: 'Synthetic Customer', phone: '13800000003', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(pending).resolves.toMatchObject({ persistenceStatus: 'COMMITTED', mutation: { status: 'COMMITTED' } })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customers/CUS-1/save-status?operationId=persisted-then-committed')
+  })
 })
