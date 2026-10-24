@@ -37,15 +37,60 @@ export const customerIdForOperation = (operationId) => stableOperationId(operati
 export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
 const CUSTOMER_MUTATION_STATE_LIMIT = 20
 const CUSTOMER_MUTATION_STATUSES = new Set(['PROCESSING', 'PERSISTED', 'COMMITTED', 'UNKNOWN', 'FAILED'])
-export const mutationPayloadHash = (input = {}) => crypto.createHash('sha256').update(JSON.stringify({
+const canonicalMutationValue = (value) => {
+  if (Array.isArray(value)) return value.map(canonicalMutationValue)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalMutationValue(value[key])]))
+  if (typeof value === 'number' && !Number.isFinite(value)) return null
+  return value
+}
+const normalizeMutationProfileUpdates = (updates) => {
+  if (!Array.isArray(updates)) return []
+  const allowedFields = new Set([...PROFILE_FIELD_KEYS, 'grade', 'paid', 'mentor_id', 'current_mentor_id', 'intended_course'])
+  const normalized = updates
+    .filter((item) => item && typeof item.field === 'string' && allowedFields.has(item.field))
+    .map((item) => {
+      const rawConfidence = Number(item.confidence ?? 0.9)
+      return {
+        field: item.field === 'mentor_id' ? 'current_mentor_id' : item.field,
+        value: canonicalMutationValue(jsonValue(item.value)),
+        source: text(item.source).trim(),
+        confidence: Number.isFinite(rawConfidence) ? Math.max(0, Math.min(1, rawConfidence)) : null,
+      }
+    })
+    .filter((item) => item.value !== null)
+  // Distinct fields are order-independent in the save contract. Duplicate fields
+  // remain ordered because the server applies the last value for that field.
+  const hasDuplicateField = new Set(normalized.map((item) => item.field)).size !== normalized.length
+  return hasDuplicateField ? normalized : normalized.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+}
+const normalizeMutationEnrollments = (enrollments) => {
+  if (!Array.isArray(enrollments)) return { provided: false, items: [] }
+  const effective = new Map()
+  for (const item of enrollments) {
+    const productId = text(item?.productId)
+    if (!productId) continue
+    effective.set(productId, {
+      productId,
+      paymentStatus: item?.paymentStatus ?? null,
+      amount: item?.amount ?? null,
+      enrolledAt: item?.enrolledAt ?? null,
+      paidAt: item?.paidAt ?? null,
+    })
+  }
+  return { provided: true, items: [...effective.values()].sort((a, b) => a.productId.localeCompare(b.productId)).map(canonicalMutationValue) }
+}
+export const mutationPayloadHash = (input = {}) => crypto.createHash('sha256').update(JSON.stringify(canonicalMutationValue({
   nickname: text(input.nickname).trim(),
   phone: normalizePhone(input.phone),
   wechat: normalizeWechat(input.wechat),
   introducer: text(input.introducer).trim(),
   situation: text(input.situation).trim(),
-  enrollments: Array.isArray(input.enrollments) ? input.enrollments.map((item) => text(item?.productId)).filter(Boolean).sort() : [],
-  profileUpdates: Array.isArray(input.profileUpdates) ? input.profileUpdates.map((item) => ({ field: text(item?.field), value: item?.value ?? null })).sort((a, b) => a.field.localeCompare(b.field)) : [],
-})).digest('hex')
+  mentorId: input.mentorId === null || input.mentorId === undefined ? null : text(input.mentorId).trim(),
+  source: text(input.source).trim(),
+  confirmedNotSame: Boolean(input.confirmedNotSame),
+  enrollments: normalizeMutationEnrollments(input.enrollments),
+  profileUpdates: normalizeMutationProfileUpdates(input.profileUpdates),
+}))).digest('hex')
 export const customerResultFingerprint = (customerRecord) => crypto.createHash('sha256').update(JSON.stringify({
   id: customerRecord?.id || '',
   name: customerRecord?.name || '',
@@ -1667,7 +1712,7 @@ export class FeishuRepository {
         const assignedMentorId = actor?.permissionRole === 'MENTOR' ? actor.id : text(input?.mentorId).trim()
         if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
         const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, updatedAt: createdAt } } : {}
-        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfileArchivingAllowedForCustomer(customerId) && automaticText ? automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_SAVE') : null, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfileArchivingAllowedForCustomer(customerId) && automaticText ? automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_SAVE') : null, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
@@ -1770,7 +1815,8 @@ export class FeishuRepository {
     const customerValues = {}
     if (nicknameChanged) customerValues.nickname = normalized.nickname
     if (situationProvided && notesChanged) customerValues.notes = normalized.situation
-    if (input.source && input.source !== current.source) customerValues.source = input.source
+    const requestedSource = text(input.source).trim()
+    if (requestedSource && requestedSource !== current.source) customerValues.source = requestedSource
     if (introducerChanged) customerValues.referrer_name = normalized.introducer
     const persistedState = operationId ? { operationId, kind: 'UPDATE', customerId, status: 'PERSISTED', payloadHash: inputHash, updatedAt: now() } : null
     let customerWriteResult = null

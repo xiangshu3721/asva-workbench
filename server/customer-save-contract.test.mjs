@@ -10,6 +10,26 @@ describe('customer save contracts', () => {
     expect(customerIdForOperation('save-operation-1')).not.toBe(customerIdForOperation('save-operation-2'))
   })
 
+  it('hashes every effective customer-save input while normalizing order-only differences', () => {
+    const base = {
+      operationId: 'op-hash-1', nickname: ' Synthetic Customer ', phone: '138 0000 0001', wechat: 'Demo_User', introducer: '导师A', situation: '当前情况',
+      mentorId: 'MENTOR-A', source: '  咨询录入  ', confirmedNotSame: true,
+      enrollments: [{ productId: 'P-2', paymentStatus: 'PAID', amount: 100, enrolledAt: '2026-01-02' }, { productId: 'P-1', paymentStatus: 'UNPAID' }],
+      profileUpdates: [{ field: 'occupation', value: '设计师', source: 'MENTOR_OBSERVATION', confidence: 0.8 }, { field: 'city', value: '杭州', source: 'USER_EXPLICIT', confidence: 1 }],
+    }
+    const reordered = { ...base, operationId: 'different-op', enrollments: [...base.enrollments].reverse(), profileUpdates: [...base.profileUpdates].reverse(), source: '咨询录入' }
+    expect(mutationPayloadHash(base)).toBe(mutationPayloadHash(reordered))
+    expect(mutationPayloadHash(base)).not.toBe(mutationPayloadHash({ ...base, mentorId: 'MENTOR-B' }))
+    expect(mutationPayloadHash(base)).not.toBe(mutationPayloadHash({ ...base, source: '客户本人提交' }))
+    expect(mutationPayloadHash(base)).not.toBe(mutationPayloadHash({ ...base, confirmedNotSame: false }))
+    expect(mutationPayloadHash(base)).not.toBe(mutationPayloadHash({ ...base, enrollments: [{ ...base.enrollments[0], amount: 200 }, base.enrollments[1]] }))
+  })
+
+  it('does not normalize duplicate profile fields across different effective orders', () => {
+    const base = { nickname: 'Synthetic Customer', phone: '13800000001', profileUpdates: [{ field: 'occupation', value: '设计师' }, { field: 'occupation', value: '教师' }] }
+    expect(mutationPayloadHash(base)).not.toBe(mutationPayloadHash({ ...base, profileUpdates: [...base.profileUpdates].reverse() }))
+  })
+
   it('explains an enrollment partial failure without pretending the customer was lost', () => {
     expect(partialEnrollmentFailureMessage()).toContain('客户已保存')
     expect(partialEnrollmentFailureMessage()).toContain('请重试')
