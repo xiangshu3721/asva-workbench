@@ -359,10 +359,22 @@ function WorkbenchApp() {
     let cancelled = false
     workbenchApi.customerSaveStatus(activeStaff.id, pending.operationId, pending.customerId).then((status) => {
       if (cancelled) return
-      if ((status.status === 'PERSISTED' || status.status === 'COMMITTED') && status.customer) {
+      if (status.status === 'COMMITTED' && status.customer) {
         applyCustomerMutation({ customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation })
         clearPendingCustomerMutation(pending.operationId)
         setCustomerSaveRecoveryMessage('已恢复并确认上一笔客户保存结果。')
+      } else if ((status.status === 'PERSISTED' || status.status === 'PROCESSING') && status.customer) {
+        applyCustomerMutation({ customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'PERSISTED', historyStatus: status.historyStatus, mutation: status.mutation })
+        setCustomerSaveRecoveryMessage(status.historyStatus === 'PENDING' ? '客户主记录已保存，档案历史正在补偿，暂不重复提交。' : '客户主记录已保存，其他保存步骤仍在确认，暂不重复提交。')
+        void workbenchApi.repairCustomerHistory(activeStaff.id, pending.operationId, status.customerId).then((repair) => {
+          if (cancelled || repair.status !== 'COMMITTED') return
+          return workbenchApi.customerSaveStatus(activeStaff.id, pending.operationId, status.customerId).then((confirmed) => {
+            if (cancelled || confirmed.status !== 'COMMITTED' || !confirmed.customer) return
+            applyCustomerMutation({ customer: confirmed.customer, enrollments: confirmed.enrollments || [], profileChanges: confirmed.profileChanges || [], createdCustomerId: confirmed.createdCustomerId || confirmed.customerId, customerCreated: confirmed.customerCreated === true, persistenceStatus: confirmed.persistenceStatus || 'COMMITTED', mutation: confirmed.mutation })
+            clearPendingCustomerMutation(pending.operationId)
+            setCustomerSaveRecoveryMessage('已恢复并确认上一笔客户保存结果。')
+          })
+        }).catch(() => { if (!cancelled) setCustomerSaveRecoveryMessage('客户主记录已保存，档案历史暂未补齐，原操作仍保留。') })
       } else if (status.status === 'UNKNOWN') {
         setCustomerSaveRecoveryMessage('上一笔客户保存结果暂时无法确认，原操作仍保留，请稍后重试。')
       } else if (status.status === 'FAILED') {

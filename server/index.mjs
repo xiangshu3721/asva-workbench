@@ -149,6 +149,8 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || ''), requestId)
   const customerSaveStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/save-status$/)
   if (request.method === 'GET' && customerSaveStatus) return send(request, response, 200, await repository.customerSaveStatus(await guard(request), decodeURIComponent(customerSaveStatus[1]), url.searchParams.get('operationId') || ''), requestId)
+  const customerSaveHistoryRepair = url.pathname.match(/^\/api\/customers\/([^/]+)\/save-status\/repair-history$/)
+  if (request.method === 'POST' && customerSaveHistoryRepair) { const body = await readBody(request); return send(request, response, 200, await repository.repairCustomerMutationHistory(await guard(request), decodeURIComponent(customerSaveHistoryRepair[1]), body.operationId || request.headers['x-operation-id'] || request.headers['x-idempotency-key'] || ''), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/privacy/service-necessity') return send(request, response, 200, await repository.overrideServiceNecessity(await guardAdmin(request), await readBody(request)), requestId)
   const proposalReview = url.pathname.match(/^\/api\/profile-proposals\/([^/]+)\/review$/)
   if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guard(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }

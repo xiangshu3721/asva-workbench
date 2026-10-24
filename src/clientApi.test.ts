@@ -116,4 +116,12 @@ describe('HTTP environment diagnostics', () => {
     await expect(createHttpApi('http://127.0.0.1:8788').updateCustomer('STAFF-1', 'CUS-2', { operationId: 'persisted-then-failed', nickname: 'Synthetic Customer', phone: '13800000004', wechat: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED' })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
+
+  it('uses the original operation id for explicit profile history repair', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify({ operationId: 'history-repair-1', customerId: 'CUS-2', status: 'COMMITTED', historyStatus: 'COMPLETE', repaired: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await createHttpApi('http://127.0.0.1:8788').repairCustomerHistory('STAFF-1', 'history-repair-1', 'CUS-2')
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/customers/CUS-2/save-status/repair-history')
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ operationId: 'history-repair-1' })
+  })
 })
