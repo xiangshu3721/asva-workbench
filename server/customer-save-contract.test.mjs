@@ -65,6 +65,16 @@ describe('customer save contracts', () => {
     })
   })
 
+  it('reads the durable operation state from a fresh repository instance', async () => {
+    const database = customerDatabase({ id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { 'op-durable': { operationId: 'op-durable', customerId: 'CUS-1', kind: 'UPDATE', status: 'COMMITTED', resultFingerprint: customerResultFingerprint({ id: 'CUS-1', name: 'Synthetic Customer' }), updatedAt: '2026-01-01T00:00:00.000Z' } } })
+    const firstInstance = new FeishuRepository({ authRepository: {} })
+    const secondInstance = new FeishuRepository({ authRepository: {} })
+    firstInstance.load = async () => database
+    secondInstance.load = async () => database
+    await expect(secondInstance.customerSaveStatus('ADMIN-1', '', 'op-durable')).resolves.toMatchObject({ operationId: 'op-durable', customerId: 'CUS-1', status: 'COMMITTED', resultSnapshotAvailable: true })
+    expect(firstInstance).not.toBe(secondInstance)
+  })
+
   it('does not expose a save result outside the actor customer scope', async () => {
     const database = {
       staff: [{ id: 'MENTOR-1', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }],
