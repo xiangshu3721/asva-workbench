@@ -35,6 +35,94 @@ const now = () => new Date().toISOString()
 const stableOperationId = (value, prefix) => `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 20)}`
 export const customerIdForOperation = (operationId) => stableOperationId(operationId, 'CUS')
 export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
+const CUSTOMER_MUTATION_STATE_LIMIT = 20
+const CUSTOMER_MUTATION_STATUSES = new Set(['PROCESSING', 'PERSISTED', 'COMMITTED', 'UNKNOWN', 'FAILED'])
+const canonicalMutationValue = (value) => {
+  if (Array.isArray(value)) return value.map(canonicalMutationValue)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalMutationValue(value[key])]))
+  if (typeof value === 'number' && !Number.isFinite(value)) return null
+  return value
+}
+const normalizeMutationProfileUpdates = (updates) => {
+  if (!Array.isArray(updates)) return []
+  const allowedFields = new Set([...PROFILE_FIELD_KEYS, 'grade', 'paid', 'mentor_id', 'current_mentor_id', 'intended_course'])
+  const normalized = updates
+    .filter((item) => item && typeof item.field === 'string' && allowedFields.has(item.field))
+    .map((item) => {
+      const rawConfidence = Number(item.confidence ?? 0.9)
+      return {
+        field: item.field === 'mentor_id' ? 'current_mentor_id' : item.field,
+        value: canonicalMutationValue(jsonValue(item.value)),
+        source: text(item.source).trim(),
+        confidence: Number.isFinite(rawConfidence) ? Math.max(0, Math.min(1, rawConfidence)) : null,
+      }
+    })
+    .filter((item) => item.value !== null)
+  // Distinct fields are order-independent in the save contract. Duplicate fields
+  // remain ordered because the server applies the last value for that field.
+  const hasDuplicateField = new Set(normalized.map((item) => item.field)).size !== normalized.length
+  return hasDuplicateField ? normalized : normalized.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+}
+const normalizeMutationEnrollments = (enrollments) => {
+  if (!Array.isArray(enrollments)) return { provided: false, items: [] }
+  const effective = new Map()
+  for (const item of enrollments) {
+    const productId = text(item?.productId)
+    if (!productId) continue
+    effective.set(productId, {
+      productId,
+      paymentStatus: item?.paymentStatus ?? null,
+      amount: item?.amount ?? null,
+      enrolledAt: item?.enrolledAt ?? null,
+      paidAt: item?.paidAt ?? null,
+    })
+  }
+  return { provided: true, items: [...effective.values()].sort((a, b) => a.productId.localeCompare(b.productId)).map(canonicalMutationValue) }
+}
+export const mutationPayloadHash = (input = {}) => crypto.createHash('sha256').update(JSON.stringify(canonicalMutationValue({
+  nickname: text(input.nickname).trim(),
+  phone: normalizePhone(input.phone),
+  wechat: normalizeWechat(input.wechat),
+  introducer: text(input.introducer).trim(),
+  situation: text(input.situation).trim(),
+  mentorId: input.mentorId === null || input.mentorId === undefined ? null : text(input.mentorId).trim(),
+  source: text(input.source).trim(),
+  confirmedNotSame: Boolean(input.confirmedNotSame),
+  enrollments: normalizeMutationEnrollments(input.enrollments),
+  profileUpdates: normalizeMutationProfileUpdates(input.profileUpdates),
+}))).digest('hex')
+export const customerResultFingerprint = (customerRecord) => crypto.createHash('sha256').update(JSON.stringify({
+  id: customerRecord?.id || '',
+  name: customerRecord?.name || '',
+  phone: customerRecord?.phone || '',
+  wechat: customerRecord?.wechat || '',
+  notes: customerRecord?.notes || '',
+  need: customerRecord?.need || '',
+  helpExpectation: customerRecord?.helpExpectation || '',
+  goal: customerRecord?.goal || '',
+  profileFields: customerRecord?.profileFields || {},
+  profileFieldMeta: customerRecord?.profileFieldMeta || {},
+  profileVersion: customerRecord?.profileVersion || 0,
+  profileUpdatedAt: customerRecord?.profileUpdatedAt || null,
+})).digest('hex')
+export const sanitizeMutationStates = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const entries = Object.entries(value).filter(([operationId, state]) => operationId && state && typeof state === 'object' && !Array.isArray(state) && typeof state.customerId === 'string' && CUSTOMER_MUTATION_STATUSES.has(state.status)).map(([operationId, state]) => [operationId, {
+    operationId,
+    kind: state.kind === 'CREATE' ? 'CREATE' : 'UPDATE',
+    customerId: state.customerId,
+    status: state.status,
+    payloadHash: typeof state.payloadHash === 'string' ? state.payloadHash : '',
+    resultFingerprint: typeof state.resultFingerprint === 'string' ? state.resultFingerprint : '',
+    updatedAt: typeof state.updatedAt === 'string' ? state.updatedAt : null,
+  }])
+  const pending = entries.filter(([, state]) => state.status !== 'COMMITTED')
+  const committed = entries.filter(([, state]) => state.status === 'COMMITTED').slice(-CUSTOMER_MUTATION_STATE_LIMIT)
+  return Object.fromEntries([...pending, ...committed])
+}
+const publicMutationState = (state) => state ? { operationId: state.operationId, customerId: state.customerId, kind: state.kind, status: state.status, updatedAt: state.updatedAt || null } : null
+const incompleteMutationError = (state) => Object.assign(new Error('该保存操作尚未完成，请查询原操作状态后再继续。'), { code: 'CUSTOMER_SAVE_INCOMPLETE', status: 409, mutationStatus: state?.status || 'UNKNOWN' })
+const confirmedMutationFailureError = () => Object.assign(new Error('客户保存已确认失败，不能自动重放原操作。'), { code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', status: 409 })
 const mentorCreateLocks = new Map()
 const publicSource = (source, { includeRaw = false } = {}) => {
   const { rawText, _recordId, processingError, ...safe } = source || {}
@@ -81,17 +169,20 @@ function publicCustomerDetailDto(database) {
     sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
   }
 }
-export function publicCustomerMutationDto(database, actorId, customerId, customerCreated = false) {
+export function publicCustomerMutationDto(database, actorId, customerId, customerCreated = false, operationId = '') {
   const visible = scope(database, actorId)
   const customerRecord = visible.customers.find((item) => item.id === customerId)
   if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+  const mutation = operationId ? publicMutationState(customerRecord.mutationStates?.[operationId]) : null
+  const persistenceStatus = mutation?.status === 'PERSISTED' ? 'PERSISTED' : database._persistenceStatus || 'COMMITTED'
   return {
     customer: publicCustomerDetail(customerRecord),
     enrollments: visible.enrollments.filter((item) => item.customerId === customerId).map(publicEnrollment),
     profileChanges: visible.profileChanges.filter((item) => item.customerId === customerId).map(publicProfileChange),
     createdCustomerId: customerId,
     customerCreated,
-    persistenceStatus: database._persistenceStatus || 'COMMITTED',
+    persistenceStatus,
+    ...(mutation ? { mutation } : {}),
   }
 }
 const loginRateLimiter = new LoginRateLimiter()
@@ -125,6 +216,7 @@ function customer(row) {
   let understandingMeta = null
   let salesUnderstandingMeta = null
   let safetyMeta = null
+  let mutationStates = {}
   try {
     const storedMeta = JSON.parse(text(get('customers', f, 'profile_field_meta_json')) || '{}')
     profileVersion = Number(storedMeta._profile_version || 0)
@@ -133,6 +225,7 @@ function customer(row) {
     understandingMeta = storedMeta._understanding && typeof storedMeta._understanding === 'object' ? storedMeta._understanding : null
     salesUnderstandingMeta = storedMeta._sales_understanding && typeof storedMeta._sales_understanding === 'object' ? storedMeta._sales_understanding : null
     safetyMeta = storedMeta._safety && typeof storedMeta._safety === 'object' ? storedMeta._safety : null
+    mutationStates = sanitizeMutationStates(storedMeta._mutation_states)
   } catch { profileFieldMeta = {} }
   const aiSummary = parsedJson(get('customers', f, 'ai_customer_summary'), aiSummaryMeta?.summary || null)
   const understanding = understandingMeta?.payload && typeof understandingMeta.payload === 'object' ? understandingMeta.payload : null
@@ -168,7 +261,7 @@ function customer(row) {
     if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
   }
   const referrerName = text(get('customers', f, 'referrer_name'))
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, _recordId: row.record_id }
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -389,7 +482,7 @@ function profileFieldsForWrite(customerRecord, updates) {
   return mapFields('customers', values)
 }
 
-function serializeCustomerDerivedMeta(customerRecord, overrides = {}) {
+export function serializeCustomerDerivedMeta(customerRecord, overrides = {}) {
   return JSON.stringify({
     _profile_version: customerRecord.profileVersion || 0,
     _fields: customerRecord.profileFieldMeta || {},
@@ -397,7 +490,32 @@ function serializeCustomerDerivedMeta(customerRecord, overrides = {}) {
     _understanding: Object.prototype.hasOwnProperty.call(overrides, 'understanding') ? overrides.understanding : customerRecord.understandingMeta || null,
     _sales_understanding: Object.prototype.hasOwnProperty.call(overrides, 'salesUnderstanding') ? overrides.salesUnderstanding : customerRecord.salesUnderstandingMeta || null,
     _safety: Object.prototype.hasOwnProperty.call(overrides, 'safety') ? overrides.safety : customerRecord.safetyMeta || null,
+    _mutation_states: Object.prototype.hasOwnProperty.call(overrides, 'mutationStates') ? sanitizeMutationStates(overrides.mutationStates) : sanitizeMutationStates(customerRecord.mutationStates),
   })
+}
+
+async function updateCustomerRecordSafely(recordId, customerId, buildFields, verify) {
+  let lastError = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const latestRow = await getRecord(config.feishu.tables.customers, recordId)
+    if (!latestRow) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const latestCustomer = customer(latestRow)
+    if (latestCustomer.id !== customerId) throw Object.assign(new Error('客户回读不匹配'), { code: 'CUSTOMER_READBACK_MISMATCH', status: 502 })
+    await updateRecord(config.feishu.tables.customers, recordId, buildFields(latestCustomer))
+    const verifiedRow = await getRecord(config.feishu.tables.customers, recordId)
+    if (!verifiedRow) {
+      lastError = Object.assign(new Error('客户更新后暂未读回'), { code: 'CUSTOMER_METADATA_UNKNOWN', status: 503 })
+      continue
+    }
+    const verifiedCustomer = customer(verifiedRow)
+    if (verifiedCustomer.id !== customerId) {
+      lastError = Object.assign(new Error('客户更新回读不匹配'), { code: 'CUSTOMER_READBACK_MISMATCH', status: 502 })
+      continue
+    }
+    if (!verify || verify(verifiedCustomer)) return { row: verifiedRow, customer: verifiedCustomer }
+    lastError = Object.assign(new Error('客户元数据更新发生并发冲突'), { code: 'CUSTOMER_METADATA_CONFLICT', status: 409 })
+  }
+  throw lastError || Object.assign(new Error('客户元数据更新结果未知'), { code: 'CUSTOMER_METADATA_UNKNOWN', status: 503 })
 }
 
 function validateManualCustomer(input) {
@@ -520,7 +638,35 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
   if (!changed.length) return { customerRecord, writeResult: null, changes: [] }
-  const writeResult = await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
+  const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
+    const next = {
+      ...latestCustomer,
+      profileFields: { ...(latestCustomer.profileFields || {}) },
+      profileFieldMeta: { ...(latestCustomer.profileFieldMeta || {}) },
+      profileVersion: Number(latestCustomer.profileVersion || 0) + 1,
+      profileUpdatedAt: updatedAt,
+      profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION,
+    }
+    for (const change of changed) {
+      next.profileFields[change.field] = change.value
+      next.profileFieldMeta[change.field] = customerRecord.profileFieldMeta[change.field]
+      if (change.field === 'current_core_issue' && typeof change.value === 'string') next.need = change.value
+      if (change.field === 'current_expectation' && typeof change.value === 'string') next.helpExpectation = change.value
+      if (change.field === 'current_goal' && typeof change.value === 'string') next.goal = change.value
+      if (change.field === 'intended_course') next.intendedCourse = typeof change.value === 'string' ? change.value : null
+      if (change.field === 'paid' && typeof change.value === 'boolean') next.paid = change.value
+      if (change.field === 'grade' && typeof change.value === 'string') next.grade = change.value
+      if (change.field === 'current_mentor_id' && typeof change.value === 'string') next.mentorId = change.value
+      if (change.field === 'birth_date') {
+        const year = derivedBirthYear(change.value)
+        const age = derivedAge(change.value)
+        if (year !== null) next.profileFields.birth_year = year
+        if (age !== null) next.profileFields.age = age
+      }
+    }
+    return profileFieldsForWrite(next, changed)
+  }, (latestCustomer) => changed.every((change) => sameProfileValue(latestCustomer.profileFields?.[change.field], change.value)))
+  const writeResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
   const persistedChanges = []
   for (const change of changed.filter((item) => customerHistoryPolicy(item.field) === 'TRACK' || (item.field === 'age' && !customerRecord.profileFields.birth_date))) {
     const changeId = provenanceContext.updateBatchId ? stableOperationId(`${provenanceContext.updateBatchId}:${change.field}`, 'PCH') : `PCH-${crypto.randomUUID()}`
@@ -1008,7 +1154,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerUnderstanding(actorId, customerId)
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) return this.getCustomerUnderstanding(actorId, customerId)
     const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: customerRecord.understanding || null }
-    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { understanding: meta }) }))
+    const writeMeta = (meta) => updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { understanding: meta }) }), (latestCustomer) => latestCustomer.understandingMeta?.updatedAt === meta.updatedAt && latestCustomer.understandingMeta?.status === meta.status)
     await writeMeta(processingMeta)
     const startedAt = Date.now()
     try {
@@ -1074,7 +1220,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerSalesUnderstanding(actorId, customerId)
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION) return this.getCustomerSalesUnderstanding(actorId, customerId)
     const processingMeta = { ...currentMeta, salesUnderstandingId: currentMeta.salesUnderstandingId || `SALES-UNDERSTANDING-${customerId}`, customerId, salesUnderstandingVersion: CUSTOMER_SALES_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: customerRecord.salesUnderstanding || null }
-    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { salesUnderstanding: meta }) }))
+    const writeMeta = (meta) => updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { salesUnderstanding: meta }) }), (latestCustomer) => latestCustomer.salesUnderstandingMeta?.updatedAt === meta.updatedAt && latestCustomer.salesUnderstandingMeta?.status === meta.status)
     await writeMeta(processingMeta)
     const startedAt = Date.now()
     try {
@@ -1101,7 +1247,7 @@ export class FeishuRepository {
     if (!customerRecord || !row) return
     const updatedAt = now()
     const safetyMeta = { ...(customerRecord.safetyMeta || {}), customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status: 'STALE', inputFingerprint: '', updatedAt }
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { safety: safetyMeta }) }))
+    await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { safety: safetyMeta }) }), (latestCustomer) => latestCustomer.safetyMeta?.updatedAt === safetyMeta.updatedAt && latestCustomer.safetyMeta?.status === safetyMeta.status)
   }
 
   async getCustomerSafetyAssessment(actorId, customerId) {
@@ -1147,7 +1293,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerSafetyAssessment(actorId, customerId)
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === SAFETY_PROMPT_VERSION) return this.getCustomerSafetyAssessment(actorId, customerId)
     const processingMeta = { ...currentMeta, customerId, assessmentVersion: SAFETY_ASSESSMENT_VERSION, status: 'PROCESSING', inputFingerprint, promptVersion: SAFETY_PROMPT_VERSION, contextDensity: context.context_density, contextDensitySource: context.context_density_source, contextDensityPolicyVersion: context.context_density_policy_version, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: currentMeta.payload || null }
-    const writeMeta = (meta) => updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { safety: meta }) }))
+    const writeMeta = (meta) => updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { safety: meta }) }), (latestCustomer) => latestCustomer.safetyMeta?.updatedAt === meta.updatedAt && latestCustomer.safetyMeta?.status === meta.status)
     await writeMeta(processingMeta)
     const startedAt = Date.now()
     try {
@@ -1181,6 +1327,49 @@ export class FeishuRepository {
     // Preview only resolves identity and duplicates. AI extraction must stay outside the customer save critical path.
     return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates: [] }
   }
+  async persistCustomerMutationState(database, customerId, operationId, state) {
+    if (!operationId) return null
+    const customerRecord = database.customers.find((item) => item.id === customerId)
+    const row = database._rows?.customers?.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
+    if (!customerRecord || !row) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    const nextState = { ...state, operationId, customerId, updatedAt: state.updatedAt || now() }
+    const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
+      const mutationState = nextState.status === 'COMMITTED' ? { ...nextState, resultFingerprint: customerResultFingerprint(latestCustomer) } : nextState
+      const mutationStates = { ...sanitizeMutationStates(latestCustomer.mutationStates), [operationId]: mutationState }
+      return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { mutationStates }) })
+    }, (latestCustomer) => {
+      const persisted = latestCustomer.mutationStates?.[operationId]
+      return persisted?.status === nextState.status && persisted?.payloadHash === nextState.payloadHash && persisted?.customerId === customerId && (nextState.status !== 'COMMITTED' || persisted?.resultFingerprint === customerResultFingerprint(latestCustomer))
+    })
+    const writeResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
+    customerRecord.mutationStates = sanitizeMutationStates({ ...customerRecord.mutationStates, [operationId]: nextState })
+    this.invalidateDatabaseCache()
+    return writeResult
+  }
+  async customerSaveStatus(actorId, customerId, operationId) {
+    const normalizedOperationId = text(operationId).trim()
+    if (!normalizedOperationId) throw Object.assign(new Error('缺少操作编号'), { code: 'CUSTOMER_SAVE_OPERATION_REQUIRED', status: 400 })
+    const database = await this.load()
+    const visible = scope(database, actorId)
+    const customerRecord = customerId
+      ? visible.customers.find((item) => item.id === customerId)
+      : visible.customers.find((item) => item.mutationStates?.[normalizedOperationId]) || visible.customers.find((item) => item.id === customerIdForOperation(normalizedOperationId))
+    const resolvedCustomerId = customerRecord?.id || customerId || customerIdForOperation(normalizedOperationId)
+    if (!customerRecord) {
+      if (!customerId) return { operationId: normalizedOperationId, customerId: resolvedCustomerId, status: 'UNKNOWN', customer: null }
+      throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    }
+    const state = customerRecord.mutationStates?.[normalizedOperationId]
+    if (!state) return { operationId: normalizedOperationId, customerId: resolvedCustomerId, status: 'UNKNOWN', customer: null }
+    const response = { operationId: normalizedOperationId, customerId: resolvedCustomerId, status: state.status, updatedAt: state.updatedAt || null, customer: null }
+    if (state.status === 'PERSISTED') return { ...response, ...publicCustomerMutationDto(database, actorId, resolvedCustomerId, state.kind === 'CREATE', normalizedOperationId) }
+    if (state.status === 'COMMITTED') {
+      const resultMatchesCurrent = state.resultFingerprint && state.resultFingerprint === customerResultFingerprint(customerRecord)
+      if (!resultMatchesCurrent) return { ...response, mutation: publicMutationState(state), resultSnapshotAvailable: false, resultChangedSinceOperation: Boolean(state.resultFingerprint) }
+      return { ...response, ...publicCustomerMutationDto(database, actorId, resolvedCustomerId, state.kind === 'CREATE', normalizedOperationId), resultSnapshotAvailable: true }
+    }
+    return response
+  }
   async createCustomer(actorId, input, requestId = '', { compactResponse = false } = {}) {
     this.invalidateDatabaseCache()
     const startedAt = Date.now()
@@ -1195,6 +1384,18 @@ export class FeishuRepository {
       const normalized = validateManualCustomer(input)
       const existingId = operationId ? customerIdForOperation(operationId) : ''
       const existing = existingId ? database.customers.find((item) => item.id === existingId) : null
+      const inputHash = mutationPayloadHash(input)
+      if (existing && operationId) {
+        const previousMutation = existing.mutationStates?.[operationId]
+        if (!previousMutation) throw Object.assign(new Error('保存结果暂时无法确认，请查询原操作状态后再继续。'), { code: 'CUSTOMER_SAVE_UNKNOWN', status: 409 })
+        if (previousMutation.payloadHash && previousMutation.payloadHash !== inputHash) throw Object.assign(new Error('同一操作编号对应的资料已发生变化，请使用新的操作编号。'), { code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
+        if (previousMutation.status === 'FAILED') throw confirmedMutationFailureError()
+        if (previousMutation.status !== 'COMMITTED') throw incompleteMutationError(previousMutation)
+        result = 'SUCCESS'
+        return compactResponse
+          ? publicCustomerMutationDto(database, actorId, existing.id, false, operationId)
+          : Object.assign(scope(database, actorId), { createdCustomerId: existing.id, customerCreated: false })
+      }
       if (!existing) {
         const identity = resolveCustomerIdentity(database.customers, normalized)
         const duplicates = duplicateMatches(database, input)
@@ -1213,7 +1414,8 @@ export class FeishuRepository {
         const actor = database.staff.find((item) => item.id === actorId)
         const assignedMentorId = actor?.permissionRole === 'MENTOR' ? actor.id : text(input?.mentorId).trim()
         if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
-        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: input.source || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+        const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, updatedAt: createdAt } } : {}
+        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
@@ -1241,10 +1443,14 @@ export class FeishuRepository {
       result = 'SUCCESS'
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
       if (enrollmentsChanged) current = await this.loadAfterWrite(undefined, customerId)
+      if (operationId && !existing) {
+        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, { kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
+        if (mutationWrite) current = await this.loadCustomerAfterWrite(mutationWrite, customerId, current)
+      }
       const latest = current
       if (!existing) this.recentCustomerWrites.set(customerId, Date.now())
       return compactResponse
-        ? publicCustomerMutationDto(latest, actorId, customerId, !existing)
+        ? publicCustomerMutationDto(latest, actorId, customerId, !existing, operationId)
         : Object.assign(scope(latest, actorId), { createdCustomerId: customerId, customerCreated: !existing })
     } finally {
       const total = Date.now() - startedAt
@@ -1264,6 +1470,15 @@ export class FeishuRepository {
     const current = visibleDatabase.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!current || !row) throw new Error('客户不存在')
+    const operationId = text(input?.operationId).trim()
+    const inputHash = mutationPayloadHash(input)
+    const previousMutation = operationId ? current.mutationStates?.[operationId] : null
+    if (previousMutation) {
+      if (previousMutation.payloadHash && previousMutation.payloadHash !== inputHash) throw Object.assign(new Error('同一操作编号对应的资料已发生变化，请使用新的操作编号。'), { code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
+      if (previousMutation.status === 'FAILED') throw confirmedMutationFailureError()
+      if (previousMutation.status !== 'COMMITTED') throw incompleteMutationError(previousMutation)
+      return compactResponse ? publicCustomerMutationDto(database, actorId, customerId, false, operationId) : scope(database, actorId)
+    }
     assertMentorAssignmentAuthority(database, actorId, input.profileUpdates)
     validateEnrollmentDrafts(database, input.enrollments)
     const phoneProvided = Object.prototype.hasOwnProperty.call(input || {}, 'phone')
@@ -1298,9 +1513,27 @@ export class FeishuRepository {
     const customerValues = {}
     if (nicknameChanged) customerValues.nickname = normalized.nickname
     if (situationProvided && notesChanged) customerValues.notes = normalized.situation
-    if (input.source && input.source !== current.source) customerValues.source = input.source
+    const requestedSource = text(input.source).trim()
+    if (requestedSource && requestedSource !== current.source) customerValues.source = requestedSource
     if (introducerChanged) customerValues.referrer_name = normalized.introducer
-    const customerWriteResult = Object.keys(customerValues).length ? await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues)) : null
+    const persistedState = operationId ? { operationId, kind: 'UPDATE', customerId, status: 'PERSISTED', payloadHash: inputHash, updatedAt: now() } : null
+    let customerWriteResult = null
+    if (Object.keys(customerValues).length) {
+      if (operationId) {
+        const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
+          ...customerValues,
+          profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { mutationStates: { ...latestCustomer.mutationStates, [operationId]: persistedState } }),
+        }), (latestCustomer) => latestCustomer.mutationStates?.[operationId]?.status === 'PERSISTED' && latestCustomer.mutationStates?.[operationId]?.payloadHash === inputHash)
+        customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
+      } else {
+        customerWriteResult = await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues))
+      }
+    } else if (operationId) {
+      const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
+        profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { mutationStates: { ...latestCustomer.mutationStates, [operationId]: persistedState } }),
+      }), (latestCustomer) => latestCustomer.mutationStates?.[operationId]?.status === 'PERSISTED' && latestCustomer.mutationStates?.[operationId]?.payloadHash === inputHash)
+      customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
+    }
     const manualChanges = []
     if (nicknameChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'nickname', fieldName: '客户昵称', oldValue: current.name, newValue: normalized.nickname, operatorId: actorId, operationId: text(input?.operationId).trim() }))
     if (notesChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'notes', fieldName: '客户情况', oldValue: current.notes || null, newValue: normalized.situation || null, operatorId: actorId, operationId: text(input?.operationId).trim() }))
@@ -1321,7 +1554,11 @@ export class FeishuRepository {
     }
     // Customer updates do not create or mutate Appointment in Stage 1.
     if (enrollmentsChanged) latest = await this.loadAfterWrite(undefined, customerId)
-    return compactResponse ? publicCustomerMutationDto(latest, actorId, customerId, false) : scope(latest, actorId)
+    if (operationId) {
+      const mutationWrite = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
+      if (mutationWrite) latest = await this.loadCustomerAfterWrite(mutationWrite, customerId, latest)
+    }
+    return compactResponse ? publicCustomerMutationDto(latest, actorId, customerId, false, operationId) : scope(latest, actorId)
   }
 
   async updateCustomerEnrollments(actorId, customerId, drafts, operationId = '') { return this.customerWriteQueue.run(customerId, () => this.updateCustomerEnrollmentsUnsafe(actorId, customerId, drafts, operationId)) }
@@ -1866,7 +2103,7 @@ export class FeishuRepository {
     if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return customerRecord
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint) return customerRecord
     const processingMeta = { ...currentMeta, status: 'PROCESSING', inputFingerprint, updatedAt: now() }
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { aiSummary: processingMeta }) }))
+    await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { aiSummary: processingMeta }) }), (latestCustomer) => latestCustomer.aiSummaryMeta?.updatedAt === processingMeta.updatedAt && latestCustomer.aiSummaryMeta?.status === processingMeta.status)
     try {
       const privateProfileFields = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
       const safeProfile = Object.fromEntries(Object.entries(customerRecord.profileFields || {}).filter(([field]) => !privateProfileFields.has(field)))
@@ -1876,11 +2113,11 @@ export class FeishuRepository {
       const context = { now: new Date().toISOString(), customer: { need: safeText(customerRecord.need), helpExpectation: safeText(customerRecord.helpExpectation), goal: safeText(customerRecord.goal), profile: safeProfile }, currentCase: null, recentSessions: [], recentChanges: [], enrollments: [], profileRenderer: safeRenderer, confirmedEvidence: safeEvidence }
       const result = await createCustomerIntelligence({ context })
       const freshMeta = { status: 'FRESH', inputFingerprint, summary: result.summary, updatedAt: now() }
-      await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { aiSummary: freshMeta }), ai_customer_summary: JSON.stringify(result.summary) }))
+      await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { aiSummary: freshMeta }), ai_customer_summary: JSON.stringify(result.summary) }), (latestCustomer) => latestCustomer.aiSummaryMeta?.updatedAt === freshMeta.updatedAt && latestCustomer.aiSummaryMeta?.status === freshMeta.status)
       return (await this.load()).customers.find((item) => item.id === customerId)
     } catch (error) {
       const failedMeta = { ...processingMeta, status: 'FAILED', updatedAt: now(), errorCode: 'SUMMARY_REFRESH_FAILED' }
-      await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord, { aiSummary: failedMeta }) })).catch(() => {})
+      await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { aiSummary: failedMeta }) }), (latestCustomer) => latestCustomer.aiSummaryMeta?.updatedAt === failedMeta.updatedAt && latestCustomer.aiSummaryMeta?.status === failedMeta.status).catch(() => {})
       throw Object.assign(new Error('客户摘要刷新失败，请稍后重试'), { code: 'SUMMARY_REFRESH_FAILED', status: 503, cause: error })
     }
   }

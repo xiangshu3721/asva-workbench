@@ -81,4 +81,39 @@ describe('HTTP environment diagnostics', () => {
     await vi.advanceTimersByTimeAsync(CLIENT_DEFAULT_TIMEOUT_MS)
     await pending
   })
+
+  it('recovers a customer save through the original operation id after the write response is lost', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'FEISHU_UNAVAILABLE', message: '响应丢失' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'stable-customer-save-1', customerId: 'CUS-1', status: 'COMMITTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'COMMITTED' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'stable-customer-save-1', nickname: 'Synthetic Customer', phone: '13800000001', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+
+    expect(result).toMatchObject({ createdCustomerId: 'CUS-1', customer: { id: 'CUS-1' } })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=stable-customer-save-1')
+  })
+
+  it('does not treat PERSISTED as a final successful save', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'PERSISTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'COMMITTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'COMMITTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'COMMITTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-then-committed', nickname: 'Synthetic Customer', phone: '13800000003', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(pending).resolves.toMatchObject({ persistenceStatus: 'COMMITTED', mutation: { status: 'COMMITTED' } })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customers/CUS-1/save-status?operationId=persisted-then-committed')
+  })
+
+  it('does not convert a PERSISTED write followed by a confirmed failure into COMMITTED', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'PERSISTED', customer: null, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'FAILED', customer: null, mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'FAILED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(createHttpApi('http://127.0.0.1:8788').updateCustomer('STAFF-1', 'CUS-2', { operationId: 'persisted-then-failed', nickname: 'Synthetic Customer', phone: '13800000004', wechat: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 })
