@@ -113,6 +113,13 @@ describe('customer save contracts', () => {
     expect(publicCustomerMutationDto(database, 'ADMIN-1', 'CUS-1', false, 'op-1')).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
   })
 
+  it('keeps durable profile history evidence attached to a partial mutation', () => {
+    const plan = [{ changeId: 'PCH-1', customerId: 'CUS-1', field: 'occupation', fieldName: '当前职业', oldValue: null, newValue: '设计师', source: 'MANUAL', confidence: 1, confirmed: true, operatorId: 'ADMIN-1', changedAt: '2026-01-01T00:00:00.000Z' }]
+    const customer = { id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { 'op-history': { operationId: 'op-history', customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED', historyStatus: 'PENDING', historyPlan: plan, enrollmentStatus: 'COMPLETE', updatedAt: '2026-01-01T00:00:00.000Z' } } }
+    const result = publicCustomerMutationDto(customerDatabase(customer), 'ADMIN-1', 'CUS-1', false, 'op-history')
+    expect(result).toMatchObject({ persistenceStatus: 'PERSISTED', historyStatus: 'PENDING', mutation: { historyStatus: 'PENDING', historyPendingCount: 1, enrollmentStatus: 'COMPLETE' } })
+  })
+
   it('does not replay an incomplete PATCH and rejects a changed payload', async () => {
     const operationId = 'patch-persisted-1'
     const originalInput = { operationId, nickname: 'Synthetic Customer', phone: '13800000001', wechat: '', situation: 'same', enrollments: [] }

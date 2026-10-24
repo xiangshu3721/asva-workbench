@@ -112,18 +112,20 @@ export interface CustomerMutationResult {
   profileChangesComplete?: boolean
   createdCustomerId: string
   customerCreated: boolean
-  persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'
+  persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED' | 'UNKNOWN'
+  historyStatus?: 'NOT_REQUIRED' | 'COMPLETE' | 'PENDING' | 'UNKNOWN' | 'CONFLICT'
   mutation?: CustomerMutationState
 }
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
-export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; updatedAt?: string | null }
-export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; profileChangesComplete?: boolean; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
+export type CustomerHistoryStatus = 'NOT_REQUIRED' | 'COMPLETE' | 'PENDING' | 'UNKNOWN' | 'CONFLICT'
+export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; updatedAt?: string | null; historyStatus?: CustomerHistoryStatus; historyPendingCount?: number; enrollmentStatus?: 'PENDING' | 'COMPLETE' | 'UNKNOWN' | 'NOT_REQUIRED' }
+export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; historyStatus?: CustomerHistoryStatus; historyPendingCount?: number; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; profileChangesComplete?: boolean; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED' | 'UNKNOWN'; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
 
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
   if (!customer) throw new Error('保存后未找到客户')
-  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), profileChangesComplete: true, createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), profileChangesComplete: true, createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', historyStatus: database.historyStatus, mutation: database.mutation }
 }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
 
@@ -147,6 +149,7 @@ export interface WorkbenchApi {
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<CustomerMutationResult>
   customerSaveStatus(actorId: string, operationId: string, customerId?: string): Promise<CustomerSaveStatusResponse>
+  repairCustomerHistory(actorId: string, operationId: string, customerId: string): Promise<{ operationId: string; customerId: string; status: CustomerMutationStateStatus; historyStatus: CustomerHistoryStatus; repaired: boolean; mutation?: CustomerMutationState }>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
   assignAppointment(actorId: string, appointmentId: string, mentorId: string): Promise<Database>
   markFollowupDone(actorId: string, appointmentId: string): Promise<Database>
@@ -272,6 +275,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     createCustomer: async (actorId, input) => customerMutationFromDatabase(await api.createCustomer(actorId, input) as Database & Partial<CustomerMutationResult>),
     updateCustomer: async (actorId, customerId, input) => customerMutationFromDatabase(await api.updateCustomer(actorId, customerId, input) as Database, customerId, false),
     customerSaveStatus: async (_actorId, operationId, customerId) => ({ operationId, customerId: customerId || '', status: 'UNKNOWN', customer: null }),
+    repairCustomerHistory: async (_actorId, operationId, customerId) => ({ operationId, customerId, status: 'UNKNOWN', historyStatus: 'UNKNOWN', repaired: false }),
     updateCustomerEnrollments: async (actorId, customerId, enrollments) => api.updateCustomerEnrollments(actorId, customerId, enrollments),
     assignAppointment: async (actorId, appointmentId, mentorId) => api.assignAppointment(actorId, appointmentId, mentorId),
     markFollowupDone: async (actorId, appointmentId) => api.markFollowupDone(actorId, appointmentId),
@@ -367,7 +371,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
         if (status.status === 'FAILED') throw new ApiError({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', serverCode: 'CUSTOMER_SAVE_CONFIRMED_FAILED', message: '客户保存已确认失败，填写内容仍保留。' })
         if (status.status === 'COMMITTED' && status.customer) {
           emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)
-          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], profileChangesComplete: status.profileChangesComplete !== false, createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation }
+          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], profileChangesComplete: status.profileChangesComplete !== false, createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', historyStatus: status.historyStatus, mutation: status.mutation }
         }
         if (status.status === 'COMMITTED' && !status.customer) {
           emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)
@@ -433,6 +437,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       }
     },
     customerSaveStatus: (actorId, operationId, customerId) => request<CustomerSaveStatusResponse>(customerId ? `/api/customers/${encodeURIComponent(customerId)}/save-status?operationId=${encodeURIComponent(operationId)}` : `/api/customer-save-status?operationId=${encodeURIComponent(operationId)}`, actorId),
+    repairCustomerHistory: (actorId, operationId, customerId) => request<{ operationId: string; customerId: string; status: CustomerMutationStateStatus; historyStatus: CustomerHistoryStatus; repaired: boolean; mutation?: CustomerMutationState }>(`/api/customers/${encodeURIComponent(customerId)}/save-status/repair-history`, actorId, { method: 'POST', body: JSON.stringify({ operationId }) }),
     updateCustomerEnrollments: (actorId, customerId, enrollments) => request<Database>(`/api/customers/${encodeURIComponent(customerId)}/enrollments`, actorId, { method: 'PUT', body: JSON.stringify({ enrollments, operationId: `enrollments-${customerId}-${Date.now()}` }) }),
     assignAppointment: (actorId, appointmentId, mentorId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/assign`, actorId, { method: 'POST', body: JSON.stringify({ mentorId }) }),
     markFollowupDone: (actorId, appointmentId) => request<Database>(`/api/appointments/${encodeURIComponent(appointmentId)}/complete-followup`, actorId, { method: 'POST', body: '{}' }),
