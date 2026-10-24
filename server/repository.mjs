@@ -796,6 +796,7 @@ export class FeishuRepository {
     const profileChangeRows = customerId
       ? await this.readFilteredTable('profileChanges', config.feishu.tables.profileChanges, mapField('profileChanges', 'customer_id'), customerId, { scene })
       : []
+    const profileChangesLoaded = Boolean(customerId && config.feishu.tables.profileChanges)
     return {
       staff: staffRows.map(staff),
       customers: customerRows.map(customer),
@@ -805,8 +806,8 @@ export class FeishuRepository {
       profileChanges: profileChangeRows.map(profileChange), sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
       _partialReadContext: true,
-      _profileChangesLoadedFor: customerId ? [customerId] : [],
-      _readCoverage: { customers: 'FULL', staff: 'FULL', products: 'FULL', enrollments: 'FULL', profileChanges: customerId ? 'CUSTOMER_FILTERED' : 'NOT_LOADED' },
+      _profileChangesLoadedFor: profileChangesLoaded ? [customerId] : [],
+      _readCoverage: { customers: 'FULL', staff: 'FULL', products: 'FULL', enrollments: 'FULL', profileChanges: profileChangesLoaded ? 'CUSTOMER_FILTERED' : 'NOT_LOADED' },
       _rows: { customers: customerRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows },
     }
   }
@@ -823,7 +824,7 @@ export class FeishuRepository {
     return {
       ...refreshed,
       profileChanges: this.mergeProfileChanges(current, refreshed, customerId),
-      _profileChangesLoadedFor: [customerId],
+      _profileChangesLoadedFor: refreshed._profileChangesLoadedFor || [],
     }
   }
   async loadSourceMutationContext(customerId, scene = 'A3_SOURCE') {
@@ -1576,7 +1577,7 @@ export class FeishuRepository {
         current = input.profileUpdates?.length && !compactResponse
           ? await this.loadAfterWrite(writeResult, customerId)
           : await this.loadCustomerAfterWrite(writeResult, customerId, current)
-        current._profileChangesLoadedFor = [...new Set([...(current._profileChangesLoadedFor || []), customerId])]
+        if (config.feishu.tables.profileChanges) current._profileChangesLoadedFor = [...new Set([...(current._profileChangesLoadedFor || []), customerId])]
         timings.customer_write_ms = Date.now() - customerWriteStartedAt
       }
       if (input.profileUpdates?.length) {
