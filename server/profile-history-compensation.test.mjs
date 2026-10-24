@@ -18,11 +18,11 @@ vi.mock('./feishu.mjs', async () => {
 
 const { FeishuRepository } = await import('./repository.mjs')
 
-function makeDatabase(plan, enrollmentStatus = 'COMPLETE') {
+function makeDatabase(plan, enrollmentStatus = 'NOT_REQUIRED', enrollmentPlan = null) {
   const operationId = 'op-history-compensation'
   const customer = {
     id: 'CUS-HISTORY-1', name: 'Synthetic Customer', mentorId: null, profileFields: {}, profileFieldMeta: {},
-    mutationStates: { [operationId]: { operationId, customerId: 'CUS-HISTORY-1', kind: 'UPDATE', status: 'PERSISTED', payloadHash: 'hash', historyStatus: 'PENDING', historyPlan: plan, enrollmentStatus, updatedAt: '2026-01-01T00:00:00.000Z' } },
+    mutationStates: { [operationId]: { operationId, customerId: 'CUS-HISTORY-1', kind: 'UPDATE', status: 'PERSISTED', payloadHash: 'hash', historyStatus: 'PENDING', historyPlan: plan, enrollmentStatus, enrollmentPlan, updatedAt: '2026-01-01T00:00:00.000Z' } },
   }
   return { staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }], customers: [customer], enrollments: [], profileChanges: [...fake.history], appointments: [], sessions: [], followups: [], products: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _readCoverage: { profileChanges: 'CUSTOMER_FILTERED' }, _rows: { customers: [{ record_id: 'rec-customer-1', fields: {} }] } }
 }
@@ -77,11 +77,11 @@ describe('profile history compensation', () => {
   })
 
   it('does not mark history compensation committed when another required step is pending', async () => {
-    const database = makeDatabase([plan('PCH-3', 'occupation', null, '设计师')], 'PENDING')
+    const database = makeDatabase([plan('PCH-3', 'occupation', null, '设计师')], 'PENDING', [{ productId: 'P-1', paymentStatus: 'PAID' }])
     const repository = new FeishuRepository({ authRepository: {} })
     repository.loadCustomerMutationContext = async () => ({ ...database, profileChanges: [...fake.history] })
     repository.persistCustomerMutationState = async (_database, _customerId, operationId, nextState) => { database.customers[0].mutationStates[operationId] = { ...nextState, operationId, customerId: 'CUS-HISTORY-1' }; return null }
-    await expect(repository.repairCustomerMutationHistory('ADMIN-1', 'CUS-HISTORY-1', 'op-history-compensation')).resolves.toMatchObject({ status: 'PERSISTED', persistenceStatus: 'PERSISTED', historyStatus: 'COMPLETE', repaired: true })
+    await expect(repository.repairCustomerMutationHistory('ADMIN-1', 'CUS-HISTORY-1', 'op-history-compensation')).resolves.toMatchObject({ status: 'PERSISTED', persistenceStatus: 'PERSISTED', historyStatus: 'COMPLETE', repaired: false, mutation: { enrollmentStatus: 'UNKNOWN' } })
     expect(database.customers[0].mutationStates['op-history-compensation'].historyPlan).toHaveLength(1)
   })
 

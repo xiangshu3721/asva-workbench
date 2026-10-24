@@ -120,6 +120,7 @@ export const sanitizeMutationStates = (value) => {
     historyStatus: CUSTOMER_HISTORY_STATUSES.has(state.historyStatus) ? state.historyStatus : (state.historyPlan?.length ? 'PENDING' : 'NOT_REQUIRED'),
     historyPlan: sanitizeHistoryPlan(state.historyPlan),
     enrollmentStatus: ['PENDING', 'COMPLETE', 'UNKNOWN', 'NOT_REQUIRED'].includes(state.enrollmentStatus) ? state.enrollmentStatus : 'NOT_REQUIRED',
+    enrollmentPlan: sanitizeEnrollmentPlan(state.enrollmentPlan),
   }])
   const pending = entries.filter(([, state]) => state.status !== 'COMMITTED')
   const committed = entries.filter(([, state]) => state.status === 'COMMITTED').slice(-CUSTOMER_MUTATION_STATE_LIMIT)
@@ -144,6 +145,38 @@ function sanitizeHistoryPlan(value) {
     updateBatchId: typeof item.updateBatchId === 'string' ? item.updateBatchId : '',
     changedAt: typeof item.changedAt === 'string' ? item.changedAt : null,
   }))
+}
+function sanitizeEnrollmentPlan(value) {
+  if (value === null || value === undefined) return null
+  if (!Array.isArray(value)) return null
+  return value
+    .filter((item) => item && typeof item === 'object' && typeof item.productId === 'string' && item.productId)
+    .map((item) => ({
+      productId: item.productId,
+      paymentStatus: item.paymentStatus ?? null,
+      amount: item.amount ?? null,
+      enrolledAt: item.enrolledAt === null || item.enrolledAt === undefined ? null : (date(item.enrolledAt) || String(item.enrolledAt)),
+      paidAt: item.paidAt === null || item.paidAt === undefined ? null : (date(item.paidAt) || String(item.paidAt)),
+    }))
+    .sort((a, b) => a.productId.localeCompare(b.productId))
+}
+function enrollmentPlanEntryMatches(existing, planned) {
+  if (!existing || !planned || existing.productId !== planned.productId) return false
+  if (planned.paymentStatus !== null && String(existing.paymentStatus || '') !== String(planned.paymentStatus)) return false
+  if (planned.amount !== null && Number(existing.amount) !== Number(planned.amount)) return false
+  if (planned.enrolledAt !== null && String(existing.enrolledAt || '') !== String(planned.enrolledAt)) return false
+  if (planned.paidAt !== null && String(existing.paidAt || '') !== String(planned.paidAt)) return false
+  return true
+}
+function verifyEnrollmentPlan(database, customerId, plan) {
+  if (plan === null) return { status: 'NOT_REQUIRED', complete: true, records: [] }
+  if (database?._partialReadContext && database?._readCoverage?.enrollments !== 'FULL') return { status: 'UNKNOWN', complete: false, records: [] }
+  const expected = sanitizeEnrollmentPlan(plan) || []
+  const records = (database?.enrollments || []).filter((item) => item.customerId === customerId && item.status !== 'CANCELLED')
+  if (records.length !== expected.length) return { status: 'UNKNOWN', complete: false, records }
+  const byProduct = new Map(records.map((item) => [item.productId, item]))
+  if (expected.some((item) => !enrollmentPlanEntryMatches(byProduct.get(item.productId), item))) return { status: 'UNKNOWN', complete: false, records }
+  return { status: 'COMPLETE', complete: true, records }
 }
 function historyPlanEntryMatches(existing, planned) {
   if (!existing || !planned) return false
@@ -1590,22 +1623,47 @@ export class FeishuRepository {
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const previousState = customerRecord.mutationStates?.[operationId]
     const previousHistoryPlan = sanitizeHistoryPlan(previousState?.historyPlan)
+    const previousEnrollmentPlan = sanitizeEnrollmentPlan(previousState?.enrollmentPlan)
     const submittedHistoryPlan = Object.prototype.hasOwnProperty.call(state, 'historyPlan')
       ? sanitizeHistoryPlan(state.historyPlan)
       : previousHistoryPlan
+    const submittedEnrollmentPlan = Object.prototype.hasOwnProperty.call(state, 'enrollmentPlan')
+      ? sanitizeEnrollmentPlan(state.enrollmentPlan)
+      : previousEnrollmentPlan
     if (state.status === 'COMMITTED' && previousHistoryPlan.length && submittedHistoryPlan.length && JSON.stringify(previousHistoryPlan) !== JSON.stringify(submittedHistoryPlan)) throw Object.assign(new Error('提交的历史计划与持久化计划不一致，不能标记为已完成'), { code: 'PROFILE_HISTORY_CONFLICT', status: 409 })
+    if (state.status === 'COMMITTED' && previousEnrollmentPlan !== null && submittedEnrollmentPlan !== null && JSON.stringify(previousEnrollmentPlan) !== JSON.stringify(submittedEnrollmentPlan)) throw Object.assign(new Error('提交的报名计划与持久化计划不一致，不能标记为已完成'), { code: 'CUSTOMER_ENROLLMENT_CONFLICT', status: 409 })
     const requestedHistoryPlan = state.status === 'COMMITTED' && previousHistoryPlan.length ? previousHistoryPlan : submittedHistoryPlan
+    const requestedEnrollmentPlan = state.status === 'COMMITTED' && previousEnrollmentPlan !== null ? previousEnrollmentPlan : submittedEnrollmentPlan
     if (state.status === 'COMMITTED' && !requestedHistoryPlan.length && previousState && !['NOT_REQUIRED', 'COMPLETE'].includes(previousState.historyStatus || 'NOT_REQUIRED')) throw Object.assign(new Error('持久化状态仍缺少历史补偿计划，不能标记为已完成'), { code: 'CUSTOMER_SAVE_HISTORY_UNVERIFIED', status: 409, mutationStatus: 'PERSISTED', historyStatus: 'UNKNOWN' })
+    if (state.status === 'COMMITTED' && requestedEnrollmentPlan !== null && (state.enrollmentStatus || previousState?.enrollmentStatus || 'PENDING') !== 'COMPLETE') throw Object.assign(new Error('报名步骤尚未完成，不能标记整体操作为已完成'), { code: 'CUSTOMER_SAVE_ENROLLMENT_UNVERIFIED', status: 409, mutationStatus: previousState?.status || 'PERSISTED', enrollmentStatus: state.enrollmentStatus || previousState?.enrollmentStatus || 'PENDING' })
+    if (requestedEnrollmentPlan === null && state.enrollmentStatus === 'COMPLETE') throw Object.assign(new Error('没有报名操作时必须使用 NOT_REQUIRED 状态'), { code: 'CUSTOMER_SAVE_ENROLLMENT_UNVERIFIED', status: 409, mutationStatus: previousState?.status || 'PERSISTED', enrollmentStatus: 'UNKNOWN' })
     let historyStatus = state.historyStatus || previousState?.historyStatus || (requestedHistoryPlan.length ? 'PENDING' : 'NOT_REQUIRED')
     let historyPlan = requestedHistoryPlan
+    let enrollmentStatus = requestedEnrollmentPlan === null ? 'NOT_REQUIRED' : (state.enrollmentStatus || previousState?.enrollmentStatus || 'PENDING')
+    let enrollmentPlan = requestedEnrollmentPlan
+    let enrollmentVerificationDatabase = null
+    if (requestedEnrollmentPlan !== null && state.enrollmentStatus === 'COMPLETE') {
+      enrollmentVerificationDatabase = await this.loadCustomerMutationContext({ scene: 'A1_ENROLLMENT_VERIFY', customerId })
+      const enrollmentVerification = verifyEnrollmentPlan(enrollmentVerificationDatabase, customerId, requestedEnrollmentPlan)
+      if (!enrollmentVerification.complete) throw Object.assign(new Error('报名记录尚未完成可靠核验，保存结果暂时无法确认'), { code: 'CUSTOMER_SAVE_ENROLLMENT_UNVERIFIED', status: 409, mutationStatus: previousState?.status || 'PERSISTED', enrollmentStatus: enrollmentVerification.status })
+      enrollmentStatus = enrollmentVerification.status
+    }
     if (state.status === 'COMMITTED') {
-      const verification = verifyHistoryPlan(await this.loadCustomerMutationContext({ scene: 'A1_COMMIT_HISTORY_VERIFY', customerId }), customerId, requestedHistoryPlan)
+      const verificationDatabase = enrollmentVerificationDatabase || await this.loadCustomerMutationContext({ scene: 'A1_COMMIT_VERIFY', customerId })
+      const verification = verifyHistoryPlan(verificationDatabase, customerId, requestedHistoryPlan)
       if (verification.status === 'CONFLICT') throw Object.assign(new Error('客户档案历史内容与提交计划不一致，不能标记为已完成'), { code: 'PROFILE_HISTORY_CONFLICT', status: 409 })
       if (!verification.complete) throw Object.assign(new Error('客户档案历史尚未完成可靠对账，保存结果暂时无法确认'), { code: 'CUSTOMER_SAVE_HISTORY_UNVERIFIED', status: 409, mutationStatus: 'PERSISTED', historyStatus: verification.status })
       historyStatus = verification.status
       historyPlan = []
+      if (requestedEnrollmentPlan === null && (state.enrollmentStatus === 'COMPLETE' || (previousState && previousState.enrollmentStatus !== 'NOT_REQUIRED'))) throw Object.assign(new Error('持久化状态仍缺少报名计划，不能标记为已完成'), { code: 'CUSTOMER_SAVE_ENROLLMENT_UNVERIFIED', status: 409, mutationStatus: 'PERSISTED', enrollmentStatus: 'UNKNOWN' })
+      const enrollmentVerification = verifyEnrollmentPlan(verificationDatabase, customerId, requestedEnrollmentPlan)
+      if (!enrollmentVerification.complete) throw Object.assign(new Error('报名记录尚未完成可靠核验，保存结果暂时无法确认'), { code: 'CUSTOMER_SAVE_ENROLLMENT_UNVERIFIED', status: 409, mutationStatus: 'PERSISTED', enrollmentStatus: enrollmentVerification.status })
+      enrollmentStatus = enrollmentVerification.status
+      // Keep the verified target as durable operation evidence so a later retry
+      // can re-check the same enrollment result instead of treating it as empty.
+      enrollmentPlan = requestedEnrollmentPlan
     }
-    const nextState = { ...state, operationId, customerId, updatedAt: state.updatedAt || now(), historyPlan, historyStatus, enrollmentStatus: state.enrollmentStatus || previousState?.enrollmentStatus || 'NOT_REQUIRED' }
+    const nextState = { ...state, operationId, customerId, updatedAt: state.updatedAt || now(), historyPlan, historyStatus, enrollmentStatus, enrollmentPlan }
     const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
       const mutationState = nextState.status === 'COMMITTED' ? { ...nextState, resultFingerprint: customerResultFingerprint(latestCustomer) } : nextState
       const mutationStates = { ...sanitizeMutationStates(latestCustomer.mutationStates), [operationId]: mutationState }
@@ -1631,7 +1689,10 @@ export class FeishuRepository {
     if (state.customerId !== customerId) throw Object.assign(new Error('操作与客户不匹配'), { code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
     if (database._readCoverage?.profileChanges && database._readCoverage.profileChanges !== 'CUSTOMER_FILTERED') return { operationId: normalizedOperationId, customerId, status: 'UNKNOWN', persistenceStatus: 'UNKNOWN', historyStatus: 'UNKNOWN', repaired: false }
     const plan = sanitizeHistoryPlan(state.historyPlan)
-    if (!plan.length) return { operationId: normalizedOperationId, customerId, status: state.status, historyStatus: state.historyStatus || 'NOT_REQUIRED', repaired: false }
+    if (!plan.length) {
+      if (state.status === 'COMMITTED' && !['COMPLETE', 'NOT_REQUIRED'].includes(state.enrollmentStatus || 'NOT_REQUIRED')) return { operationId: normalizedOperationId, customerId, status: 'UNKNOWN', persistenceStatus: 'UNKNOWN', historyStatus: state.historyStatus || 'NOT_REQUIRED', repaired: false }
+      return { operationId: normalizedOperationId, customerId, status: state.status, historyStatus: state.historyStatus || 'NOT_REQUIRED', repaired: false }
+    }
     const existingById = new Map((database.profileChanges || []).filter((item) => item.customerId === customerId).map((item) => [item.id, item]))
     for (const item of plan) {
       const existing = existingById.get(item.changeId)
@@ -1656,8 +1717,16 @@ export class FeishuRepository {
       const mutationWrite = await this.persistCustomerMutationState(verified, customerId, normalizedOperationId, pendingState)
       return { operationId: normalizedOperationId, customerId, status: pendingState.status, historyStatus: 'UNKNOWN', repaired: false, persistenceStatus: pendingState.status, mutation: publicMutationState(pendingState), writeResult: Boolean(mutationWrite) }
     }
-    const canCommit = ['COMPLETE', 'NOT_REQUIRED'].includes(state.enrollmentStatus || 'NOT_REQUIRED')
-    const nextState = { ...state, status: canCommit ? 'COMMITTED' : 'PERSISTED', historyStatus: 'COMPLETE', historyPlan: plan, updatedAt: now() }
+    const enrollmentPlan = sanitizeEnrollmentPlan(state.enrollmentPlan)
+    const enrollmentVerification = verifyEnrollmentPlan(verified, customerId, enrollmentPlan)
+    const enrollmentStatus = state.enrollmentStatus || (enrollmentPlan === null ? 'NOT_REQUIRED' : 'PENDING')
+    if (!enrollmentVerification.complete || (enrollmentPlan === null && enrollmentStatus === 'COMPLETE')) {
+      const pendingState = { ...state, status: state.status === 'COMMITTED' ? 'PERSISTED' : state.status, historyStatus: 'COMPLETE', historyPlan: plan, enrollmentStatus: enrollmentPlan === null ? 'UNKNOWN' : enrollmentVerification.status, enrollmentPlan, updatedAt: now() }
+      const mutationWrite = await this.persistCustomerMutationState(verified, customerId, normalizedOperationId, pendingState)
+      return { operationId: normalizedOperationId, customerId, status: pendingState.status, persistenceStatus: pendingState.status === 'PERSISTED' ? 'PERSISTED' : 'UNKNOWN', historyStatus: 'COMPLETE', repaired: false, mutation: publicMutationState(pendingState), writeResult: Boolean(mutationWrite) }
+    }
+    const canCommit = enrollmentStatus === 'COMPLETE' || enrollmentStatus === 'NOT_REQUIRED'
+    const nextState = { ...state, status: canCommit ? 'COMMITTED' : 'PERSISTED', historyStatus: 'COMPLETE', historyPlan: plan, enrollmentStatus: enrollmentVerification.status, enrollmentPlan, updatedAt: now() }
     const mutationWrite = await this.persistCustomerMutationState(verified, customerId, normalizedOperationId, nextState)
     return { operationId: normalizedOperationId, customerId, status: nextState.status, historyStatus: nextState.historyStatus, repaired: true, persistenceStatus: nextState.status, mutation: publicMutationState(nextState), writeResult: Boolean(mutationWrite) }
   }
@@ -1681,6 +1750,7 @@ export class FeishuRepository {
     if (state.status === 'PERSISTED' || state.status === 'PROCESSING') return { ...response, ...publicCustomerMutationDto(database, actorId, resolvedCustomerId, state.kind === 'CREATE', normalizedOperationId) }
     if (state.status === 'COMMITTED') {
       if (!['COMPLETE', 'NOT_REQUIRED'].includes(state.historyStatus || 'NOT_REQUIRED') || sanitizeHistoryPlan(state.historyPlan).length) return { ...response, status: 'UNKNOWN', persistenceStatus: 'UNKNOWN', mutation: publicMutationState(state), resultSnapshotAvailable: false }
+      if (!['COMPLETE', 'NOT_REQUIRED'].includes(state.enrollmentStatus || 'NOT_REQUIRED')) return { ...response, status: 'UNKNOWN', persistenceStatus: 'UNKNOWN', mutation: publicMutationState(state), resultSnapshotAvailable: false }
       const resultMatchesCurrent = state.resultFingerprint && state.resultFingerprint === customerResultFingerprint(customerRecord)
       if (!resultMatchesCurrent) return { ...response, mutation: publicMutationState(state), resultSnapshotAvailable: false, resultChangedSinceOperation: Boolean(state.resultFingerprint) }
       return { ...response, ...publicCustomerMutationDto(database, actorId, resolvedCustomerId, state.kind === 'CREATE', normalizedOperationId), persistenceStatus: 'COMMITTED', resultSnapshotAvailable: true }
@@ -1702,6 +1772,7 @@ export class FeishuRepository {
       const normalized = validateManualCustomer(input)
       const existing = existingId ? database.customers.find((item) => item.id === existingId) : null
       const inputHash = mutationPayloadHash(input)
+      const enrollmentPlan = Array.isArray(input.enrollments) ? normalizeMutationEnrollments(input.enrollments).items : null
       if (existing && operationId) {
         const previousMutation = existing.mutationStates?.[operationId]
         if (!previousMutation) throw Object.assign(new Error('保存结果暂时无法确认，请查询原操作状态后再继续。'), { code: 'CUSTOMER_SAVE_UNKNOWN', status: 409 })
@@ -1733,7 +1804,7 @@ export class FeishuRepository {
         const actor = database.staff.find((item) => item.id === actorId)
         const assignedMentorId = actor?.permissionRole === 'MENTOR' ? actor.id : text(input?.mentorId).trim()
         if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
-        const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, historyStatus: createHistoryPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan: createHistoryPlan, enrollmentStatus: Array.isArray(input.enrollments) ? 'PENDING' : 'NOT_REQUIRED', updatedAt: createdAt } } : {}
+        const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, historyStatus: createHistoryPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan: createHistoryPlan, enrollmentStatus: Array.isArray(input.enrollments) ? 'PENDING' : 'NOT_REQUIRED', enrollmentPlan, updatedAt: createdAt } } : {}
         const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
@@ -1764,9 +1835,9 @@ export class FeishuRepository {
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
       if (enrollmentsChanged) current = await this.reloadAfterEnrollmentMutation(current, customerId, compactResponse, 'A1')
       if (operationId && !existing) {
-        const persistedBeforeCommit = await this.persistCustomerMutationState(current, customerId, operationId, { kind: 'CREATE', status: 'PERSISTED', payloadHash: inputHash, historyStatus: createHistoryPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan: createHistoryPlan, enrollmentStatus: 'COMPLETE', updatedAt: now() })
+        const persistedBeforeCommit = await this.persistCustomerMutationState(current, customerId, operationId, { kind: 'CREATE', status: 'PERSISTED', payloadHash: inputHash, historyStatus: createHistoryPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan: createHistoryPlan, enrollmentStatus: enrollmentPlan === null ? 'NOT_REQUIRED' : 'COMPLETE', enrollmentPlan, updatedAt: now() })
         if (persistedBeforeCommit) current = await this.loadCustomerAfterWrite(persistedBeforeCommit, customerId, current)
-        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, { kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
+        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, { kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, enrollmentStatus: enrollmentPlan === null ? 'NOT_REQUIRED' : 'COMPLETE', enrollmentPlan, updatedAt: now() })
         if (mutationWrite) current = await this.loadCustomerAfterWrite(mutationWrite, customerId, current)
       }
       const latest = current
@@ -1794,6 +1865,7 @@ export class FeishuRepository {
     if (!current || !row) throw new Error('客户不存在')
     const operationId = text(input?.operationId).trim()
     const inputHash = mutationPayloadHash(input)
+    const enrollmentPlan = Array.isArray(input.enrollments) ? normalizeMutationEnrollments(input.enrollments).items : null
     const previousMutation = operationId ? current.mutationStates?.[operationId] : null
     if (previousMutation) {
       if (previousMutation.payloadHash && previousMutation.payloadHash !== inputHash) throw Object.assign(new Error('同一操作编号对应的资料已发生变化，请使用新的操作编号。'), { code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
@@ -1843,7 +1915,7 @@ export class FeishuRepository {
       ...profileHistoryPlan(customerId, normalizedProfileUpdates, actorId, operationId, {}, current),
       ...(Array.isArray(input.enrollments) && JSON.stringify(previousEnrollmentIds) !== JSON.stringify(nextEnrollmentIds) ? enrollmentHistoryPlan(customerId, previousEnrollmentIds, nextEnrollmentIds, actorId, operationId) : []),
     ]
-    if (operationId) await this.persistCustomerMutationState(database, customerId, operationId, { kind: 'UPDATE', status: 'PROCESSING', payloadHash: inputHash, historyStatus: historyPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan, enrollmentStatus: Array.isArray(input.enrollments) ? 'PENDING' : 'NOT_REQUIRED', updatedAt: now() })
+    if (operationId) await this.persistCustomerMutationState(database, customerId, operationId, { kind: 'UPDATE', status: 'PROCESSING', payloadHash: inputHash, historyStatus: historyPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan, enrollmentStatus: Array.isArray(input.enrollments) ? 'PENDING' : 'NOT_REQUIRED', enrollmentPlan, updatedAt: now() })
     if (normalizedIdentityUpdates.length) await persistCustomerProfile(database, customerId, normalizedIdentityUpdates, undefined, actorId, { operationId })
     const customerValues = {}
     if (nicknameChanged) customerValues.nickname = normalized.nickname
@@ -1851,7 +1923,7 @@ export class FeishuRepository {
     const requestedSource = text(input.source).trim()
     if (requestedSource && requestedSource !== current.source) customerValues.source = requestedSource
     if (introducerChanged) customerValues.referrer_name = normalized.introducer
-    const persistedState = operationId ? { operationId, kind: 'UPDATE', customerId, status: 'PERSISTED', payloadHash: inputHash, historyStatus: historyPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan, enrollmentStatus: Array.isArray(input.enrollments) ? 'PENDING' : 'NOT_REQUIRED', updatedAt: now() } : null
+    const persistedState = operationId ? { operationId, kind: 'UPDATE', customerId, status: 'PERSISTED', payloadHash: inputHash, historyStatus: historyPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan, enrollmentStatus: Array.isArray(input.enrollments) ? 'PENDING' : 'NOT_REQUIRED', enrollmentPlan, updatedAt: now() } : null
     let customerWriteResult = null
     if (Object.keys(customerValues).length) {
       if (operationId) {
@@ -1886,13 +1958,13 @@ export class FeishuRepository {
       if (enrollmentChange) latest = { ...latest, profileChanges: [...latest.profileChanges, enrollmentChange] }
     }
     if (operationId) {
-      const persistedAfterSteps = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'PERSISTED', payloadHash: inputHash, historyStatus: historyPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan, enrollmentStatus: 'COMPLETE', updatedAt: now() })
+      const persistedAfterSteps = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'PERSISTED', payloadHash: inputHash, historyStatus: historyPlan.length ? 'PENDING' : 'NOT_REQUIRED', historyPlan, enrollmentStatus: enrollmentPlan === null ? 'NOT_REQUIRED' : 'COMPLETE', enrollmentPlan, updatedAt: now() })
       if (persistedAfterSteps) latest = await this.loadCustomerAfterWrite(persistedAfterSteps, customerId, latest)
     }
     // Customer updates do not create or mutate Appointment in Stage 1.
     if (enrollmentsChanged) latest = await this.reloadAfterEnrollmentMutation(latest, customerId, compactResponse, 'A2')
     if (operationId) {
-      const mutationWrite = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
+      const mutationWrite = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'COMMITTED', payloadHash: inputHash, enrollmentStatus: enrollmentPlan === null ? 'NOT_REQUIRED' : 'COMPLETE', enrollmentPlan, updatedAt: now() })
       if (mutationWrite) latest = await this.loadCustomerAfterWrite(mutationWrite, customerId, latest)
     }
     return compactResponse ? publicCustomerMutationDto(latest, actorId, customerId, false, operationId) : scope(latest, actorId)
