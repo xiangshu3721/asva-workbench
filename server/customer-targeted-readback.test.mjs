@@ -27,7 +27,7 @@ describe('customer targeted write readback', () => {
 
     const result = await repository.loadCustomerAfterWrite({ record: { record_id: 'rec-customer-1' } }, 'CUS-1', database)
 
-    expect(getRecordMock).toHaveBeenCalledWith(config.feishu.tables.customers, 'rec-customer-1')
+    expect(getRecordMock).toHaveBeenCalledWith(config.feishu.tables.customers, 'rec-customer-1', expect.objectContaining({ readContext: expect.any(Object) }))
     expect(result.customers[0].name).toBe('Updated Customer')
     expect(result._persistenceStatus).toBe('COMMITTED')
   })
