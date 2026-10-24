@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { listRecordsMock } = vi.hoisted(() => ({ listRecordsMock: vi.fn() }))
+const { findRecordsByFieldMock, listRecordsMock } = vi.hoisted(() => ({ findRecordsByFieldMock: vi.fn(), listRecordsMock: vi.fn() }))
 
 vi.mock('./feishu.mjs', async () => {
   const actual = await vi.importActual('./feishu.mjs')
-  return { ...actual, listRecords: listRecordsMock }
+  return { ...actual, findRecordsByField: findRecordsByFieldMock, listRecords: listRecordsMock }
 })
 
 const { config } = await import('./config.mjs')
@@ -38,6 +38,7 @@ beforeEach(() => {
   for (const name of Object.keys(originalTables)) config.feishu.tables[name] = tableId(name)
   const rows = fixtureRows()
   listRecordsMock.mockReset().mockImplementation(async (id) => rows[id] || [])
+  findRecordsByFieldMock.mockReset().mockImplementation(async (id, fieldName, value) => (rows[id] || []).filter((item) => String(item?.fields?.[fieldName] ?? '') === String(value)))
 })
 
 afterEach(() => {
@@ -115,6 +116,27 @@ describe('R043 progressive read paths', () => {
     expect(JSON.stringify(mentorProfile.profileMaterialization)).not.toContain('高敏安全原文')
   })
 
+  it('uses customer-scoped source filters when no shared full read is active', async () => {
+    const repository = new FeishuRepository()
+    const workspace = await repository.sourceWorkspace(mentor.id, 'CUS-1')
+
+    expect(workspace.sources.map((item) => item.id)).toEqual(['SRC-1'])
+    expect(workspace.evidenceItems.map((item) => item.id)).toEqual(['E-1', 'E-PENDING', 'E-HIGH'])
+    expect(listRecordsMock).toHaveBeenCalledTimes(4)
+    expect(findRecordsByFieldMock).toHaveBeenCalledTimes(4)
+    expect(repository.readMetricsSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scene: 'A3_SOURCE', mode: 'TARGETED', table: 'sourceRecords', logicalReads: 1, providerRequests: 1 }),
+      expect.objectContaining({ scene: 'A3_SOURCE', mode: 'TARGETED', table: 'evidenceItems', logicalReads: 1, providerRequests: 1 }),
+    ]))
+  })
+
+  it('fails closed when a source-scoped query fails instead of treating it as missing', async () => {
+    findRecordsByFieldMock.mockRejectedValueOnce(Object.assign(new Error('synthetic read failure'), { code: 'FEISHU_TIMEOUT', retryable: true }))
+    const repository = new FeishuRepository()
+
+    await expect(repository.sourceWorkspace(mentor.id, 'CUS-1')).rejects.toMatchObject({ code: 'FEISHU_TIMEOUT' })
+  })
+
   it('reuses one permission-scoped database read across customer detail resources', async () => {
     const repository = new FeishuRepository()
     await Promise.all([
@@ -125,6 +147,7 @@ describe('R043 progressive read paths', () => {
     ])
 
     expect(listRecordsMock).toHaveBeenCalledTimes(11)
+    expect(findRecordsByFieldMock).toHaveBeenCalledTimes(0)
     await Promise.all([
       repository.customerProfile(mentor.id, 'CUS-1'),
       repository.getCustomerUnderstanding(mentor.id, 'CUS-1'),
@@ -132,5 +155,6 @@ describe('R043 progressive read paths', () => {
       repository.sourceWorkspace(mentor.id, 'CUS-1'),
     ])
     expect(listRecordsMock).toHaveBeenCalledTimes(11)
+    expect(findRecordsByFieldMock).toHaveBeenCalledTimes(0)
   })
 })

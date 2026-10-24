@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, deleteRecord, getRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
+import { createRecord, deleteRecord, findRecordsByField, getRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
 import { classifyDialogue, createCustomerIntelligence, createCustomerUnderstanding, createCustomerSalesUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -689,9 +689,9 @@ function normalizeSourceRawText(value) {
   }
   return normalized
 }
-async function waitForSourceVisibility(sourceId) {
+async function waitForSourceVisibility(sourceId, { readRows } = {}) {
   const result = await boundedReadAfterWrite(async () => {
-  const rows = await listRecords(stage2Table('sourceRecords'))
+    const rows = readRows ? await readRows() : await listRecords(stage2Table('sourceRecords'))
     const row = rows.find((item) => text(get('sourceRecords', item.fields, 'source_id')) === sourceId)
     return row ? sourceRecord(row) : null
   })
@@ -773,6 +773,18 @@ export class FeishuRepository {
       throw error
     }
   }
+  async readFilteredTable(table, tableId, fieldName, value, { scene = 'A3_SOURCE' } = {}) {
+    if (!tableId) return []
+    const trace = this.readMetrics.start({ scene, mode: 'TARGETED', table })
+    try {
+      const rows = await findRecordsByField(tableId, fieldName, value, { readContext: trace })
+      trace.finish()
+      return rows
+    } catch (error) {
+      trace.finish({ status: error?.code || 'FAILED' })
+      throw error
+    }
+  }
   readMetricsSnapshot() { return this.readMetrics.snapshot() }
   async loadCustomerMutationContext({ scene = 'A1' } = {}) {
     if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
@@ -794,6 +806,62 @@ export class FeishuRepository {
     if (!compactResponse) return this.loadAfterWrite(undefined, customerId)
     const refreshed = await this.loadCustomerMutationContext({ scene })
     return { ...refreshed, profileChanges: current.profileChanges || [] }
+  }
+  async loadSourceContext(actorId, customerId, scene = 'A3_SOURCE') {
+    if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
+    // Reuse an already active permission-scoped database read in a shared request
+    // cycle; otherwise use the customer-scoped source projection below.
+    if (this.databaseCache.promise || this.databaseCache.data) return this.load()
+    const base = await this.loadCustomerMutationContext({ scene })
+    const sourceField = mapField('sourceRecords', 'customer_id')
+    const evidenceField = mapField('evidenceItems', 'customer_id')
+    const proposalField = mapField('profileUpdateProposals', 'customer_id')
+    const conflictField = mapField('evidenceConflicts', 'customer_id')
+    const [sourceRows, evidenceRows, proposalRows, conflictRows] = await Promise.all([
+      this.readFilteredTable('sourceRecords', stage2Table('sourceRecords'), sourceField, customerId, { scene }),
+      this.readFilteredTable('evidenceItems', stage2Table('evidenceItems'), evidenceField, customerId, { scene }),
+      this.readFilteredTable('profileUpdateProposals', stage2Table('profileUpdateProposals'), proposalField, customerId, { scene }),
+      this.readFilteredTable('evidenceConflicts', stage2Table('evidenceConflicts'), conflictField, customerId, { scene }),
+    ])
+    const sourceRecords = sourceRows.map(sourceRecord)
+    const allEvidenceItems = evidenceRows.map(evidenceItem)
+    const evidenceItems = allEvidenceItems.filter((item) => {
+      if (item.reviewStatus === 'CONFIRMED') return true
+      if (item.reviewStatus !== 'PENDING_REVIEW') return false
+      const source = sourceRecords.find((candidate) => candidate.id === item.sourceId)
+      return !source?.lastBatchId || source.lastBatchId === item.extractionBatchId
+    })
+    const activeEvidenceIds = new Set(evidenceItems.map((item) => item.id))
+    const proposals = proposalRows.map(proposalRecord).filter((item) => activeEvidenceIds.has(item.evidenceId))
+    const conflicts = conflictRows.map(conflictRecord).filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId))
+    return {
+      ...base,
+      sourceRecords,
+      evidenceItems,
+      profileUpdateProposals: proposals,
+      evidenceConflicts: conflicts,
+      _allEvidenceItems: allEvidenceItems,
+      _rows: { ...(base._rows || {}), sourceRecords: sourceRows, evidenceItems, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
+    }
+  }
+  async loadSourceProcessingContext(sourceId, scene = 'A3_SOURCE') {
+    if (this.load !== FeishuRepository.prototype.load) return this.load({ force: true })
+    const sourceRows = await this.readFilteredTable('sourceRecords', stage2Table('sourceRecords'), mapField('sourceRecords', 'source_id'), sourceId, { scene })
+    const source = sourceRows[0] ? sourceRecord(sourceRows[0]) : null
+    if (!source) return null
+    const base = await this.loadCustomerMutationContext({ scene })
+    const evidenceRows = await this.readFilteredTable('evidenceItems', stage2Table('evidenceItems'), mapField('evidenceItems', 'source_id'), sourceId, { scene })
+    const allEvidenceItems = evidenceRows.map(evidenceItem)
+    const evidenceItems = allEvidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' || (item.reviewStatus === 'PENDING_REVIEW' && (!source.lastBatchId || source.lastBatchId === item.extractionBatchId)))
+    return {
+      ...base,
+      sourceRecords: [source],
+      evidenceItems,
+      profileUpdateProposals: [],
+      evidenceConflicts: [],
+      _allEvidenceItems: allEvidenceItems,
+      _rows: { ...(base._rows || {}), sourceRecords: sourceRows, evidenceItems: evidenceRows },
+    }
   }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
@@ -1713,7 +1781,7 @@ export class FeishuRepository {
     requireStage2Tables()
     const startedAt = Date.now()
     const requestedCustomerId = text(input?.customerId).trim()
-    let database = await this.load()
+    let database = await this.loadSourceContext(actorId, requestedCustomerId, 'A3_SOURCE')
     let visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) {
       const recentWriteAt = this.recentCustomerWrites.get(requestedCustomerId) || 0
@@ -1751,7 +1819,7 @@ export class FeishuRepository {
     if (existingSource) return existingSource
     const recentSourceWriteAt = this.recentSourceWrites.get(sourceId) || 0
     if (recentSourceWriteAt && Date.now() - recentSourceWriteAt <= RECENT_WRITE_WINDOW_MS) {
-      const existingRecentSource = await waitForSourceVisibility(sourceId)
+      const existingRecentSource = await waitForSourceVisibility(sourceId, { readRows: this.load === FeishuRepository.prototype.load ? () => this.readFilteredTable('sourceRecords', stage2Table('sourceRecords'), mapField('sourceRecords', 'source_id'), sourceId, { scene: 'A3_SOURCE' }) : undefined })
       if (existingRecentSource) return existingRecentSource
       return { id: sourceId, sourceId, customerId: normalized.customerId, subjectType: normalized.subjectType, subjectId: normalized.subjectId, sourceType: normalized.sourceType, title: normalized.title, rawText: normalized.rawText, fileRef: normalized.fileRef, sourceRole: normalized.sourceRole, contentHash: normalized.contentHash, processingStatus: 'UPLOADED', _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
     }
@@ -1766,14 +1834,14 @@ export class FeishuRepository {
       await updateMappedRecord('sourceRecords', 'source.privacy.review-required', sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, { privacy_level: 'HIGH_SENSITIVE', privacy_status: 'REVIEW_REQUIRED', privacy_meta_json: JSON.stringify({ classificationReason: '隐私分类失败', categories: [], safetyFlags: [], serviceNecessity: 'UNKNOWN', mentorSafeSummary: '该资料正在进行安全处理，请稍后查看。' }), mentor_safe_summary: '该资料正在进行安全处理，请稍后查看。', updated_at: now() }).catch(() => {})
       this.audit('CLASSIFY_SOURCE_PRIVACY', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'PRIVACY_CLASSIFICATION_FAILED')
     }
-    const result = await waitForSourceVisibility(sourceId)
+    const result = await waitForSourceVisibility(sourceId, { readRows: this.load === FeishuRepository.prototype.load ? () => this.readFilteredTable('sourceRecords', stage2Table('sourceRecords'), mapField('sourceRecords', 'source_id'), sourceId, { scene: 'A3_SOURCE' }) : undefined })
     if (result) return result
     console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, source_id: sourceId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
     return { id: sourceId, sourceId, customerId: normalized.customerId, subjectType: normalized.subjectType, subjectId: normalized.subjectId, sourceType: normalized.sourceType, title: normalized.title, rawText: normalized.rawText, fileRef: normalized.fileRef, sourceRole: normalized.sourceRole, contentHash: normalized.contentHash, processingStatus: 'UPLOADED', _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
   }
   async sourceWorkspace(actorId, customerId) {
     requireStage2Tables()
-    const database = await this.load()
+    const database = await this.loadSourceContext(actorId, customerId, 'A3_SOURCE')
     const visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === customerId)) throw new Error('客户不存在')
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
@@ -1797,10 +1865,14 @@ export class FeishuRepository {
     const requestedCustomerId = text(customerId).trim()
     const requestedOperationId = text(operationId).trim()
     if (!requestedCustomerId || !requestedOperationId) throw Object.assign(new Error('保存状态查询参数不完整'), { code: 'SOURCE_STATUS_QUERY_REQUIRED', status: 400 })
-    const database = await this.load()
+    const base = await this.loadCustomerMutationContext({ scene: 'A3_SOURCE' })
+    const sourceId = stableId('SRC', `${requestedCustomerId}:${requestedOperationId}`)
+    const sourceRows = this.load !== FeishuRepository.prototype.load
+      ? (base.sourceRecords || []).map((item) => ({ record_id: item._recordId, fields: item }))
+      : await this.readFilteredTable('sourceRecords', stage2Table('sourceRecords'), mapField('sourceRecords', 'source_id'), sourceId, { scene: 'A3_SOURCE' })
+    const database = { ...base, sourceRecords: this.load !== FeishuRepository.prototype.load ? base.sourceRecords || [] : sourceRows.map(sourceRecord), _rows: { ...(base._rows || {}), sourceRecords: sourceRows } }
     const visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const sourceId = stableId('SRC', `${requestedCustomerId}:${requestedOperationId}`)
     const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     if (!source) return { status: 'NOT_FOUND', source: null }
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
@@ -1817,7 +1889,7 @@ export class FeishuRepository {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
-    const database = await this.load()
+    const database = await this.loadSourceProcessingContext(sourceId, 'A3_SOURCE') || await this.load()
     const visibleDatabase = scope(database, actorId)
     let source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     const sourceRow = database._rows.sourceRecords.find((item) => item.record_id === source?._recordId)
