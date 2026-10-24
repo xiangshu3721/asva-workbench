@@ -77,7 +77,7 @@ describe('R043 progressive read paths', () => {
     const staff = await repository.staff(admin.id)
     expect(staff.id).toBe(admin.id)
     expect(listRecordsMock).toHaveBeenCalledTimes(1)
-    expect(listRecordsMock).toHaveBeenCalledWith(tableId('staff'))
+    expect(listRecordsMock).toHaveBeenCalledWith(tableId('staff'), expect.objectContaining({ readContext: expect.any(Object) }))
   })
 
   it('loads the customer profile materialization on demand without returning raw workspace tables', async () => {

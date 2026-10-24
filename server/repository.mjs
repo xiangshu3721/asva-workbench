@@ -24,6 +24,7 @@ import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
+import { ReadMetrics } from './read-metrics.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -690,7 +691,7 @@ function normalizeSourceRawText(value) {
 }
 async function waitForSourceVisibility(sourceId) {
   const result = await boundedReadAfterWrite(async () => {
-    const rows = await listRecords(stage2Table('sourceRecords'))
+  const rows = await listRecords(stage2Table('sourceRecords'))
     const row = rows.find((item) => text(get('sourceRecords', item.fields, 'source_id')) === sourceId)
     return row ? sourceRecord(row) : null
   })
@@ -747,7 +748,32 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.readMetrics = new ReadMetrics(); this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  async readTable(table, tableId, { scene = 'UNSPECIFIED', mode = 'FULL', filter, fieldNames } = {}) {
+    if (!tableId) return []
+    const trace = this.readMetrics.start({ scene, mode, table })
+    try {
+      const rows = await listRecords(tableId, { filter, fieldNames, readContext: trace })
+      trace.finish()
+      return rows
+    } catch (error) {
+      trace.finish({ status: error?.code || 'FAILED' })
+      throw error
+    }
+  }
+  async readRecord(table, tableId, recordId, { scene = 'UNSPECIFIED', mode = 'TARGETED' } = {}) {
+    if (!tableId || !recordId) return null
+    const trace = this.readMetrics.start({ scene, mode, table })
+    try {
+      const row = await getRecord(tableId, recordId, { readContext: trace })
+      trace.finish()
+      return row
+    } catch (error) {
+      trace.finish({ status: error?.code || 'FAILED' })
+      throw error
+    }
+  }
+  readMetricsSnapshot() { return this.readMetrics.snapshot() }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -766,7 +792,7 @@ export class FeishuRepository {
     if (!force && this.staffCache.promise) return this.staffCache.promise
     const startedAt = Date.now()
     const request = (async () => {
-      const rows = config.feishu.tables.staff ? await listRecords(config.feishu.tables.staff) : []
+      const rows = config.feishu.tables.staff ? await this.readTable('staff', config.feishu.tables.staff, { scene: 'AUTH', mode: 'FULL' }) : []
       const records = rows.map(staff)
       this.staffCache.data = records
       this.staffCache.savedAt = Date.now()
@@ -802,7 +828,7 @@ export class FeishuRepository {
 
   async loadDirectoryFresh() {
     const entries = [['customers', config.feishu.tables.customers], ['staff', config.feishu.tables.staff], ['products', config.feishu.tables.products], ['enrollments', config.feishu.tables.enrollments]]
-    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? listRecords(tableId) : []))
+    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? this.readTable(table, tableId, { scene: 'A0_DIRECTORY', mode: 'FULL' }) : []))
     const [customerRows, staffRows, productRows, enrollmentRows] = rows
     const customers = customerRows.map(customer)
     return {
@@ -853,7 +879,7 @@ export class FeishuRepository {
     const rows = await Promise.all(entries.map(async ([table, tableId]) => {
       if (!tableId) return []
       const startedAt = Date.now()
-      const result = await listRecords(tableId)
+      const result = await this.readTable(table, tableId, { scene: 'A0_DATABASE', mode: 'FULL' })
       tableDurations[table] = Date.now() - startedAt
       return result
     }))
@@ -897,7 +923,7 @@ export class FeishuRepository {
   async loadCustomerDetailFresh(customerId, directory) {
     const entries = [['appointments', config.feishu.tables.appointments], ['serviceRecords', config.feishu.tables.serviceRecords], ['profileChanges', config.feishu.tables.profileChanges]]
     const startedAt = Date.now()
-    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? listRecords(tableId) : []))
+    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? this.readTable(table, tableId, { scene: 'A0_DATABASE', mode: 'FULL' }) : []))
     const [appointmentRows, serviceRows, profileChangeRows] = rows
     const customerRecord = directory.customers.find((item) => item.id === customerId)
     if (!customerRecord) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
@@ -970,7 +996,7 @@ export class FeishuRepository {
     const recordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id
     if (!recordId || !config.feishu.tables.customers) return this.loadAfterWrite(writeResult, targetCustomerId)
     const result = await boundedReadAfterWrite(async () => {
-      const row = await getRecord(config.feishu.tables.customers, recordId)
+      const row = await this.readRecord('customers', config.feishu.tables.customers, recordId, { scene: 'CUSTOMER_SAVE', mode: 'TARGETED' })
       if (!row) throw new FeishuUnavailableError('写入后暂未读到目标客户', { retryable: true, operation: 'readback_customer_by_id', customerId: targetCustomerId })
       const parsed = customer(row)
       if (parsed.id !== targetCustomerId) throw Object.assign(new Error('写入回读客户不匹配'), { code: 'CUSTOMER_READBACK_MISMATCH', status: 502 })

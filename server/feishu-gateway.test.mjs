@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createFeishuGateway, createFeishuWriteClient, FEISHU_ERROR_CODES } from './feishu.mjs'
+import { buildExactTextFilter, createFeishuGateway, createFeishuWriteClient, FEISHU_ERROR_CODES } from './feishu.mjs'
 
 function response(payload, { status = 200, headers = {} } = {}) {
   return { ok: status >= 200 && status < 300, status, headers: { get: (name) => headers[name] || null }, json: async () => payload }
@@ -27,6 +27,16 @@ describe('FeishuGateway', () => {
     const gateway = createFeishuGateway({ appId: 'app', appSecret: 'secret', baseToken: 'base', fetchImpl })
     await Promise.all([gateway.listRecords('tbl-a'), gateway.listRecords('tbl-a'), gateway.listRecords('tbl-a')])
     expect(tokenCalls).toBe(1)
+  })
+
+  it('builds a bounded exact-text filter without exposing the value in logs', async () => {
+    expect(buildExactTextFilter('客户ID', 'CUS-01"\\test')).toBe('CurrentValue.[客户ID] = "CUS-01\\"\\\\test"')
+    const { gateway, calls } = gatewayWith([
+      response({ tenant_access_token: 'token-1', expire: 7200 }),
+      response({ data: { items: [{ record_id: 'rec-1' }] } }),
+    ])
+    await expect(gateway.findRecordsByField('tbl-customers', '客户ID', 'CUS-01')).resolves.toHaveLength(1)
+    expect(new URL(calls[1].url).searchParams.get('filter')).toBe('CurrentValue.[客户ID] = "CUS-01"')
   })
 
   it('retries transient 429 with backoff and succeeds', async () => {

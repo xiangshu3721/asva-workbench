@@ -62,6 +62,13 @@ export function isRetryableFeishuError(error) {
   return error?.retryable === true || [FEISHU_ERROR_CODES.NETWORK, FEISHU_ERROR_CODES.TIMEOUT, FEISHU_ERROR_CODES.RATE_LIMITED, FEISHU_ERROR_CODES.SERVER_ERROR, FEISHU_ERROR_CODES.TEMPORARILY_UNAVAILABLE].includes(error?.code) || isTimeout(error) || isNetwork(error)
 }
 
+export function buildExactTextFilter(fieldName, value) {
+  const field = String(fieldName || '').trim()
+  if (!field) throw new TypeError('Feishu filter field is required')
+  const escaped = String(value ?? '').replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+  return `CurrentValue.[${field}] = "${escaped}"`
+}
+
 export function createFeishuGateway({
   fetchImpl = globalThis.fetch, sleepImpl = sleep, random = Math.random, now = Date.now,
   timeoutMs = DEFAULT_TIMEOUT_MS, maxAttempts = DEFAULT_MAX_ATTEMPTS, backoffMs = DEFAULT_BACKOFF_MS,
@@ -118,6 +125,7 @@ export function createFeishuGateway({
         if (operationId) headers['X-Idempotency-Key'] = String(operationId)
         const startedAt = now(); metrics.requests += 1
         let response
+        context.readContext?.providerRequest?.({ retry: attempt > 0 })
         try { response = await fetchImpl(`${baseUrl}${path}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(timeoutMs) }) } catch (error) {
           const timeout = isTimeout(error)
           if (timeout) metrics.timeoutCount += 1
@@ -130,7 +138,8 @@ export function createFeishuGateway({
           if (normalized.code === FEISHU_ERROR_CODES.SERVER_ERROR) metrics.serverErrorCount += 1
           throw new FeishuUnavailableError(normalized.message, { ...normalized, providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, operation, attempt, customerId: context.customerId, entityType: context.entityType })
         }
-        metrics.successes += 1; recordSuccess(attempt)
+        metrics.successes += 1
+        recordSuccess(attempt)
         if (isWrite) logger.info?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ request_id: requestId(response, payload), operation, operation_id: operationId, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, latency_ms: now() - startedAt, result: 'SUCCESS' }))
         return payload?.data ?? payload
       } catch (error) {
@@ -169,8 +178,19 @@ export function createFeishuGateway({
   return {
     request, getToken, providerStatus, metrics: () => ({ ...metrics }),
     findExistingRecord,
-    listRecords: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId }),
-    getRecord: async (tableId, recordId) => { const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${encodeURIComponent(recordId)}`, {}, { operation: 'get_record', table: tableId }); return data?.record || data },
+    listRecords: (tableId, options = {}) => listPaged((query) => {
+      if (options.filter) query.set('filter', String(options.filter))
+      if (options.viewId) query.set('view_id', String(options.viewId))
+      if (Array.isArray(options.fieldNames) && options.fieldNames.length) query.set('field_names', options.fieldNames.join(','))
+      return `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`
+    }, 'list_records', { table: tableId, readContext: options.readContext }),
+    findRecordsByField: (tableId, fieldName, value, options = {}) => listPaged((query) => {
+      query.set('filter', buildExactTextFilter(fieldName, value))
+      if (options.viewId) query.set('view_id', String(options.viewId))
+      if (Array.isArray(options.fieldNames) && options.fieldNames.length) query.set('field_names', options.fieldNames.join(','))
+      return `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`
+    }, 'list_records_filtered', { table: tableId, readContext: options.readContext }),
+    getRecord: async (tableId, recordId, options = {}) => { const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${encodeURIComponent(recordId)}`, {}, { operation: 'get_record', table: tableId, readContext: options.readContext }); return data?.record || data },
     listFields: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields?${query}`, 'list_fields', { table: tableId }),
     listTables: () => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables?${query}`, 'list_tables'),
     createTable: (name, fields = []) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables`, { method: 'POST', body: JSON.stringify({ table: { name, default_view_name: '默认视图', fields } }) }, { operation: 'create_table', retry: false }),
@@ -183,8 +203,9 @@ export function createFeishuGateway({
 
 const gateway = createFeishuGateway()
 export const feishuGateway = gateway
-export const listRecords = (tableId) => gateway.listRecords(tableId)
-export const getRecord = (tableId, recordId) => gateway.getRecord(tableId, recordId)
+export const listRecords = (tableId, options = {}) => gateway.listRecords(tableId, options)
+export const getRecord = (tableId, recordId, options = {}) => gateway.getRecord(tableId, recordId, options)
+export const findRecordsByField = (tableId, fieldName, value, options = {}) => gateway.findRecordsByField(tableId, fieldName, value, options)
 export const listFields = (tableId) => gateway.listFields(tableId)
 export const listTables = () => gateway.listTables()
 export const createTable = (name, fields = []) => gateway.createTable(name, fields)
