@@ -81,4 +81,17 @@ describe('HTTP environment diagnostics', () => {
     await vi.advanceTimersByTimeAsync(CLIENT_DEFAULT_TIMEOUT_MS)
     await pending
   })
+
+  it('recovers a customer save through the original operation id after the write response is lost', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'FEISHU_UNAVAILABLE', message: '响应丢失' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'stable-customer-save-1', customerId: 'CUS-1', status: 'COMMITTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'COMMITTED' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'stable-customer-save-1', nickname: 'Synthetic Customer', phone: '13800000001', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+
+    expect(result).toMatchObject({ createdCustomerId: 'CUS-1', customer: { id: 'CUS-1' } })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=stable-customer-save-1')
+  })
 })

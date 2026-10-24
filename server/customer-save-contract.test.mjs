@@ -41,4 +41,36 @@ describe('customer save contracts', () => {
     expect(result).not.toHaveProperty('appointments')
     expect(result).not.toHaveProperty('sourceRecords')
   })
+
+  it('returns a durable mutation result only for the exact operation identity', async () => {
+    const database = {
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      customers: [{ id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { 'op-1': { operationId: 'op-1', customerId: 'CUS-1', kind: 'UPDATE', status: 'COMMITTED', updatedAt: '2026-01-01T00:00:00.000Z' } } }],
+      enrollments: [], profileChanges: [], appointments: [], sessions: [], followups: [], products: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {},
+    }
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = async () => database
+
+    await expect(repository.customerSaveStatus('ADMIN-1', 'CUS-1', 'op-1')).resolves.toMatchObject({
+      operationId: 'op-1', customerId: 'CUS-1', status: 'COMMITTED', mutation: { operationId: 'op-1', kind: 'UPDATE' },
+    })
+    await expect(repository.customerSaveStatus('ADMIN-1', 'CUS-1', 'op-unknown')).resolves.toMatchObject({
+      operationId: 'op-unknown', customerId: 'CUS-1', status: 'UNKNOWN', customer: null,
+    })
+    await expect(repository.customerSaveStatus('ADMIN-1', '', 'op-1')).resolves.toMatchObject({
+      operationId: 'op-1', customerId: 'CUS-1', status: 'COMMITTED', mutation: { operationId: 'op-1', kind: 'UPDATE' },
+    })
+  })
+
+  it('does not expose a save result outside the actor customer scope', async () => {
+    const database = {
+      staff: [{ id: 'MENTOR-1', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }],
+      customers: [{ id: 'CUS-ADMIN', name: 'Admin Customer', mentorId: 'MENTOR-OTHER', mutationStates: { 'op-admin': { operationId: 'op-admin', customerId: 'CUS-ADMIN', kind: 'CREATE', status: 'COMMITTED', updatedAt: '2026-01-01T00:00:00.000Z' } } }],
+      enrollments: [], profileChanges: [], appointments: [], sessions: [], followups: [], products: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {},
+    }
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = async () => database
+
+    await expect(repository.customerSaveStatus('MENTOR-1', 'CUS-ADMIN', 'op-admin')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
+  })
 })

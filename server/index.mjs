@@ -121,6 +121,7 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/customers/directory') return send(request, response, 200, await repository.customerDirectory(await guard(request)), requestId)
+  if (request.method === 'GET' && url.pathname === '/api/customer-save-status') return send(request, response, 200, await repository.customerSaveStatus(await guard(request), '', url.searchParams.get('operationId') || ''), requestId)
   const customerDetailPath = url.pathname.match(/^\/api\/customers\/([^/]+)\/detail$/)
   if (request.method === 'GET' && customerDetailPath) return send(request, response, 200, await repository.customerDetail(await guard(request), decodeURIComponent(customerDetailPath[1])), requestId)
   const customerProfilePath = url.pathname.match(/^\/api\/customers\/([^/]+)\/profile$/)
@@ -152,6 +153,8 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
   const sourceStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/source-status$/)
   if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || ''), requestId)
+  const customerSaveStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/save-status$/)
+  if (request.method === 'GET' && customerSaveStatus) return send(request, response, 200, await repository.customerSaveStatus(await guard(request), decodeURIComponent(customerSaveStatus[1]), url.searchParams.get('operationId') || ''), requestId)
   if (request.method === 'POST' && url.pathname === '/api/privacy/service-necessity') return send(request, response, 200, await repository.overrideServiceNecessity(await guardAdmin(request), await readBody(request)), requestId)
   const proposalReview = url.pathname.match(/^\/api\/profile-proposals\/([^/]+)\/review$/)
   if (request.method === 'POST' && proposalReview) { const body = await readBody(request); return send(request, response, 200, await repository.reviewProposal(await guard(request), decodeURIComponent(proposalReview[1]), body.decision), requestId) }

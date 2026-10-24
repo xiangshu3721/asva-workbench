@@ -11,14 +11,17 @@ const state = vi.hoisted(() => ({
   failAfterCommitOnce: false,
 }))
 
-const publicCustomer = (item) => ({ ...item })
+const publicCustomer = (item) => {
+  const { mutationStates, ...safe } = item
+  return safe
+}
 const database = () => ({
   staff: [{ id: 'MENTOR-HTTP', name: 'Synthetic Mentor', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }],
   customers: [...state.customers.values()].map(publicCustomer),
   appointments: [], sessions: [], followups: [], products: [{ id: 'PRODUCT-1', name: 'Synthetic Course', status: '在售', active: true }],
   enrollments: [...state.enrollments.values()], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
 })
-const mutation = (customer, customerCreated) => ({ customer: publicCustomer(customer), enrollments: [...state.enrollments.values()].filter((item) => item.customerId === customer.id), createdCustomerId: customer.id, customerCreated, persistenceStatus: 'COMMITTED' })
+const mutation = (customer, customerCreated, operationId = '', kind = customerCreated ? 'CREATE' : 'UPDATE') => ({ customer: publicCustomer(customer), enrollments: [...state.enrollments.values()].filter((item) => item.customerId === customer.id), createdCustomerId: customer.id, customerCreated, persistenceStatus: 'COMMITTED', ...(operationId ? { mutation: { operationId, customerId: customer.id, kind, status: 'COMMITTED', updatedAt: new Date().toISOString() } } : {}) })
 const failure = (message, code, status) => Object.assign(new Error(message), { code, status })
 
 class SyntheticRepository {
@@ -28,11 +31,11 @@ class SyntheticRepository {
     const existingOperationId = state.operations.get(operationId)
     if (existingOperationId) {
       const existing = state.customers.get(existingOperationId)
-      return compactResponse ? mutation(existing, false) : database()
+      return compactResponse ? mutation(existing, false, operationId, 'CREATE') : database()
     }
     if ([...state.customers.values()].some((item) => item.phone && item.phone === input.phone)) throw failure('该联系方式已匹配到现有客户，请打开原档案更新。', 'CUSTOMER_DUPLICATE', 409)
     const id = `CUS-HTTP-${state.nextId++}`
-    const customer = { id, name: input.nickname, phone: input.phone || '', wechat: input.wechat || '', referrerName: input.introducer || '', notes: input.situation || '' }
+    const customer = { id, name: input.nickname, phone: input.phone || '', wechat: input.wechat || '', referrerName: input.introducer || '', notes: input.situation || '', mutationStates: operationId ? { [operationId]: { operationId, customerId: id, kind: 'CREATE', status: 'COMMITTED', updatedAt: new Date().toISOString() } } : {} }
     state.customers.set(id, customer)
     if (operationId) state.operations.set(operationId, id)
     state.createWrites += 1
@@ -40,14 +43,15 @@ class SyntheticRepository {
       state.failAfterCommitOnce = false
       throw failure('模拟响应丢失', 'FEISHU_UNAVAILABLE', 502)
     }
-    return compactResponse ? mutation(customer, true) : { ...database(), createdCustomerId: id, customerCreated: true }
+    return compactResponse ? mutation(customer, true, operationId, 'CREATE') : { ...database(), createdCustomerId: id, customerCreated: true }
   }
 
   async updateCustomer(_actorId, customerId, input, { compactResponse = false } = {}) {
     const customer = state.customers.get(customerId)
     if (!customer) throw failure('客户不存在', 'CUSTOMER_NOT_FOUND', 404)
-    Object.assign(customer, { name: input.nickname || customer.name, phone: input.phone ?? customer.phone, wechat: input.wechat ?? customer.wechat, referrerName: input.introducer ?? customer.referrerName, notes: input.situation ?? customer.notes })
-    return compactResponse ? mutation(customer, false) : database()
+    const operationId = String(input.operationId || '')
+    Object.assign(customer, { name: input.nickname || customer.name, phone: input.phone ?? customer.phone, wechat: input.wechat ?? customer.wechat, referrerName: input.introducer ?? customer.referrerName, notes: input.situation ?? customer.notes, mutationStates: operationId ? { ...customer.mutationStates, [operationId]: { operationId, customerId, kind: 'UPDATE', status: 'COMMITTED', updatedAt: new Date().toISOString() } } : customer.mutationStates })
+    return compactResponse ? mutation(customer, false, operationId, 'UPDATE') : database()
   }
 
   async updateCustomerEnrollments(_actorId, customerId, drafts) {
@@ -60,6 +64,12 @@ class SyntheticRepository {
   async customerDirectory() { return database() }
   async customerDetail(_actorId, customerId) { return { ...database(), customers: database().customers.filter((item) => item.id === customerId), enrollments: database().enrollments.filter((item) => item.customerId === customerId) } }
   async customer(_actorId, customerId) { return state.customers.get(customerId) || null }
+  async customerSaveStatus(_actorId, customerId, operationId) {
+    const customer = customerId ? state.customers.get(customerId) : [...state.customers.values()].find((item) => item.mutationStates?.[operationId])
+    const mutationState = customer?.mutationStates?.[operationId]
+    if (!customer || !mutationState) return { operationId, customerId: customerId || '', status: 'UNKNOWN', customer: null }
+    return { operationId, customerId: customer.id, status: mutationState.status, customer: publicCustomer(customer), createdCustomerId: customer.id, customerCreated: mutationState.kind === 'CREATE', persistenceStatus: 'COMMITTED', mutation: { operationId, customerId: customer.id, kind: mutationState.kind, status: mutationState.status, updatedAt: mutationState.updatedAt } }
+  }
 }
 
 vi.mock('./repository.mjs', () => ({ SyntheticRepository, FeishuRepository: SyntheticRepository }))
@@ -108,6 +118,10 @@ describe('real Node HTTP customer save flow with isolated persistence', () => {
     expect(created.payload).toMatchObject({ customer: { name: input.nickname, phone: input.phone }, createdCustomerId: expect.any(String), persistenceStatus: 'COMMITTED' })
     const customerId = created.payload.createdCustomerId
 
+    const createStatus = await request(`/api/customers/${customerId}/save-status?operationId=${input.operationId}`)
+    expect(createStatus.response.status).toBe(200)
+    expect(createStatus.payload).toMatchObject({ status: 'COMMITTED', mutation: { operationId: input.operationId, kind: 'CREATE' } })
+
     const directory = await request('/api/customers/directory')
     expect(directory.response.status).toBe(200)
     expect(directory.payload.customers.some((item) => item.id === customerId)).toBe(true)
@@ -121,8 +135,17 @@ describe('real Node HTTP customer save flow with isolated persistence', () => {
     expect(updated.response.headers.get('access-control-allow-origin')).toBe('https://xiangshu3721.github.io')
     expect(updated.payload).toMatchObject({ customer: { id: customerId, notes: '更新后的客户情况。' }, persistenceStatus: 'COMMITTED' })
 
+    const updateStatus = await request(`/api/customers/${customerId}/save-status?operationId=op-http-update-1`)
+    expect(updateStatus.payload).toMatchObject({ status: 'COMMITTED', mutation: { operationId: 'op-http-update-1', kind: 'UPDATE' } })
+    const unknownStatus = await request(`/api/customers/${customerId}/save-status?operationId=op-http-unknown-1`)
+    expect(unknownStatus.payload).toMatchObject({ status: 'UNKNOWN', customer: null })
+
+    const secondUpdate = await request(`/api/customers/${customerId}`, { method: 'PATCH', headers: { 'X-ASVA-Response-Mode': 'customer-mutation-v1', 'X-Idempotency-Key': 'op-http-update-2' }, body: JSON.stringify({ operationId: 'op-http-update-2', nickname: input.nickname, phone: input.phone, wechat: '', introducer: input.introducer, situation: '第二次更新后的客户情况。', enrollments: [] }) })
+    expect(secondUpdate.payload).toMatchObject({ customer: { id: customerId, notes: '第二次更新后的客户情况。' }, mutation: { operationId: 'op-http-update-2', kind: 'UPDATE' } })
+    expect((await request(`/api/customers/${customerId}/save-status?operationId=op-http-update-1`)).payload).toMatchObject({ status: 'COMMITTED', mutation: { operationId: 'op-http-update-1', kind: 'UPDATE' }, customer: { notes: '第二次更新后的客户情况。' } })
+
     const readAfterUpdate = await request(`/api/customers/${customerId}/detail`)
-    expect(readAfterUpdate.payload.customers[0].notes).toBe('更新后的客户情况。')
+    expect(readAfterUpdate.payload.customers[0].notes).toBe('第二次更新后的客户情况。')
 
     const enrollments = await request(`/api/customers/${customerId}/enrollments`, { method: 'PUT', body: JSON.stringify({ operationId: 'op-http-enrollment-1', enrollments: [{ productId: 'PRODUCT-1' }] }) })
     expect(enrollments.response.status).toBe(200)
