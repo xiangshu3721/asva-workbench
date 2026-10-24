@@ -83,6 +83,7 @@ function customerSaveFailureMessage(error: unknown) {
   const code = (error as { serverCode?: string; code?: string })?.serverCode || (error as { code?: string })?.code
   if (code === 'CUSTOMER_SAVE_UNKNOWN') return '保存结果暂时无法确认，原内容仍保留。请稍后查询或重试。'
   if (code === 'CUSTOMER_SAVE_CONFIRMED_FAILED') return '客户保存已确认失败，填写内容仍保留，请修正后重试。'
+  if (code === 'CUSTOMER_SAVE_COMMITTED_RESULT_UNAVAILABLE') return '客户保存已确认，但客户已有后续更新，请刷新后查看。'
   if (code === 'REQUEST_TIMEOUT' || code === 'NETWORK_UNREACHABLE' || code === 'CORS_PREFLIGHT_FAILED' || code === 'CORS_ERROR') return '保存结果暂未确认，原内容仍保留。请稍后重试，系统会继续使用同一操作编号核对，避免重复创建客户。'
   return sourceFailureMessage(error, 'save')
 }

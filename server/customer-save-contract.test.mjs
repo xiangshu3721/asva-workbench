@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { FeishuRepository, customerIdForOperation, partialEnrollmentFailureMessage, publicCustomerMutationDto } from './repository.mjs'
+import { FeishuRepository, customerIdForOperation, customerResultFingerprint, mutationPayloadHash, partialEnrollmentFailureMessage, publicCustomerMutationDto, sanitizeMutationStates, serializeCustomerDerivedMeta } from './repository.mjs'
+
+const emptyCollections = { enrollments: [], profileChanges: [], appointments: [], sessions: [], followups: [], products: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [] }
+const customerDatabase = (customer) => ({ staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }], customers: [customer], ...emptyCollections, _rows: { customers: [{ record_id: 'rec-customer-1', fields: { 客户ID: customer.id } }] } })
 
 describe('customer save contracts', () => {
   it('keeps the same operation idempotent across retries', () => {
@@ -72,5 +75,58 @@ describe('customer save contracts', () => {
     repository.load = async () => database
 
     await expect(repository.customerSaveStatus('MENTOR-1', 'CUS-ADMIN', 'op-admin')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
+  })
+
+  it('keeps PERSISTED distinct from COMMITTED in the public contract', () => {
+    const database = customerDatabase({ id: 'CUS-1', name: 'Synthetic Customer', mutationStates: { 'op-1': { operationId: 'op-1', customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED', updatedAt: '2026-01-01T00:00:00.000Z' } } })
+    expect(publicCustomerMutationDto(database, 'ADMIN-1', 'CUS-1', false, 'op-1')).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
+  })
+
+  it('does not replay an incomplete PATCH and rejects a changed payload', async () => {
+    const operationId = 'patch-persisted-1'
+    const originalInput = { operationId, nickname: 'Synthetic Customer', phone: '13800000001', wechat: '', situation: 'same', enrollments: [] }
+    const customer = { id: 'CUS-1', name: 'Synthetic Customer', phone: '13800000001', wechat: '', notes: '', mutationStates: { [operationId]: { operationId, customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED', payloadHash: mutationPayloadHash(originalInput), updatedAt: '2026-01-01T00:00:00.000Z' } } }
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = async () => customerDatabase(customer)
+    await expect(repository.updateCustomerUnsafe('ADMIN-1', 'CUS-1', originalInput, { compactResponse: true })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_INCOMPLETE', mutationStatus: 'PERSISTED' })
+    await expect(repository.updateCustomerUnsafe('ADMIN-1', 'CUS-1', { operationId, nickname: 'Changed payload', phone: '13800000001', wechat: '', situation: 'same', enrollments: [] }, { compactResponse: true })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
+  })
+
+  it('does not replay an incomplete CREATE with the same operation id', async () => {
+    const operationId = 'create-persisted-1'
+    const customerId = customerIdForOperation(operationId)
+    const database = customerDatabase({ id: customerId, name: 'Synthetic Customer', phone: '13800000002', wechat: '', mutationStates: { [operationId]: { operationId, customerId, kind: 'CREATE', status: 'PERSISTED', payloadHash: '', updatedAt: '2026-01-01T00:00:00.000Z' } } })
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = async () => database
+    await expect(repository.createCustomer('ADMIN-1', { operationId, nickname: 'Synthetic Customer', phone: '13800000002', wechat: '', introducer: '', situation: '', enrollments: [] }, '', { compactResponse: true })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_INCOMPLETE', mutationStatus: 'PERSISTED' })
+  })
+
+  it('retains incomplete mutation states when committed history exceeds the limit', () => {
+    const states = Object.fromEntries(Array.from({ length: 25 }, (_, index) => [`committed-${index}`, { customerId: 'CUS-1', kind: 'UPDATE', status: 'COMMITTED', updatedAt: `2026-01-01T00:00:${String(index).padStart(2, '0')}.000Z` }]))
+    states.pending = { customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED', updatedAt: '2026-01-01T00:01:00.000Z' }
+    const result = sanitizeMutationStates(states)
+    expect(Object.keys(result)).toHaveLength(21)
+    expect(result.pending.status).toBe('PERSISTED')
+    expect(result['committed-0']).toBeUndefined()
+    expect(result['committed-24'].status).toBe('COMMITTED')
+  })
+
+  it('merges a derived metadata update without dropping sibling namespaces', () => {
+    const customer = { id: 'CUS-1', profileVersion: 3, profileFieldMeta: { occupation: { source: 'MANUAL' } }, aiSummaryMeta: { status: 'FRESH' }, understandingMeta: { status: 'FRESH' }, salesUnderstandingMeta: { status: 'FRESH' }, safetyMeta: { status: 'FRESH' }, mutationStates: { op: { customerId: 'CUS-1', kind: 'UPDATE', status: 'PERSISTED' } } }
+    const parsed = JSON.parse(serializeCustomerDerivedMeta(customer, { understanding: { status: 'PROCESSING' } }))
+    expect(parsed._fields).toEqual(customer.profileFieldMeta)
+    expect(parsed._ai_summary).toEqual(customer.aiSummaryMeta)
+    expect(parsed._sales_understanding).toEqual(customer.salesUnderstandingMeta)
+    expect(parsed._safety).toEqual(customer.safetyMeta)
+    expect(parsed._mutation_states.op.status).toBe('PERSISTED')
+    expect(parsed._understanding.status).toBe('PROCESSING')
+  })
+
+  it('does not return the latest customer fields as the historical result of an older operation', async () => {
+    const original = { id: 'CUS-1', name: 'Original name', notes: 'Original notes', profileFields: { occupation: 'Designer' }, profileFieldMeta: {}, profileVersion: 1, profileUpdatedAt: '2026-01-01T00:00:00.000Z' }
+    const database = customerDatabase({ ...original, name: 'Latest name', notes: 'Later notes', profileFields: { occupation: 'Teacher' }, profileVersion: 2, profileUpdatedAt: '2026-01-02T00:00:00.000Z', mutationStates: { 'old-op': { operationId: 'old-op', customerId: 'CUS-1', kind: 'UPDATE', status: 'COMMITTED', resultFingerprint: customerResultFingerprint(original), updatedAt: '2026-01-01T00:00:00.000Z' } } })
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = async () => database
+    await expect(repository.customerSaveStatus('ADMIN-1', 'CUS-1', 'old-op')).resolves.toMatchObject({ status: 'COMMITTED', customer: null, resultSnapshotAvailable: false, resultChangedSinceOperation: true })
   })
 })
