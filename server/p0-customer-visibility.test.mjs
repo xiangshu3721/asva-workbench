@@ -20,7 +20,7 @@ const mentor = { id: 'STAFF-MENTOR', name: '导师', permissionRole: 'MENTOR', r
 function fixtureRows() {
   return {
     [tableId('customers')]: [
-      row('customers', 'rec-c1', { customer_id: 'CUS-1', nickname: '合成客户一', current_mentor_id: mentor.id, current_issue: '最近工作压力很大', help_expectation: '先梳理优先级', current_goal: '找到下一步方向', city: '杭州' }),
+      row('customers', 'rec-c1', { customer_id: 'CUS-1', nickname: '合成客户一', current_mentor_id: mentor.id, current_issue: '最近工作压力很大', help_expectation: '先梳理优先级', current_goal: '找到下一步方向', city: '杭州', age: 35, occupation: '设计师', marital_status: '已婚', family_summary: '与家人同住', notes: '客户情况来自基础资料录入' }),
       row('customers', 'rec-c2', { customer_id: 'CUS-2', nickname: '合成客户二', current_mentor_id: 'STAFF-OTHER', current_issue: '其他客户资料不应可见' }),
     ],
     [tableId('staff')]: [
@@ -55,6 +55,9 @@ describe('P0 customer visibility fallbacks', () => {
     const profile = await repository.customerProfile(mentor.id, 'CUS-1')
     const section = profile.profileMaterialization.sections.find((item) => item.title === '当前状态与目标')
     expect(section.items.map((item) => item.text)).toEqual(expect.arrayContaining(['最近工作压力很大', '先梳理优先级', '找到下一步方向']))
+    const rendered = profile.profileMaterialization.sections.flatMap((item) => item.items).map((item) => item.text)
+    expect(rendered).toEqual(expect.arrayContaining(['35', '杭州', '设计师', '已婚', '与家人同住', '客户情况来自基础资料录入']))
+    expect(profile.profileMaterialization.coverage.percentage).toBeGreaterThan(0)
   })
 
   it('returns a grounded understanding fallback instead of an empty result', async () => {

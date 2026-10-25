@@ -33,6 +33,43 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(section.items.map((item) => item.text)).toEqual(expect.arrayContaining(['最近工作压力很大', '先梳理优先级', '找到下一步方向']))
   })
 
+  it('materializes Customers base fields when profileFields is empty and there is no evidence', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        profileFields: {},
+        age: 35,
+        city: '杭州',
+        occupation: '设计师',
+        maritalStatus: '已婚',
+        familySummary: '与家人同住',
+        need: '正在考虑职业转型',
+        helpExpectation: '希望梳理职业方向',
+        goal: '三个月内确定下一步',
+        notes: '客户情况来自基础资料录入',
+      },
+      evidenceItems: [],
+    })
+    const rendered = result.sections.flatMap((section) => section.items).map((item) => item.text)
+    expect(rendered).toEqual(expect.arrayContaining(['35', '杭州', '设计师', '已婚', '与家人同住', '正在考虑职业转型', '希望梳理职业方向', '三个月内确定下一步', '客户情况来自基础资料录入']))
+    expect(result.coverage.percentage).toBeGreaterThan(0)
+  })
+
+  it('keeps existing formal profile fields ahead of legacy base-field fallbacks', () => {
+    const result = materializeCustomerProfile({
+      customer: { profileFields: { current_core_issue: '已确认的当前困扰' }, need: '旧基础字段内容' },
+      evidenceItems: [],
+    })
+    const current = result.sections.find((section) => section.title === '当前状态与目标')
+    expect(current?.items.map((item) => item.text)).toContain('已确认的当前困扰')
+    expect(current?.items.map((item) => item.text)).not.toContain('旧基础字段内容')
+  })
+
+  it('keeps the real empty state when neither base fields nor profile fields exist', () => {
+    const result = materializeCustomerProfile({ customer: { profileFields: {} }, evidenceItems: [] })
+    expect(result.sections.every((section) => section.items.length === 0)).toBe(true)
+    expect(result.coverage.percentage).toBe(0)
+  })
+
   it('only auto-confirms factual event evidence, never hypothesis', () => {
     expect(shouldAutoConfirmEvidence(evidence({ semanticKind: 'EVENT' }))).toBe(true)
     expect(shouldAutoConfirmEvidence(evidence({ semanticKind: 'EVENT', evidenceType: 'HYPOTHESIS' }))).toBe(false)
