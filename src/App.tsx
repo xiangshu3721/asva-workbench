@@ -467,7 +467,7 @@ function WorkbenchApp() {
     if (source?.id) {
       logAppPerformance('SOURCE_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
       const aiStartedAt = performance.now()
-      void processSource(source.id).then(() => logAppPerformance('AI_PROCESS_DURATION_MS', { duration_ms: Math.round(performance.now() - aiStartedAt) })).catch(() => {})
+      void workbenchApi.processSource(activeStaff.id, source.id).then(() => logAppPerformance('AI_PROCESS_DURATION_MS', { duration_ms: Math.round(performance.now() - aiStartedAt) })).catch(() => {})
     }
   }
   const saveManualCustomer = async (input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
