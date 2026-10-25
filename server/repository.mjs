@@ -12,13 +12,13 @@ import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, 
 import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
-import { buildCustomerUnderstandingContext, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
+import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
 import { isStaleProcessing, processingErrorCode } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
-import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
+import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
@@ -974,7 +974,9 @@ export class FeishuRepository {
     const storedMeta = customerRecord.understandingMeta || {}
     const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
     const status = fresh ? 'FRESH' : storedMeta.status === 'PROCESSING' ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
-    return { customerId, status, understanding: customerRecord.understanding || null, meta: { ...storedMeta, understandingId: storedMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || fingerprint, evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION }, evidence_refs: context.evidence_refs, context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density } }
+    const understanding = customerRecord.understanding || createLocalCustomerUnderstanding(context)
+    const source = customerRecord.understanding ? storedMeta.provider || 'DEEPSEEK' : 'STRUCTURED_FALLBACK'
+    return { customerId, status, understanding, meta: { ...storedMeta, understandingId: storedMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status, source, inputFingerprint: storedMeta.inputFingerprint || fingerprint, evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION }, evidence_refs: context.evidence_refs, context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density } }
   }
 
   scheduleCustomerUnderstandingRefresh(actorId, customerId) {
@@ -1047,8 +1049,11 @@ export class FeishuRepository {
     const storedMeta = customerRecord.salesUnderstandingMeta || {}
     const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === context.input_fingerprint && storedMeta.promptVersion === CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION
     const status = fresh ? 'FRESH' : storedMeta.status === 'PROCESSING' ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
-    const salesUnderstanding = customerRecord.salesUnderstanding ? applyAbilityEvidenceGate(applyWillingnessEvidenceGate(customerRecord.salesUnderstanding, { evidenceItems, enrollments, sessions, appointments }), { evidenceItems, enrollments }) : null
-    return { customerId, status, salesUnderstanding, meta: { ...storedMeta, salesUnderstandingId: storedMeta.salesUnderstandingId || `SALES-UNDERSTANDING-${customerId}`, customerId, salesUnderstandingVersion: CUSTOMER_SALES_UNDERSTANDING_VERSION, status, inputFingerprint: storedMeta.inputFingerprint || context.input_fingerprint, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION }, historical_enrollments: historicalSalesRecords({ enrollments, products, sessions }).enrollmentHistory, service_history: historicalSalesRecords({ enrollments: [], products, sessions }).serviceHistory, evidence_refs: context.evidence_refs, context_summary: { density: context.customer_snapshot.context_density, evidence_count: context.evidence_refs.length } }
+    const salesUnderstanding = customerRecord.salesUnderstanding
+      ? applyAbilityEvidenceGate(applyWillingnessEvidenceGate(customerRecord.salesUnderstanding, { evidenceItems, enrollments, sessions, appointments }), { evidenceItems, enrollments })
+      : createLocalCustomerSalesUnderstanding(context)
+    const source = customerRecord.salesUnderstanding ? storedMeta.provider || 'DEEPSEEK' : 'STRUCTURED_FALLBACK'
+    return { customerId, status, salesUnderstanding, meta: { ...storedMeta, salesUnderstandingId: storedMeta.salesUnderstandingId || `SALES-UNDERSTANDING-${customerId}`, customerId, salesUnderstandingVersion: CUSTOMER_SALES_UNDERSTANDING_VERSION, status, source, inputFingerprint: storedMeta.inputFingerprint || context.input_fingerprint, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION }, historical_enrollments: historicalSalesRecords({ enrollments, products, sessions }).enrollmentHistory, service_history: historicalSalesRecords({ enrollments: [], products, sessions }).serviceHistory, evidence_refs: context.evidence_refs, context_summary: { density: context.customer_snapshot.context_density, evidence_count: context.evidence_refs.length } }
   }
 
   async refreshCustomerSalesUnderstanding(actorId, customerId, { force = false } = {}) {

@@ -59,6 +59,7 @@ export interface CustomerUnderstandingMeta {
   profileVersion?: number
   promptVersion?: string
   provider?: string
+  source?: 'DEEPSEEK' | 'STRUCTURED_FALLBACK'
   model?: string
   generatedAt?: string
   updatedAt?: string
@@ -99,6 +100,7 @@ export interface CustomerSalesUnderstandingMeta {
   profileVersion?: number
   promptVersion?: string
   provider?: string
+  source?: 'DEEPSEEK' | 'STRUCTURED_FALLBACK'
   model?: string
   generatedAt?: string
   updatedAt?: string

@@ -27,6 +27,12 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.coverage.percentage).toBeGreaterThan(0)
   })
 
+  it('renders recorded current issue and goal even when no evidence exists', () => {
+    const result = materializeCustomerProfile({ customer: { need: '最近工作压力很大', helpExpectation: '先梳理优先级', goal: '找到下一步方向', profileFields: { current_core_issue: '最近工作压力很大', current_expectation: '先梳理优先级', current_goal: '找到下一步方向' } }, evidenceItems: [] })
+    const section = result.sections.find((item) => item.title === '当前状态与目标')
+    expect(section.items.map((item) => item.text)).toEqual(expect.arrayContaining(['最近工作压力很大', '先梳理优先级', '找到下一步方向']))
+  })
+
   it('only auto-confirms factual event evidence, never hypothesis', () => {
     expect(shouldAutoConfirmEvidence(evidence({ semanticKind: 'EVENT' }))).toBe(true)
     expect(shouldAutoConfirmEvidence(evidence({ semanticKind: 'EVENT', evidenceType: 'HYPOTHESIS' }))).toBe(false)

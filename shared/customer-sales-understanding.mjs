@@ -323,8 +323,17 @@ export function createLocalCustomerSalesUnderstanding(context = {}) {
   const refs = Array.isArray(context.evidence_refs) ? context.evidence_refs : []
   const allowed = new Set(refs.map((item) => item.evidence_id))
   const density = context.customer_snapshot?.context_density?.classification || context.context_density?.classification || 'SPARSE'
-  const needs = (context.current_needs || []).filter((item) => item.evidence_ids?.some((id) => allowed.has(id))).slice(0, 2)
-  const goals = (context.current_goals || []).filter((item) => item.evidence_ids?.some((id) => allowed.has(id))).slice(0, 2)
+  const explicitNeed = text(context.customer_snapshot?.current_issue || context.recorded_context?.current_need)
+  const explicitGoal = text(context.customer_snapshot?.current_goal || context.recorded_context?.current_goal)
+  const needs = [...(context.current_needs || []), explicitNeed ? { text: explicitNeed, evidence_ids: [] } : null]
+    .filter((item) => item?.text)
+    .filter((item) => item.text !== explicitGoal)
+    .filter((item, index, list) => list.findIndex((candidate) => candidate.text === item.text) === index)
+    .slice(0, 2)
+  const goals = [...(context.current_goals || []), explicitGoal ? { text: explicitGoal, evidence_ids: [] } : null]
+    .filter((item) => item?.text)
+    .filter((item, index, list) => list.findIndex((candidate) => candidate.text === item.text) === index)
+    .slice(0, 2)
   const safety = context.safety
   const paid = Number(context.paid_history_count || 0) > 0
   return normalizeCustomerSalesUnderstanding({
@@ -333,8 +342,8 @@ export function createLocalCustomerSalesUnderstanding(context = {}) {
     summary: density === 'SPARSE' ? '当前资料有限，先围绕客户明确表达的困扰与期待展开探索。' : '先确认客户当前问题与想要的变化，再判断是否适合进入服务讨论。',
     follow_up_focus: ['确认客户当前最想解决的一件事', '了解客户期待的具体变化与判断标准'],
     do_not_do: ['不要把当前困扰直接等同于购买意愿'],
-    pain_points: needs.map((item) => ({ title: item.text, explanation: '这是客户已表达、且需要进一步了解现实影响的当前议题。', severity: 'UNKNOWN', frequency: 'UNKNOWN', urgency: 'UNKNOWN', confidence: 'MEDIUM', evidence_ids: item.evidence_ids })),
-    aspirations: goals.map((item) => ({ title: item.text, explanation: '这是客户已表达的目标，具体路径和优先级仍需确认。', gap: '具体期待与可行路径待了解', clarity: 'MEDIUM', confidence: 'MEDIUM', evidence_ids: item.evidence_ids })),
+    pain_points: needs.map((item) => ({ title: item.text, explanation: '这是已录入的客户议题，现实影响仍需进一步确认。', severity: 'UNKNOWN', frequency: 'UNKNOWN', urgency: 'UNKNOWN', confidence: item.evidence_ids?.length ? 'MEDIUM' : 'LOW', evidence_ids: item.evidence_ids || [] })),
+    aspirations: goals.map((item) => ({ title: item.text, explanation: '这是已录入的客户目标，具体路径和优先级仍需确认。', gap: '具体路径和优先级待了解', clarity: 'MEDIUM', confidence: item.evidence_ids?.length ? 'MEDIUM' : 'LOW', evidence_ids: item.evidence_ids || [] })),
     willingness_to_pay: { level: 'UNKNOWN', explanation: '当前没有足够的明确购买或支付证据。', unknowns: ['是否愿意为解决当前问题投入费用'], evidence_ids: [] },
     ability_to_pay: { level: 'UNKNOWN', explanation: '当前没有足够的预算或经济状况证据。', unknowns: ['预算范围与实际支付条件'], evidence_ids: [] },
     meta: { overall_confidence: 'LOW', evidence_count: refs.length },
