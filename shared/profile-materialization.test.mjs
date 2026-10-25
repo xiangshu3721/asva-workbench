@@ -50,7 +50,8 @@ describe('CustomerProfileRenderer materialization', () => {
       evidenceItems: [],
     })
     const rendered = result.sections.flatMap((section) => section.items).map((item) => item.text)
-    expect(rendered).toEqual(expect.arrayContaining(['35', '杭州', '设计师', '已婚', '与家人同住', '正在考虑职业转型', '希望梳理职业方向', '三个月内确定下一步', '客户情况来自基础资料录入']))
+    expect(rendered).toEqual(expect.arrayContaining(['35', '杭州', '设计师', '已婚', '与家人同住', '正在考虑职业转型', '希望梳理职业方向', '三个月内确定下一步']))
+    expect(result.rawNotes).toBe('客户情况来自基础资料录入')
     expect(result.coverage.percentage).toBeGreaterThan(0)
   })
 
@@ -62,6 +63,14 @@ describe('CustomerProfileRenderer materialization', () => {
     const current = result.sections.find((section) => section.title === '当前状态与目标')
     expect(current?.items.map((item) => item.text)).toContain('已确认的当前困扰')
     expect(current?.items.map((item) => item.text)).not.toContain('旧基础字段内容')
+  })
+
+  it('keeps raw notes separate from structured fields and uses human labels', () => {
+    const result = materializeCustomerProfile({ customer: { profileFields: { relationship_status: '恋爱中' }, notes: '最近和伴侣沟通不顺。' }, evidenceItems: [] })
+    const relationship = result.sections.find((section) => section.title === '家庭与关系')
+    expect(relationship.items[0]).toMatchObject({ label: '亲密关系状态', text: '恋爱中', statusLabel: '已录入' })
+    expect(result.rawNotes).toBe('最近和伴侣沟通不顺。')
+    expect(result.sections.flatMap((section) => section.items).map((item) => item.text)).not.toContain('最近和伴侣沟通不顺。')
   })
 
   it('keeps the real empty state when neither base fields nor profile fields exist', () => {

@@ -33,6 +33,13 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(local.one_line_understanding.evidence_ids).toEqual([])
   })
 
+  it('uses existing notes in the conservative local one-line fallback', () => {
+    const value = createLocalCustomerUnderstanding({ generated_at: '2026-01-01T00:00:00.000Z', recorded_context: { notes: '29岁，在杭州工作，最近对职业方向感到困惑。' }, evidence_refs: [], coverage_gaps: ['职业事业'] })
+    expect(value.one_line_understanding.text).toContain('29岁，在杭州工作')
+    expect(value.one_line_understanding.confidence).toBe('LOW')
+    expect(value.one_line_understanding.evidence_ids).toEqual([])
+  })
+
   it('forms a conservative one-line understanding from recorded customer facts without evidence', () => {
     const context = buildCustomerUnderstandingContext({ customer: { ...customer, need: '最近工作压力很大', goal: '找到下一步方向' }, evidenceItems: [] })
     const local = createLocalCustomerUnderstanding(context)

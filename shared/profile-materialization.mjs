@@ -4,22 +4,23 @@ const VALUE_FIELDS = new Set(['core_values', 'family_values', 'career_values', '
 
 const FIELD_LABELS = {
   birth_date: '出生日期', age: '年龄', gender: '性别', city: '现居地', hometown: '出生地 / 家乡', marital_status: '婚姻状态', children_summary: '子女情况',
-  family_summary: '家庭背景', parents_relationship: '父母关系', siblings: '兄弟姐妹', family_events: '家庭经历', support_system: '支持系统',
-  occupation: '当前职业', industry: '行业', position: '职位', career_stage: '事业阶段', career_problem: '事业困扰', career_goal: '事业目标',
+  family_summary: '家庭背景', parents_relationship: '父母关系', siblings: '兄弟姐妹', family_events: '家庭经历', support_system: '支持系统', relationship_status: '亲密关系状态', relationship_conflicts: '关系困扰', partner_summary: '伴侣情况',
+  occupation: '当前职业', industry: '行业', position: '职位', career_stage: '事业阶段', career_problem: '事业困扰', career_goal: '事业目标', education: '教育经历', work_years: '工作年限',
   hobbies: '兴趣', sports: '运动', reading: '阅读', travel: '旅行', art_preferences: '艺术偏好', strengths: '优势',
-  personality_traits: '性格特点', communication_style: '沟通方式', decision_style: '决策方式', common_blocks: '常见卡点',
+  personality_traits: '性格特点', communication_style: '沟通方式', decision_style: '决策方式', common_blocks: '常见卡点', emotion_expression: '情绪表达', stress_response: '压力反应',
   core_values: '核心价值', family_values: '家庭价值', career_values: '事业价值', growth_attitude: '成长态度',
-  current_core_issue: '当前困扰', current_goal: '当前目标', current_expectation: '期待获得', current_resources: '已有资源', current_barriers: '当前阻碍', energy_state: '当前状态', notes: '补充备注',
+  current_core_issue: '当前困扰', current_goal: '当前目标', current_expectation: '期待获得', current_resources: '已有资源', current_barriers: '当前阻碍', energy_state: '当前状态', sleep: '睡眠情况', routine: '生活状态',
 }
 
 const SECTION_DEFINITIONS = [
   { title: 'TA是谁', fields: ['birth_date', 'age', 'gender', 'city', 'hometown', 'marital_status', 'children_summary'], emptyLabel: '待补充' },
-  { title: '家庭与关系', fields: ['family_summary', 'parents_relationship', 'siblings', 'family_events', 'relationship_status', 'relationship_conflicts', 'support_system'], emptyLabel: '待补充' },
-  { title: '职业与事业', fields: ['occupation', 'industry', 'position', 'career_stage', 'career_problem', 'career_goal'], emptyLabel: '待补充' },
+  { title: '家庭与关系', fields: ['family_summary', 'parents_relationship', 'siblings', 'family_events', 'relationship_status', 'relationship_conflicts', 'partner_summary', 'support_system'], emptyLabel: '待补充' },
+  { title: '职业与事业', fields: ['occupation', 'industry', 'position', 'career_stage', 'career_problem', 'career_goal', 'education', 'work_years'], emptyLabel: '待补充' },
+  { title: '情绪与生活', fields: ['emotion_expression', 'stress_response', 'sleep', 'routine', 'energy_state'], emptyLabel: '待了解' },
   { title: '兴趣偏好', fields: ['hobbies', 'sports', 'reading', 'travel', 'art_preferences'], emptyLabel: '待了解' },
   { title: '性格特点', fields: ['self_description', 'personality_traits', 'communication_style', 'decision_style', 'strengths', 'common_blocks'], emptyLabel: '待了解' },
   { title: '核心价值观', fields: ['core_values', 'family_values', 'career_values', 'growth_attitude'], emptyLabel: '待了解' },
-  { title: '当前状态与目标', fields: ['current_core_issue', 'current_expectation', 'current_goal', 'current_barriers', 'energy_state', 'notes'], emptyLabel: '待补充' },
+  { title: '当前状态与目标', fields: ['current_core_issue', 'current_expectation', 'current_goal', 'current_barriers'], emptyLabel: '待补充' },
   { title: '当前资源', fields: ['current_resources', 'support_system', 'strengths', 'career_stage'], emptyLabel: '待补充' },
 ]
 
@@ -52,11 +53,11 @@ function fieldEvidence(evidenceItems, field) {
 function itemFromField(field, value, evidenceItems) {
   if (!present(value)) return null
   const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
-  return { label: FIELD_LABELS[field] || field, text: displayValue(value), evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }
+  return { label: FIELD_LABELS[field] || field, text: displayValue(value), statusLabel: evidence.length ? '已确认' : '已录入', evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }
 }
 
 function itemFromEvidence(evidence, label = '资料线索') {
-  return { label, text: evidence.displayText, evidenceIds: [evidence.id], basis: [basis(evidence)] }
+  return { label, text: evidence.displayText, statusLabel: '已确认', evidenceIds: [evidence.id], basis: [basis(evidence)] }
 }
 
 const MATERIALIZATION_FIELD_KEYS = new Set(SECTION_DEFINITIONS.flatMap((definition) => definition.fields))
@@ -121,6 +122,7 @@ function provisionalItemFromEvidence(evidence) {
     value: evidence.standardValue,
     displayText: evidence.displayText,
     label,
+    statusLabel: evidence.verificationStatus === 'CONFLICTED' ? '存在冲突' : evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS' ? 'AI推断 · 待验证' : '待核实',
     text: evidence.displayText,
     sourceId: evidence.sourceId,
     evidenceId: evidence.id,
@@ -249,5 +251,5 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
   })
 
   const lifeEvents = confirmedEvidence.filter((item) => item.semanticKind === 'EVENT').map((item) => ({ id: item.id, title: item.displayText, detail: item.sourceExcerpt, occurredAt: item.occurredAt || null, evidenceIds: [item.id], basis: [basis(item)] }))
-  return { schemaVersion: 'profile-materialization-v2', currentSnapshot, sections, provisionalItems, lifeEvents, coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
+  return { schemaVersion: 'profile-materialization-v2', currentSnapshot, sections, provisionalItems, lifeEvents, rawNotes: present(customer?.notes) ? String(customer.notes) : '', coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
 }

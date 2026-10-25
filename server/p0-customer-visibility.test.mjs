@@ -56,7 +56,8 @@ describe('P0 customer visibility fallbacks', () => {
     const section = profile.profileMaterialization.sections.find((item) => item.title === '当前状态与目标')
     expect(section.items.map((item) => item.text)).toEqual(expect.arrayContaining(['最近工作压力很大', '先梳理优先级', '找到下一步方向']))
     const rendered = profile.profileMaterialization.sections.flatMap((item) => item.items).map((item) => item.text)
-    expect(rendered).toEqual(expect.arrayContaining(['35', '杭州', '设计师', '已婚', '与家人同住', '客户情况来自基础资料录入']))
+    expect(rendered).toEqual(expect.arrayContaining(['35', '杭州', '设计师', '已婚', '与家人同住']))
+    expect(profile.profileMaterialization.rawNotes).toBe('客户情况来自基础资料录入')
     expect(profile.profileMaterialization.coverage.percentage).toBeGreaterThan(0)
   })
 
