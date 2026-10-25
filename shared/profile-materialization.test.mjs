@@ -73,6 +73,24 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.sections.flatMap((section) => section.items).map((item) => item.text)).not.toContain('最近和伴侣沟通不顺。')
   })
 
+  it('uses profile metadata to distinguish entered, human-confirmed and AI-inferred fields', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        profileFields: { occupation: '设计师', current_goal: '想做自己感兴趣的事业', sleep: '一般' },
+        profileFieldMeta: {
+          occupation: { source: 'MENTOR_CONFIRMED', confirmed: true },
+          current_goal: { source: 'AI_INFERENCE', confirmed: false },
+          sleep: { source: 'MENTOR_FACTUAL_INPUT', confirmed: false },
+        },
+      },
+      evidenceItems: [],
+    })
+    const fields = result.sections.flatMap((section) => section.items)
+    expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
+    expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 待核实' })
+  })
+
   it('keeps the real empty state when neither base fields nor profile fields exist', () => {
     const result = materializeCustomerProfile({ customer: { profileFields: {} }, evidenceItems: [] })
     expect(result.sections.every((section) => section.items.length === 0)).toBe(true)

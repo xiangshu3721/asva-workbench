@@ -50,10 +50,29 @@ function fieldEvidence(evidenceItems, field) {
   return evidenceItems.filter((item) => confirmed(item) && item.fieldKey === field)
 }
 
-function itemFromField(field, value, evidenceItems) {
+function fieldStatusLabel(fieldMeta, evidenceItems) {
+  const source = fieldMeta?.source
+  if (evidenceItems.length) {
+    if (source === 'AI_EXTRACTED_CONFIRMED') return 'AI提取 · 人工确认'
+    if (['ADMIN_CONFIRMED', 'MENTOR_CONFIRMED', 'USER_EXPLICIT'].includes(source)) return '人工已确认'
+    return '已确认'
+  }
+  if (fieldMeta?.confirmed === true) {
+    if (source === 'AI_EXTRACTED_CONFIRMED') return 'AI提取 · 人工确认'
+    if (['ADMIN_CONFIRMED', 'MENTOR_CONFIRMED', 'USER_EXPLICIT'].includes(source)) return '人工已确认'
+    return '已确认'
+  }
+  if (source === 'AI_INFERENCE') return 'AI推断 · 待验证'
+  if (source === 'MENTOR_OBSERVATION') return '导师观察 · 待核实'
+  if (source === 'MENTOR_FACTUAL_INPUT') return '导师记录 · 待核实'
+  if (fieldMeta) return '待核实'
+  return '已录入'
+}
+
+function itemFromField(field, value, evidenceItems, fieldMeta) {
   if (!present(value)) return null
   const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
-  return { label: FIELD_LABELS[field] || field, text: displayValue(value), statusLabel: evidence.length ? '已确认' : '已录入', evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }
+  return { label: FIELD_LABELS[field] || field, text: displayValue(value), statusLabel: fieldStatusLabel(fieldMeta, evidence), evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }
 }
 
 function itemFromEvidence(evidence, label = '资料线索') {
@@ -232,13 +251,14 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
   const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).map(provisionalItemFromEvidence))
   const fingerprint = summaryInputFingerprint({ customer, evidenceItems })
   const fields = materializationFields(customer)
+  const fieldMeta = customer?.profileFieldMeta && typeof customer.profileFieldMeta === 'object' && !Array.isArray(customer.profileFieldMeta) ? customer.profileFieldMeta : {}
   const currentSnapshot = Object.fromEntries(Object.entries(fields).filter(([, value]) => present(value)).map(([field, value]) => {
     const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
     return [field, { value, evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }]
   }))
 
   const sections = SECTION_DEFINITIONS.map((definition) => {
-    const fieldItems = definition.fields.map((field) => itemFromField(field, fields[field], evidenceItems)).filter(Boolean)
+    const fieldItems = definition.fields.map((field) => itemFromField(field, fields[field], evidenceItems, fieldMeta[field])).filter(Boolean)
     let evidenceItemsForSection = []
     if (definition.title === '家庭与关系') evidenceItemsForSection = confirmedEvidence.filter((item) => item.semanticKind === 'RELATIONSHIP' && !definition.fields.includes(item.fieldKey))
     if (definition.title === '职业与事业') evidenceItemsForSection = confirmedEvidence.filter((item) => item.semanticKind === 'EVENT' && CAREER_TERMS.test(evidenceText(item)))
