@@ -167,6 +167,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue) !important
 .profile-basis { display: grid; gap: 6px; margin-top: 6px; padding: 8px 9px; border-radius: 8px; background: #f7f9fc; }
 .profile-basis p { margin: 0; color: var(--ink); font-size: 10px; line-height: 1.5; }
 .profile-basis small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.profile-item-status { margin-left: 6px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 500; }
+.profile-original-notes { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafcfd; }
+.profile-original-notes summary { cursor: pointer; color: var(--blue-dark); font-size: 12px; }
+.profile-original-notes p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
 .profile-life-events { margin-top: 15px; padding-top: 14px; border-top: 1px solid #eef1f5; }
 .profile-life-events > h3 { margin: 0 0 9px; color: var(--ink); font-size: 12px; }
 .profile-life-event { display: grid; gap: 4px; margin-top: 8px; padding: 10px 11px; border: 1px solid #e6ebf4; border-radius: 9px; background: #fafbfe; }

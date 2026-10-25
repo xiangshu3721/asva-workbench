@@ -41,6 +41,13 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(local.one_line_understanding.confidence).toBe('LOW')
   })
 
+  it('uses notes for a sparse customer instead of treating the record as empty', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { ...customer, need: '', goal: '', helpExpectation: '', notes: '客户正在考虑职业转型。' }, evidenceItems: [] })
+    const local = createLocalCustomerUnderstanding(context)
+    expect(local.one_line_understanding.text).toContain('已录入资料：客户正在考虑职业转型。')
+    expect(local.one_line_understanding.confidence).toBe('LOW')
+  })
+
   it('rejects unsupported diagnosis and unknown evidence references', () => {
     const normalized = normalizeCustomerUnderstanding({ one_line_understanding: { text: '这是抑郁症', evidence_ids: ['NOPE'], confidence: 'HIGH', type: 'SYNTHESIS' }, knowledge_gaps: [{ text: '待确认' }] }, { evidenceIds: ['EVD-1'] })
     const result = qualityCheckCustomerUnderstanding(normalized, { evidenceIds: ['EVD-1'] })

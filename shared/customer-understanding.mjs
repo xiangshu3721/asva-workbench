@@ -243,7 +243,8 @@ export function createLocalCustomerUnderstanding(context) {
   const needs = refsFor(context.current_needs || [])
   const recorded = context.recorded_context || context.current_snapshot || {}
   const recordedNeeds = [recorded.current_need, recorded.current_goal, recorded.help_expectation].filter(Boolean).map((text) => ({ text: safeText(text), evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' }))
-  const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text))].slice(0, 3)
+  const noteSignal = recorded.notes ? { text: `已录入资料：${safeText(recorded.notes, 220)}`, evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' } : null
+  const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text)), ...(noteSignal ? [noteSignal] : [])].slice(0, 3)
   const resources = refsFor(context.resources || [])
   const events = refsFor(context.top_life_events || [])
   const gaps = (context.coverage_gaps || []).slice(0, 4).map((text) => ({ text: `还需要了解${text}`, detail: '当前资料尚不足以形成稳定判断。', priority: 'MEDIUM', evidence_ids: [] }))
