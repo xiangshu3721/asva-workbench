@@ -4,6 +4,7 @@
 
 const CITY_WORDS = /北京|上海|天津|重庆|深圳|广州|杭州|南京|苏州|成都|武汉|西安|厦门|青岛|大连|宁波|郑州|长沙|合肥|济南|福州|昆明|无锡|佛山|东莞|珠海|惠州|香港|澳门|台北/
 const CURRENT_WORDS = /目前|现在|当前|现居|居住|住在|长期住|搬到|所在城市|生活在|定居/
+const RESIDENCE_CURRENT_WORDS = /现居|居住|住在|生活在|定居|搬到|所在城市|(?:在|于)[^，。；]{0,8}(?:生活|居住|定居)/
 const FUTURE_WORDS = /计划|打算|准备|考虑|未来|以后|将来|明年|下个月|之后|后面|想去|想搬|希望.*(?:去|搬|生活|居住|辞职|成为)/
 const HISTORY_WORDS = /曾经|以前|原来|三年前|几年前|过去|历史上|曾在|曾住|离开.*(?:之前|以后)?/
 const RESIDENCE_STATE_WORDS = /一个人|独居|同住|合租|和父母住|和家人住|居住状态|生活状态|居住比较稳定/
@@ -40,7 +41,7 @@ function nearby(textValue, pattern, value) {
 
 function isCityLike(value, quote) {
   const candidate = valueText(value)
-  return Boolean(candidate && CITY_WORDS.test(candidate) && (CITY_WORDS.test(quote) || CURRENT_WORDS.test(quote) || FUTURE_WORDS.test(quote) || HISTORY_WORDS.test(quote)))
+  return Boolean(candidate && CITY_WORDS.test(candidate) && (RESIDENCE_CURRENT_WORDS.test(quote) || FUTURE_WORDS.test(quote) || HISTORY_WORDS.test(quote)))
 }
 
 function isResidenceStateOnly(value, quote) {

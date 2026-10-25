@@ -84,7 +84,7 @@ class SyntheticRepository {
     const candidates = [
       ['age', 29, '年龄：29岁', '29岁'],
       ['gender', '女', '性别：女', '女性'],
-      ['city', '杭州', '现居地：杭州', '在杭州工作'],
+      [null, '杭州', '工作地点：杭州', '在杭州工作'],
       ['relationship_status', '恋爱中', '亲密关系状态：恋爱中', '和男朋友吵架'],
       ['relationship_conflicts', '经常与伴侣争吵', '关系困扰：经常与伴侣争吵', '最近经常和男朋友吵架'],
       ['emotion_expression', '感觉很累', '情绪感受：感觉很累', '感觉很累'],
