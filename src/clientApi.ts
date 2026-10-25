@@ -34,6 +34,7 @@ export function normalizeCustomerDto(value: unknown): Customer {
     sections: arrayValue<ProfileMaterialization['sections'][number]>(rawMaterialization.sections),
     provisionalItems: arrayValue<ProfileMaterialization['provisionalItems'][number]>(rawMaterialization.provisionalItems),
     lifeEvents: arrayValue<ProfileMaterialization['lifeEvents'][number]>(rawMaterialization.lifeEvents),
+    ...(typeof rawMaterialization.rawNotes === 'string' ? { rawNotes: rawMaterialization.rawNotes } : {}),
     coverage: {
       percentage: Number(coverage.percentage || 0),
       domains: arrayValue<ProfileMaterialization['coverage']['domains'][number]>(coverage.domains),

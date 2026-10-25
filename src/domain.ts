@@ -177,6 +177,7 @@ export interface ProfileEvidenceReference {
 export interface ProfileMaterializationItem {
   label: string
   text: string
+  statusLabel?: string
   evidenceIds: string[]
   basis: ProfileEvidenceReference[]
 }
@@ -207,6 +208,8 @@ export interface ProfileMaterialization {
   sections: ProfileMaterializationSection[]
   provisionalItems: ProfileProvisionalItem[]
   lifeEvents: Array<{ id: string; title: string; detail: string; occurredAt: string | null; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
+  /** Derived from the existing Customers.notes field; not a new persisted field. */
+  rawNotes?: string
   coverage: { percentage: number; domains: Array<{ name: string; status: 'KNOWN' | 'PARTIAL' | 'UNKNOWN'; signalCount: number }> }
   aiSummaryStatus: SummaryStatus
   aiSummaryFingerprint?: string
