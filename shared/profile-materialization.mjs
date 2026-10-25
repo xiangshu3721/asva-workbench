@@ -19,6 +19,7 @@ const SECTION_DEFINITIONS = [
   { title: '兴趣偏好', fields: ['hobbies', 'sports', 'reading', 'travel', 'art_preferences'], emptyLabel: '待了解' },
   { title: '性格特点', fields: ['self_description', 'personality_traits', 'communication_style', 'decision_style', 'strengths', 'common_blocks'], emptyLabel: '待了解' },
   { title: '核心价值观', fields: ['core_values', 'family_values', 'career_values', 'growth_attitude'], emptyLabel: '待了解' },
+  { title: '当前状态与目标', fields: ['current_core_issue', 'current_expectation', 'current_goal', 'current_barriers', 'energy_state'], emptyLabel: '待补充' },
   { title: '当前资源', fields: ['current_resources', 'support_system', 'strengths', 'career_stage'], emptyLabel: '待补充' },
 ]
 

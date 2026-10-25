@@ -76,6 +76,16 @@ describe('CustomerSalesUnderstandingV1 contract', () => {
     expect(value.ability_to_pay.level).toBe('UNKNOWN')
   })
 
+  it('keeps recorded need and goal visible while leaving commercial readiness unknown', () => {
+    const context = buildCustomerSalesContext({ customer: { id: 'CUS-1', need: '最近工作压力很大', goal: '找到下一步方向', profileFields: {} }, evidenceItems: [] })
+    const value = createLocalCustomerSalesUnderstanding(context)
+    expect(value.pain_points[0]).toMatchObject({ title: '最近工作压力很大', confidence: 'LOW', evidence_ids: [] })
+    expect(value.pain_points.map((item) => item.title)).not.toContain('找到下一步方向')
+    expect(value.aspirations[0]).toMatchObject({ title: '找到下一步方向', confidence: 'LOW', evidence_ids: [] })
+    expect(value.willingness_to_pay.level).toBe('UNKNOWN')
+    expect(value.ability_to_pay.level).toBe('UNKNOWN')
+  })
+
   it('caps sparse commercial insights without filling empty context', () => {
     const value = normalizeCustomerSalesUnderstanding({
       pain_points: [{ title: '一' }, { title: '二' }, { title: '三' }],

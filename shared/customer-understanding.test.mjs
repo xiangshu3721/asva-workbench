@@ -33,6 +33,14 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(local.one_line_understanding.evidence_ids).toEqual([])
   })
 
+  it('forms a conservative one-line understanding from recorded customer facts without evidence', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { ...customer, need: '最近工作压力很大', goal: '找到下一步方向' }, evidenceItems: [] })
+    const local = createLocalCustomerUnderstanding(context)
+    expect(local.one_line_understanding.text).toBe('最近工作压力很大')
+    expect(local.one_line_understanding.evidence_ids).toEqual([])
+    expect(local.one_line_understanding.confidence).toBe('LOW')
+  })
+
   it('rejects unsupported diagnosis and unknown evidence references', () => {
     const normalized = normalizeCustomerUnderstanding({ one_line_understanding: { text: '这是抑郁症', evidence_ids: ['NOPE'], confidence: 'HIGH', type: 'SYNTHESIS' }, knowledge_gaps: [{ text: '待确认' }] }, { evidenceIds: ['EVD-1'] })
     const result = qualityCheckCustomerUnderstanding(normalized, { evidenceIds: ['EVD-1'] })
