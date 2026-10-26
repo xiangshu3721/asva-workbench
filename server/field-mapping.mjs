@@ -170,7 +170,7 @@ const DATE_FIELDS = {
   serviceRecords: new Set(['created_at']),
   staff: new Set(['created_at', 'updated_at', 'deactivated_at']),
   enrollments: new Set(['enrolled_at', 'paid_at', 'created_at']),
-  profileChanges: new Set(['updated_at']),
+  profileChanges: new Set(['changed_at', 'updated_at']),
   authCredentials: new Set(['created_at', 'updated_at', 'password_changed_at', 'last_login_at']),
   // Synthetic SourceRecords keeps 上传时间 as a text field; only the
   // explicitly typed Feishu datetime columns should receive epoch millis.
