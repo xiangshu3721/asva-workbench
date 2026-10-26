@@ -127,7 +127,7 @@ export const FIELD_MAPPING = {
   },
 }
 
-const TEXT_ONLY_TABLES = new Set(['profileChanges', 'sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'])
+const TEXT_ONLY_TABLES = new Set(['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'])
 
 // Temporary migration aliases. They are intentionally kept here, rather than
 // scattered through Repository code, so the app remains readable while a
