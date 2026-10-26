@@ -43,6 +43,11 @@ describe('R037 canonical profile fact normalization', () => {
     expect(fact.grounded).toBe(false)
   })
 
+  it('does not turn a work location into a current residence', () => {
+    const fact = normalizeCanonicalFact({ fieldKey: 'city', value: '杭州', sourceExcerpt: '她在杭州工作。', semanticKind: 'EVENT' })
+    expect(fact).toMatchObject({ canonicalFieldKey: 'UNKNOWN', storageFieldKey: null })
+  })
+
   it('does not treat a future marker as a current fact', () => {
     expect(classifyTemporalFact({ fieldKey: 'current_city', value: '广州', sourceExcerpt: '她计划以后去广州生活一段时间。', semanticKind: 'CURRENT_STATE' })).toBe('FUTURE_PLAN')
   })

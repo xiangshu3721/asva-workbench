@@ -127,7 +127,7 @@ export const FIELD_MAPPING = {
   },
 }
 
-const TEXT_ONLY_TABLES = new Set(['sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'])
+const TEXT_ONLY_TABLES = new Set(['profileChanges', 'sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts'])
 
 // Temporary migration aliases. They are intentionally kept here, rather than
 // scattered through Repository code, so the app remains readable while a
@@ -150,8 +150,9 @@ export function field(table, key) {
 
 export function fields(table, values) {
   return Object.fromEntries(Object.entries(values).map(([key, value]) => {
+    if (DATE_FIELDS[table]?.has(key)) return [field(table, key), serializeDateForFeishu(value)]
     if (TEXT_ONLY_TABLES.has(table)) return [field(table, key), value === null || value === undefined ? '' : typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value)]
-    return [field(table, key), DATE_FIELDS[table]?.has(key) ? serializeDateForFeishu(value) : value]
+    return [field(table, key), value]
   }))
 }
 
@@ -169,11 +170,13 @@ const DATE_FIELDS = {
   serviceRecords: new Set(['created_at']),
   staff: new Set(['created_at', 'updated_at', 'deactivated_at']),
   enrollments: new Set(['enrolled_at', 'paid_at', 'created_at']),
-  profileChanges: new Set(['changed_at', 'updated_at']),
+  profileChanges: new Set(['updated_at']),
   authCredentials: new Set(['created_at', 'updated_at', 'password_changed_at', 'last_login_at']),
-  sourceRecords: new Set(['occurred_at', 'uploaded_at', 'created_at', 'updated_at']),
-  evidenceItems: new Set(['occurred_at', 'created_at', 'updated_at']),
-  profileUpdateProposals: new Set(['reviewed_at', 'created_at', 'updated_at']),
-  evidenceConflicts: new Set(['resolved_at', 'created_at', 'updated_at']),
+  // Synthetic SourceRecords keeps 上传时间 as a text field; only the
+  // explicitly typed Feishu datetime columns should receive epoch millis.
+  sourceRecords: new Set(['created_at', 'updated_at']),
+  evidenceItems: new Set(['created_at', 'updated_at']),
+  profileUpdateProposals: new Set(['created_at', 'updated_at']),
+  evidenceConflicts: new Set(['created_at', 'updated_at']),
   safetyAssessments: new Set(['generated_at', 'updated_at', 'created_at']),
 }

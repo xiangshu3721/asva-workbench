@@ -86,6 +86,32 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(current?.items.map((item) => item.text)).not.toContain('旧基础字段内容')
   })
 
+  it('keeps raw notes separate from structured fields and uses human labels', () => {
+    const result = materializeCustomerProfile({ customer: { profileFields: { relationship_status: '恋爱中' }, notes: '最近和伴侣沟通不顺。' }, evidenceItems: [] })
+    const relationship = result.sections.find((section) => section.title === '家庭与关系')
+    expect(relationship.items[0]).toMatchObject({ label: '亲密关系状态', text: '恋爱中', statusLabel: '已录入' })
+    expect(result.rawNotes).toBe('最近和伴侣沟通不顺。')
+    expect(result.sections.flatMap((section) => section.items).map((item) => item.text)).not.toContain('最近和伴侣沟通不顺。')
+  })
+
+  it('uses profile metadata to distinguish entered, human-confirmed and AI-inferred fields', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        profileFields: { occupation: '设计师', current_goal: '想做自己感兴趣的事业', sleep: '一般' },
+        profileFieldMeta: {
+          occupation: { source: 'MENTOR_CONFIRMED', confirmed: true },
+          current_goal: { source: 'AI_INFERENCE', confirmed: false },
+          sleep: { source: 'MENTOR_FACTUAL_INPUT', confirmed: false },
+        },
+      },
+      evidenceItems: [],
+    })
+    const fields = result.sections.flatMap((section) => section.items)
+    expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
+    expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 待核实' })
+  })
+
   it('keeps a work location out of the current residence field in the display projection', () => {
     const result = materializeCustomerProfile({
       customer: { profileFields: {}, city: '', age: '', gender: '' },

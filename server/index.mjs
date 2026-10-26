@@ -10,6 +10,12 @@ import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
 
 const repository = new FeishuRepository()
+repository.startAutomaticProcessingRecovery?.()
+if (repository.recoverAutomaticProcessing) {
+  void repository.recoverAutomaticProcessing().catch((error) => {
+    repository.audit?.('START_AUTOMATIC_PROCESSING_RECOVERY', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_START_FAILED')
+  })
+}
 
 function send(request, response, statusCode, body, requestId) {
   if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|customers(?:\/directory|\/[^/]+\/detail)?|staff\/mentors)/.test(request.url || '')) {

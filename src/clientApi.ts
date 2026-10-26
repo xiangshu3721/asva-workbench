@@ -121,7 +121,8 @@ function customerMutationFromDatabase(database: Database & Partial<CustomerMutat
   if (!customer) throw new Error('保存后未找到客户')
   return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED' }
 }
-export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization }
+export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
 export interface WorkbenchApi {
   login(phone: string, password: string): Promise<Staff & { mustChangePassword?: boolean }>
@@ -230,7 +231,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     dashboard: async (staffId) => api.dashboard(staffId),
     customerDirectory: async (staffId) => api.dashboard(staffId),
     customerDetail: async (actorId, customerId) => { const database = api.dashboard(actorId); return { ...database, customers: database.customers.filter((item) => item.id === customerId), appointments: database.appointments.filter((item) => item.customerId === customerId), sessions: database.sessions.filter((item) => item.customerId === customerId), enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId) } },
-    customerProfile: async (actorId, customerId) => { const customer = await api.customer(actorId, customerId); if (!customer) throw new Error('客户不存在或无权访问'); return { customerId, profileFields: customer.profileFields, profileFieldMeta: customer.profileFieldMeta, profileUpdatedAt: customer.profileUpdatedAt, profileSchemaVersion: customer.profileSchemaVersion, profileVersion: customer.profileVersion, profileMaterialization: customer.profileMaterialization || { schemaVersion: 'profile-materialization-v2', currentSnapshot: {}, sections: [], provisionalItems: [], lifeEvents: [], coverage: { percentage: 0, domains: [] }, aiSummaryStatus: 'STALE' } } },
+    customerProfile: async (actorId, customerId) => { const customer = await api.customer(actorId, customerId); if (!customer) throw new Error('客户不存在或无权访问'); return { customerId, profileFields: customer.profileFields, profileFieldMeta: customer.profileFieldMeta, profileUpdatedAt: customer.profileUpdatedAt, profileSchemaVersion: customer.profileSchemaVersion, profileVersion: customer.profileVersion, profileMaterialization: customer.profileMaterialization || { schemaVersion: 'profile-materialization-v2', currentSnapshot: {}, sections: [], provisionalItems: [], lifeEvents: [], coverage: { percentage: 0, domains: [] }, aiSummaryStatus: 'STALE' }, autoOrganizeStatus: 'NOT_STARTED' } },
     basicDashboard: async (staffId) => buildBasicDashboard(api.dashboard(staffId)),
     staff: async (staffId) => api.staff(staffId),
     customer: async (actorId, id) => api.customer(actorId, id),

@@ -464,11 +464,7 @@ function WorkbenchApp() {
       if (recovered?.source) { source = recovered.source; recoveredAfterTimeout = true }
       else throw new Error('客户已创建，资料保存待确认，可稍后重试。')
     }
-    if (source?.id) {
-      logAppPerformance('SOURCE_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
-      const aiStartedAt = performance.now()
-      void workbenchApi.processSource(activeStaff.id, source.id).then(() => logAppPerformance('AI_PROCESS_DURATION_MS', { duration_ms: Math.round(performance.now() - aiStartedAt) })).catch(() => {})
-    }
+    if (source?.id) logAppPerformance('SOURCE_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
   }
   const saveManualCustomer = async (input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
     const saveStartedAt = performance.now()
@@ -703,6 +699,19 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const hasEntered = fieldItems.some((item) => item.statusLabel === '已录入') || Boolean(rawNotes)
   const hasProvisional = provisionalItems.length > 0
   const coverageLabel = showInitialLoading ? '正在读取档案' : error && !profile ? '档案读取失败' : !profile ? '展开后读取' : !hasDisplayContent ? '暂无可展示资料' : hasProvisional && (hasConfirmed || hasEntered) ? '已确认资料与待核实资料' : hasProvisional ? '待核实资料' : hasConfirmed ? '已确认资料' : hasEntered ? '已录入资料' : '已录入资料'
+  const autoStatusMessage = profile?.autoOrganizeStatus === 'PROCESSING'
+    ? 'AI正在整理资料，原始资料已保存。'
+    : profile?.autoOrganizeStatus === 'FAILED'
+      ? 'AI整理失败，将自动重试，原始资料已保留。'
+      : profile?.autoOrganizeStatus === 'REVIEW_REQUIRED'
+        ? 'AI整理完成，部分信息待核实。'
+        : profile?.autoOrganizeStatus === 'NO_USABLE_OUTPUT'
+          ? '本次整理未生成可展示资料，原始资料已保留。'
+          : profile?.autoOrganizeStatus === 'COMPLETED'
+            ? 'AI整理完成，档案已更新。'
+            : profile?.autoOrganizeStatus === 'PENDING'
+              ? 'AI整理等待后台恢复，原始资料已保留。'
+              : ''
   const profileContent = showInitialLoading ? <p className="detail-empty-line">正在读取该客户的确认档案…</p>
     : error && !profile ? <div className="detail-empty-line"><p>档案暂时读取失败，客户基础资料不受影响。</p><button className="secondary-button small" type="button" onClick={() => void onLoad()}>重新读取档案</button></div>
       : !profile ? <p className="detail-empty-line">展开后按需读取该客户的确认档案。</p>
@@ -730,7 +739,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
               {event.basis.length > 0 && <details><summary>查看依据</summary><div className="profile-basis">{dedupeEvidenceDisplay(event.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))).map((reference) => <p key={reference.evidenceIds.join('|')} data-evidence-ids={reference.evidenceIds.join(',')}>{reference.displayText}{reference.excerpt && <small>{reference.excerpt}</small>}</p>)}</div></details>}
             </article>)}</div> : null}
           </>
-  return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{profileContent}{profile && loading && <p className="profile-refresh-note">正在后台更新档案，当前内容仍可查看。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
+  return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{autoStatusMessage && <p className="profile-refresh-note">{autoStatusMessage}</p>}{profileContent}{profile && loading && <p className="profile-refresh-note">正在后台更新档案，当前内容仍可查看。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
 }
 function customerPaymentLabel(customer: Customer, enrollments: Database['enrollments']) {
   if (!enrollments.length) return customer.paid ? '已付费' : '暂未付费'
