@@ -65,7 +65,7 @@ export const FIELD_MAPPING = {
     family_values: '家庭价值观', career_values: '职业价值观', money_values: '金钱观', relationship_values: '关系价值观',
     success_definition: '成功定义', happiness_definition: '幸福定义', freedom_definition: '自由定义', growth_attitude: '成长态度',
     current_core_issue: '当前核心需求', secondary_issues: '其他困扰', current_stressors: '当前压力源', current_expectation: '期待获得',
-    current_resources: '当前资源', support_system: '支持系统', current_barriers: '当前阻碍', energy_state: '当前能量状态',
+    current_resources: '当前资源', support_system: '支持系统', current_barriers: '当前阻碍', energy_state: '当前能量状态', supplementary_info: '客户补充信息',
     recent_major_changes: '近期重要变化', ai_customer_summary: 'AI客户摘要',
   },
   serviceRecords: {

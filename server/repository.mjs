@@ -119,6 +119,25 @@ function appointment(row) {
   return { id: text(get('appointments', f, 'appointment_id')) || row.record_id, customerId: text(get('appointments', f, 'customer_id')), topic: text(get('appointments', f, 'expectation')) || '首次沟通', submittedAt: date(get('appointments', f, 'submitted_at')), description: text(get('appointments', f, 'current_issue_description')), expectation: text(get('appointments', f, 'expectation')), status, mentorId: text(get('appointments', f, 'assigned_mentor_id')) || null, assignedMentorId: text(get('appointments', f, 'assigned_mentor_id')) || null, followupHandled: boolean(get('appointments', f, 'followup_handled')), followupInfoCompleted: boolean(get('appointments', f, 'followup_info_completed')), createdAt: date(get('appointments', f, 'created_at')) || date(get('appointments', f, 'submitted_at')), completedAt: date(get('appointments', f, 'completed_at')) || null, source: caseSource, caseSource, _recordId: row.record_id }
 }
 
+function parseSupplementaryField(value) {
+  try {
+    const parsed = JSON.parse(text(value) || '[]')
+    return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object' && text(item.text)) : []
+  } catch {
+    return []
+  }
+}
+
+function serializeSupplementaryField(items) {
+  return JSON.stringify((Array.isArray(items) ? items : []).filter((item) => item && text(item.text)).map((item) => ({ id: item.id || '', text: text(item.text), source: item.source || 'AI_EXTRACTED', confirmed: item.confirmed === true, status: item.status || 'PENDING_REVIEW', confidence: item.confidence ?? null, sourceRecordId: item.sourceRecordId || '', evidenceId: item.evidenceId || '', updatedAt: item.updatedAt || '', operatorId: item.operatorId || '' })))
+}
+
+function mergeSupplementaryItems(fieldItems, metaItems) {
+  const byId = new Map((Array.isArray(metaItems) ? metaItems : []).map((item) => [text(item.id), item]))
+  const source = Array.isArray(fieldItems) && fieldItems.length ? fieldItems : (Array.isArray(metaItems) ? metaItems : [])
+  return source.map((item) => ({ ...(byId.get(text(item.id)) || {}), ...item, text: text(item.text) })).filter((item) => item.text)
+}
+
 function customer(row) {
   const f = row.fields || {}
   const name = text(get('customers', f, 'nickname')) || '未命名客户'
@@ -138,7 +157,7 @@ function customer(row) {
     understandingMeta = storedMeta._understanding && typeof storedMeta._understanding === 'object' ? storedMeta._understanding : null
     salesUnderstandingMeta = storedMeta._sales_understanding && typeof storedMeta._sales_understanding === 'object' ? storedMeta._sales_understanding : null
     safetyMeta = storedMeta._safety && typeof storedMeta._safety === 'object' ? storedMeta._safety : null
-    supplementaryItems = Array.isArray(storedMeta._supplementary_items) ? storedMeta._supplementary_items : []
+    supplementaryItems = mergeSupplementaryItems(parseSupplementaryField(get('customers', f, 'supplementary_info')), storedMeta._supplementary_items)
     automaticProfilePending = storedMeta._automatic_profile_pending && typeof storedMeta._automatic_profile_pending === 'object' ? storedMeta._automatic_profile_pending : null
   } catch { profileFieldMeta = {} }
   const aiSummary = parsedJson(get('customers', f, 'ai_customer_summary'), aiSummaryMeta?.summary || null)
@@ -393,6 +412,9 @@ function profileFieldsForWrite(customerRecord, updates) {
   values.is_paid = customerRecord.paid
   values.intended_course = customerRecord.intendedCourse || ''
   values.current_mentor_id = customerRecord.mentorId || ''
+  if (Array.isArray(customerRecord.supplementaryItems) && customerRecord.supplementaryItems.length > 0) {
+    values.supplementary_info = serializeSupplementaryField(customerRecord.supplementaryItems)
+  }
   return mapFields('customers', values)
 }
 
@@ -404,7 +426,7 @@ function serializeCustomerDerivedMeta(customerRecord, overrides = {}) {
     _understanding: Object.prototype.hasOwnProperty.call(overrides, 'understanding') ? overrides.understanding : customerRecord.understandingMeta || null,
     _sales_understanding: Object.prototype.hasOwnProperty.call(overrides, 'salesUnderstanding') ? overrides.salesUnderstanding : customerRecord.salesUnderstandingMeta || null,
     _safety: Object.prototype.hasOwnProperty.call(overrides, 'safety') ? overrides.safety : customerRecord.safetyMeta || null,
-    _supplementary_items: customerRecord.supplementaryItems || [],
+    _supplementary_items: (customerRecord.supplementaryItems || []).map(({ text: _text, ...item }) => item),
     _automatic_profile_pending: Object.prototype.hasOwnProperty.call(overrides, 'automaticProfilePending') ? overrides.automaticProfilePending : customerRecord.automaticProfilePending || null,
   })
 }
@@ -562,11 +584,7 @@ async function appendCustomerSupplementaryItem(database, customerId, evidence, o
   customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
-  await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', {
-    profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord),
-    profile_schema_version: customerRecord.profileSchemaVersion,
-    profile_updated_at: updatedAt,
-  }))
+  await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, []))
   return true
 }
 
@@ -1257,7 +1275,11 @@ export class FeishuRepository {
   }
 
   async markSafetyStale(customerId) {
-    const database = await this.load()
+    // Profile writes and safety metadata writes share one Feishu JSON field.
+    // Always rebuild from the persisted row here; a cached pre-profile-write
+    // snapshot could otherwise overwrite a newer field's provenance/status.
+    this.invalidateDatabaseCache()
+    const database = await this.load({ force: true })
     const customerRecord = database.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!customerRecord || !row) return
@@ -1860,27 +1882,33 @@ export class FeishuRepository {
           const currentValue = database.customers.find((item) => item.id === source.customerId)?.profileFields?.[evidence.fieldKey] ?? null
           const change = classifyEvidenceChange(evidence, currentValue)
           const existingProposal = refreshed.profileUpdateProposals.find((item) => item.evidenceId === evidence.id)
-          if (existingProposal || evidence.evidenceType !== 'FACT') continue
+          if (existingProposal || (evidence.evidenceType !== 'FACT' && evidence.fieldKey)) continue
           const timestamp = now()
           if (change.changeType === 'NO_CHANGE') {
             if (!automaticMode && evidence.reviewStatus !== 'CONFIRMED') await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
             continue
           }
           if (!automaticMode && shouldAutoConfirmEvidence(evidence) && evidence.reviewStatus !== 'CONFIRMED') await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
-          if (!evidence.fieldKey) {
-            if (automaticMode) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
-            continue
-          }
-          const profileMeta = database.customers.find((item) => item.id === source.customerId)?.profileFieldMeta?.[evidence.fieldKey]
-          const humanConfirmed = profileMeta?.confirmed === true && ['MENTOR_CONFIRMED', 'ADMIN_CONFIRMED', 'MENTOR_FACTUAL_INPUT', 'USER_EXPLICIT'].includes(profileMeta?.source)
-          const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence))
           const privacyPolicy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel, categories: evidence.privacyMeta?.categories, safetyFlags: evidence.privacyMeta?.safetyFlags, currentRole: 'ADMIN', assertionType: evidence.privacyMeta?.assertionType })
           const provenanceAllowsAutoApply = automaticMode
             ? !['UNKNOWN', 'MIXED'].includes(evidence.contentSource) && evidence.informationNature !== 'AI_INFERENCE' && evidence.verificationStatus !== 'CONFLICTED'
             : !evidence.contentSource && !evidence.informationNature && !evidence.verificationStatus
               ? true
               : evidence.verificationStatus === 'HUMAN_VERIFIED'
-          const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !humanConfirmed && isSnapshotEvidence(evidence) && ['ADD', 'UPDATE', 'APPEND'].includes(change.action) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+          if (!evidence.fieldKey) {
+            if (automaticMode && privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
+            continue
+          }
+          const currentCustomer = database.customers.find((item) => item.id === source.customerId)
+          const profileMeta = currentCustomer?.profileFieldMeta?.[evidence.fieldKey]
+          const currentStateField = ['age', 'gender', 'city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_goal', 'current_core_issue', 'current_expectation'].includes(evidence.fieldKey)
+          const incomingAt = new Date(evidence.occurredAt || source.updatedAt || source.createdAt || now()).getTime()
+          const currentUpdatedAtValue = profileMeta?.updatedAt || currentCustomer?.profileUpdatedAt
+          const currentUpdatedAt = currentUpdatedAtValue ? new Date(currentUpdatedAtValue).getTime() : Number.NaN
+          const staleIncoming = Number.isFinite(currentUpdatedAt) && Number.isFinite(incomingAt) && incomingAt < currentUpdatedAt
+          const currentFactAllowed = automaticMode && currentStateField && evidence.evidenceType === 'FACT' && evidence.semanticKind !== 'EVENT' && !staleIncoming
+          const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence) && !currentFactAllowed)
+          const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !staleIncoming && isSnapshotEvidence(evidence) && (['ADD', 'UPDATE', 'APPEND'].includes(change.action) || currentFactAllowed) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
           if (autoApply) {
             const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), automaticMode ? false : true)[0]
             if (update) {
@@ -1891,7 +1919,8 @@ export class FeishuRepository {
           if (automaticMode && !autoApply && (evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS')) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
           const reviewStatus = automaticMode ? 'PENDING_REVIEW' : autoApply || shouldAutoConfirmEvidence(evidence) ? 'CONFIRMED' : 'PENDING_REVIEW'
           if (privacyPolicy.canPromoteToProfile && evidence.fieldKey && isSnapshotEvidence(evidence)) {
-            const proposal = { id: proposalId(evidence.id, evidence.fieldKey), customerId: source.customerId, subjectId: source.subjectId, evidenceId: evidence.id, sourceId, fieldKey: evidence.fieldKey, fieldName: mapField('customers', evidence.fieldKey), currentValue, proposedValue: evidence.standardValue, action: PROPOSAL_ACTIONS.has(change.action) ? change.action : 'REVIEW_REQUIRED', changeType: change.changeType, reviewStatus, reason: evidence.displayText, confidence: evidence.confidence, extractionBatchId: evidence.extractionBatchId, reviewerId: '', reviewedAt: null, createdAt: timestamp, updatedAt: timestamp }
+            const proposalAction = autoApply && change.action === 'REVIEW_REQUIRED' ? 'UPDATE' : change.action
+            const proposal = { id: proposalId(evidence.id, evidence.fieldKey), customerId: source.customerId, subjectId: source.subjectId, evidenceId: evidence.id, sourceId, fieldKey: evidence.fieldKey, fieldName: mapField('customers', evidence.fieldKey), currentValue, proposedValue: evidence.standardValue, action: PROPOSAL_ACTIONS.has(proposalAction) ? proposalAction : 'REVIEW_REQUIRED', changeType: change.changeType, reviewStatus, reason: evidence.displayText, confidence: evidence.confidence, extractionBatchId: evidence.extractionBatchId, reviewerId: '', reviewedAt: null, createdAt: timestamp, updatedAt: timestamp }
             if (!refreshed.profileUpdateProposals.some((item) => item.id === proposal.id)) await createMappedRecord('profileUpdateProposals', 'proposal.create', { proposal_id: proposal.id, customer_id: proposal.customerId, subject_id: proposal.subjectId, evidence_id: proposal.evidenceId, source_id: proposal.sourceId, field_key: proposal.fieldKey, field_name: proposal.fieldName, current_value: stage2Json(proposal.currentValue), proposed_value: stage2Json(proposal.proposedValue), action: proposal.action, change_type: proposal.changeType, review_status: proposal.reviewStatus, reason: proposal.reason, confidence: proposal.confidence, extraction_batch_id: proposal.extractionBatchId, reviewer_id: proposal.reviewerId, reviewed_at: proposal.reviewedAt || '', created_at: proposal.createdAt, updated_at: proposal.updatedAt })
           }
           if (requiresReview) {

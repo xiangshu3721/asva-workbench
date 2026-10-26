@@ -292,4 +292,60 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     expect(result.evidenceItems[0].sourceExcerpt).toBe('A：我住在杭州')
     expect(result.source.notes).not.toContain('[ASVA_DIALOGUE_CONTEXT]')
   })
+
+  it('automatically overwrites a confirmed prior current-state value and records provenance', async () => {
+    const previousAutomaticMode = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      activeDatabase.customers[0].profileFields.age = 23
+      activeDatabase.customers[0].profileFieldMeta.age = { source: 'MENTOR_CONFIRMED', confirmed: true, updatedAt: '2020-01-01T00:00:00.000Z' }
+      activeDatabase.sourceRecords[0].createdAt = new Date().toISOString()
+      activeDatabase.sourceRecords[0].rawText = '客户今年24岁'
+      const repository = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'age', value: 24, display_text: '客户目前24岁', source_excerpt: '客户今年24岁', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'OBJECTIVE_RECORD', verification_status: 'SOURCE_SUPPORTED', confidence: 0.98, locator: { paragraph_index: 0 } }])
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+      expect(activeDatabase.customers[0].profileFields.age).toBe(24)
+      expect(activeDatabase.customers[0].profileFieldMeta.age).toMatchObject({ source: 'AI_EXTRACTED', confirmed: false })
+      expect(activeDatabase.profileChanges).toHaveLength(1)
+      expect(activeDatabase.profileChanges[0]).toMatchObject({ field: 'age', oldValue: 23, newValue: 24 })
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomaticMode
+    }
+  })
+
+  it('does not let an older current-state task overwrite the latest value', async () => {
+    const previousAutomaticMode = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      activeDatabase.customers[0].profileFields.age = 24
+      activeDatabase.customers[0].profileFieldMeta.age = { source: 'AI_EXTRACTED', confirmed: false, updatedAt: new Date().toISOString() }
+      activeDatabase.sourceRecords[0].createdAt = '2020-01-01T00:00:00.000Z'
+      const repository = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'age', value: 23, display_text: '客户23岁', source_excerpt: '客户23岁', confidence: 0.98, locator: { paragraph_index: 0 } }])
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+      expect(activeDatabase.customers[0].profileFields.age).toBe(24)
+      expect(activeDatabase.profileChanges).toHaveLength(0)
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomaticMode
+    }
+  })
+
+  it('writes unknown low-risk information to the independent supplementary field and blocks sensitive fallback', async () => {
+    const previousAutomaticMode = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      activeDatabase.sourceRecords[0].rawText = '客户希望把生活节奏放慢。客户曾遭受严重暴力。'
+      const repository = setupRepository(async () => [
+        { evidence_type: 'SELF_MEANING', semantic_kind: 'OTHER', field_key: '', value: '希望把生活节奏放慢', display_text: '客户希望把生活节奏放慢', source_excerpt: '客户希望把生活节奏放慢', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.88, locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'OTHER', field_key: '', value: '曾遭受严重暴力', display_text: '客户曾遭受严重暴力', source_excerpt: '客户曾遭受严重暴力', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', privacy_level: 'HIGH', locator: { paragraph_index: 0 } },
+      ])
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+      expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(1)
+      expect(activeDatabase.customers[0].supplementaryItems[0]).toMatchObject({ text: '客户希望把生活节奏放慢', confirmed: false, status: 'PENDING_REVIEW' })
+      expect(activeDatabase.customers[0].supplementaryItems.some((item) => item.text.includes('暴力'))).toBe(false)
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomaticMode
+    }
+  })
 })
