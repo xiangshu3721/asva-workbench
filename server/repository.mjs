@@ -661,6 +661,7 @@ export class FeishuRepository {
   }
 
   async recoverAutomaticProcessing() {
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
     if (this.autoProcessingRecoveryRunning) return
     this.autoProcessingRecoveryRunning = true
     try {
@@ -676,6 +677,7 @@ export class FeishuRepository {
   }
 
   async queueAutomaticCustomerProfile(actorId, customerId, rawText, reason) {
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
     const normalizedText = normalizeSourceRawText(rawText)
     if (!normalizedText) return { status: 'NOT_REQUIRED' }
     const sourceOperationId = stableOperationId(`${customerId}:${contentHash(normalizedText)}`, 'AUTO-SOURCE')

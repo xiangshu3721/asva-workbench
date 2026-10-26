@@ -1,7 +1,25 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { config } from './config.mjs'
 import { FeishuRepository } from './repository.mjs'
 
 describe('automatic customer profile processing', () => {
+  const originalEnabled = config.features.automaticProfileArchiving
+
+  beforeEach(() => { config.features.automaticProfileArchiving = true })
+  afterEach(() => { config.features.automaticProfileArchiving = originalEnabled })
+
+  it('does not create a source or start recovery when automatic archiving is disabled', async () => {
+    config.features.automaticProfileArchiving = false
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.createSource = vi.fn()
+    repository.startAutomaticProcessingRecovery = vi.fn()
+
+    await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-OFF', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'DISABLED' })
+    expect(repository.createSource).not.toHaveBeenCalled()
+    expect(repository.startAutomaticProcessingRecovery).not.toHaveBeenCalled()
+  })
+
   it('queues saved customer text with a stable content operation and schedules background processing', async () => {
     const repository = new FeishuRepository({ authRepository: {} })
     const created = []

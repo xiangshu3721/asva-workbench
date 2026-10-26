@@ -689,13 +689,16 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const displaySections = [...sections, ...[...new Set(provisionalItems.map((item) => item.sectionTitle))].filter((title) => !sections.some((section) => section.title === title)).map((title) => ({ title, emptyLabel: '待补充', items: [] }))]
   const lifeEvents = materialization?.lifeEvents || []
   const rawNotes = materialization?.rawNotes || ''
-  const itemCount = displaySections.reduce((count, section) => count + section.items.length + provisionalForSection(section.title).length, 0) + lifeEvents.length + (rawNotes ? 1 : 0)
+  const visibleSectionItemCount = displaySections.reduce((count, section) => count + section.items.filter((item) => item.text.trim()).length + provisionalForSection(section.title).filter((item) => item.text.trim()).length, 0)
+  const itemCount = visibleSectionItemCount + lifeEvents.length + (rawNotes ? 1 : 0)
+  const hasBaseProfileFields = Object.values(hydratedCustomer.profileFields || {}).some((value) => detailProfileText(value).trim())
+  const hasDisplayContent = itemCount > 0 || hasBaseProfileFields
   const showInitialLoading = loading && !profile
   const fieldItems = displaySections.flatMap((section) => section.items)
   const hasConfirmed = fieldItems.some((item) => ['已确认', '人工已确认', 'AI提取 · 人工确认'].includes(item.statusLabel || ''))
   const hasEntered = fieldItems.some((item) => item.statusLabel === '已录入') || Boolean(rawNotes)
   const hasProvisional = provisionalItems.length > 0
-  const coverageLabel = showInitialLoading ? '正在读取档案' : error && !profile ? '档案读取失败' : !profile ? '展开后读取' : itemCount === 0 ? '暂无可展示资料' : hasProvisional && (hasConfirmed || hasEntered) ? '已确认资料与待核实资料' : hasProvisional ? '待核实资料' : hasConfirmed ? '已确认资料' : hasEntered ? '已录入资料' : '暂无可展示资料'
+  const coverageLabel = showInitialLoading ? '正在读取档案' : error && !profile ? '档案读取失败' : !profile ? '展开后读取' : !hasDisplayContent ? '暂无可展示资料' : hasProvisional && (hasConfirmed || hasEntered) ? '已确认资料与待核实资料' : hasProvisional ? '待核实资料' : hasConfirmed ? '已确认资料' : hasEntered ? '已录入资料' : '已录入资料'
   const autoStatusMessage = profile?.autoOrganizeStatus === 'PROCESSING'
     ? 'AI正在整理资料，原始资料已保存。'
     : profile?.autoOrganizeStatus === 'FAILED'
@@ -712,7 +715,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const profileContent = showInitialLoading ? <p className="detail-empty-line">正在读取该客户的确认档案…</p>
     : error && !profile ? <div className="detail-empty-line"><p>档案暂时读取失败，客户基础资料不受影响。</p><button className="secondary-button small" type="button" onClick={() => void onLoad()}>重新读取档案</button></div>
       : !profile ? <p className="detail-empty-line">展开后按需读取该客户的确认档案。</p>
-        : itemCount === 0 ? <p className="detail-empty-line">暂无可展示资料。已保存的原始资料仍可在“原始资料与查看依据”中查看。</p>
+          : !hasDisplayContent ? <p className="detail-empty-line">暂无可展示资料。已保存的原始资料仍可在“原始资料与查看依据”中查看。</p>
           : <>
             {rawNotes && <details className="profile-original-notes"><summary>查看原始资料</summary><p>{sanitizeUserVisibleText(rawNotes)}</p></details>}
             <div className="portrait-grid">

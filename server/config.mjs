@@ -55,6 +55,7 @@ export const config = {
   corsAllowedOrigins,
   features: {
     externalAppointment: value('FEATURE_EXTERNAL_APPOINTMENT', 'false') === 'true',
+    automaticProfileArchiving: value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING', 'false') === 'true',
   },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),

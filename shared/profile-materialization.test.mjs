@@ -55,6 +55,27 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.coverage.percentage).toBeGreaterThan(0)
   })
 
+  it('keeps raw notes separate from confirmed facts and labels profile metadata', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        notes: '客户正在考虑职业转型。',
+        profileFields: { occupation: '设计师', current_goal: '探索新的方向', sleep: '一般' },
+        profileFieldMeta: {
+          occupation: { source: 'MENTOR_CONFIRMED', confirmed: true },
+          current_goal: { source: 'AI_INFERENCE', confirmed: false },
+          sleep: { source: 'MENTOR_FACTUAL_INPUT', confirmed: false },
+        },
+      },
+      evidenceItems: [],
+    })
+    const fields = result.sections.flatMap((section) => section.items)
+    expect(result.rawNotes).toBe('客户正在考虑职业转型。')
+    expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
+    expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 待核实' })
+    expect(fields.map((item) => item.text)).not.toContain('客户正在考虑职业转型。')
+  })
+
   it('keeps existing formal profile fields ahead of legacy base-field fallbacks', () => {
     const result = materializeCustomerProfile({
       customer: { profileFields: { current_core_issue: '已确认的当前困扰' }, need: '旧基础字段内容' },
@@ -89,6 +110,15 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
     expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
     expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 待核实' })
+  })
+
+  it('keeps a work location out of the current residence field in the display projection', () => {
+    const result = materializeCustomerProfile({
+      customer: { profileFields: {}, city: '', age: '', gender: '' },
+      evidenceItems: [evidence({ id: 'EVD-WORK-CITY', fieldKey: 'city', semanticKind: 'CURRENT_STATE', standardValue: '杭州', displayText: '工作地点：杭州', sourceExcerpt: '她在杭州工作。' })],
+    })
+    expect(result.sections.find((section) => section.title === 'TA是谁')?.items.map((item) => item.text)).not.toContain('杭州')
+    expect(result.sections.find((section) => section.title === '职业与事业')?.items.map((item) => item.text)).toContain('工作地点：杭州')
   })
 
   it('keeps the real empty state when neither base fields nor profile fields exist', () => {

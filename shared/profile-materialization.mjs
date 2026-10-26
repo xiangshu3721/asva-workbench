@@ -46,8 +46,17 @@ function basis(evidence) {
   return { evidenceId: evidence.id, sourceId: evidence.sourceId, displayText: evidence.displayText, excerpt: evidence.sourceExcerpt }
 }
 
+const WORK_LOCATION_CUES = /工作地点|在[^，。；]{0,12}工作|于[^，。；]{0,12}工作/
+const RESIDENCE_CUES = /现居|居住|住在|生活在|定居|搬到|所在城市/
+
+function isWorkLocationOnlyEvidence(evidence) {
+  if (!evidence || !['city', 'current_city'].includes(evidence.fieldKey)) return false
+  const text = `${evidence.displayText || ''} ${evidence.sourceExcerpt || ''}`
+  return WORK_LOCATION_CUES.test(text) && !RESIDENCE_CUES.test(text)
+}
+
 function fieldEvidence(evidenceItems, field) {
-  return evidenceItems.filter((item) => confirmed(item) && item.fieldKey === field)
+  return evidenceItems.filter((item) => confirmed(item) && item.fieldKey === field && !isWorkLocationOnlyEvidence(item))
 }
 
 function fieldStatusLabel(fieldMeta, evidenceItems) {
@@ -116,6 +125,7 @@ function provisionalSourceLabel(evidence) {
 }
 
 function sectionTitleForEvidence(evidence) {
+  if (isWorkLocationOnlyEvidence(evidence)) return '职业与事业'
   const direct = SECTION_DEFINITIONS.find((definition) => definition.fields.includes(evidence?.fieldKey))
   if (direct) return direct.title
   if (evidence?.semanticKind === 'RELATIONSHIP') return '家庭与关系'
@@ -261,7 +271,7 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
     const fieldItems = definition.fields.map((field) => itemFromField(field, fields[field], evidenceItems, fieldMeta[field])).filter(Boolean)
     let evidenceItemsForSection = []
     if (definition.title === '家庭与关系') evidenceItemsForSection = confirmedEvidence.filter((item) => item.semanticKind === 'RELATIONSHIP' && !definition.fields.includes(item.fieldKey))
-    if (definition.title === '职业与事业') evidenceItemsForSection = confirmedEvidence.filter((item) => item.semanticKind === 'EVENT' && CAREER_TERMS.test(evidenceText(item)))
+    if (definition.title === '职业与事业') evidenceItemsForSection = confirmedEvidence.filter((item) => (item.semanticKind === 'EVENT' && CAREER_TERMS.test(evidenceText(item))) || isWorkLocationOnlyEvidence(item))
     if (definition.title === '兴趣偏好') evidenceItemsForSection = confirmedEvidence.filter((item) => (item.semanticKind === 'PREFERENCE' || (item.semanticKind === 'EVENT' && INTEREST_TERMS.test(evidenceText(item)))) && !definition.fields.includes(item.fieldKey))
     if (definition.title === '性格特点') evidenceItemsForSection = confirmedEvidence.filter((item) => (item.evidenceType === 'SELF_MEANING' || item.evidenceType === 'OBSERVATION') && (SUBJECTIVE_FIELDS.has(item.fieldKey) || /性格|沟通|决策|优势|卡点|表达/.test(evidenceText(item))))
     if (definition.title === '核心价值观') evidenceItemsForSection = confirmedEvidence.filter((item) => VALUE_FIELDS.has(item.fieldKey) || (item.evidenceType === 'SELF_MEANING' && /价值|重要|意义|成长|自由|成功|幸福/.test(evidenceText(item))))
