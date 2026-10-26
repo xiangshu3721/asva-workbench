@@ -61,6 +61,12 @@ function fieldEvidence(evidenceItems, field) {
 
 function fieldStatusLabel(fieldMeta, evidenceItems) {
   const source = fieldMeta?.source
+  if (fieldMeta?.confirmed === false) {
+    if (source === 'AI_INFERENCE') return 'AI推断 · 待验证'
+    if (source === 'MENTOR_OBSERVATION') return '导师观察 · 待核实'
+    if (source === 'MENTOR_FACTUAL_INPUT') return '导师记录 · 待核实'
+    return '待核实'
+  }
   if (evidenceItems.length) {
     if (source === 'AI_EXTRACTED_CONFIRMED') return 'AI提取 · 人工确认'
     if (['ADMIN_CONFIRMED', 'MENTOR_CONFIRMED', 'USER_EXPLICIT'].includes(source)) return '人工已确认'
@@ -80,7 +86,7 @@ function fieldStatusLabel(fieldMeta, evidenceItems) {
 
 function itemFromField(field, value, evidenceItems, fieldMeta) {
   if (!present(value)) return null
-  const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
+  const evidence = evidenceItems.filter((item) => item.fieldKey === field && (confirmed(item) || fieldMeta?.evidenceId === item.id)).slice(0, 4)
   return { label: FIELD_LABELS[field] || field, text: displayValue(value), statusLabel: fieldStatusLabel(fieldMeta, evidence), evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }
 }
 
@@ -258,10 +264,22 @@ function coverageFor(customer, evidenceItems) {
 
 export function materializeCustomerProfile({ customer, evidenceItems = [], summaryMeta = null }) {
   const confirmedEvidence = evidenceItems.filter(confirmed)
-  const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).map(provisionalItemFromEvidence))
   const fingerprint = summaryInputFingerprint({ customer, evidenceItems })
   const fields = materializationFields(customer)
   const fieldMeta = customer?.profileFieldMeta && typeof customer.profileFieldMeta === 'object' && !Array.isArray(customer.profileFieldMeta) ? customer.profileFieldMeta : {}
+  const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).filter((item) => fieldMeta[item.fieldKey]?.evidenceId !== item.id).map(provisionalItemFromEvidence))
+  const supplementaryItems = Array.isArray(customer?.supplementaryItems) ? customer.supplementaryItems.filter((item) => present(item?.text)).map((item) => ({
+    id: String(item.id || hashText(`${item.sourceRecordId || ''}:${item.text}`)),
+    label: '客户补充信息',
+    text: String(item.text),
+    statusLabel: item.confirmed === true ? '已确认' : item.source === 'AI_INFERENCE' ? 'AI推断 · 待验证' : '待核实',
+    evidenceIds: item.evidenceId ? [item.evidenceId] : [],
+    basis: item.evidenceId ? [{ evidenceId: item.evidenceId, sourceId: item.sourceRecordId || '', displayText: String(item.text), excerpt: String(item.text) }] : [],
+    source: item.source || 'AI_EXTRACTED',
+    confirmed: item.confirmed === true,
+    sourceRecordId: item.sourceRecordId || '',
+    evidenceId: item.evidenceId || '',
+  })) : []
   const currentSnapshot = Object.fromEntries(Object.entries(fields).filter(([, value]) => present(value)).map(([field, value]) => {
     const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
     return [field, { value, evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }]
@@ -281,5 +299,6 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
   })
 
   const lifeEvents = confirmedEvidence.filter((item) => item.semanticKind === 'EVENT').map((item) => ({ id: item.id, title: item.displayText, detail: item.sourceExcerpt, occurredAt: item.occurredAt || null, evidenceIds: [item.id], basis: [basis(item)] }))
-  return { schemaVersion: 'profile-materialization-v2', currentSnapshot, sections, provisionalItems, lifeEvents, rawNotes: present(customer?.notes) ? String(customer.notes) : '', coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
+  if (supplementaryItems.length) sections.push({ title: '客户补充信息', emptyLabel: '暂无补充信息', items: supplementaryItems })
+  return { schemaVersion: 'profile-materialization-v2', currentSnapshot, sections, provisionalItems, supplementaryItems, lifeEvents, rawNotes: present(customer?.notes) ? String(customer.notes) : '', coverage: coverageFor(customer, evidenceItems), aiSummaryStatus: summaryStatus({ customer, confirmedEvidence, summaryMeta, fingerprint }), aiSummaryFingerprint: fingerprint }
 }

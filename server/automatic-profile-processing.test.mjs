@@ -55,4 +55,16 @@ describe('automatic customer profile processing', () => {
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-3', '   ', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'NOT_REQUIRED' })
     expect(repository.createSource).not.toHaveBeenCalled()
   })
+
+  it('returns before automatic source work starts, avoiding nested customer-queue waits', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    let release
+    repository.queueAutomaticCustomerProfile = vi.fn(() => new Promise((resolve) => { release = resolve }))
+    const result = repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
+    expect(result).toEqual({ status: 'QUEUED' })
+    expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
+    release({ status: 'QUEUED', sourceId: 'SRC-AUTO-4' })
+  })
 })
