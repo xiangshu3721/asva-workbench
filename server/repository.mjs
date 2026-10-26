@@ -309,7 +309,12 @@ function mentorVisibleEvidence(evidence, source) {
   const meta = evidence?.privacyMeta || source?.privacyMeta || {}
   const policy = resolvePrivacyPolicy({ ...privacy, currentRole: 'MENTOR' })
   if (policy.canViewRaw) return evidence
-  return { ...evidence, sourceExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', displayText: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || evidence.mentorSafeText || privacySafeText(meta)) : (evidence.mentorSafeText || privacySafeText(meta)), standardValue: policy.canPromoteToProfile ? evidence.standardValue : undefined, mentorServiceDetail: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || '') : '', necessaryExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', salesSafeSummary: meta.salesSafeSummary || '', privacyPolicy: policy }
+  const sourceHighSensitive = source?.privacyLevel === 'HIGH_SENSITIVE'
+  const safeMeta = sourceHighSensitive ? (source?.privacyMeta || {}) : meta
+  const safeText = sourceHighSensitive ? privacySafeText(safeMeta) : (evidence.mentorSafeText || privacySafeText(meta))
+  const serviceDetail = sourceHighSensitive ? (source?.mentorServiceDetail || safeMeta.mentorServiceDetail || safeText) : (evidence.mentorServiceDetail || meta.mentorServiceDetail || evidence.mentorSafeText || privacySafeText(meta))
+  const necessaryExcerpt = sourceHighSensitive ? (source?.necessaryExcerpt || safeMeta.necessaryExcerpt || '') : (evidence.necessaryExcerpt || meta.necessaryExcerpt || '')
+  return { ...evidence, sourceExcerpt: policy.canViewNecessaryExcerpt ? necessaryExcerpt : '', displayText: policy.canViewServiceDetail ? serviceDetail : safeText, standardValue: policy.canPromoteToProfile ? evidence.standardValue : undefined, mentorServiceDetail: policy.canViewServiceDetail ? serviceDetail : '', necessaryExcerpt: policy.canViewNecessaryExcerpt ? necessaryExcerpt : '', salesSafeSummary: safeMeta.salesSafeSummary || '', privacyPolicy: policy }
 }
 
 function profileMaterializationEvidence({ evidenceItems = [], sourceRecords = [], customer, actor }) {
