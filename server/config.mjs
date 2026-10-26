@@ -33,6 +33,12 @@ const isStaging = appEnv === 'staging'
 const productionWriteProtection = value('PRODUCTION_WRITE_PROTECTION', 'OFF')
 const productionTableIds = new Set(['tblUrXu4ivBGJ7zV', 'tblFKkM7fPTqi8Zx', 'tblFGmyJi3RJQ7bM', 'tblojNfk4bVM5KxH', 'tblLG2SFwYpKgiMQ', 'tblTH3OmBuzUsBVu'])
 const stagingRequiredTableKeys = ['customers', 'staff', 'profileChanges', 'sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']
+const automaticProfileArchivingMode = value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE', 'off').toLowerCase()
+const automaticProfileArchivingEnabledAt = value('AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
+const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
+  .split(/[\s,]+/)
+  .map((id) => id.trim())
+  .filter(Boolean))
 const frontendOrigin = value('ASVA_FRONTEND_ORIGIN', 'https://xiangshu3721.github.io')
 const corsAllowedOrigins = (value('CORS_ALLOWED_ORIGINS') || [frontendOrigin, 'https://xiangshu3721.github.io', 'http://localhost:5173', 'http://127.0.0.1:5173'].join(','))
   .split(',')
@@ -56,6 +62,10 @@ export const config = {
   features: {
     externalAppointment: value('FEATURE_EXTERNAL_APPOINTMENT', 'false') === 'true',
     automaticProfileArchiving: value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING', 'false') === 'true',
+    automaticProfileArchivingMode,
+    automaticProfileArchivingEnabledAt,
+    automaticProfileArchivingCanary: value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY', 'false') === 'true',
+    automaticProfileCanaryCustomerIds,
   },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),
@@ -84,6 +94,22 @@ export const config = {
       safetyAssessments: value('FEISHU_SAFETY_ASSESSMENTS_TABLE_ID'),
     },
   },
+}
+
+if (config.appEnv === 'production') {
+  if (!['off', 'canary', 'production'].includes(config.features.automaticProfileArchivingMode)) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_MODE_INVALID')
+  if (!config.features.automaticProfileArchiving) {
+    if (config.features.automaticProfileArchivingMode !== 'off' || config.features.automaticProfileArchivingCanary || config.features.automaticProfileCanaryCustomerIds.size || config.features.automaticProfileArchivingEnabledAt) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_DISABLED_CONFIG_INVALID')
+  } else if (config.features.automaticProfileArchivingMode === 'canary') {
+    if (!config.features.automaticProfileArchivingCanary) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_CANARY_REQUIRED')
+    if (!config.features.automaticProfileCanaryCustomerIds.size) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_CANARY_ALLOWLIST_REQUIRED')
+    if (config.features.automaticProfileArchivingEnabledAt) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_CANARY_ENABLE_TIME_FORBIDDEN')
+  } else if (config.features.automaticProfileArchivingMode === 'production') {
+    if (!config.features.automaticProfileArchivingEnabledAt || Number.isNaN(Date.parse(config.features.automaticProfileArchivingEnabledAt))) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_ENABLE_TIME_REQUIRED')
+    if (config.features.automaticProfileArchivingCanary || config.features.automaticProfileCanaryCustomerIds.size) throw new Error('PRODUCTION_AUTOMATIC_PROFILE_FORMAL_MODE_CANARY_CONFIG_FORBIDDEN')
+  } else {
+    throw new Error('PRODUCTION_AUTOMATIC_PROFILE_MODE_REQUIRED')
+  }
 }
 
 if (config.appEnv === 'staging') {
