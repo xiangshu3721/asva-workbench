@@ -655,8 +655,15 @@ function isAutomaticProfileSource(source) {
 
 function automaticProfileArchivingAllowedForCustomer(customerId) {
   if (!config.features.automaticProfileArchiving) return false
-  if (!config.features.automaticProfileArchivingCanary) return true
-  return config.features.automaticProfileCanaryCustomerIds.has(text(customerId))
+  if (config.features.automaticProfileArchivingMode === 'canary' || config.features.automaticProfileArchivingCanary) return config.features.automaticProfileCanaryCustomerIds.has(text(customerId))
+  return config.features.automaticProfileArchivingMode === 'production' || config.appEnv !== 'production'
+}
+
+function automaticProfileEventAllowed(eventAt) {
+  if (config.appEnv !== 'production' || config.features.automaticProfileArchivingMode !== 'production') return true
+  const enabledAt = Date.parse(config.features.automaticProfileArchivingEnabledAt || '')
+  const occurredAt = Date.parse(eventAt || '')
+  return Number.isFinite(enabledAt) && Number.isFinite(occurredAt) && occurredAt >= enabledAt
 }
 
 function automaticProfileStatus(sources, evidenceItems, customerId) {
@@ -760,7 +767,7 @@ export class FeishuRepository {
   }
 
   scheduleAutomaticCustomerProfile(actorId, customerId, rawText, reason) {
-    if (!automaticProfileArchivingAllowedForCustomer(customerId)) return { status: 'DISABLED' }
+    if (!automaticProfileArchivingAllowedForCustomer(customerId) || !automaticProfileEventAllowed(now())) return { status: 'DISABLED' }
     const normalizedText = normalizeSourceRawText(rawText)
     if (!normalizedText) return { status: 'NOT_REQUIRED' }
     const pendingKey = `${customerId}:${contentHash(normalizedText)}`
@@ -793,7 +800,7 @@ export class FeishuRepository {
     try {
       const database = await this.load({ force: true })
       const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
-      for (const customer of database.customers.filter((item) => automaticProfileArchivingAllowedForCustomer(item.id) && item.automaticProfilePending?.contentHash).slice(0, 10)) {
+      for (const customer of database.customers.filter((item) => automaticProfileArchivingAllowedForCustomer(item.id) && automaticProfileEventAllowed(item.automaticProfilePending?.createdAt) && item.automaticProfilePending?.contentHash).slice(0, 10)) {
         const pending = customer.automaticProfilePending
         const actorId = database.staff.some((item) => item.id === pending.actorId && item.status === 'ACTIVE') ? pending.actorId : fallbackActor
         const recoveredText = automaticProfileTextFromCustomer(customer)
@@ -803,7 +810,7 @@ export class FeishuRepository {
         }
         if (actorId) this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
       }
-      for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && (['UPLOADED', 'FAILED'].includes(item.processingStatus) || (item.processingStatus === 'PROCESSING' && isStaleProcessing(item)))).slice(0, 10)) {
+      for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && automaticProfileEventAllowed(item.createdAt || item.uploadedAt || item.occurredAt || item.processingStartedAt) && (['UPLOADED', 'FAILED'].includes(item.processingStatus) || (item.processingStatus === 'PROCESSING' && isStaleProcessing(item)))).slice(0, 10)) {
         const actorId = database.staff.some((item) => item.id === source.uploadedBy && item.status === 'ACTIVE') ? source.uploadedBy : fallbackActor
         if (actorId) this.scheduleAutomaticProcessing(actorId, source.id)
       }
@@ -1782,6 +1789,10 @@ export class FeishuRepository {
     if (!source || !sourceRow) throw new Error('资料不存在')
     if (isAutomaticProfileSource(source) && !automaticProfileArchivingAllowedForCustomer(source.customerId)) {
       this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'DISABLED', 'AUTOMATIC_PROFILE_CANARY_CUSTOMER_NOT_ALLOWED')
+      return this.sourceDetail(actorId, sourceId)
+    }
+    if (isAutomaticProfileSource(source) && !automaticProfileEventAllowed(source.createdAt || source.uploadedAt || source.occurredAt || source.processingStartedAt)) {
+      this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'DISABLED', 'AUTOMATIC_PROFILE_EVENT_BEFORE_ENABLE_TIME')
       return this.sourceDetail(actorId, sourceId)
     }
     const dialogueContext = parseDialogueContext(source.notes)

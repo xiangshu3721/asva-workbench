@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, deployProduction, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
 
 function validProductionValues() {
-  const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'false' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
+  const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'false' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'off' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
   values.FEISHU_AUTH_CREDENTIALS_TABLE_ID = 'value-FEISHU_AUTH_CREDENTIALS_TABLE_ID'
   return values
 }
@@ -40,10 +40,23 @@ describe('CloudBase production deployment preflight', () => {
     const values = validProductionValues()
     values.ASVA_DEPLOY_MODE = 'canary'
     values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING = 'true'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE = 'canary'
     values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY = 'true'
     expect(() => validateProductionEnv(values)).toThrow(/AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS/)
     values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS = 'CUS-SYNTH-1,CUS-SYNTH-2'
     expect(validateProductionEnv(values)).toMatchObject({ deployMode: 'canary', automaticProfileCanaryCustomerCount: 2 })
+  })
+
+  it('requires a post-enable timestamp and rejects Canary settings in formal production mode', () => {
+    const values = validProductionValues()
+    values.ASVA_DEPLOY_MODE = 'production'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING = 'true'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE = 'production'
+    expect(() => validateProductionEnv(values)).toThrow(/AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT/)
+    values.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT = '2026-10-26T15:00:00.000Z'
+    expect(validateProductionEnv(values)).toMatchObject({ deployMode: 'production', automaticProfileArchivingMode: 'production' })
+    values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS = 'CUS-SYNTH-1'
+    expect(() => validateProductionEnv(values)).toThrow(/Canary 配置/)
   })
 
   it('passes every explicit table ID through and forces automatic archiving off', () => {
@@ -54,6 +67,8 @@ describe('CloudBase production deployment preflight', () => {
     expect(env.FEISHU_PROFILE_CHANGES_TABLE_ID).toBe(values.FEISHU_PROFILE_CHANGES_TABLE_ID)
     expect(env.FEISHU_ENROLLMENTS_TABLE_ID).toBe('tbl-enrollments-explicit')
     expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING).toBe('false')
+    expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE).toBe('off')
+    expect(env.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT).toBe('')
     expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY).toBe('false')
     expect(env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS).toBe('')
   })

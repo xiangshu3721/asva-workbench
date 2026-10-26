@@ -4,12 +4,15 @@ import { FeishuRepository } from './repository.mjs'
 import { contentHash } from '../shared/evidence-contract.mjs'
 
 describe('automatic customer profile processing', () => {
+  const originalAppEnv = config.appEnv
   const originalEnabled = config.features.automaticProfileArchiving
+  const originalMode = config.features.automaticProfileArchivingMode
+  const originalEnabledAt = config.features.automaticProfileArchivingEnabledAt
   const originalCanary = config.features.automaticProfileArchivingCanary
   const originalAllowlist = config.features.automaticProfileCanaryCustomerIds
 
-  beforeEach(() => { config.features.automaticProfileArchiving = true; config.features.automaticProfileArchivingCanary = false; config.features.automaticProfileCanaryCustomerIds = new Set() })
-  afterEach(() => { config.features.automaticProfileArchiving = originalEnabled; config.features.automaticProfileArchivingCanary = originalCanary; config.features.automaticProfileCanaryCustomerIds = originalAllowlist })
+  beforeEach(() => { config.features.automaticProfileArchiving = true; config.features.automaticProfileArchivingMode = 'off'; config.features.automaticProfileArchivingEnabledAt = ''; config.features.automaticProfileArchivingCanary = false; config.features.automaticProfileCanaryCustomerIds = new Set() })
+  afterEach(() => { config.appEnv = originalAppEnv; config.features.automaticProfileArchiving = originalEnabled; config.features.automaticProfileArchivingMode = originalMode; config.features.automaticProfileArchivingEnabledAt = originalEnabledAt; config.features.automaticProfileArchivingCanary = originalCanary; config.features.automaticProfileCanaryCustomerIds = originalAllowlist })
 
   it('does not create a source or start recovery when automatic archiving is disabled', async () => {
     config.features.automaticProfileArchiving = false
@@ -60,6 +63,7 @@ describe('automatic customer profile processing', () => {
   })
 
   it('fails closed for customers outside the Canary allowlist', async () => {
+    config.features.automaticProfileArchivingMode = 'canary'
     config.features.automaticProfileArchivingCanary = true
     config.features.automaticProfileCanaryCustomerIds = new Set(['CUS-AUTO-ALLOWED'])
     const repository = new FeishuRepository({ authRepository: {} })
@@ -73,6 +77,7 @@ describe('automatic customer profile processing', () => {
   })
 
   it('recovers only allowlisted pending customers and sources in Canary mode', async () => {
+    config.features.automaticProfileArchivingMode = 'canary'
     config.features.automaticProfileArchivingCanary = true
     config.features.automaticProfileCanaryCustomerIds = new Set(['CUS-AUTO-ALLOWED'])
     const repository = new FeishuRepository({ authRepository: {} })
@@ -131,5 +136,24 @@ describe('automatic customer profile processing', () => {
 
     expect(repository.scheduleAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-LONG', longText, 'CUSTOMER_SAVE')
     expect(JSON.stringify(pending)).not.toContain(longText)
+  })
+
+  it('does not recover pending automatic work created before formal enable time', async () => {
+    config.appEnv = 'production'
+    config.features.automaticProfileArchivingMode = 'production'
+    config.features.automaticProfileArchivingEnabledAt = '2026-10-26T15:00:00.000Z'
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-AUTO-OLD', notes: '旧资料', need: '', helpExpectation: '', goal: '', automaticProfilePending: { contentHash: contentHash('旧资料'), actorId: 'ADMIN-1', reason: 'RECOVERY', createdAt: '2026-10-26T14:59:59.000Z' } }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [{ id: 'SRC-AUTO-OLD', customerId: 'CUS-AUTO-OLD', processingStatus: 'UPLOADED', uploadedBy: 'ADMIN-1', createdAt: '2026-10-26T14:59:59.000Z' }],
+    }))
+    repository.scheduleAutomaticCustomerProfile = vi.fn()
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    await repository.recoverAutomaticProcessing()
+
+    expect(repository.scheduleAutomaticCustomerProfile).not.toHaveBeenCalled()
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
   })
 })

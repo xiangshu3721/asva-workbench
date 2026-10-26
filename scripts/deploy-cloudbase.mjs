@@ -30,6 +30,7 @@ export const PRODUCTION_REQUIRED_KEYS = [
   'DATA_MODE',
   'AUTH_MODE',
   'FEATURE_AUTOMATIC_PROFILE_ARCHIVING',
+  'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE',
   'DEEPSEEK_API_KEY',
   'FEISHU_APP_ID',
   'FEISHU_APP_SECRET',
@@ -53,16 +54,25 @@ export function validateProductionEnv(values, envPath = '') {
   }
   if (!['ADMIN_CODE', 'PASSWORD'].includes(values.AUTH_MODE)) throw new Error('AUTH_MODE 必须明确设置为 ADMIN_CODE 或 PASSWORD')
   const deployMode = values.ASVA_DEPLOY_MODE || 'normal'
+  const automaticProfileMode = String(values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE || '').toLowerCase()
+  const automaticProfileEnabledAt = String(values.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT || '').trim()
   const canaryEnabled = values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY === 'true'
   const canaryCustomerIds = String(values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
-  if (!['normal', 'canary'].includes(deployMode)) throw new Error('ASVA_DEPLOY_MODE 必须是 normal 或 canary')
+  if (!['normal', 'canary', 'production'].includes(deployMode)) throw new Error('ASVA_DEPLOY_MODE 必须是 normal、canary 或 production')
   if (deployMode === 'normal') {
     if (values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING !== 'false') throw new Error('FEATURE_AUTOMATIC_PROFILE_ARCHIVING 必须显式设置为 false')
-    if (canaryEnabled || canaryCustomerIds.length) throw new Error('normal 部署不得携带自动归档 Canary 配置')
-  } else {
+    if (automaticProfileMode !== 'off' || automaticProfileEnabledAt || canaryEnabled || canaryCustomerIds.length) throw new Error('normal 部署不得携带自动归档运行配置')
+  } else if (deployMode === 'canary') {
     if (values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING !== 'true') throw new Error('canary 部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING=true')
+    if (automaticProfileMode !== 'canary') throw new Error('canary 部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE=canary')
     if (!canaryEnabled) throw new Error('canary 部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY=true')
     if (!canaryCustomerIds.length) throw new Error('canary 部署必须配置 AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS')
+    if (automaticProfileEnabledAt) throw new Error('canary 部署不得设置 AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
+  } else {
+    if (values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING !== 'true') throw new Error('production 自动归档部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING=true')
+    if (automaticProfileMode !== 'production') throw new Error('production 自动归档部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE=production')
+    if (!automaticProfileEnabledAt || Number.isNaN(Date.parse(automaticProfileEnabledAt))) throw new Error('production 自动归档部署必须设置有效的 AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
+    if (canaryEnabled || canaryCustomerIds.length) throw new Error('production 自动归档部署不得携带 Canary 配置')
   }
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
@@ -74,6 +84,8 @@ export function validateProductionEnv(values, envPath = '') {
     authMode: values.AUTH_MODE,
     deployMode,
     automaticProfileArchiving: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING,
+    automaticProfileArchivingMode: automaticProfileMode,
+    automaticProfileArchivingEnabledAt: automaticProfileEnabledAt || '',
     automaticProfileArchivingCanary: canaryEnabled,
     automaticProfileCanaryCustomerCount: canaryCustomerIds.length,
     requiredKeyCount: requiredKeys.length,
@@ -113,6 +125,8 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ALLOW_DEV_OTP: 'false',
     FEATURE_EXTERNAL_APPOINTMENT: 'false',
     FEATURE_AUTOMATIC_PROFILE_ARCHIVING: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING,
+    FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE,
+    AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT: values.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT || '',
     FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY || 'false',
     AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS: values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS || '',
     ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
