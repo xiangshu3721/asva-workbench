@@ -5,9 +5,11 @@ import { contentHash } from '../shared/evidence-contract.mjs'
 
 describe('automatic customer profile processing', () => {
   const originalEnabled = config.features.automaticProfileArchiving
+  const originalCanary = config.features.automaticProfileArchivingCanary
+  const originalAllowlist = config.features.automaticProfileCanaryCustomerIds
 
-  beforeEach(() => { config.features.automaticProfileArchiving = true })
-  afterEach(() => { config.features.automaticProfileArchiving = originalEnabled })
+  beforeEach(() => { config.features.automaticProfileArchiving = true; config.features.automaticProfileArchivingCanary = false; config.features.automaticProfileCanaryCustomerIds = new Set() })
+  afterEach(() => { config.features.automaticProfileArchiving = originalEnabled; config.features.automaticProfileArchivingCanary = originalCanary; config.features.automaticProfileCanaryCustomerIds = originalAllowlist })
 
   it('does not create a source or start recovery when automatic archiving is disabled', async () => {
     config.features.automaticProfileArchiving = false
@@ -55,6 +57,45 @@ describe('automatic customer profile processing', () => {
 
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-3', '   ', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'NOT_REQUIRED' })
     expect(repository.createSource).not.toHaveBeenCalled()
+  })
+
+  it('fails closed for customers outside the Canary allowlist', async () => {
+    config.features.automaticProfileArchivingCanary = true
+    config.features.automaticProfileCanaryCustomerIds = new Set(['CUS-AUTO-ALLOWED'])
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.createSource = vi.fn()
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
+    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'DISABLED' })
+    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'QUEUED' })
+    expect(repository.createSource).not.toHaveBeenCalled()
+  })
+
+  it('recovers only allowlisted pending customers and sources in Canary mode', async () => {
+    config.features.automaticProfileArchivingCanary = true
+    config.features.automaticProfileCanaryCustomerIds = new Set(['CUS-AUTO-ALLOWED'])
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [
+        { id: 'CUS-AUTO-ALLOWED', notes: '允许恢复', need: '', helpExpectation: '', goal: '', automaticProfilePending: { contentHash: contentHash('允许恢复'), actorId: 'ADMIN-1', reason: 'RECOVERY' } },
+        { id: 'CUS-AUTO-BLOCKED', notes: '禁止恢复', need: '', helpExpectation: '', goal: '', automaticProfilePending: { contentHash: contentHash('禁止恢复'), actorId: 'ADMIN-1', reason: 'RECOVERY' } },
+      ],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [
+        { id: 'SRC-ALLOWED', customerId: 'CUS-AUTO-ALLOWED', processingStatus: 'UPLOADED', uploadedBy: 'ADMIN-1' },
+        { id: 'SRC-BLOCKED', customerId: 'CUS-AUTO-BLOCKED', processingStatus: 'UPLOADED', uploadedBy: 'ADMIN-1' },
+      ],
+    }))
+    repository.scheduleAutomaticCustomerProfile = vi.fn()
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    await repository.recoverAutomaticProcessing()
+
+    expect(repository.scheduleAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-ALLOWED', '允许恢复', 'RECOVERY')
+    expect(repository.scheduleAutomaticCustomerProfile).not.toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-BLOCKED', expect.anything(), expect.anything())
+    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledWith('ADMIN-1', 'SRC-ALLOWED')
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalledWith('ADMIN-1', 'SRC-BLOCKED')
   })
 
   it('returns before automatic source work starts, avoiding nested customer-queue waits', async () => {

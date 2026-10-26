@@ -36,6 +36,16 @@ describe('CloudBase production deployment preflight', () => {
     expect(() => validateProductionEnv(values)).toThrow(/FEATURE_AUTOMATIC_PROFILE_ARCHIVING/)
   })
 
+  it('requires an explicit non-empty allowlist for production Canary mode', () => {
+    const values = validProductionValues()
+    values.ASVA_DEPLOY_MODE = 'canary'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING = 'true'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY = 'true'
+    expect(() => validateProductionEnv(values)).toThrow(/AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS/)
+    values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS = 'CUS-SYNTH-1,CUS-SYNTH-2'
+    expect(validateProductionEnv(values)).toMatchObject({ deployMode: 'canary', automaticProfileCanaryCustomerCount: 2 })
+  })
+
   it('passes every explicit table ID through and forces automatic archiving off', () => {
     const values = validProductionValues()
     values.FEISHU_ENROLLMENTS_TABLE_ID = 'tbl-enrollments-explicit'
@@ -44,5 +54,7 @@ describe('CloudBase production deployment preflight', () => {
     expect(env.FEISHU_PROFILE_CHANGES_TABLE_ID).toBe(values.FEISHU_PROFILE_CHANGES_TABLE_ID)
     expect(env.FEISHU_ENROLLMENTS_TABLE_ID).toBe('tbl-enrollments-explicit')
     expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING).toBe('false')
+    expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY).toBe('false')
+    expect(env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS).toBe('')
   })
 })

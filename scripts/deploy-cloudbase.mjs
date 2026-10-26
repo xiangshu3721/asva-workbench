@@ -52,7 +52,18 @@ export function validateProductionEnv(values, envPath = '') {
     throw new Error('CloudBase Production 部署必须使用 APP_ENV=production 与 DATA_MODE=production 的显式配置文件')
   }
   if (!['ADMIN_CODE', 'PASSWORD'].includes(values.AUTH_MODE)) throw new Error('AUTH_MODE 必须明确设置为 ADMIN_CODE 或 PASSWORD')
-  if (values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING !== 'false') throw new Error('FEATURE_AUTOMATIC_PROFILE_ARCHIVING 必须显式设置为 false')
+  const deployMode = values.ASVA_DEPLOY_MODE || 'normal'
+  const canaryEnabled = values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY === 'true'
+  const canaryCustomerIds = String(values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+  if (!['normal', 'canary'].includes(deployMode)) throw new Error('ASVA_DEPLOY_MODE 必须是 normal 或 canary')
+  if (deployMode === 'normal') {
+    if (values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING !== 'false') throw new Error('FEATURE_AUTOMATIC_PROFILE_ARCHIVING 必须显式设置为 false')
+    if (canaryEnabled || canaryCustomerIds.length) throw new Error('normal 部署不得携带自动归档 Canary 配置')
+  } else {
+    if (values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING !== 'true') throw new Error('canary 部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING=true')
+    if (!canaryEnabled) throw new Error('canary 部署必须显式设置 FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY=true')
+    if (!canaryCustomerIds.length) throw new Error('canary 部署必须配置 AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS')
+  }
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
   if (missing.length) throw new Error(`生产部署配置缺少必填变量：${missing.join(', ')}`)
@@ -61,7 +72,10 @@ export function validateProductionEnv(values, envPath = '') {
     appEnv: values.APP_ENV,
     dataMode: values.DATA_MODE,
     authMode: values.AUTH_MODE,
+    deployMode,
     automaticProfileArchiving: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING,
+    automaticProfileArchivingCanary: canaryEnabled,
+    automaticProfileCanaryCustomerCount: canaryCustomerIds.length,
     requiredKeyCount: requiredKeys.length,
     configuredTableKeys: Object.keys(values).filter((key) => key.startsWith('FEISHU_') && key.endsWith('_TABLE_ID')).sort(),
   }
@@ -98,7 +112,10 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     DATA_MODE: 'production',
     ALLOW_DEV_OTP: 'false',
     FEATURE_EXTERNAL_APPOINTMENT: 'false',
-    FEATURE_AUTOMATIC_PROFILE_ARCHIVING: 'false',
+    FEATURE_AUTOMATIC_PROFILE_ARCHIVING: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING,
+    FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY || 'false',
+    AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS: values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS || '',
+    ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
     ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
     CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',
     ASVA_RELEASE_COUNTER: String(buildMetadata.releaseCounter),
