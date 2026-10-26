@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPrivacyClassificationPrompt, classifyPrivacyText, privacySafeText, resolvePrivacyPolicy } from './privacy-guard.mjs'
+import { buildPrivacyClassificationPrompt, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy } from './privacy-guard.mjs'
 
 describe('R040 privacy guard', () => {
   it('classifies ordinary work information as NORMAL', () => {
@@ -118,6 +118,14 @@ describe('R040 privacy guard', () => {
     const result = classifyPrivacyText('我很焦虑，但没有自伤想法。')
     expect(result).toHaveProperty('privacyLevel')
     expect(result).toHaveProperty('safetyFlags')
+  })
+
+  it('keeps a high-sensitive source from being weakened by a normal extracted item', () => {
+    const source = { privacyLevel: 'HIGH_SENSITIVE', privacyMeta: { categories: ['DOMESTIC_VIOLENCE'], safetyFlags: ['DOMESTIC_VIOLENCE'] } }
+    const evidence = { privacyLevel: 'NORMAL', privacyMeta: {}, displayText: '普通化的摘录' }
+    const privacy = combinePrivacyContext(evidence, source)
+    expect(privacy).toMatchObject({ privacyLevel: 'HIGH_SENSITIVE', categories: ['DOMESTIC_VIOLENCE'], safetyFlags: ['DOMESTIC_VIOLENCE'] })
+    expect(resolvePrivacyPolicy({ ...privacy, currentRole: 'ADMIN' }).canPromoteToProfile).toBe(false)
   })
 })
 

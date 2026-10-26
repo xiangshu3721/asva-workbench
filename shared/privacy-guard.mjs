@@ -153,6 +153,28 @@ export function classifyPrivacyText(value, { subject = 'UNKNOWN' } = {}) {
   }
 }
 
+// A source-level restriction is a floor for every extracted item from that
+// source. An extractor may classify an item too narrowly, but it must not
+// weaken the privacy boundary established by the original source.
+export function combinePrivacyContext(evidence = {}, source = {}) {
+  const evidenceMeta = evidence?.privacyMeta || {}
+  const sourceMeta = source?.privacyMeta || {}
+  const levelRank = { NORMAL: 0, SENSITIVE: 1, HIGH_SENSITIVE: 2 }
+  const evidenceLevel = PRIVACY_LEVELS.has(evidence?.privacyLevel) ? evidence.privacyLevel : 'NORMAL'
+  const sourceLevel = PRIVACY_LEVELS.has(source?.privacyLevel) ? source.privacyLevel : 'NORMAL'
+  const privacyLevel = (levelRank[sourceLevel] || 0) >= (levelRank[evidenceLevel] || 0) ? sourceLevel : evidenceLevel
+  return {
+    privacyLevel,
+    categories: unique([...(sourceMeta.categories || []), ...(evidenceMeta.categories || [])]),
+    safetyFlags: unique([...(sourceMeta.safetyFlags || []), ...(evidenceMeta.safetyFlags || [])]),
+    serviceNecessity: evidence?.serviceNecessity || source?.serviceNecessity || evidenceMeta.serviceNecessity || sourceMeta.serviceNecessity,
+    serviceNecessityOverride: evidenceMeta.serviceNecessityOverride || sourceMeta.serviceNecessityOverride,
+    temporalType: evidence?.temporalType || source?.temporalType || evidenceMeta.temporalType || sourceMeta.temporalType,
+    assertionType: evidenceMeta.assertionType || sourceMeta.assertionType,
+    verification: evidenceMeta.verification || sourceMeta.verification,
+  }
+}
+
 export function resolvePrivacyPolicy({ privacyLevel = 'NORMAL', categories = [], currentRole = 'ADMIN', isAssignedMentor = true, serviceNecessity = '', serviceNecessityOverride = '', temporalType = 'UNKNOWN', safetyFlags = [], assertionType = '', verification = '' } = {}) {
   const level = PRIVACY_LEVELS.has(privacyLevel) ? privacyLevel : 'HIGH_SENSITIVE'
   const categoryList = Array.isArray(categories) ? categories : []
@@ -191,8 +213,9 @@ export function buildConsultationContext({ role = 'MENTOR', isAssignedMentor = t
   const sourceById = new Map(sourceRecords.map((source) => [source.id, source]))
   return evidenceItems.map((evidence) => {
     const source = sourceById.get(evidence.sourceId)
+    const privacy = combinePrivacyContext(evidence, source)
     const meta = evidence.privacyMeta || source?.privacyMeta || {}
-    const policy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel || source?.privacyLevel, categories: meta.categories, currentRole: role, isAssignedMentor, serviceNecessity: meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: meta.temporalType, safetyFlags: meta.safetyFlags, assertionType: meta.assertionType, verification: meta.verification })
+    const policy = resolvePrivacyPolicy({ ...privacy, currentRole: role, isAssignedMentor })
     if (!policy.canUseInConsultation) return null
     return { ...evidence, displayText: policy.canViewServiceDetail ? (meta.mentorServiceDetail || evidence.displayText) : evidence.displayText, sourceExcerpt: policy.canViewNecessaryExcerpt ? (meta.necessaryExcerpt || '') : '', mentorServiceDetail: meta.mentorServiceDetail || '', necessaryExcerpt: meta.necessaryExcerpt || '', privacyPolicy: policy }
   }).filter(Boolean)
@@ -202,8 +225,9 @@ export function buildSalesContext({ evidenceItems = [], sourceRecords = [] } = {
   const sourceById = new Map(sourceRecords.map((source) => [source.id, source]))
   return evidenceItems.map((evidence) => {
     const source = sourceById.get(evidence.sourceId)
+    const privacy = combinePrivacyContext(evidence, source)
     const meta = evidence.privacyMeta || source?.privacyMeta || {}
-    const policy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel || source?.privacyLevel, categories: meta.categories, safetyFlags: meta.safetyFlags, serviceNecessity: meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: meta.temporalType, assertionType: meta.assertionType, verification: meta.verification, currentRole: 'MENTOR' })
+    const policy = resolvePrivacyPolicy({ ...privacy, currentRole: 'MENTOR' })
     if (policy.canUseInSales) return { ...evidence, sourceExcerpt: '', privacyPolicy: policy }
     if (!policy.canUseInSalesSafeSummary) return null
     return { ...evidence, displayText: meta.salesSafeSummary || '客户当前存在与服务相关的重要议题。', sourceExcerpt: '', standardValue: undefined, privacyPolicy: policy }

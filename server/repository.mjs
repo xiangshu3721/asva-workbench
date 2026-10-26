@@ -22,7 +22,7 @@ import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSa
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
-import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
+import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
@@ -305,9 +305,9 @@ function mentorVisibleSource(source) {
 }
 
 function mentorVisibleEvidence(evidence, source) {
+  const privacy = combinePrivacyContext(evidence, source)
   const meta = evidence?.privacyMeta || source?.privacyMeta || {}
-  const level = evidence?.privacyLevel || source?.privacyLevel || 'NORMAL'
-  const policy = resolvePrivacyPolicy({ privacyLevel: level, categories: meta.categories, safetyFlags: meta.safetyFlags, currentRole: 'MENTOR', assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: evidence?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: evidence?.temporalType || meta.temporalType })
+  const policy = resolvePrivacyPolicy({ ...privacy, currentRole: 'MENTOR' })
   if (policy.canViewRaw) return evidence
   return { ...evidence, sourceExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', displayText: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || evidence.mentorSafeText || privacySafeText(meta)) : (evidence.mentorSafeText || privacySafeText(meta)), standardValue: policy.canPromoteToProfile ? evidence.standardValue : undefined, mentorServiceDetail: policy.canViewServiceDetail ? (evidence.mentorServiceDetail || meta.mentorServiceDetail || '') : '', necessaryExcerpt: policy.canViewNecessaryExcerpt ? (evidence.necessaryExcerpt || meta.necessaryExcerpt || '') : '', salesSafeSummary: meta.salesSafeSummary || '', privacyPolicy: policy }
 }
@@ -320,8 +320,8 @@ function profileMaterializationEvidence({ evidenceItems = [], sourceRecords = []
     if (evidence.customerId !== customer?.id) return false
     if (evidence.contentSource === 'THIRD_PARTY_REPORTED') return false
     const source = sourceById.get(evidence.sourceId)
-    const meta = evidence.privacyMeta || source?.privacyMeta || {}
-    const policy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel || source?.privacyLevel, categories: meta.categories, currentRole: role, isAssignedMentor, assertionType: meta.assertionType, verification: meta.verification, serviceNecessity: evidence.serviceNecessity || source?.serviceNecessity || meta.serviceNecessity, serviceNecessityOverride: meta.serviceNecessityOverride, temporalType: evidence.temporalType || source?.temporalType || meta.temporalType, safetyFlags: meta.safetyFlags })
+    const privacy = combinePrivacyContext(evidence, source)
+    const policy = resolvePrivacyPolicy({ ...privacy, currentRole: role, isAssignedMentor })
     return policy.canPromoteToProfile
   })
 }
@@ -1931,7 +1931,7 @@ export class FeishuRepository {
             continue
           }
           if (!automaticMode && shouldAutoConfirmEvidence(evidence) && evidence.reviewStatus !== 'CONFIRMED') await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
-          const privacyPolicy = resolvePrivacyPolicy({ privacyLevel: evidence.privacyLevel, categories: evidence.privacyMeta?.categories, safetyFlags: evidence.privacyMeta?.safetyFlags, currentRole: 'ADMIN', assertionType: evidence.privacyMeta?.assertionType })
+          const privacyPolicy = resolvePrivacyPolicy({ ...combinePrivacyContext(evidence, source), currentRole: 'ADMIN' })
           const provenanceAllowsAutoApply = automaticMode
             ? !['UNKNOWN', 'MIXED'].includes(evidence.contentSource) && evidence.informationNature !== 'AI_INFERENCE' && evidence.verificationStatus !== 'CONFLICTED'
             : !evidence.contentSource && !evidence.informationNature && !evidence.verificationStatus
