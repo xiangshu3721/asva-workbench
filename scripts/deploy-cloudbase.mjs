@@ -44,17 +44,21 @@ function runCapture(command, args, cwd) {
   })
 }
 
-const envPath = path.join(root, '.env.local')
+const envPath = process.env.ASVA_DEPLOY_ENV_FILE
+  ? path.resolve(process.env.ASVA_DEPLOY_ENV_FILE)
+  : path.join(root, '.env.local')
 const values = parseEnv(await readFile(envPath, 'utf8'))
 const buildMetadata = JSON.parse(await readFile(path.join(root, 'build-meta.json'), 'utf8'))
 const authMode = values.AUTH_MODE || 'ADMIN_CODE'
-const requiredKeys = ['DEEPSEEK_API_KEY', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN', 'ASVA_AUTH_SECRET', ...(authMode === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
+if (values.APP_ENV !== 'production' || values.DATA_MODE !== 'production') throw new Error('CloudBase Production 部署必须使用 APP_ENV=production 与 DATA_MODE=production 的配置文件')
+const requiredKeys = ['DEEPSEEK_API_KEY', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN', 'ASVA_AUTH_SECRET', 'FEISHU_SOURCE_RECORDS_TABLE_ID', 'FEISHU_EVIDENCE_ITEMS_TABLE_ID', 'FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID', 'FEISHU_EVIDENCE_CONFLICTS_TABLE_ID', ...(authMode === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
 const missing = requiredKeys.filter((key) => !values[key])
 if (missing.length) throw new Error(`.env.local 缺少 ASVA CloudBase 生产变量：${missing.join(', ')}`)
 
 const envVariables = {
   DEEPSEEK_API_KEY: values.DEEPSEEK_API_KEY,
   DEEPSEEK_MODEL: values.DEEPSEEK_MODEL || 'deepseek-chat',
+  DEEPSEEK_EVIDENCE_MODEL: values.DEEPSEEK_EVIDENCE_MODEL || 'deepseek-flash',
   DEEPSEEK_BASE_URL: values.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
   FEISHU_APP_ID: values.FEISHU_APP_ID || 'cli_aaff6cb53db89bd3',
   FEISHU_APP_SECRET: values.FEISHU_APP_SECRET,
@@ -80,6 +84,7 @@ const envVariables = {
   DATA_MODE: 'production',
   ALLOW_DEV_OTP: 'false',
   FEATURE_EXTERNAL_APPOINTMENT: 'false',
+  FEATURE_AUTOMATIC_PROFILE_ARCHIVING: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING || 'false',
   ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
   CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',
   ASVA_RELEASE_COUNTER: String(buildMetadata.releaseCounter),
