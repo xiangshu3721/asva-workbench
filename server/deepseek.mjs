@@ -18,18 +18,34 @@ export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJ
 
 export const HUMAN_LANGUAGE_RULE = '最终面向导师和管理员展示的解释必须使用自然、直接的中文；不要输出内部英文枚举、字段名、代码、Schema 名称、版本号、系统状态标识或调试信息。遇到信息不足时直接说“待确认”“资料还不够”，不要把内部值原样写进解释。'
 
-async function callDeepSeek(messages, temperature = 0.2) {
+const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_OUTPUT_TRUNCATED'])
+
+async function callDeepSeek(messages, temperature = 0.2, options = {}) {
   if (!config.deepseek.apiKey) throw new DeepSeekUnavailableError('DeepSeek 尚未配置')
+  const model = options.model || config.deepseek.model
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 35_000
+  const maxAttempts = Math.max(1, Number(options.maxAttempts) || 1)
+  let lastError
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const startedAt = Date.now()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    try {
   const humanizedMessages = messages.map((message) => message.role === 'system' && !message.content.includes(HUMAN_LANGUAGE_RULE)
     ? { ...message, content: `${message.content}\n${HUMAN_LANGUAGE_RULE}` }
     : message)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 35_000)
-  try {
     const response = await fetch(`${config.deepseek.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.deepseek.apiKey}` },
-      body: JSON.stringify({ model: config.deepseek.model, messages: humanizedMessages, temperature, stream: false }),
+      body: JSON.stringify({
+        model,
+        messages: humanizedMessages,
+        temperature,
+        stream: false,
+        ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+        ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+        ...(options.thinking ? { thinking: options.thinking } : {}),
+      }),
       signal: controller.signal,
     })
     let payload = null
@@ -42,17 +58,26 @@ async function callDeepSeek(messages, temperature = 0.2) {
       const code = classifyDeepSeekResponse({ status: response.status })
       throw Object.assign(new Error(payload?.error?.message || `DeepSeek HTTP ${response.status}`), { code, status: response.status })
     }
-    const content = payload?.choices?.[0]?.message?.content?.trim()
+    const choice = payload?.choices?.[0]
+    const finishReason = choice?.finish_reason || ''
+    const content = choice?.message?.content?.trim()
+    console.info('[ASVA_DEEPSEEK]', JSON.stringify({ operation: options.operation || 'unknown', model, attempt, http_status: response.status, finish_reason: finishReason, output_length: content?.length || 0, duration_ms: Date.now() - startedAt }))
+    if (finishReason === 'length') throw Object.assign(new Error('DeepSeek 输出被截断'), { code: 'DEEPSEEK_OUTPUT_TRUNCATED', status: 502 })
     if (!content) throw Object.assign(new Error('DeepSeek 返回内容为空或缺少 choices.message.content'), { code: classifyDeepSeekResponse({ emptyContent: true }), status: 502 })
+    if (options.requireJson && !parseJson(content)) throw Object.assign(new Error('DeepSeek 返回内容不是有效 JSON'), { code: classifyDeepSeekResponse({ invalidJson: true }), status: 502 })
     return content
   } catch (error) {
-    if (error?.code === 'DEEPSEEK_INVALID_RESPONSE' || error?.code === 'DEEPSEEK_RATE_LIMIT') throw error
-    if (error?.name === 'AbortError') throw Object.assign(new Error('DeepSeek 请求超时'), { code: classifyDeepSeekResponse({ aborted: true }), status: 504 })
-    if (error instanceof DeepSeekUnavailableError || error?.code === 'DEEPSEEK_UNAVAILABLE') throw error
-    throw new DeepSeekUnavailableError(error instanceof Error ? error.message : 'DeepSeek 请求失败')
+    lastError = error?.name === 'AbortError'
+      ? Object.assign(new Error('DeepSeek 请求超时'), { code: classifyDeepSeekResponse({ aborted: true }), status: 504 })
+      : error instanceof DeepSeekUnavailableError || error?.code
+        ? error
+        : new DeepSeekUnavailableError(error instanceof Error ? error.message : 'DeepSeek 请求失败')
+    if (attempt >= maxAttempts || !RETRYABLE_DEEPSEEK_CODES.has(lastError?.code)) throw lastError
   } finally {
     clearTimeout(timeout)
   }
+  }
+  throw lastError || new DeepSeekUnavailableError('DeepSeek 请求失败')
 }
 
 function parseJson(content) {
@@ -142,9 +167,9 @@ export async function createEvidenceCandidates(input) {
   const promptInput = JSON.stringify({ source_text: sourceText, source_role: input.sourceRole || 'UNKNOWN', source_perspective: input.sourcePerspective || 'UNKNOWN', dialogue_context: input.dialogueContext || null, provenance_rule: 'source_role and uploaded_by are legacy context only; never infer who spoke from the uploader', current_snapshot: input.current || {} })
   input.onDiagnostics?.({ source_char_count: sourceText.length, prompt_char_count: promptInput.length, token_estimate: Math.ceil(promptInput.length / 2) })
   const raw = await callDeepSeek([
-    { role: 'system', content: '你是 ASVA 资料整理助手。只从当前资料文本中提取可回溯的原子信息，不生成客户画像总结，不诊断，不补全，不把推测写成事实。严格返回 JSON：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"Customer字段英文名或空","value":"标准值","display_text":"简短展示文本","source_excerpt":"资料中的原文短摘录","occurred_at":"资料中明确的时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0},"speaker_id":"A|B|C|空","subject_scope":"CURRENT_CUSTOMER|MENTOR_SELF|OTHER_PARTICIPANT|UNKNOWN","content_source":"CUSTOMER_DIRECT|STAFF_TRANSCRIBED_CUSTOMER|MENTOR_REPORTED|MENTOR_OBSERVATION|THIRD_PARTY_REPORTED|UNKNOWN|MIXED","information_nature":"OBJECTIVE_RECORD|PERSONAL_STATEMENT|REPORTED_SPEECH|BEHAVIOR_OBSERVATION|SUBJECTIVE_JUDGMENT|AI_INFERENCE|UNKNOWN","verification_status":"UNKNOWN|SOURCE_SUPPORTED|HUMAN_VERIFIED|CONFLICTED"}]}。对话资料必须输出 speaker_id 和 subject_scope；无法安全判断时使用 UNKNOWN。只有 subject_scope=CURRENT_CUSTOMER 的原子信息才可进入客户档案。content_source必须由文本证据决定，不能根据uploaded_by或source_role猜测；无法确认时使用UNKNOWN。MIXED只在不能安全拆分时使用，优先拆成多个原子Evidence。SOURCE_SUPPORTED只表示source_excerpt可回溯到原文；AI不得输出HUMAN_VERIFIED。客户陈述不能自动转为外部事实，导师判断不能转为人格事实，第三方指控必须保留不确定性。source_perspective=STAFF_REPORTED 时，不能把内容写成客户原话或 SELF_MEANING；可记录明确事实为 FACT。source_perspective=CUSTOMER_FIRST_PARTY 时，客户本人表达可用 SELF_MEANING 或 FACT。只有导师观察资料才可使用 OBSERVATION；HYPOTHESIS 必须带有可能、似乎、推测等不确定语气。年龄、性别、城市、教育经历、工作年限、关系状态、情绪感受、睡眠和当前困扰要分别拆成独立原子；“在某地工作”只能输出工作地点或工作状态的待核实资料，field_key 留空或使用未知字段，不得填入 city；除非原文明确表达居住或现居，不能把工作地点当作现居地。具体职业只有原文明确出现时才能提取；“想做某事业”记录为目标，不记录为已经发生的职业；不要输出抑郁症、焦虑症、人格障碍等诊断，也不要补写没有原文依据的频率或数量。' },
+    { role: 'system', content: '你是 ASVA 资料整理助手。仅根据 source_text 提取可回溯的原子信息，不总结、不诊断、不补全、不把推测写成事实。必须返回 JSON 对象：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"允许的客户字段英文名或空","value":"标准值","display_text":"简短中文展示","source_excerpt":"原文短摘录","occurred_at":"原文明确时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0},"speaker_id":"A|B|C|空","subject_scope":"CURRENT_CUSTOMER|MENTOR_SELF|OTHER_PARTICIPANT|UNKNOWN","content_source":"CUSTOMER_DIRECT|STAFF_TRANSCRIBED_CUSTOMER|MENTOR_REPORTED|MENTOR_OBSERVATION|THIRD_PARTY_REPORTED|UNKNOWN|MIXED","information_nature":"OBJECTIVE_RECORD|PERSONAL_STATEMENT|REPORTED_SPEECH|BEHAVIOR_OBSERVATION|SUBJECTIVE_JUDGMENT|AI_INFERENCE|UNKNOWN","verification_status":"UNKNOWN|SOURCE_SUPPORTED|HUMAN_VERIFIED|CONFLICTED"}]}。规则：逐条拆分年龄、性别、工作地点、关系状态、关系困扰、情绪、睡眠、当前问题和目标；来源、人物归属和性质必须由原文决定，不能依赖 uploaded_by/source_role，不能仅凭第一人称或引号推断客户身份。对话资料必须区分实际说话人和被提及的人；无法判断时使用 UNKNOWN，只有 subject_scope=CURRENT_CUSTOMER 才可进入档案。STAFF_REPORTED 不得写成客户原话；导师观察与主观判断分开；第三方陈述保留不确定性。工作地点不能填入现居地 city，职业只提取原文明确职业；“想做某事业”只能作为目标。保留原文依据和待核实状态；AI不得输出 HUMAN_VERIFIED。禁止心理诊断、无依据频率、数量、经济状态或背景。' },
     { role: 'user', content: promptInput },
-  ])
+  ], 0, { model: config.deepseek.evidenceModel, operation: 'evidence.extract', timeoutMs: 45_000, maxAttempts: 2, maxTokens: 4096, thinking: { type: 'disabled' }, responseFormat: { type: 'json_object' }, requireJson: true })
   const parsed = parseJson(raw)
   if (!parsed) throw Object.assign(new Error('资料整理模型返回内容无法解析为 JSON'), { code: 'JSON_PARSE_FAILED', status: 502 })
   if (!Array.isArray(parsed.items)) throw Object.assign(new Error('资料整理模型返回 JSON 缺少 items 数组'), { code: 'SCHEMA_VALIDATION_FAILED', status: 502 })

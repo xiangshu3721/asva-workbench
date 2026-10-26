@@ -59,6 +59,7 @@ export const config = {
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),
     model: value('DEEPSEEK_MODEL', 'deepseek-chat'),
+    evidenceModel: value('DEEPSEEK_EVIDENCE_MODEL', 'deepseek-flash'),
     baseUrl: value('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').replace(/\/$/, ''),
   },
   feishu: {
