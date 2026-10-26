@@ -33,6 +33,7 @@ export function normalizeCustomerDto(value: unknown): Customer {
     currentSnapshot: objectValue(rawMaterialization.currentSnapshot) as ProfileMaterialization['currentSnapshot'],
     sections: arrayValue<ProfileMaterialization['sections'][number]>(rawMaterialization.sections),
     provisionalItems: arrayValue<ProfileMaterialization['provisionalItems'][number]>(rawMaterialization.provisionalItems),
+    supplementaryItems: arrayValue<NonNullable<ProfileMaterialization['supplementaryItems']>[number]>(rawMaterialization.supplementaryItems),
     lifeEvents: arrayValue<ProfileMaterialization['lifeEvents'][number]>(rawMaterialization.lifeEvents),
     ...(typeof rawMaterialization.rawNotes === 'string' ? { rawNotes: rawMaterialization.rawNotes } : {}),
     coverage: {

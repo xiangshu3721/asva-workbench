@@ -2,7 +2,7 @@ export type Role = 'ADMIN' | 'MENTOR'
 export type PermissionRole = 'ADMIN' | 'MENTOR'
 export type StaffStatus = 'ACTIVE' | 'INACTIVE'
 export type AppointmentWorkflowStatus = 'WAIT_ASSIGN' | 'WAIT_FOLLOW_UP' | 'WAIT_FEEDBACK' | 'COMPLETED'
-export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIRMED' | 'MENTOR_FACTUAL_INPUT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_EXTRACTED_CONFIRMED' | 'AI_INFERENCE' | 'IMPORTED_HISTORY' | 'LEGACY_MIGRATION' | 'MANUAL'
+export type ProfileSource = 'STRUCTURED_INPUT' | 'USER_EXPLICIT' | 'ADMIN_CONFIRMED' | 'MENTOR_FACTUAL_INPUT' | 'MENTOR_CONFIRMED' | 'MENTOR_OBSERVATION' | 'AI_EXTRACTED' | 'AI_EXTRACTED_CONFIRMED' | 'AI_INFERENCE' | 'IMPORTED_HISTORY' | 'LEGACY_MIGRATION' | 'MANUAL'
 export type ProfileValue = string | number | boolean | string[] | null
 export type SummaryStatus = 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'
 
@@ -207,6 +207,7 @@ export interface ProfileMaterialization {
   currentSnapshot: Record<string, { value: ProfileValue; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
   sections: ProfileMaterializationSection[]
   provisionalItems: ProfileProvisionalItem[]
+  supplementaryItems?: Array<ProfileMaterializationItem & { id: string; source: string; confirmed: boolean; sourceRecordId?: string; evidenceId?: string }>
   lifeEvents: Array<{ id: string; title: string; detail: string; occurredAt: string | null; evidenceIds: string[]; basis: ProfileEvidenceReference[] }>
   /** Derived from the existing Customers.notes field; not a new persisted field. */
   rawNotes?: string

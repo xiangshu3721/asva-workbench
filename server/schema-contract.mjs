@@ -37,7 +37,16 @@ function fieldDefinition(internalKey, feishuName, overrides = {}) {
   }
 }
 
-const TRACK_FIELDS = new Set(['phone', 'wechat', 'referrer_name', 'birth_date', 'gender', 'city', 'marital_status', 'children_summary', 'family_summary', 'occupation', 'job_status', 'relationship_status', 'support_system', 'current_resources', 'current_barriers', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id'])
+const TRACK_FIELDS = new Set([
+  'phone', 'wechat', 'referrer_name', 'birth_date', 'gender', 'city', 'hometown', 'education', 'living_status', 'children_summary',
+  'family_summary', 'parents_relationship', 'father_summary', 'mother_summary', 'relationship_with_father', 'relationship_with_mother', 'siblings', 'family_events', 'family_support_level',
+  'occupation', 'industry', 'position', 'work_years', 'job_status', 'income_range', 'career_stage', 'career_satisfaction', 'career_problem', 'career_goal', 'entrepreneurship_experience',
+  'marital_status', 'relationship_status', 'partner_summary', 'marriage_years', 'relationship_satisfaction', 'relationship_conflicts', 'communication_pattern', 'conflict_pattern', 'relationship_goal', 'children_detail', 'parent_child_relationship', 'parenting_problem', 'parenting_values',
+  'hobbies', 'sports', 'reading', 'travel', 'art_preferences', 'social_preference', 'sleep', 'diet', 'routine', 'life_satisfaction',
+  'self_description', 'personality_traits', 'communication_style', 'decision_style', 'emotion_expression', 'stress_response', 'conflict_style', 'action_style', 'strengths', 'common_blocks',
+  'core_values', 'family_values', 'career_values', 'money_values', 'relationship_values', 'success_definition', 'happiness_definition', 'freedom_definition', 'growth_attitude',
+  'support_system', 'current_resources', 'current_barriers', 'current_core_issue', 'secondary_issues', 'current_stressors', 'energy_state', 'recent_major_changes', 'current_goal', 'current_expectation', 'current_mentor_id',
+])
 const DERIVED_FIELDS = new Set(['age', 'birth_year'])
 
 export const SCHEMA_CONTRACT = Object.fromEntries(Object.entries(FIELD_MAPPING).map(([table, mapping]) => [table, Object.entries(mapping).map(([internalKey, feishuName]) => fieldDefinition(internalKey, feishuName, { type: typeFor(internalKey, table), history_policy: table === 'customers' ? DERIVED_FIELDS.has(internalKey) ? 'DERIVED' : TRACK_FIELDS.has(internalKey) ? 'TRACK' : 'NO_TRACK' : null }))]))

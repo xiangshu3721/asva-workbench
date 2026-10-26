@@ -165,4 +165,29 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.provisionalItems.filter((item) => item.text === '近期睡眠有所改善')).toHaveLength(1)
     expect(result.provisionalItems.find((item) => item.text === '近期睡眠有所改善').evidenceIds).toEqual(['EVD-1', 'EVD-2'])
   })
+
+  it('shows persisted fallback information as pending instead of dropping it', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        profileFields: {},
+        profileFieldMeta: {},
+        supplementaryItems: [{ id: 'SUP-1', text: '客户补充信息：希望逐步尝试新的工作方向', source: 'AI_EXTRACTED', confirmed: false, sourceRecordId: 'SRC-1', evidenceId: 'EVD-1' }],
+      },
+      evidenceItems: [],
+    })
+    expect(result.supplementaryItems).toHaveLength(1)
+    expect(result.supplementaryItems[0]).toMatchObject({ label: '客户补充信息', statusLabel: '待核实' })
+    expect(result.sections.find((section) => section.title === '客户补充信息')?.items[0].text).toContain('希望逐步尝试')
+  })
+
+  it('keeps an automatically extracted field visible as pending with its source basis', () => {
+    const result = materializeCustomerProfile({
+      customer: { profileFields: { career_goal: '想做自己感兴趣的事业' }, profileFieldMeta: { career_goal: { source: 'AI_EXTRACTED', confirmed: false, evidenceId: 'EVD-1' } } },
+      evidenceItems: [{ id: 'EVD-1', fieldKey: 'career_goal', standardValue: '想做自己感兴趣的事业', displayText: '事业目标：想做自己感兴趣的事业', sourceExcerpt: '想做自己感兴趣的事业', sourceId: 'SRC-1', customerId: 'CUS-1', reviewStatus: 'PENDING_REVIEW', evidenceType: 'FACT', semanticKind: 'GOAL' }],
+    })
+    const item = result.sections.find((section) => section.title === '职业与事业')?.items.find((candidate) => candidate.label === '事业目标')
+    expect(item).toMatchObject({ text: '想做自己感兴趣的事业', statusLabel: '待核实' })
+    expect(item.basis[0]).toMatchObject({ evidenceId: 'EVD-1', sourceId: 'SRC-1' })
+    expect(result.provisionalItems).toHaveLength(0)
+  })
 })
