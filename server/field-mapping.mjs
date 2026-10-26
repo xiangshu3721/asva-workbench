@@ -150,8 +150,11 @@ export function field(table, key) {
 
 export function fields(table, values) {
   return Object.fromEntries(Object.entries(values).map(([key, value]) => {
-    if (DATE_FIELDS[table]?.has(key)) return [field(table, key), serializeDateForFeishu(value)]
+    // Current Stage-2 Feishu tables use plain Text columns, including their
+    // date-looking fields. Keep those values as text before applying the
+    // generic DateTime adapter, otherwise epoch numbers cause TextFieldConvFail.
     if (TEXT_ONLY_TABLES.has(table)) return [field(table, key), value === null || value === undefined ? '' : typeof value === 'string' ? value : typeof value === 'object' ? JSON.stringify(value) : String(value)]
+    if (DATE_FIELDS[table]?.has(key)) return [field(table, key), serializeDateForFeishu(value)]
     return [field(table, key), value]
   }))
 }
