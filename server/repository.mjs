@@ -526,7 +526,18 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
     const field = update.field === 'mentor_id' ? 'current_mentor_id' : update.field
     const oldValue = customerRecord.profileFields[field] ?? null
     customerRecord.profileFields[field] = update.value
-    customerRecord.profileFieldMeta[field] = { source: update.source, confidence: update.confidence, confirmed: update.confirmed, updatedAt, ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}), ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}), ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}) }
+    customerRecord.profileFieldMeta[field] = {
+      source: update.source,
+      confidence: update.confidence,
+      confirmed: update.confirmed,
+      updatedAt,
+      ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}),
+      ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}),
+      ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}),
+      ...(provenanceContext.sourceEventAt ? { sourceEventAt: provenanceContext.sourceEventAt } : {}),
+      ...(provenanceContext.sourceEntryAt ? { sourceEntryAt: provenanceContext.sourceEntryAt } : {}),
+      ...(provenanceContext.sourceVersion ? { sourceVersion: provenanceContext.sourceVersion } : {}),
+    }
     if (field === 'current_core_issue' && typeof update.value === 'string') customerRecord.need = update.value
     if (field === 'current_expectation' && typeof update.value === 'string') customerRecord.helpExpectation = update.value
     if (field === 'current_goal' && typeof update.value === 'string') customerRecord.goal = update.value
@@ -613,8 +624,24 @@ function automaticProfileText(input, situation = '') {
   return normalizeSourceRawText(chunks.join('\n'))
 }
 
+function automaticProfileTextFromCustomer(customer) {
+  return automaticProfileText({
+    profileUpdates: [
+      { field: 'current_core_issue', value: customer?.need || '' },
+      { field: 'current_expectation', value: customer?.helpExpectation || '' },
+      { field: 'current_goal', value: customer?.goal || '' },
+    ],
+  }, customer?.notes || '')
+}
+
 function automaticProfilePendingMarker(rawText, actorId, reason) {
-  return { contentHash: contentHash(rawText), rawText, actorId: text(actorId), reason: text(reason), createdAt: now() }
+  return {
+    contentHash: contentHash(rawText),
+    actorId: text(actorId),
+    reason: text(reason),
+    createdAt: now(),
+    sourceReference: { kind: 'CUSTOMER_FIELDS', fields: ['notes', 'current_issue', 'help_expectation', 'current_goal'] },
+  }
 }
 
 function isAutomaticProfileSource(source) {
@@ -624,7 +651,7 @@ function isAutomaticProfileSource(source) {
 function automaticProfileStatus(sources, evidenceItems, customerId) {
   const latest = (sources || [])
     .filter((source) => source.customerId === customerId && isAutomaticProfileSource(source))
-    .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))[0]
+    .sort((a, b) => String(b.occurredAt || b.uploadedAt || b.createdAt || '').localeCompare(String(a.occurredAt || a.uploadedAt || a.createdAt || '')))[0]
   if (!latest) return 'NOT_STARTED'
   if (latest.processingStatus === 'UPLOADED' || latest.processingStatus === 'PROCESSING') return 'PROCESSING'
   if (latest.processingStatus === 'FAILED') return 'FAILED'
@@ -755,10 +782,15 @@ export class FeishuRepository {
     try {
       const database = await this.load({ force: true })
       const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
-      for (const customer of database.customers.filter((item) => item.automaticProfilePending?.rawText).slice(0, 10)) {
+      for (const customer of database.customers.filter((item) => item.automaticProfilePending?.contentHash).slice(0, 10)) {
         const pending = customer.automaticProfilePending
         const actorId = database.staff.some((item) => item.id === pending.actorId && item.status === 'ACTIVE') ? pending.actorId : fallbackActor
-        if (actorId) this.scheduleAutomaticCustomerProfile(actorId, customer.id, pending.rawText, pending.reason || 'RECOVERY')
+        const recoveredText = automaticProfileTextFromCustomer(customer)
+        if (contentHash(recoveredText) !== pending.contentHash) {
+          this.audit('RECOVER_AUTOMATIC_PROCESSING', customer.id, actorId || '', 'PENDING', 'AUTOMATIC_PROFILE_REFERENCE_CHANGED')
+          continue
+        }
+        if (actorId) this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
       }
       for (const source of database.sourceRecords.filter((item) => ['UPLOADED', 'FAILED'].includes(item.processingStatus) || (item.processingStatus === 'PROCESSING' && isStaleProcessing(item))).slice(0, 10)) {
         const actorId = database.staff.some((item) => item.id === source.uploadedBy && item.status === 'ACTIVE') ? source.uploadedBy : fallbackActor
@@ -1901,18 +1933,36 @@ export class FeishuRepository {
           }
           const currentCustomer = database.customers.find((item) => item.id === source.customerId)
           const profileMeta = currentCustomer?.profileFieldMeta?.[evidence.fieldKey]
-          const currentStateField = ['age', 'gender', 'city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_goal', 'current_core_issue', 'current_expectation'].includes(evidence.fieldKey)
-          const incomingAt = new Date(evidence.occurredAt || source.updatedAt || source.createdAt || now()).getTime()
-          const currentUpdatedAtValue = profileMeta?.updatedAt || currentCustomer?.profileUpdatedAt
-          const currentUpdatedAt = currentUpdatedAtValue ? new Date(currentUpdatedAtValue).getTime() : Number.NaN
-          const staleIncoming = Number.isFinite(currentUpdatedAt) && Number.isFinite(incomingAt) && incomingAt < currentUpdatedAt
-          const currentFactAllowed = automaticMode && currentStateField && evidence.evidenceType === 'FACT' && evidence.semanticKind !== 'EVENT' && !staleIncoming
+          const incomingEventAt = evidence.occurredAt || source.occurredAt || ''
+          const incomingEntryAt = source.uploadedAt || source.createdAt || ''
+          const currentEventAt = profileMeta?.sourceEventAt || ''
+          const currentEntryAt = profileMeta?.sourceEntryAt || ''
+          const incomingEventMs = incomingEventAt ? new Date(incomingEventAt).getTime() : Number.NaN
+          const currentEventMs = currentEventAt ? new Date(currentEventAt).getTime() : Number.NaN
+          const incomingEntryMs = incomingEntryAt ? new Date(incomingEntryAt).getTime() : Number.NaN
+          const currentEntryMs = currentEntryAt ? new Date(currentEntryAt).getTime() : Number.NaN
+          const sameSource = profileMeta?.sourceRecordId && profileMeta.sourceRecordId === sourceId
+          const incomingVersion = Number(source.sourceVersion || 0)
+          const currentVersion = Number(profileMeta?.sourceVersion || 0)
+          const incomingOrderMs = Number.isFinite(incomingEventMs) ? incomingEventMs : incomingEntryMs
+          const currentOrderMs = Number.isFinite(currentEventMs) ? currentEventMs : currentEntryMs
+          const olderSourceOrder = Number.isFinite(incomingOrderMs) && Number.isFinite(currentOrderMs) && incomingOrderMs < currentOrderMs
+          const olderSameSourceVersion = sameSource && incomingVersion > 0 && currentVersion > 0 && incomingVersion < currentVersion
+          const staleIncoming = olderSourceOrder || olderSameSourceVersion
+          const currentFactAllowed = automaticMode && isSnapshotEvidence(evidence) && !staleIncoming
           const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence) && !currentFactAllowed)
           const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !staleIncoming && isSnapshotEvidence(evidence) && (['ADD', 'UPDATE', 'APPEND'].includes(change.action) || currentFactAllowed) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
           if (autoApply) {
             const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), automaticMode ? false : true)[0]
             if (update) {
-              await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, { sourceRecordId: sourceId, evidenceId: evidence.id, updateBatchId: evidence.extractionBatchId })
+              await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
+                sourceRecordId: sourceId,
+                evidenceId: evidence.id,
+                updateBatchId: evidence.extractionBatchId,
+                sourceEventAt: incomingEventAt,
+                sourceEntryAt: incomingEntryAt,
+                sourceVersion: incomingVersion,
+              })
               if (!automaticMode) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
             }
           }

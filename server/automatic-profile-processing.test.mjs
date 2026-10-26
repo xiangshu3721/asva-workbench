@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { config } from './config.mjs'
 import { FeishuRepository } from './repository.mjs'
+import { contentHash } from '../shared/evidence-contract.mjs'
 
 describe('automatic customer profile processing', () => {
   const originalEnabled = config.features.automaticProfileArchiving
@@ -66,5 +67,28 @@ describe('automatic customer profile processing', () => {
     await new Promise((resolve) => setImmediate(resolve))
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
     release({ status: 'QUEUED', sourceId: 'SRC-AUTO-4' })
+  })
+
+  it('recovers a long pending text from stable customer fields without storing raw text in metadata', async () => {
+    const longText = `${'客户长期资料。'.repeat(2500)}\n当前困扰：职业方向需要进一步确认。`
+    const pending = {
+      contentHash: contentHash(longText),
+      actorId: 'ADMIN-1',
+      reason: 'CUSTOMER_SAVE',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceReference: { kind: 'CUSTOMER_FIELDS', fields: ['notes', 'current_issue', 'help_expectation', 'current_goal'] },
+    }
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-AUTO-LONG', notes: longText, need: '', helpExpectation: '', goal: '', automaticProfilePending: pending }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [],
+    }))
+    repository.scheduleAutomaticCustomerProfile = vi.fn()
+
+    await repository.recoverAutomaticProcessing()
+
+    expect(repository.scheduleAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-LONG', longText, 'CUSTOMER_SAVE')
+    expect(JSON.stringify(pending)).not.toContain(longText)
   })
 })

@@ -313,13 +313,35 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     }
   })
 
+  it('automatically overwrites an ordinary profile field such as sleep', async () => {
+    const previousAutomaticMode = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      activeDatabase.customers[0].profileFields.sleep = '较好'
+      activeDatabase.customers[0].profileFieldMeta.sleep = { source: 'MENTOR_CONFIRMED', confirmed: true, updatedAt: '2020-01-01T00:00:00.000Z' }
+      activeDatabase.sourceRecords[0].createdAt = new Date().toISOString()
+      activeDatabase.sourceRecords[0].rawText = '客户最近睡眠一般'
+      const repository = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'sleep', value: '一般', display_text: '客户最近睡眠一般', source_excerpt: '客户最近睡眠一般', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'OBJECTIVE_RECORD', verification_status: 'SOURCE_SUPPORTED', confidence: 0.95, locator: { paragraph_index: 0 } }])
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+      expect(activeDatabase.customers[0].profileFields.sleep).toBe('一般')
+      expect(activeDatabase.customers[0].profileFieldMeta.sleep).toMatchObject({ source: 'AI_EXTRACTED', confirmed: false })
+      expect(activeDatabase.profileChanges).toContainEqual(expect.objectContaining({ field: 'sleep', oldValue: '较好', newValue: '一般' }))
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomaticMode
+    }
+  })
+
   it('does not let an older current-state task overwrite the latest value', async () => {
     const previousAutomaticMode = config.features.automaticProfileArchiving
     config.features.automaticProfileArchiving = true
     try {
       activeDatabase.customers[0].profileFields.age = 24
-      activeDatabase.customers[0].profileFieldMeta.age = { source: 'AI_EXTRACTED', confirmed: false, updatedAt: new Date().toISOString() }
+      activeDatabase.customers[0].profileFieldMeta.age = { source: 'AI_EXTRACTED', confirmed: false, updatedAt: new Date().toISOString(), sourceRecordId: 'SRC-NEWER', sourceEntryAt: '2025-01-01T00:00:00.000Z', sourceVersion: 1 }
       activeDatabase.sourceRecords[0].createdAt = '2020-01-01T00:00:00.000Z'
+      activeDatabase.sourceRecords[0].uploadedAt = '2020-01-01T00:00:00.000Z'
+      activeDatabase.sourceRecords[0].updatedAt = new Date().toISOString()
+      activeDatabase.sourceRecords[0].sourceVersion = 1
       const repository = setupRepository(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'age', value: 23, display_text: '客户23岁', source_excerpt: '客户23岁', confidence: 0.98, locator: { paragraph_index: 0 } }])
       await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
 
