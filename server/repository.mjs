@@ -594,9 +594,15 @@ function attachFeishuWriteContext(error, tableKey, operation, values) {
   return error
 }
 async function createMappedRecord(tableKey, operation, values) {
-  const mapped = mapFields(tableKey, values)
+  // ProfileChanges uses the Feishu record_id as its durable row identity;
+  // the domain-level change_id is retained in memory/audit context but is
+  // not a column in the existing table contract.
+  const persistedValues = tableKey === 'profileChanges'
+    ? Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'change_id'))
+    : values
+  const mapped = mapFields(tableKey, persistedValues)
   const operationId = text(values.operationId || values.source_id || values.change_id || values.evidence_id || values.proposal_id || values.enrollment_id || values.service_record_id)
-  const uniqueKey = ['source_id', 'change_id', 'evidence_id', 'proposal_id', 'enrollment_id', 'service_record_id'].find((key) => text(values[key]))
+  const uniqueKey = tableKey === 'profileChanges' ? null : ['source_id', 'change_id', 'evidence_id', 'proposal_id', 'enrollment_id', 'service_record_id'].find((key) => text(values[key]))
   try {
     return await createRecord(config.feishu.tables[tableKey], mapped, { operation, operationId, customerId: text(values.customer_id), entityType: tableKey, ...(uniqueKey ? { idempotency: { field: mapField(tableKey, uniqueKey), value: values[uniqueKey] } } : {}) })
   } catch (error) {
