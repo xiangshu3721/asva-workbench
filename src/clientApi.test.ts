@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
+import { CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -68,7 +68,20 @@ describe('HTTP environment diagnostics', () => {
     await vi.advanceTimersByTimeAsync(CLIENT_SOURCE_SAVE_TIMEOUT_MS)
     await pending
     expect(CLIENT_SOURCE_SAVE_TIMEOUT_MS).toBeGreaterThan(CLIENT_DEFAULT_TIMEOUT_MS)
+    expect(CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS).toBeGreaterThan(CLIENT_DEFAULT_TIMEOUT_MS)
+    expect(CLIENT_SOURCE_SAVE_TIMEOUT_MS).toBeLessThanOrEqual(55_000)
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: expect.any(AbortSignal) })
+  })
+
+  it('CLIENT_TIMEOUT_BOUNDED uses the customer-mutation budget for createCustomer', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { nickname: '慢客户', phone: '13800138000', operationId: 'cust-timeout-1', confirmedNotSame: true })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS)
+    await pending
   })
 
   it('CLIENT_TIMEOUT_BOUNDED also covers a response body that never finishes', async () => {

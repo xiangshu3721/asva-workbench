@@ -15,7 +15,7 @@ import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEviden
 import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
 import { isStaleProcessing, processingErrorCode } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
-import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
+import { boundedReadAfterWrite, MUTATION_READBACK_DELAYS_MS, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
 import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
@@ -679,13 +679,40 @@ function automaticProfileStatus(sources, evidenceItems, customerId) {
   return hasUsableEvidence ? 'COMPLETED' : 'NO_USABLE_OUTPUT'
 }
 
-async function waitForSourceVisibility(sourceId) {
+async function waitForSourceVisibility(sourceId, recordId) {
+  // Prefer single-record get by Feishu record_id. Never list the entire sourceRecords table on the save path.
+  if (!recordId || !stage2Table('sourceRecords')) return null
   const result = await boundedReadAfterWrite(async () => {
-    const rows = await listRecords(stage2Table('sourceRecords'))
-    const row = rows.find((item) => text(get('sourceRecords', item.fields, 'source_id')) === sourceId)
-    return row ? sourceRecord(row) : null
-  })
+    const row = await getRecord(stage2Table('sourceRecords'), recordId)
+    if (!row) return null
+    const parsed = sourceRecord(row)
+    return parsed.id === sourceId ? parsed : null
+  }, { delays: MUTATION_READBACK_DELAYS_MS })
   return result.value
+}
+
+function sourceRecordIdFromWrite(writeResult) {
+  return writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id || ''
+}
+
+function committedSourceFallback(sourceId, normalized, extras = {}) {
+  return {
+    id: sourceId,
+    sourceId,
+    customerId: normalized.customerId,
+    subjectType: normalized.subjectType,
+    subjectId: normalized.subjectId,
+    sourceType: normalized.sourceType,
+    title: normalized.title,
+    rawText: normalized.rawText,
+    fileRef: normalized.fileRef,
+    sourceRole: normalized.sourceRole,
+    contentHash: normalized.contentHash,
+    processingStatus: 'UPLOADED',
+    _persistenceStatus: 'COMMITTED',
+    _dataFreshness: 'DELAYED',
+    ...extras,
+  }
 }
 function attachFeishuWriteContext(error, tableKey, operation, values) {
   error.integrationContext = {
@@ -1054,8 +1081,14 @@ export class FeishuRepository {
       const parsed = customer(row)
       if (parsed.id !== targetCustomerId) throw Object.assign(new Error('写入回读客户不匹配'), { code: 'CUSTOMER_READBACK_MISMATCH', status: 502 })
       return { row, parsed }
-    }, { delays: READ_AFTER_WRITE_DELAYS_MS })
-    if (!result.value) return this.loadAfterWrite(writeResult, targetCustomerId)
+    }, { delays: MUTATION_READBACK_DELAYS_MS })
+    if (!result.value) {
+      // Write already committed; avoid falling back to a full 11-table loadFresh on the save critical path.
+      console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: recordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+      const next = cloneDatabase(baseDatabase)
+      this.lastKnownGoodByCustomer.set(targetCustomerId, cloneDatabase(next))
+      return { ...next, _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
+    }
     const next = cloneDatabase(baseDatabase)
     next.customers = next.customers.some((item) => item.id === targetCustomerId)
       ? next.customers.map((item) => item.id === targetCustomerId ? result.value.parsed : item)
@@ -1416,7 +1449,7 @@ export class FeishuRepository {
     return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates: [] }
   }
   async createCustomer(actorId, input, requestId = '', { compactResponse = false } = {}) {
-    this.invalidateDatabaseCache()
+    // Do not force a full 11-table loadFresh before the Feishu write; reuse warm cache for identity checks.
     const startedAt = Date.now()
     const timings = { identity_resolution_ms: 0, customer_write_ms: 0, enrollment_write_ms: 0, profile_change_ms: 0, ai_ms: 0 }
     const operationId = text(input?.operationId).trim()
@@ -1453,9 +1486,17 @@ export class FeishuRepository {
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
         const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues), { operation: 'customer.create', operationId: customerId, customerId, entityType: 'customers', idempotency: { field: mapField('customers', 'customer_id'), value: customerId } })
-        current = input.profileUpdates?.length
-          ? await this.loadAfterWrite(writeResult, customerId)
-          : await this.loadCustomerAfterWrite(writeResult, customerId, current)
+        this.invalidateDatabaseCache()
+        const writeRecordId = sourceRecordIdFromWrite(writeResult)
+        const optimisticRow = { record_id: writeRecordId, fields: mapFields('customers', writeValues) }
+        const optimisticCustomer = customer(optimisticRow)
+        current = {
+          ...cloneDatabase(current),
+          customers: [...current.customers.filter((item) => item.id !== customerId), optimisticCustomer],
+          _rows: { ...(current._rows || {}), customers: [...(current._rows?.customers || []).filter((item) => item.record_id !== writeRecordId && text(get('customers', item.fields, 'customer_id')) !== customerId), optimisticRow] },
+        }
+        // Success only after Feishu createRecord returned; brief getRecord confirm, no full-table readback.
+        current = await this.loadCustomerAfterWrite(writeResult, customerId, current)
         timings.customer_write_ms = Date.now() - customerWriteStartedAt
       }
       if (input.profileUpdates?.length) {
@@ -1494,7 +1535,6 @@ export class FeishuRepository {
   }
   async updateCustomer(actorId, customerId, input, { compactResponse = false } = {}) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerUnsafe(actorId, customerId, input, { compactResponse })) }
   async updateCustomerUnsafe(actorId, customerId, input, { compactResponse = false } = {}) {
-    this.invalidateDatabaseCache()
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     const actor = database.staff.find((item) => item.id === actorId)
@@ -1542,6 +1582,8 @@ export class FeishuRepository {
     if (introducerChanged) customerValues.referrer_name = normalized.introducer
     if (automaticProfileArchivingAllowedForCustomer(customerId) && automaticText) customerValues.profile_field_meta_json = serializeCustomerDerivedMeta(current, { automaticProfilePending: automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE') })
     const customerWriteResult = Object.keys(customerValues).length ? await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues)) : null
+    // Drop warm cache after mutation writes begin so later loads do not serve pre-write rows.
+    this.invalidateDatabaseCache()
     const manualChanges = []
     if (nicknameChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'nickname', fieldName: '客户昵称', oldValue: current.name, newValue: normalized.nickname, operatorId: actorId, operationId: text(input?.operationId).trim() }))
     if (notesChanged) manualChanges.push(await createManualProfileChange(database, { customerId, field: 'notes', fieldName: '客户情况', oldValue: current.notes || null, newValue: normalized.situation || null, operatorId: actorId, operationId: text(input?.operationId).trim() }))
@@ -1670,10 +1712,10 @@ export class FeishuRepository {
     })
   }
   async createSourceUnsafe(actorId, input) {
-    this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
     const requestedCustomerId = text(input?.customerId).trim()
+    // Reuse warm cache for duplicate/visibility checks; invalidate only after Feishu write commits.
     let database = await this.load()
     let visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) {
@@ -1710,31 +1752,33 @@ export class FeishuRepository {
     const sourceId = requestedSourceId || (normalized.operationId ? stableId('SRC', `${normalized.customerId}:${normalized.operationId}`) : stableId('SRC', `${normalized.customerId}:${normalized.contentHash}`))
     const existingSource = database.sourceRecords.find((item) => item.id === sourceId)
     if (existingSource) return existingSource
-    const recentSourceWriteAt = this.recentSourceWrites.get(sourceId) || 0
+    const recentSourceMeta = this.recentSourceWrites.get(sourceId)
+    const recentSourceWriteAt = recentSourceMeta?.at || (typeof recentSourceMeta === 'number' ? recentSourceMeta : 0)
     if (recentSourceWriteAt && Date.now() - recentSourceWriteAt <= RECENT_WRITE_WINDOW_MS) {
-      const existingRecentSource = await waitForSourceVisibility(sourceId)
+      const existingRecentSource = await waitForSourceVisibility(sourceId, recentSourceMeta?.recordId)
       if (existingRecentSource) return existingRecentSource
-      return { id: sourceId, sourceId, customerId: normalized.customerId, subjectType: normalized.subjectType, subjectId: normalized.subjectId, sourceType: normalized.sourceType, title: normalized.title, rawText: normalized.rawText, fileRef: normalized.fileRef, sourceRole: normalized.sourceRole, contentHash: normalized.contentHash, processingStatus: 'UPLOADED', _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
+      return committedSourceFallback(sourceId, normalized)
     }
     const timestamp = now()
     const sourceWriteResult = await createMappedRecord('sourceRecords', 'source.create', { source_id: sourceId, subject_type: normalized.subjectType, subject_id: normalized.subjectId, customer_id: normalized.customerId, source_type: normalized.sourceType, title: normalized.title, raw_text: normalized.rawText, file_ref: normalized.fileRef, occurred_at: '', uploaded_at: timestamp, uploaded_by: normalized.uploadedBy, source_role: normalized.sourceRole, service_record_id: normalized.serviceRecordId, content_hash: normalized.contentHash, processing_status: 'UPLOADED', processing_version: 1, sensitivity_level: 'HIGH', privacy_level: 'NORMAL', privacy_status: 'PROCESSING', privacy_meta_json: '{}', mentor_safe_summary: '', notes: normalized.notes, source_version: 1, extractor_version: 'evidence-v1', last_batch_id: '', processing_started_at: '', last_processing_at: '', processing_error: '', created_at: timestamp, updated_at: timestamp })
-    this.recentSourceWrites.set(sourceId, Date.now())
+    const writeRecordId = sourceRecordIdFromWrite(sourceWriteResult)
+    this.invalidateDatabaseCache()
+    this.recentSourceWrites.set(sourceId, { at: Date.now(), recordId: writeRecordId })
     this.sourceSaveTimes.set(sourceId, Date.now() - startedAt)
+    // Privacy classify is local + one update; keep it briefly awaited so returned privacy fields are accurate when getRecord succeeds.
     try {
       const privacy = classifyPrivacyText(normalized.rawText)
-      await updateMappedRecord('sourceRecords', 'source.privacy.classify', sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, { privacy_level: privacy.privacyLevel, privacy_status: 'READY', privacy_meta_json: JSON.stringify(privacy), mentor_safe_summary: privacy.mentorSafeSummary, updated_at: now() })
+      await updateMappedRecord('sourceRecords', 'source.privacy.classify', writeRecordId, { privacy_level: privacy.privacyLevel, privacy_status: 'READY', privacy_meta_json: JSON.stringify(privacy), mentor_safe_summary: privacy.mentorSafeSummary, updated_at: now() })
     } catch (error) {
-      await updateMappedRecord('sourceRecords', 'source.privacy.review-required', sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, { privacy_level: 'HIGH_SENSITIVE', privacy_status: 'REVIEW_REQUIRED', privacy_meta_json: JSON.stringify({ classificationReason: '隐私分类失败', categories: [], safetyFlags: [], serviceNecessity: 'UNKNOWN', mentorSafeSummary: '该资料正在进行安全处理，请稍后查看。' }), mentor_safe_summary: '该资料正在进行安全处理，请稍后查看。', updated_at: now() }).catch(() => {})
+      await updateMappedRecord('sourceRecords', 'source.privacy.review-required', writeRecordId, { privacy_level: 'HIGH_SENSITIVE', privacy_status: 'REVIEW_REQUIRED', privacy_meta_json: JSON.stringify({ classificationReason: '隐私分类失败', categories: [], safetyFlags: [], serviceNecessity: 'UNKNOWN', mentorSafeSummary: '该资料正在进行安全处理，请稍后查看。' }), mentor_safe_summary: '该资料正在进行安全处理，请稍后查看。', updated_at: now() }).catch(() => {})
       this.audit('CLASSIFY_SOURCE_PRIVACY', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'PRIVACY_CLASSIFICATION_FAILED')
     }
-    const result = await waitForSourceVisibility(sourceId)
-    if (result) {
-      if (!isAutomaticProfileSource(normalized)) this.scheduleAutomaticProcessing(actorId, sourceId)
-      return result
-    }
-    console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: sourceWriteResult?.record?.record_id || sourceWriteResult?.record_id, source_id: sourceId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+    // Original raw_text already persisted by createMappedRecord above. Confirm with getRecord(record_id), not list-entire-table.
+    const result = await waitForSourceVisibility(sourceId, writeRecordId)
     if (!isAutomaticProfileSource(normalized)) this.scheduleAutomaticProcessing(actorId, sourceId)
-    return { id: sourceId, sourceId, customerId: normalized.customerId, subjectType: normalized.subjectType, subjectId: normalized.subjectId, sourceType: normalized.sourceType, title: normalized.title, rawText: normalized.rawText, fileRef: normalized.fileRef, sourceRole: normalized.sourceRole, contentHash: normalized.contentHash, processingStatus: 'UPLOADED', _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
+    if (result) return result
+    console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, source_id: sourceId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+    return committedSourceFallback(sourceId, normalized)
   }
   async sourceWorkspace(actorId, customerId) {
     requireStage2Tables()

@@ -195,7 +195,10 @@ export function getApiRequestTraces() { return [...requestTraces] }
 export function clearApiRequestTraces() { requestTraces.splice(0, requestTraces.length) }
 
 export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
-export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
+/** Customer create/update: allow Feishu write + brief getRecord confirm without UI abort at 20s. */
+export const CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS = 45_000
+/** Keep under CloudBase SCF 60s so the client does not wait after the function already died. */
+export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 55_000
 
 export function classifyFetchFailure(error: unknown, timedOut = false): { code: 'REQUEST_TIMEOUT' | 'NETWORK_UNREACHABLE' | 'CORS_PREFLIGHT_FAILED'; message: string } {
   if (timedOut) return { code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认保存结果。' }
@@ -290,7 +293,12 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     if (!base) throw new ApiError({ code: 'CONFIGURATION_ERROR', message: '未配置真实 API 地址。请设置 VITE_API_BASE_URL 后重启前端；如需演示，请明确设置 VITE_APP_ENV=mock。' })
     let response: Response
     let payload: Record<string, any> | null = null
-    const timeoutMs = path === '/api/sources' && method === 'POST' ? CLIENT_SOURCE_SAVE_TIMEOUT_MS : CLIENT_DEFAULT_TIMEOUT_MS
+    const isCustomerMutation = (path === '/api/customers' && method === 'POST') || (/^\/api\/customers\/[^/]+$/.test(path) && method === 'PATCH')
+    const timeoutMs = path === '/api/sources' && method === 'POST'
+      ? CLIENT_SOURCE_SAVE_TIMEOUT_MS
+      : isCustomerMutation
+        ? CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS
+        : CLIENT_DEFAULT_TIMEOUT_MS
     const controller = new AbortController()
     let timedOut = false
     const timeoutHandle = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
