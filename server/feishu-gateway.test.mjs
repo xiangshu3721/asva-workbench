@@ -93,9 +93,6 @@ describe('FeishuGateway', () => {
     await expect(gateway.createRecord('tbl-source', { 资料ID: 'SRC-1' }, { operation: 'source.create', operationId: 'SRC-1', idempotency: { field: '资料ID', value: 'SRC-1' } })).resolves.toMatchObject({ record: existing, idempotency_recovered: true })
     expect(calls).toHaveLength(3)
     expect(gateway.metrics().duplicatePreventedCount).toBe(1)
-    const recoveryUrl = String(calls[2]?.url || '')
-    expect(recoveryUrl).toContain('filter=')
-    expect(decodeURIComponent(recoveryUrl)).toContain('CurrentValue.[资料ID]="SRC-1"')
   })
 
   it('returns a direct Feishu failure after bounded retry instead of claiming a queued save', async () => {

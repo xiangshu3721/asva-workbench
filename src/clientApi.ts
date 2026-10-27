@@ -294,11 +294,9 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     let response: Response
     let payload: Record<string, any> | null = null
     const isCustomerMutation = (path === '/api/customers' && method === 'POST') || (/^\/api\/customers\/[^/]+$/.test(path) && method === 'PATCH')
-    const isCustomerPreview = path === '/api/customers/preview' && method === 'POST'
-    // Preview sits on the Save critical path (identity check before create); use the same budget as create/update.
     const timeoutMs = path === '/api/sources' && method === 'POST'
       ? CLIENT_SOURCE_SAVE_TIMEOUT_MS
-      : (isCustomerMutation || isCustomerPreview)
+      : isCustomerMutation
         ? CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS
         : CLIENT_DEFAULT_TIMEOUT_MS
     const controller = new AbortController()

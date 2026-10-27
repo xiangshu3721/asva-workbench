@@ -163,16 +163,8 @@ export function createFeishuGateway({
   }
   async function findExistingRecord(tableId, idempotency) {
     if (!tableId || !idempotency?.field || idempotency.value === undefined || idempotency.value === null) return null
-    // Filter by the idempotency field so recovery after a lost response does not list the entire table.
-    const field = String(idempotency.field)
-    const raw = String(idempotency.value)
-    const escaped = raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    const filter = `CurrentValue.[${field}]="${escaped}"`
-    const rows = await listPaged((query) => {
-      query.set('filter', filter)
-      return `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`
-    }, 'list_records', { table: tableId })
-    return rows.find((row) => String(row?.fields?.[idempotency.field] ?? '') === raw) || rows[0] || null
+    const rows = await listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId })
+    return rows.find((row) => String(row?.fields?.[idempotency.field] ?? '') === String(idempotency.value)) || null
   }
   return {
     request, getToken, providerStatus, metrics: () => ({ ...metrics }),
