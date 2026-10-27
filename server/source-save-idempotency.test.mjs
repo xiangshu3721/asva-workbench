@@ -5,16 +5,15 @@ process.env.FEISHU_EVIDENCE_ITEMS_TABLE_ID ||= 'tbl-evidence-save-test'
 process.env.FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID ||= 'tbl-proposal-save-test'
 process.env.FEISHU_EVIDENCE_CONFLICTS_TABLE_ID ||= 'tbl-conflict-save-test'
 
-const { createRecordMock, getRecordMock, listRecordsMock, updateRecordMock } = vi.hoisted(() => ({
+const { createRecordMock, listRecordsMock, updateRecordMock } = vi.hoisted(() => ({
   createRecordMock: vi.fn(),
-  getRecordMock: vi.fn(),
   listRecordsMock: vi.fn(),
   updateRecordMock: vi.fn(),
 }))
 
 vi.mock('./feishu.mjs', async () => {
   const actual = await vi.importActual('./feishu.mjs')
-  return { ...actual, createRecord: createRecordMock, getRecord: getRecordMock, listRecords: listRecordsMock, updateRecord: updateRecordMock }
+  return { ...actual, createRecord: createRecordMock, listRecords: listRecordsMock, updateRecord: updateRecordMock }
 })
 
 const { FeishuRepository } = await import('./repository.mjs')
@@ -48,17 +47,8 @@ beforeEach(() => {
     }
     return { record: { record_id: 'rec-unused' } }
   })
-  getRecordMock.mockReset().mockImplementation(async (tableId, recordId) => {
-    if (tableId === config.feishu.tables.sourceRecords && sourceRow && recordId === sourceRow.record_id) return sourceRow
-    return null
-  })
   listRecordsMock.mockReset().mockImplementation(async (tableId) => tableId === config.feishu.tables.sourceRecords && sourceRow ? [sourceRow] : [])
-  updateRecordMock.mockReset().mockImplementation(async (tableId, recordId, fields) => {
-    if (tableId === config.feishu.tables.sourceRecords && sourceRow && recordId === sourceRow.record_id) {
-      sourceRow = { ...sourceRow, fields: { ...sourceRow.fields, ...fields } }
-    }
-    return { record: { record_id: sourceRow?.record_id || recordId || 'rec-source-save-1' } }
-  })
+  updateRecordMock.mockReset().mockResolvedValue({ record: { record_id: sourceRow?.record_id || 'rec-source-save-1' } })
 })
 
 describe('source save idempotency', () => {

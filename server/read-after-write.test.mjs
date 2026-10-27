@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boundedReadAfterWrite, MUTATION_READBACK_DELAYS_MS, READ_AFTER_WRITE_DELAYS_MS } from './read-after-write.mjs'
+import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS } from './read-after-write.mjs'
 
 describe('bounded read-after-write', () => {
   it('waits through two not-found reads and returns the third visible record', async () => {
@@ -17,12 +17,5 @@ describe('bounded read-after-write', () => {
 
   it('uses a finite bounded retry schedule', () => {
     expect(READ_AFTER_WRITE_DELAYS_MS).toEqual([0, 400, 800, 1500, 2500])
-  })
-
-  it('caps mutation readback retries briefly for the save critical path', () => {
-    expect(MUTATION_READBACK_DELAYS_MS).toEqual([0, 250, 500])
-    expect(MUTATION_READBACK_DELAYS_MS.reduce((sum, item) => sum + item, 0)).toBeLessThan(
-      READ_AFTER_WRITE_DELAYS_MS.reduce((sum, item) => sum + item, 0),
-    )
   })
 })

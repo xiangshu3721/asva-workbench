@@ -1,6 +1,4 @@
 export const READ_AFTER_WRITE_DELAYS_MS = Object.freeze([0, 400, 800, 1500, 2500])
-/** Brief, capped retries for save critical path (getRecord by id). Avoids multi-second list-table readback. */
-export const MUTATION_READBACK_DELAYS_MS = Object.freeze([0, 250, 500])
 export const RECENT_WRITE_WINDOW_MS = 8_000
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
