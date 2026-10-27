@@ -201,7 +201,7 @@ export const CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS = 45_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 55_000
 
 export function classifyFetchFailure(error: unknown, timedOut = false): { code: 'REQUEST_TIMEOUT' | 'NETWORK_UNREACHABLE' | 'CORS_PREFLIGHT_FAILED'; message: string } {
-  if (timedOut) return { code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认结果。' }
+  if (timedOut) return { code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认保存结果。' }
   const errorText = error instanceof Error ? `${error.name} ${error.message}` : String(error || '')
   if (/cors|cross[- ]origin|preflight|access[- ]control|blocked by cors policy/i.test(errorText)) {
     return { code: 'CORS_PREFLIGHT_FAILED', message: 'CORS_PREFLIGHT_FAILED：浏览器拒绝跨域预检，请检查网络或稍后重试。' }
