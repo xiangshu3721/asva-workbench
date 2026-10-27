@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FeishuRepository, customerIdForOperation, partialEnrollmentFailureMessage, publicCustomerMutationDto } from './repository.mjs'
+import { FeishuRepository, customerIdForOperation, partialEnrollmentFailureMessage, publicCustomerMutationDto, withOptimisticEnrollments } from './repository.mjs'
 
 describe('customer save contracts', () => {
   it('keeps the same operation idempotent across retries', () => {
@@ -40,5 +40,54 @@ describe('customer save contracts', () => {
     expect(result.profileChanges).toHaveLength(1)
     expect(result).not.toHaveProperty('appointments')
     expect(result).not.toHaveProperty('sourceRecords')
+  })
+})
+
+
+describe('customer save fast-path after write', () => {
+  it('builds enrollment DTOs without waiting for a full-table readback', () => {
+    const database = {
+      customers: [{ id: 'CUS-1' }],
+      enrollments: [{ id: 'ENR-OTHER', customerId: 'CUS-OTHER', productId: 'P-9', status: '学习中' }],
+      staff: [], appointments: [], sessions: [], followups: [], products: [], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {},
+    }
+    const next = withOptimisticEnrollments(database, 'CUS-1', [{ productId: 'P-001' }, { productId: 'P-002', paymentStatus: 'PAID' }], 'op-save-1')
+    expect(next.enrollments.filter((item) => item.customerId === 'CUS-1')).toEqual([
+      expect.objectContaining({ productId: 'P-001', status: 'ACTIVE', paymentStatus: 'UNRECORDED' }),
+      expect.objectContaining({ productId: 'P-002', status: 'ACTIVE', paymentStatus: 'PAID' }),
+    ])
+    expect(next.enrollments.some((item) => item.customerId === 'CUS-OTHER')).toBe(true)
+  })
+
+  it('returns COMMITTED for the same operationId when the customer already exists (lost-response recovery)', async () => {
+    const operationId = 'op-recover-committed-1'
+    const customerId = customerIdForOperation(operationId)
+    const database = {
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      customers: [{ id: customerId, name: 'Recovered', phone: '13800000099', wechat: '', notes: '', profileFields: {}, profileFieldMeta: {} }],
+      products: [{ id: 'P-001', name: '觉塑', active: true, status: '在售' }],
+      enrollments: [],
+      appointments: [], sessions: [], followups: [], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
+      _rows: {},
+    }
+    const repository = new FeishuRepository({ authRepository: {} })
+    let loadAfterWriteCalls = 0
+    repository.loadDirectory = async () => database
+    repository.loadAfterWrite = async () => { loadAfterWriteCalls += 1; return database }
+    repository.loadCustomerAfterWrite = async () => { throw new Error('should not create again') }
+    repository.scheduleAutomaticCustomerProfile = () => ({ status: 'NOT_REQUIRED' })
+
+    const result = await repository.createCustomer('ADMIN-1', {
+      operationId,
+      nickname: 'Recovered',
+      phone: '13800000099',
+      wechat: '',
+      situation: '',
+      needsFollowup: false,
+      confirmedNotSame: true,
+    }, 'req-1', { compactResponse: true })
+
+    expect(result).toMatchObject({ createdCustomerId: customerId, customerCreated: false, persistenceStatus: 'COMMITTED' })
+    expect(loadAfterWriteCalls).toBe(0)
   })
 })

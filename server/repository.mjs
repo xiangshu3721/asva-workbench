@@ -507,6 +507,34 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
   return changed
 }
 
+/** Build response enrollments from drafts so create/update can return without a full-table loadAfterWrite. */
+export function withOptimisticEnrollments(database, customerId, drafts, operationId = '', { replace = false } = {}) {
+  if (!Array.isArray(drafts)) return database
+  const byProduct = new Map(drafts.map((draft) => [draft.productId, draft]).filter(([productId]) => productId))
+  const enrollments = []
+  for (const item of database.enrollments || []) {
+    if (item.customerId !== customerId) { enrollments.push(item); continue }
+    if (item.status === 'CANCELLED') { enrollments.push(item); continue }
+    if (byProduct.has(item.productId)) continue
+    enrollments.push(replace ? { ...item, status: 'CANCELLED' } : item)
+  }
+  for (const draft of byProduct.values()) {
+    const enrollmentId = operationId ? stableOperationId(`${operationId}:${draft.productId}`, 'ENR') : `E-opt-${draft.productId}`
+    enrollments.push({
+      id: enrollmentId,
+      customerId,
+      productId: draft.productId,
+      status: 'ACTIVE',
+      paymentStatus: draft.paymentStatus || 'UNRECORDED',
+      amount: draft.amount ?? null,
+      enrollmentSource: 'MANUAL',
+      enrolledAt: draft.enrolledAt || null,
+      paidAt: draft.paidAt || null,
+    })
+  }
+  return { ...database, enrollments }
+}
+
 async function createManualProfileChange(database, { customerId, field, fieldName, oldValue, newValue, operatorId, operationId = '' }) {
   if (sameProfileValue(oldValue, newValue)) return null
   const existing = (database.profileChanges || []).find((item) => item.customerId === customerId && item.field === field && sameProfileValue(item.oldValue, oldValue) && sameProfileValue(item.newValue, newValue) && item.operatorId === operatorId)
@@ -1441,7 +1469,8 @@ export class FeishuRepository {
     return createProfileDraft({ text: textInput, existing: current.profileFields || {} })
   }
   async previewCustomer(actorId, input) {
-    const database = await this.load()
+    // Directory (4 tables) is enough for identity/duplicates; avoid 11-table loadFresh on Save preview.
+    const database = await this.loadDirectory()
     scope(database, actorId)
     const normalized = validateManualCustomer(input)
     const identity = resolveCustomerIdentity(database.customers, normalized)
@@ -1457,7 +1486,8 @@ export class FeishuRepository {
     let result = 'ERROR'
     try {
       const identityStartedAt = Date.now()
-      const database = await this.load()
+      // Identity + enrollment validation only need customers/staff/products/enrollments.
+      const database = await this.loadDirectory()
       scope(database, actorId)
       const normalized = validateManualCustomer(input)
       const existingId = operationId ? customerIdForOperation(operationId) : ''
@@ -1519,8 +1549,9 @@ export class FeishuRepository {
         : { status: 'NOT_REQUIRED' }
       result = 'SUCCESS'
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
-      if (enrollmentsChanged) current = await this.loadAfterWrite(undefined, customerId)
-      const latest = current
+      // Enrollment writes already committed above; skip full-table loadAfterWrite on the save critical path.
+      if (enrollmentsChanged) current = withOptimisticEnrollments(current, customerId, input.enrollments, operationId)
+      const latest = { ...current, _persistenceStatus: 'COMMITTED' }
       if (!existing) this.recentCustomerWrites.set(customerId, Date.now())
       const response = compactResponse
         ? publicCustomerMutationDto(latest, actorId, customerId, !existing)
@@ -1603,7 +1634,9 @@ export class FeishuRepository {
       if (enrollmentChange) latest = { ...latest, profileChanges: [...latest.profileChanges, enrollmentChange] }
     }
     // Customer updates do not create or mutate Appointment in Stage 1.
-    if (enrollmentsChanged) latest = await this.loadAfterWrite(undefined, customerId)
+    // Enrollment writes already committed; avoid full-table loadAfterWrite on the mutation critical path.
+    if (enrollmentsChanged) latest = withOptimisticEnrollments(latest, customerId, input.enrollments, text(input?.operationId).trim(), { replace: Array.isArray(input.enrollments) })
+    latest = { ...latest, _persistenceStatus: 'COMMITTED' }
     const automaticProfile = automaticText
       ? this.scheduleAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_UPDATE')
       : { status: 'NOT_REQUIRED' }

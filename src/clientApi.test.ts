@@ -94,4 +94,16 @@ describe('HTTP environment diagnostics', () => {
     await vi.advanceTimersByTimeAsync(CLIENT_DEFAULT_TIMEOUT_MS)
     await pending
   })
+
+  it('CLIENT_TIMEOUT_BOUNDED uses the customer-mutation budget for previewCustomer on the Save path', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').previewCustomer('STAFF-1', { nickname: '预览客户', phone: '13800138001', situation: '', needsFollowup: false, operationId: 'preview-timeout-1', confirmedNotSame: true })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS)
+    await pending
+  })
 })
+
