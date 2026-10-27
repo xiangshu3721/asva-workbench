@@ -95,6 +95,26 @@ describe('HTTP environment diagnostics', () => {
     await pending
   })
 
+  it('REQUEST_TIMEOUT message is neutral and not save-specific (login shares the helper)', () => {
+    const failure = classifyFetchFailure(new DOMException('Aborted', 'AbortError'), true)
+    expect(failure).toMatchObject({ code: 'REQUEST_TIMEOUT', message: '请求等待时间较长，正在确认结果。' })
+    expect(failure.message).not.toContain('保存')
+  })
+
+  it('login timeout surfaces the neutral REQUEST_TIMEOUT message', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').login('15000000000', 'probe')).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+      message: '请求等待时间较长，正在确认结果。',
+    })
+    await vi.advanceTimersByTimeAsync(CLIENT_DEFAULT_TIMEOUT_MS)
+    await pending
+  })
+
   it('CLIENT_TIMEOUT_BOUNDED uses the customer-mutation budget for previewCustomer on the Save path', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
