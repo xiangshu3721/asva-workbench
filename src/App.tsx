@@ -84,6 +84,10 @@ function customerSaveFailureMessage(error: unknown) {
   if (code === 'REQUEST_TIMEOUT' || code === 'NETWORK_UNREACHABLE' || code === 'CORS_PREFLIGHT_FAILED' || code === 'CORS_ERROR') return '保存结果暂未确认，原内容仍保留。请稍后重试，系统会继续使用同一操作编号核对，避免重复创建客户。'
   return sourceFailureMessage(error, 'save')
 }
+function isCustomerSaveUnconfirmed(error: unknown) {
+  const code = (error as { serverCode?: string; code?: string })?.serverCode || (error as { code?: string })?.code
+  return code === 'REQUEST_TIMEOUT' || code === 'NETWORK_UNREACHABLE' || code === 'CORS_PREFLIGHT_FAILED' || code === 'CORS_ERROR'
+}
 
 function Avatar({ staff, size = 'md' }: { staff?: Staff; size?: 'sm' | 'md' | 'lg' }) { return <span className={`avatar avatar-${size}`}>{accountAvatar(staff?.name)}</span> }
 function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'blue' | 'green' | 'amber' | 'rose' | 'dark' }) { return <span className={`badge badge-${tone}`}>{children}</span> }
@@ -468,8 +472,17 @@ function WorkbenchApp() {
   }
   const saveManualCustomer = async (input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
     const saveStartedAt = performance.now()
-    const saved = await workbenchApi.createCustomer(activeStaff.id, input)
-    logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) })
+    let saved
+    let recoveredAfterTimeout = false
+    try {
+      saved = await workbenchApi.createCustomer(activeStaff.id, input)
+    } catch (error) {
+      // Write may have committed while the response was lost; same operationId is idempotent and recovers the customer.
+      if (!isCustomerSaveUnconfirmed(error) || !input.operationId) throw error
+      saved = await workbenchApi.createCustomer(activeStaff.id, input)
+      recoveredAfterTimeout = true
+    }
+    logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
     applyCustomerMutation(saved)
     if (!upload) { setManualCustomerOpen(false); return }
     const customerId = saved.createdCustomerId
@@ -478,7 +491,23 @@ function WorkbenchApp() {
     openCustomer(customerId)
   }
   const previewManualCustomer = (input: ManualCustomerInput): Promise<CustomerDraftPreview> => workbenchApi.previewCustomer(activeStaff.id, input)
-  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => { const saveStartedAt = performance.now(); const saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (upload) await saveCustomerUpload(customerId, upload); setManualCustomerOpen(false); openCustomer(customerId) }
+  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
+    const saveStartedAt = performance.now()
+    let saved
+    let recoveredAfterTimeout = false
+    try {
+      saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input)
+    } catch (error) {
+      if (!isCustomerSaveUnconfirmed(error) || !input.operationId) throw error
+      saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input)
+      recoveredAfterTimeout = true
+    }
+    logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
+    applyCustomerMutation(saved)
+    if (upload) await saveCustomerUpload(customerId, upload)
+    setManualCustomerOpen(false)
+    openCustomer(customerId)
+  }
   const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabaseSnapshot(saved); refresh() }
   const sourceWorkspace = (customerId: string) => workbenchApi.sourceWorkspace(activeStaff.id, customerId)
   const sourceStatus = (customerId: string, operationId: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId)
