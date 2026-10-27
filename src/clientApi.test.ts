@@ -79,7 +79,7 @@ describe('HTTP environment diagnostics', () => {
       init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
     }))
     vi.stubGlobal('fetch', fetchMock)
-    const pending = expect(createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { nickname: '慢客户', phone: '13800138000', situation: '', needsFollowup: false, operationId: 'cust-timeout-1', confirmedNotSame: true })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { nickname: '慢客户', phone: '13800138000', operationId: 'cust-timeout-1', confirmedNotSame: true })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
     await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_MUTATION_TIMEOUT_MS)
     await pending
   })
