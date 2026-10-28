@@ -111,6 +111,24 @@ const PROFILE_FIELD_KEYS = new Set('phone wechat gender birth_date age birth_yea
 const IMPORTANT_PROFILE_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'age', 'city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id', 'mentor_id', 'grade', 'paid', 'intended_course'])
 const CUSTOMER_PROFILE_SCHEMA_VERSION = 'v1.0'
 
+export function classifyStructuredArchivingOutcome({
+  validEvidenceCount = 0,
+  mappedEvidenceCount = 0,
+  mappedNoChangeCount = 0,
+  physicalFieldWriteCount = 0,
+  unresolvedMappedEvidenceCount = 0,
+  derivedErrorCount = 0,
+  hasOpenConflict = false,
+} = {}) {
+  if (hasOpenConflict) return { status: 'REVIEW_REQUIRED', outcome: 'REVIEW_REQUIRED', errorCode: 'OPEN_EVIDENCE_CONFLICT' }
+  if (derivedErrorCount > 0) return { status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'DERIVED_WRITE_FAILED' }
+  if (unresolvedMappedEvidenceCount > 0) return { status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'STRUCTURED_ARCHIVE_PARTIAL' }
+  if (physicalFieldWriteCount > 0) return { status: 'COMPLETED', outcome: 'EFFECTIVE', errorCode: '' }
+  if (mappedEvidenceCount > 0 && mappedNoChangeCount === mappedEvidenceCount) return { status: 'COMPLETED', outcome: 'NO_NEW_FACTS', errorCode: '' }
+  if (validEvidenceCount === 0) return { status: 'REVIEW_REQUIRED', outcome: 'NO_ARCHIVABLE_FACTS', errorCode: 'NO_ARCHIVABLE_FACTS' }
+  return { status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'STRUCTURED_ARCHIVE_PARTIAL' }
+}
+
 function appointment(row) {
   const f = row.fields || {}
   const rawStatus = text(get('appointments', f, 'status'))
@@ -1978,14 +1996,26 @@ export class FeishuRepository {
       if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
       const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
       const derivedErrors = []
+      const archivingCounts = {
+        mappedEvidenceCount: 0,
+        mappedNoChangeCount: 0,
+        physicalFieldWriteCount: 0,
+        supplementaryWriteCount: 0,
+        unresolvedMappedEvidenceCount: 0,
+      }
       for (const evidence of allEvidence) {
         try {
+          if (evidence.fieldKey) archivingCounts.mappedEvidenceCount += 1
           const currentValue = database.customers.find((item) => item.id === source.customerId)?.profileFields?.[evidence.fieldKey] ?? null
           const change = classifyEvidenceChange(evidence, currentValue)
           const existingProposal = refreshed.profileUpdateProposals.find((item) => item.evidenceId === evidence.id)
-          if (existingProposal || (evidence.evidenceType !== 'FACT' && evidence.fieldKey)) continue
+          if (existingProposal || (evidence.evidenceType !== 'FACT' && evidence.fieldKey)) {
+            if (evidence.fieldKey) archivingCounts.unresolvedMappedEvidenceCount += 1
+            continue
+          }
           const timestamp = now()
           if (change.changeType === 'NO_CHANGE') {
+            if (evidence.fieldKey) archivingCounts.mappedNoChangeCount += 1
             if (!automaticMode && evidence.reviewStatus !== 'CONFIRMED') await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
             continue
           }
@@ -1997,7 +2027,10 @@ export class FeishuRepository {
               ? true
               : evidence.verificationStatus === 'HUMAN_VERIFIED'
           if (!evidence.fieldKey) {
-            if (automaticMode && privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
+            if (automaticMode && privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply) {
+              const appended = await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
+              if (appended) archivingCounts.supplementaryWriteCount += 1
+            }
             continue
           }
           const currentCustomer = database.customers.find((item) => item.id === source.customerId)
@@ -2024,7 +2057,7 @@ export class FeishuRepository {
           if (autoApply) {
             const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), automaticMode ? false : true)[0]
             if (update) {
-              await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
+              const profileWrite = await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
                 sourceRecordId: sourceId,
                 evidenceId: evidence.id,
                 updateBatchId: evidence.extractionBatchId,
@@ -2032,9 +2065,12 @@ export class FeishuRepository {
                 sourceEntryAt: incomingEntryAt,
                 sourceVersion: incomingVersion,
               })
+              archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
+              if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += 1
               if (!automaticMode) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
             }
           }
+          if (!autoApply) archivingCounts.unresolvedMappedEvidenceCount += 1
           if (automaticMode && !autoApply && (evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS')) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
           const reviewStatus = automaticMode ? 'PENDING_REVIEW' : autoApply || shouldAutoConfirmEvidence(evidence) ? 'CONFIRMED' : 'PENDING_REVIEW'
           if (privacyPolicy.canPromoteToProfile && evidence.fieldKey && isSnapshotEvidence(evidence)) {
@@ -2054,12 +2090,18 @@ export class FeishuRepository {
       }
       const debugBeforeStatus = await this.load()
       const hasOpenConflict = debugBeforeStatus.evidenceConflicts.some((item) => item.newEvidenceId && debugBeforeStatus.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
-      const finalStatus = hasOpenConflict ? 'REVIEW_REQUIRED' : candidates.length > 0 && replaceableEvidence.length === 0 ? 'REVIEW_REQUIRED' : 'COMPLETED'
+      const archiveOutcome = classifyStructuredArchivingOutcome({
+        validEvidenceCount: replaceableEvidence.length,
+        ...archivingCounts,
+        derivedErrorCount: derivedErrors.length,
+        hasOpenConflict,
+      })
+      const finalStatus = archiveOutcome.status
       const finishedAt = now()
-      const finalErrors = [...new Set([...derivedErrors, ...(candidates.length > 0 && replaceableEvidence.length === 0 ? ['NO_VALID_EVIDENCE'] : [])])]
+      const finalErrors = [...new Set([...derivedErrors, ...(archiveOutcome.errorCode ? [archiveOutcome.errorCode] : []), ...(candidates.length > 0 && replaceableEvidence.length === 0 ? ['NO_VALID_EVIDENCE'] : [])])]
       await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: finalErrors.length ? finalErrors.join(',').slice(0, 200) : '', updated_at: finishedAt })
       const debugDatabase = await this.load()
-      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, processing_error: finalErrors.length ? finalErrors.join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, archive_outcome: archiveOutcome.outcome, processing_error: finalErrors.length ? finalErrors.join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, ...archivingCounts, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)
       await this.markSafetyStale(source.customerId).catch((error) => this.audit('MARK_SAFETY_STALE', source.customerId, actorId, 'FAIL', error instanceof Error ? error.code || error.message : 'SAFETY_STALE_FAILED'))
@@ -2081,9 +2123,14 @@ export class FeishuRepository {
     if (!source) return
     const pendingProposal = database.profileUpdateProposals.some((item) => item.sourceId === sourceId && item.reviewStatus === 'PENDING_REVIEW')
     const openConflict = database.evidenceConflicts.some((item) => item.newEvidenceId && database.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
+    const mappedEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId && item.fieldKey)
+    const customer = database.customers.find((item) => item.id === source.customerId)
+    const allMappedFactsPersisted = mappedEvidence.length > 0 && mappedEvidence.every((item) => sameProfileValue(customer?.profileFields?.[item.fieldKey], item.standardValue))
+    const partialArchive = /STRUCTURED_ARCHIVE_PARTIAL|DERIVED_WRITE_FAILED|NO_ARCHIVABLE_FACTS/.test(source.processingError || '')
+    if (partialArchive && !allMappedFactsPersisted) return
     if (!pendingProposal && !openConflict) {
       const row = database._rows.sourceRecords.find((item) => item.record_id === source._recordId)
-      if (row) await updateRecord(stage2Table('sourceRecords'), row.record_id, mapFields('sourceRecords', { processing_status: 'COMPLETED', updated_at: now() }))
+      if (row) await updateRecord(stage2Table('sourceRecords'), row.record_id, mapFields('sourceRecords', { processing_status: 'COMPLETED', processing_error: '', updated_at: now() }))
     }
   }
   async reviewProposal(actorId, proposalIdValue, decision) {

@@ -26,6 +26,13 @@ describe('DeepSeek processing diagnostics', () => {
     expect(body.response_format).toEqual({ type: 'json_object' })
     expect(body.max_tokens).toBe(4096)
     expect(body.stream).toBe(false)
+    const promptInput = JSON.parse(body.messages.find((message) => message.role === 'user').content)
+    expect(promptInput.writable_customer_fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'sleep', meaning: '睡眠情况' }),
+      expect.objectContaining({ key: 'relationship_conflicts', meaning: '关系冲突' }),
+      expect.objectContaining({ key: 'career_goal', meaning: '职业目标' }),
+    ]))
+    expect(promptInput.writable_customer_fields.find((item) => item.key === 'city').boundary).toContain('工作地点不得填入')
   })
 
   it('fails closed on truncated evidence output without burning extra DeepSeek attempts', async () => {
