@@ -85,7 +85,10 @@ function isResidenceStateOnly(value, quote) {
 
 export function resolveCanonicalField({ fieldKey = '', value = '', sourceExcerpt = '', displayText = '' } = {}) {
   const rawField = text(fieldKey).toLowerCase()
-  const quote = `${sourceExcerpt} ${displayText}`
+  // Only the original excerpt is evidence. A model-generated display label
+  // may explain ambiguity but must never add residence, timing, or identity
+  // semantics that are absent from the customer's source material.
+  const quote = text(sourceExcerpt)
   const canonical = rawField === 'living_status' && isCityLike(value, quote)
     ? 'current_city'
     : ALIAS_TO_CANONICAL.get(rawField)
@@ -129,6 +132,7 @@ function canonicalValueMatchesQuote(fieldKey, value, quote) {
   if (fieldKey === 'gender') return /男|女/.test(candidate) && source.includes(candidate.slice(0, 1))
   if (fieldKey === 'relationship_status') {
     if (/恋爱|有伴侣/.test(candidate)) return /恋爱|男朋友|女朋友|对象|伴侣/.test(quote)
+    if (/有(?:男|女)朋友/.test(candidate)) return /男朋友|女朋友/.test(quote)
     if (/单身/.test(candidate)) return /单身|没有(?:男|女)朋友|无伴侣/.test(quote)
     if (/已婚|婚姻/.test(candidate)) return /已婚|结婚|丈夫|妻子|爱人/.test(quote)
   }

@@ -49,6 +49,16 @@ describe('R037 canonical profile fact normalization', () => {
     expect(fact).toMatchObject({ canonicalFieldKey: 'UNKNOWN', storageFieldKey: null })
   })
 
+  it('does not trust a model display label to turn a work location into residence', () => {
+    const fact = normalizeCanonicalFact({ fieldKey: 'city', value: '杭州', sourceExcerpt: '在杭州工作', displayText: '在杭州工作（现居城市待确认）', semanticKind: 'CURRENT_STATE' })
+    expect(fact.storageFieldKey).toBeNull()
+  })
+
+  it('grounds a relationship status from an explicitly named partner', () => {
+    const fact = normalizeCanonicalFact({ fieldKey: 'relationship_status', value: '有男朋友', sourceExcerpt: '最近经常和男朋友吵架', semanticKind: 'CURRENT_STATE' })
+    expect(fact).toMatchObject({ storageFieldKey: 'relationship_status', grounded: true })
+  })
+
   it('does not treat a future marker as a current fact', () => {
     expect(classifyTemporalFact({ fieldKey: 'current_city', value: '广州', sourceExcerpt: '她计划以后去广州生活一段时间。', semanticKind: 'CURRENT_STATE' })).toBe('FUTURE_PLAN')
   })
