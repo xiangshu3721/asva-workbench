@@ -13,7 +13,7 @@ import { documentFileRef, extractDocument, parseDocumentFileRef } from './docume
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
 import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
-import { isStaleProcessing, processingErrorCode } from '../shared/processing-contract.mjs'
+import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, finalizeAutoProcessingFailureCode, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
@@ -744,7 +744,7 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -793,9 +793,43 @@ export class FeishuRepository {
     return true
   }
 
+  resetAutoRecoveryCircuitIfNeeded() {
+    const day = new Date().toISOString().slice(0, 10)
+    if (this.autoRecoveryCircuit.day !== day) this.autoRecoveryCircuit = { day, count: 0, paused: false }
+  }
+
+  noteAutoRecoverySchedule() {
+    this.resetAutoRecoveryCircuitIfNeeded()
+    this.autoRecoveryCircuit.count += 1
+    if (this.autoRecoveryCircuit.count > AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY) {
+      this.autoRecoveryCircuit.paused = true
+      this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', 'AUTO_RECOVERY_CIRCUIT_OPEN')
+    }
+  }
+
+  async stampAutoRetryCapReached(source) {
+    if (!source?._recordId || source.processingError === AUTO_RETRY_CAP_REACHED) return false
+    if (!hasReachedAutoRetryCap(source)) return false
+    if (isNonRetryableAutoProcessingError(source.processingError) && source.processingError !== AUTO_RETRY_CAP_REACHED) return false
+    const stampedAt = now()
+    await updateMappedRecord('sourceRecords', 'source.processing.auto_retry_cap', source._recordId, {
+      processing_status: 'FAILED',
+      processing_error: AUTO_RETRY_CAP_REACHED,
+      last_processing_at: stampedAt,
+      updated_at: stampedAt,
+    }).catch(() => {})
+    this.audit('RECOVER_AUTOMATIC_PROCESSING', source.id, '', 'FAIL', AUTO_RETRY_CAP_REACHED)
+    return true
+  }
+
   async recoverAutomaticProcessing() {
     if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
     if (this.autoProcessingRecoveryRunning) return
+    this.resetAutoRecoveryCircuitIfNeeded()
+    if (this.autoRecoveryCircuit.paused) {
+      this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', 'AUTO_RECOVERY_CIRCUIT_OPEN')
+      return { status: 'CIRCUIT_OPEN' }
+    }
     this.autoProcessingRecoveryRunning = true
     try {
       const database = await this.load({ force: true })
@@ -810,9 +844,18 @@ export class FeishuRepository {
         }
         if (actorId) this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
       }
-      for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && automaticProfileEventAllowed(item.createdAt || item.uploadedAt || item.occurredAt || item.processingStartedAt) && (['UPLOADED', 'FAILED'].includes(item.processingStatus) || (item.processingStatus === 'PROCESSING' && isStaleProcessing(item)))).slice(0, 10)) {
+      let scheduledSources = 0
+      for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && automaticProfileEventAllowed(item.createdAt || item.uploadedAt || item.occurredAt || item.processingStartedAt))) {
+        if (!shouldAutoRecoverSource(source)) {
+          if (hasReachedAutoRetryCap(source) && ['FAILED', 'PROCESSING'].includes(source.processingStatus)) await this.stampAutoRetryCapReached(source)
+          continue
+        }
+        if (this.autoRecoveryCircuit.paused || scheduledSources >= 10) break
         const actorId = database.staff.some((item) => item.id === source.uploadedBy && item.status === 'ACTIVE') ? source.uploadedBy : fallbackActor
-        if (actorId) this.scheduleAutomaticProcessing(actorId, source.id)
+        if (!actorId) continue
+        this.noteAutoRecoverySchedule()
+        this.scheduleAutomaticProcessing(actorId, source.id)
+        scheduledSources += 1
       }
     } finally {
       this.autoProcessingRecoveryRunning = false
@@ -2024,8 +2067,9 @@ export class FeishuRepository {
       return this.sourceDetail(actorId, sourceId)
     } catch (error) {
       const failedAt = now()
-      await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_processing_at: failedAt, processing_error: processingErrorCode(error), updated_at: failedAt }).catch(() => {})
-      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', processing_error: processingErrorCode(error), extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, duration_ms: Date.now() - startedAt })
+      const failedCode = finalizeAutoProcessingFailureCode(error, processingVersion)
+      await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_processing_at: failedAt, processing_error: failedCode, updated_at: failedAt }).catch(() => {})
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', processing_error: failedCode, extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId, 'FAIL', error instanceof Error ? error.message : 'EXTRACTION_FAILED')
       throw error

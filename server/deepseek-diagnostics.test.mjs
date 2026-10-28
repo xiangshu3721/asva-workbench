@@ -28,11 +28,11 @@ describe('DeepSeek processing diagnostics', () => {
     expect(body.stream).toBe(false)
   })
 
-  it('retries finite truncated evidence responses and then fails closed', async () => {
+  it('fails closed on truncated evidence output without burning extra DeepSeek attempts', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{"items":[' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
     await expect(createEvidenceCandidates({ text: '合成资料。', sourceRole: 'STAFF_REPORTED', sourcePerspective: 'STAFF_REPORTED' })).rejects.toMatchObject({ code: 'DEEPSEEK_OUTPUT_TRUNCATED' })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
 
