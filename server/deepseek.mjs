@@ -18,7 +18,8 @@ export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJ
 
 export const HUMAN_LANGUAGE_RULE = '最终面向导师和管理员展示的解释必须使用自然、直接的中文；不要输出内部英文枚举、字段名、代码、Schema 名称、版本号、系统状态标识或调试信息。遇到信息不足时直接说“待确认”“资料还不够”，不要把内部值原样写进解释。'
 
-const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_OUTPUT_TRUNCATED'])
+const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_RATE_LIMIT'])
+// DEEPSEEK_OUTPUT_TRUNCATED is non-transient (same max_tokens → same truncation); do not burn extra attempts.
 
 async function callDeepSeek(messages, temperature = 0.2, options = {}) {
   if (!config.deepseek.apiKey) throw new DeepSeekUnavailableError('DeepSeek 尚未配置')

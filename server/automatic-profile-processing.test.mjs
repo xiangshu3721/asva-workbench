@@ -156,4 +156,41 @@ describe('automatic customer profile processing', () => {
     expect(repository.scheduleAutomaticCustomerProfile).not.toHaveBeenCalled()
     expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
   })
+
+  it('does not auto-recover FAILED sources past the processing_version cap or with truncation errors', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [
+        { id: 'SRC-CAP', customerId: 'CUS-AUTO-1', processingStatus: 'FAILED', processingVersion: 191, processingError: 'DEEPSEEK_TIMEOUT', uploadedBy: 'ADMIN-1', _recordId: 'rec-cap' },
+        { id: 'SRC-TRUNC', customerId: 'CUS-AUTO-1', processingStatus: 'FAILED', processingVersion: 2, processingError: 'DEEPSEEK_OUTPUT_TRUNCATED', uploadedBy: 'ADMIN-1', _recordId: 'rec-trunc' },
+        { id: 'SRC-OK', customerId: 'CUS-AUTO-1', processingStatus: 'FAILED', processingVersion: 2, processingError: 'DEEPSEEK_TIMEOUT', uploadedBy: 'ADMIN-1', _recordId: 'rec-ok' },
+        { id: 'SRC-UPLOADED', customerId: 'CUS-AUTO-1', processingStatus: 'UPLOADED', processingVersion: 1, uploadedBy: 'ADMIN-1', _recordId: 'rec-up' },
+      ],
+    }))
+    repository.scheduleAutomaticProcessing = vi.fn()
+    repository.stampAutoRetryCapReached = vi.fn(async () => true)
+
+    await repository.recoverAutomaticProcessing()
+
+    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledWith('ADMIN-1', 'SRC-OK')
+    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledWith('ADMIN-1', 'SRC-UPLOADED')
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalledWith('ADMIN-1', 'SRC-CAP')
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalledWith('ADMIN-1', 'SRC-TRUNC')
+    expect(repository.stampAutoRetryCapReached).toHaveBeenCalledWith(expect.objectContaining({ id: 'SRC-CAP' }))
+    expect(repository.stampAutoRetryCapReached).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'SRC-TRUNC' }))
+  })
+
+  it('pauses further auto recovery once the daily circuit breaker opens', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.autoRecoveryCircuit = { day: new Date().toISOString().slice(0, 10), count: 81, paused: true }
+    repository.load = vi.fn()
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'CIRCUIT_OPEN' })
+    expect(repository.load).not.toHaveBeenCalled()
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
+  })
+
 })
