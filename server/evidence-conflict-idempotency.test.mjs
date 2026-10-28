@@ -17,7 +17,7 @@ vi.mock('./feishu.mjs', async () => {
 })
 
 const { config } = await import('./config.mjs')
-const { FeishuRepository } = await import('./repository.mjs')
+const { FeishuRepository, classifyStructuredArchivingOutcome } = await import('./repository.mjs')
 const { serializeDialogueContext } = await import('../shared/dialogue-gate.mjs')
 
 let activeDatabase
@@ -73,6 +73,33 @@ function setupRepository(extractor = async () => [{ evidence_type: 'FACT', seman
   repository.scheduleCustomerUnderstandingRefresh = () => {}
   return repository
 }
+
+describe('structured archive completion criteria', () => {
+  it('does not treat technical Evidence completion as effective archiving', () => {
+    expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 5, mappedEvidenceCount: 0, physicalFieldWriteCount: 0 })).toEqual({ status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'STRUCTURED_ARCHIVE_PARTIAL' })
+  })
+
+  it('marks real physical writes and fully matched existing facts as effective outcomes', () => {
+    expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 3, mappedEvidenceCount: 2, mappedNoChangeCount: 0, physicalFieldWriteCount: 2 })).toMatchObject({ status: 'COMPLETED', outcome: 'EFFECTIVE' })
+    expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 2, mappedEvidenceCount: 2, mappedNoChangeCount: 2 })).toMatchObject({ status: 'COMPLETED', outcome: 'NO_NEW_FACTS' })
+  })
+
+  it('fails closed on unresolved mappings, conflicts, and derived write errors', () => {
+    expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 2, mappedEvidenceCount: 2, physicalFieldWriteCount: 1, unresolvedMappedEvidenceCount: 1 }).status).toBe('REVIEW_REQUIRED')
+    expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 2, mappedEvidenceCount: 2, physicalFieldWriteCount: 2, derivedErrorCount: 1 }).errorCode).toBe('DERIVED_WRITE_FAILED')
+    expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 2, mappedEvidenceCount: 2, physicalFieldWriteCount: 2, hasOpenConflict: true }).outcome).toBe('REVIEW_REQUIRED')
+  })
+
+  it('keeps a Source review-required when valid Evidence has no usable structured field', async () => {
+    const repository = setupRepository(async () => [{
+      evidence_type: 'FACT', semantic_kind: 'OTHER', field_key: '', value: '无法归类的普通线索', display_text: '无法归类的普通线索', source_excerpt: '她提到一个无法归类的普通线索。', confidence: 0.9,
+      content_source: 'MENTOR_REPORTED', information_nature: 'REPORTED_SPEECH', verification_status: 'SOURCE_SUPPORTED', locator: { paragraph_index: 0 },
+    }])
+    activeDatabase.sourceRecords[0].rawText = '她提到一个无法归类的普通线索。'
+    const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+  })
+})
 
 describe('R036 source-scoped evidence replacement and conflict confirmation', () => {
   it('serializes concurrent retries and keeps source/evidence counts stable across three retries', async () => {

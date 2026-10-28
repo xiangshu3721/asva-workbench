@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalProfileFieldRegistry, classifyTemporalFact, normalizeCanonicalFact, resolveCanonicalField } from './canonical-profile-facts.mjs'
+import { canonicalProfileFieldCatalog, canonicalProfileFieldRegistry, classifyTemporalFact, normalizeCanonicalFact, resolveCanonicalField } from './canonical-profile-facts.mjs'
+import { FIELD_MAPPING } from '../server/field-mapping.mjs'
 
 describe('R037 canonical profile fact normalization', () => {
   it('maps living_status location wording to the existing city field', () => {
@@ -54,5 +55,29 @@ describe('R037 canonical profile fact normalization', () => {
 
   it('exposes only the minimum registry for existing profile fields', () => {
     expect(canonicalProfileFieldRegistry()).toMatchObject({ current_city: { storageFieldKey: 'city' }, occupation: { storageFieldKey: 'occupation' }, employment_status: { storageFieldKey: 'job_status' } })
+  })
+
+  it('recognizes the complete writable Customers profile schema directly', () => {
+    for (const key of ['sleep', 'relationship_conflicts', 'emotion_expression', 'current_stressors', 'support_system', 'career_goal']) {
+      const resolved = resolveCanonicalField({ fieldKey: key, value: '原文值', sourceExcerpt: '原文值' })
+      expect(resolved.storageFieldKey).toBe(key)
+      expect(FIELD_MAPPING.customers[key]).toBeTruthy()
+    }
+  })
+
+  it('keeps every model-exposed field aligned with the Customers schema', () => {
+    const catalog = canonicalProfileFieldCatalog()
+    expect(catalog.length).toBeGreaterThan(70)
+    for (const item of catalog) expect(FIELD_MAPPING.customers[item.storageFieldKey]).toBeTruthy()
+  })
+
+  it('keeps future career intent out of current occupation', () => {
+    const fact = normalizeCanonicalFact({ fieldKey: 'occupation', value: '自己感兴趣的事业', sourceExcerpt: '她想做自己感兴趣的事业。', semanticKind: 'CURRENT_STATE' })
+    expect(fact).toMatchObject({ canonicalFieldKey: 'career_goal', storageFieldKey: 'career_goal', temporalType: 'CURRENT', semanticKind: 'CURRENT_STATE', grounded: true })
+  })
+
+  it('allows a normal structured field when its value is directly grounded', () => {
+    const fact = normalizeCanonicalFact({ fieldKey: 'sleep', value: '一般', sourceExcerpt: '她最近睡眠一般。', semanticKind: 'CURRENT_STATE' })
+    expect(fact).toMatchObject({ storageFieldKey: 'sleep', grounded: true, semanticKind: 'CURRENT_STATE' })
   })
 })
