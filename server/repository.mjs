@@ -1863,7 +1863,15 @@ export class FeishuRepository {
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
     const processingVersion = Number(source.processingVersion || 1) + 1
     const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
-    const batchId = stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}:${processingVersion}`)
+    // A failed automatic run may have committed its Evidence before the
+    // post-write readback returned. Continue that exact batch instead of
+    // calling the model again or creating a second set of Evidence.
+    const resumableEvidence = resumeExistingEvidence ? existingEvidence.filter((item) => item.reviewStatus !== 'SUPERSEDED') : []
+    const resumableBatchIds = [...new Set(resumableEvidence.map((item) => String(item.extractionBatchId || '')).filter(Boolean))]
+    if (resumeExistingEvidence && resumableBatchIds.length !== 1) throw Object.assign(new Error('既有 Evidence 批次无法安全恢复'), { code: 'EVIDENCE_RESUME_BATCH_AMBIGUOUS', status: 409 })
+    const batchId = resumeExistingEvidence
+      ? resumableBatchIds[0]
+      : stableId('EXT', `${sourceId}:${source.contentHash}:${source.extractorVersion || 'evidence-v1'}:${processingVersion}`)
     const processingStartedAt = now()
     const processingDiagnostics = { source_char_count: String(source.rawText || '').length, prompt_char_count: 0, token_estimate: 0, extracted_candidate_count: 0, privacy_restricted_count: 0, cross_customer_rejected_count: 0 }
     await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
@@ -1927,10 +1935,14 @@ export class FeishuRepository {
           }
         }
       }
-      const unique = dedupeEvidence(candidates)
+      // Deduplicate both the model output and any already-persisted recovery
+      // batch by stable logical identity. Physical duplicates remain
+      // auditable in Feishu, but may not cause repeated profile writes.
+      const unique = resumeExistingEvidence ? dedupeEvidence(resumableEvidence) : dedupeEvidence(candidates)
       const protectedKeys = new Set(allExistingEvidence.filter((item) => item.reviewStatus === 'CONFIRMED').map((item) => evidenceLogicalKey(item)))
       const rejectedEvidence = []
-      const replaceableEvidence = unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item))).filter((item) => {
+      const replaceableEvidence = (resumeExistingEvidence ? unique : unique.filter((item) => !protectedKeys.has(evidenceLogicalKey(item)))).filter((item) => {
+        if (resumeExistingEvidence) return true
         const compactExcerpt = normalizeText(item.sourceExcerpt, 500).replace(/\s+/g, '')
         const valid = item.sourceId === sourceId && Boolean(compactExcerpt) && item._sourceGrounded === true && item._canonicalGrounded === true
         if (!valid) rejectedEvidence.push({ fieldKey: item.fieldKey || '', reason: item._sourceGrounded === true ? 'CANONICAL_NOT_GROUNDED' : 'SOURCE_NOT_GROUNDED' })
@@ -1940,18 +1952,44 @@ export class FeishuRepository {
       const customer = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []
       for (const item of replaceableEvidence) {
-        const evidence = { ...item, id: stableId('EVD', `${sourceId}:${batchId}:${evidenceLogicalKey(item)}`) }
+        const evidence = { ...item, id: resumeExistingEvidence ? item.id : stableId('EVD', `${sourceId}:${batchId}:${evidenceLogicalKey(item)}`), extractionBatchId: batchId }
+        if (resumeExistingEvidence) {
+          createdEvidence.push(evidence)
+          continue
+        }
         try {
-          await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: evidence.contentSource, information_nature: evidence.informationNature, verification_status: evidence.verificationStatus, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, privacy_level: evidence.privacyLevel || 'NORMAL', privacy_meta_json: stage2Json(evidence.privacyMeta || {}), mentor_safe_text: evidence.mentorSafeText || evidence.displayText, created_at: now(), updated_at: now() })
+          const write = await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: evidence.contentSource, information_nature: evidence.informationNature, verification_status: evidence.verificationStatus, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, privacy_level: evidence.privacyLevel || 'NORMAL', privacy_meta_json: stage2Json(evidence.privacyMeta || {}), mentor_safe_text: evidence.mentorSafeText || evidence.displayText, created_at: now(), updated_at: now() })
+          evidence._recordId = write?.record?.record_id || write?.record_id || ''
         } catch (error) {
           throw Object.assign(error instanceof Error ? error : new Error('Evidence 批次写入失败'), { code: 'EVIDENCE_WRITE_FAILED', causeCode: processingErrorCode(error) })
         }
         createdEvidence.push(evidence)
       }
       this.invalidateDatabaseCache()
-      const persisted = await this.load({ force: true })
-      const persistedAllEvidence = (persisted._allEvidenceItems || persisted.evidenceItems).filter((item) => item.sourceId === sourceId && item.extractionBatchId === batchId && item.reviewStatus !== 'SUPERSEDED')
-      if (persistedAllEvidence.length !== replaceableEvidence.length) throw Object.assign(new Error('Evidence 批次写入校验失败'), { code: 'EVIDENCE_BATCH_READBACK_FAILED', status: 502 })
+      const expectedEvidenceIds = new Set(createdEvidence.map((item) => item.id).filter(Boolean))
+      const expectedRecordIds = new Set((resumeExistingEvidence ? resumableEvidence : createdEvidence).map((item) => item._recordId).filter(Boolean))
+      const exactBatchReadback = async () => {
+        const persisted = await this.load({ force: true })
+        const persistedAllEvidence = (persisted._allEvidenceItems || persisted.evidenceItems).filter((item) => item.sourceId === sourceId && item.extractionBatchId === batchId && item.reviewStatus !== 'SUPERSEDED')
+        const persistedEvidenceIds = new Set(persistedAllEvidence.map((item) => item.id))
+        const persistedRecordIds = new Set(persistedAllEvidence.map((item) => item._recordId))
+        const idsMatch = expectedEvidenceIds.size === persistedEvidenceIds.size && [...expectedEvidenceIds].every((id) => persistedEvidenceIds.has(id))
+        const recordsMatch = [...expectedRecordIds].every((id) => persistedRecordIds.has(id))
+        if (idsMatch && recordsMatch) return { persistedAllEvidence, method: 'BATCH_LIST' }
+        // Feishu list results can lag a successful create. Re-read only the
+        // exact record IDs written (or safely resumed), with bounded retries.
+        if (!expectedRecordIds.size) return null
+        const exactRows = await Promise.all([...expectedRecordIds].map(async (recordId) => {
+          try { return await getRecord(stage2Table('evidenceItems'), recordId) } catch (error) { if (error?.code === 'FEISHU_NOT_FOUND' || error?.retryable === true) return null; throw error }
+        }))
+        const exactItems = exactRows.filter(Boolean).map(evidenceItem)
+        const exactIds = new Set(exactItems.filter((item) => item.sourceId === sourceId && item.extractionBatchId === batchId && item.reviewStatus !== 'SUPERSEDED').map((item) => item.id))
+        return exactIds.size === expectedEvidenceIds.size && [...expectedEvidenceIds].every((id) => exactIds.has(id))
+          ? { persistedAllEvidence: exactItems, method: 'EXACT_RECORDS' }
+          : null
+      }
+      const readback = await boundedReadAfterWrite(exactBatchReadback, { delays: READ_AFTER_WRITE_DELAYS_MS, isVisible: Boolean })
+      if (!readback.value) throw Object.assign(new Error('Evidence 批次精确回读校验失败'), { code: 'EVIDENCE_BATCH_READBACK_FAILED', status: 502 })
 
       // A zero-result replacement must never erase a previously active
       // generation. The new batch is kept for diagnostics only; the source
@@ -1992,7 +2030,10 @@ export class FeishuRepository {
       for (const oldEvidence of oldReplaceable) await updateMappedRecord('evidenceItems', 'evidence.supersede', oldEvidence._recordId, { review_status: 'SUPERSEDED', updated_at: now() })
       this.invalidateDatabaseCache()
       const refreshed = await this.load({ force: true })
-      const allEvidence = refreshed.evidenceItems.filter((item) => item.sourceId === sourceId)
+      // A legacy/failed batch can contain repeated physical rows with the
+      // same logical Evidence identity. Keep them for audit, but materialize
+      // the profile from one canonical item only.
+      const allEvidence = dedupeEvidence(refreshed.evidenceItems.filter((item) => item.sourceId === sourceId))
       if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
       const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
       const derivedErrors = []

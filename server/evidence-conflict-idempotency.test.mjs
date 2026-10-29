@@ -90,6 +90,25 @@ describe('structured archive completion criteria', () => {
     expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 2, mappedEvidenceCount: 2, physicalFieldWriteCount: 2, hasOpenConflict: true }).outcome).toBe('REVIEW_REQUIRED')
   })
 
+  it('recovers a failed Evidence batch without another extraction or Evidence write', async () => {
+    const initial = setupRepository()
+    const first = await initial.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const source = activeDatabase.sourceRecords[0]
+    const evidenceCount = activeDatabase._allEvidenceItems.length
+    const writesBeforeRecovery = createRecordMock.mock.calls.length
+    source.processingStatus = 'FAILED'
+    source.lastBatchId = ''
+    const extractor = vi.fn(async () => { throw new Error('recovery must not call extractor') })
+    const recovery = setupRepository(extractor)
+
+    const recovered = await recovery.processSource('MENTOR-A', 'SRC-SYNTH-1')
+
+    expect(extractor).not.toHaveBeenCalled()
+    expect(createRecordMock).toHaveBeenCalledTimes(writesBeforeRecovery)
+    expect(activeDatabase._allEvidenceItems).toHaveLength(evidenceCount)
+    expect(recovered.source.lastBatchId).toBe(first.source.lastBatchId)
+  })
+
   it('keeps a Source review-required when valid Evidence has no usable structured field', async () => {
     const repository = setupRepository(async () => [{
       evidence_type: 'FACT', semantic_kind: 'OTHER', field_key: '', value: '无法归类的普通线索', display_text: '无法归类的普通线索', source_excerpt: '她提到一个无法归类的普通线索。', confidence: 0.9,
