@@ -69,9 +69,24 @@ vi.mock('./feishu.mjs', async () => {
     },
     updateRecord: async (tableId, recordId, fields) => {
       state.updateCalls.push([tableId, recordId])
+      // R048.11: 仅拦截 COMMITTED 状态写入,允许 PERSISTED 写入通过
+      // 因为现在 PERSISTED 写入是同步的,必须成功
       if (state.commitUpdateFailures > 0) {
-        state.commitUpdateFailures -= 1
-        throw unavailable('模拟 COMMITTED 状态更新失败')
+        const metaField = fields['档案字段元数据']
+        let isCommittedWrite = false
+        if (metaField) {
+          try {
+            const meta = JSON.parse(String(metaField))
+            const mutationStates = meta._mutation_states || {}
+            isCommittedWrite = Object.values(mutationStates).some((s) => s.status === 'COMMITTED')
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        if (isCommittedWrite) {
+          state.commitUpdateFailures -= 1
+          throw unavailable('模拟 COMMITTED 状态更新失败')
+        }
       }
       const row = table(tableId).get(recordId)
       if (!row) throw unavailable('模拟更新记录不存在')

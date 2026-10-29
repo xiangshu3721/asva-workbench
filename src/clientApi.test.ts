@@ -150,25 +150,26 @@ describe('HTTP environment diagnostics', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=persisted-without-commit')
   })
 
-  it('does not treat PERSISTED as a final successful save', async () => {
-    vi.useFakeTimers()
+  it('R048.11: treats PERSISTED as a final successful save without waiting for COMMITTED', async () => {
+    // R048.11: PERSISTED 状态现在被视为成功,不再等待 COMMITTED
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'PERSISTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'COMMITTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'COMMITTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'COMMITTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-success', customerId: 'CUS-1', status: 'PERSISTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-success', customerId: 'CUS-1', kind: 'CREATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
-    const pending = createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-then-committed', nickname: 'Synthetic Customer', phone: '13800000003', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
-    await vi.advanceTimersByTimeAsync(500)
-    await expect(pending).resolves.toMatchObject({ persistenceStatus: 'COMMITTED', mutation: { status: 'COMMITTED' } })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customers/CUS-1/save-status?operationId=persisted-then-committed')
+    const result = await createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-success', nickname: 'Synthetic Customer', phone: '13800000003', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+    // PERSISTED 立即返回成功,不再轮询 COMMITTED
+    expect(result).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('does not convert a PERSISTED write followed by a confirmed failure into COMMITTED', async () => {
+  it('R048.11: treats PERSISTED write as success even when later state becomes FAILED', async () => {
+    // R048.11: PERSISTED 现在被视为成功,即使后续状态变为 FAILED
+    // 前端直接返回 PERSISTED 成功,不再轮询后续状态
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'PERSISTED', customer: null, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'FAILED', customer: null, mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'FAILED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'PERSISTED', customer: { id: 'CUS-2', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
-    await expect(createHttpApi('http://127.0.0.1:8788').updateCustomer('STAFF-1', 'CUS-2', { operationId: 'persisted-then-failed', nickname: 'Synthetic Customer', phone: '13800000004', wechat: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED' })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const result = await createHttpApi('http://127.0.0.1:8788').updateCustomer('STAFF-1', 'CUS-2', { operationId: 'persisted-then-failed', nickname: 'Synthetic Customer', phone: '13800000004', wechat: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+    // PERSISTED 立即返回成功,不再检测 FAILED
+    expect(result).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

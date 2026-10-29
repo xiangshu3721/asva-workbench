@@ -188,13 +188,15 @@ export interface WorkbenchApi {
 }
 
 export interface ApiRequestTrace { time: string; method: string; path: string; status: number | null; duration: number; request_id?: string; result: 'SUCCESS' | 'ERROR' }
-export interface ApiErrorInfo { code: string; message: string; request_id?: string; serverCode?: string; httpStatus?: number }
+export interface ApiErrorInfo { code: string; message: string; request_id?: string; serverCode?: string; httpStatus?: number; matches?: any[]; identity?: any }
 export class ApiError extends Error {
   code: string
   request_id?: string
   serverCode?: string
   httpStatus?: number
-  constructor(info: ApiErrorInfo) { super(info.message); this.name = 'ApiError'; this.code = info.code; this.request_id = info.request_id; this.serverCode = info.serverCode; this.httpStatus = info.httpStatus }
+  matches?: any[]
+  identity?: any
+  constructor(info: ApiErrorInfo) { super(info.message); this.name = 'ApiError'; this.code = info.code; this.request_id = info.request_id; this.serverCode = info.serverCode; this.httpStatus = info.httpStatus; this.matches = info.matches; this.identity = info.identity }
 }
 
 const requestTraces: ApiRequestTrace[] = []
@@ -387,7 +389,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       if (metric) console.info('[ASVA_PERF]', JSON.stringify({ metric, value_ms: duration, status: response.status, request_id: requestId }))
     }
     if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('asva-auth-expired'))
-    if (!response.ok) throw new ApiError({ code: `HTTP_${response.status}`, serverCode: payload?.code, httpStatus: response.status, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId })
+    if (!response.ok) throw new ApiError({ code: `HTTP_${response.status}`, serverCode: payload?.code, httpStatus: response.status, message: payload?.message || payload?.error || `HTTP ${response.status}`, request_id: requestId, matches: payload?.matches, identity: payload?.identity })
     if (payload === null) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'INVALID_RESPONSE：API 返回的内容不是有效 JSON。', request_id: requestId })
     if ((path === '/api/auth/login' || path === '/api/auth/change-password') && payload?.token) writeAccessToken(payload.token)
     return payload as T
@@ -446,8 +448,9 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       try {
         const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers }, { softTimeoutMs: CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, hardTimeoutMs: CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
-        if (operationId && mutation.mutation && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, mutation.createdCustomerId)
-        if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', mutation.createdCustomerId)
+        // R048.11: PERSISTED 和 COMMITTED 都是成功状态，不强制等待 COMMITTED
+        if (operationId && mutation.mutation && mutation.mutation.status !== 'PERSISTED' && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, mutation.createdCustomerId)
+        if (operationId) emitCustomerSaveState(operationId, mutation.mutation?.status || 'COMMITTED', mutation.createdCustomerId)
         return mutation
       } catch (error) {
         if (operationId && isRecoverableCustomerSaveError(error)) return recoverCustomerMutation(actorId, operationId)
@@ -462,8 +465,9 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       try {
         const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
-        if (operationId && mutation.mutation && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, customerId)
-        if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', customerId)
+        // R048.11: PERSISTED 和 COMMITTED 都是成功状态，不强制等待 COMMITTED
+        if (operationId && mutation.mutation && mutation.mutation.status !== 'PERSISTED' && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, customerId)
+        if (operationId) emitCustomerSaveState(operationId, mutation.mutation?.status || 'COMMITTED', customerId)
         return mutation
       } catch (error) {
         if (operationId && isRecoverableCustomerSaveError(error)) return recoverCustomerMutation(actorId, operationId, customerId)
