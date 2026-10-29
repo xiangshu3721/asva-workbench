@@ -223,6 +223,10 @@ export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
 // Customer creation has a durable operation record and an explicit status
 // readback. Fail over early instead of making the form look stuck for 20s.
 export const CLIENT_CUSTOMER_SAVE_TIMEOUT_MS = 8_000
+// After the soft customer-save timeout the request is allowed to finish so the
+// server can complete the Customers write while the client verifies the
+// operation. This is a hard ceiling, not a longer blocking wait.
+export const CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS = 30_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
 const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
 
@@ -318,7 +322,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
 
 export function createHttpApi(baseUrl: string): WorkbenchApi {
   const base = baseUrl.replace(/\/$/, '')
-  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit): Promise<T> {
+  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit, options: { softTimeoutMs?: number; hardTimeoutMs?: number } = {}): Promise<T> {
     const startedAt = performance.now()
     const method = init?.method || 'GET'
     const headers = new Headers(init?.headers)
@@ -329,28 +333,51 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     if (!base) throw new ApiError({ code: 'CONFIGURATION_ERROR', message: '未配置真实 API 地址。请设置 VITE_API_BASE_URL 后重启前端；如需演示，请明确设置 VITE_APP_ENV=mock。' })
     let response: Response
     let payload: Record<string, any> | null = null
-    const timeoutMs = path === '/api/sources' && method === 'POST'
+    const defaultTimeoutMs = path === '/api/sources' && method === 'POST'
       ? CLIENT_SOURCE_SAVE_TIMEOUT_MS
       : path === '/api/customers' && method === 'POST'
         ? CLIENT_CUSTOMER_SAVE_TIMEOUT_MS
         : CLIENT_DEFAULT_TIMEOUT_MS
+    const softTimeoutMs = options.softTimeoutMs ?? defaultTimeoutMs
+    const hardTimeoutMs = Math.max(options.hardTimeoutMs ?? defaultTimeoutMs, softTimeoutMs)
     const controller = new AbortController()
     let timedOut = false
-    const timeoutHandle = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
-    try {
-      response = await fetch(`${base}${path}`, { ...init, headers, signal: controller.signal })
-      try { payload = await response.json() } catch (error) {
+    let softTimedOut = false
+    const hardTimeoutHandle = setTimeout(() => { timedOut = true; controller.abort() }, hardTimeoutMs)
+    let softTimeoutHandle: ReturnType<typeof setTimeout> | undefined
+    const softTimeout = softTimeoutMs < hardTimeoutMs ? new Promise<never>((_, reject) => {
+      softTimeoutHandle = setTimeout(() => {
+        softTimedOut = true
+        reject(Object.assign(new Error('请求等待时间较长'), { __softTimeout: true }))
+      }, softTimeoutMs)
+    }) : null
+    const execution = (async () => {
+      const nextResponse = await fetch(`${base}${path}`, { ...init, headers, signal: controller.signal })
+      let nextPayload: Record<string, any> | null = null
+      try { nextPayload = await nextResponse.json() } catch (error) {
         if (timedOut) throw error
-        payload = null
+        nextPayload = null
       }
+      return { response: nextResponse, payload: nextPayload }
+    })()
+    // A soft timeout only stops the caller waiting; the HTTP request keeps
+    // running so the server can finish the Customers write.
+    execution.finally(() => clearTimeout(hardTimeoutHandle)).catch(() => {})
+    let completed: { response: Response; payload: Record<string, any> | null }
+    try {
+      completed = softTimeout ? await Promise.race([execution, softTimeout]) : await execution
     } catch (error) {
-      clearTimeout(timeoutHandle)
+      if (softTimeoutHandle) clearTimeout(softTimeoutHandle)
       requestTraces.unshift({ time: new Date().toISOString(), method, path, status: null, duration: Math.round(performance.now() - startedAt), result: 'ERROR' })
       requestTraces.splice(20)
-      const failure = classifyFetchFailure(error, timedOut)
+      const failure = softTimedOut
+        ? { code: 'REQUEST_TIMEOUT' as const, message: '请求等待时间较长，正在确认保存结果。' }
+        : classifyFetchFailure(error, timedOut)
       throw new ApiError(failure)
     }
-    clearTimeout(timeoutHandle)
+    if (softTimeoutHandle) clearTimeout(softTimeoutHandle)
+    response = completed.response
+    payload = completed.payload
     const requestId = response.headers.get('X-Request-Id') || payload?.request_id || undefined
     const duration = Math.round(performance.now() - startedAt)
     requestTraces.unshift({ time: new Date().toISOString(), method, path, status: response.status, duration, request_id: requestId, result: response.ok ? 'SUCCESS' : 'ERROR' })
@@ -417,7 +444,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       const operationId = input.operationId || ''
       emitCustomerSaveState(operationId, 'PROCESSING')
       try {
-        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers })
+        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers }, { softTimeoutMs: CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, hardTimeoutMs: CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
         if (operationId && mutation.mutation && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, mutation.createdCustomerId)
         if (operationId) emitCustomerSaveState(operationId, 'COMMITTED', mutation.createdCustomerId)

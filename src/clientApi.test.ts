@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
+import { CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS, CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -74,6 +74,43 @@ describe('HTTP environment diagnostics', () => {
   it('switches a delayed customer create to operation-status recovery before the generic timeout', async () => {
     expect(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS).toBeLessThan(CLIENT_DEFAULT_TIMEOUT_MS)
     expect(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS).toBe(8_000)
+    expect(CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS).toBeGreaterThan(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS)
+  })
+
+  it('stops waiting at the soft customer-save timeout without aborting the underlying write', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', {
+      nickname: 'Soft timeout customer',
+      phone: '13800000009',
+      wechat: '',
+      introducer: '',
+      situation: '',
+      needsFollowup: false,
+      mentorId: null,
+      source: 'Synthetic',
+      caseSource: 'SYNTHETIC',
+      enrollments: [],
+    }).catch((error) => error)
+
+    await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS)
+    await expect(pending).resolves.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    const firstCall = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(firstCall[1].signal?.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS - CLIENT_CUSTOMER_SAVE_TIMEOUT_MS)
+    expect(firstCall[1].signal?.aborted).toBe(true)
+  })
+
+  it('does not enter operation recovery when the server confirms nothing was written', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ code: 'CUSTOMER_SAVE_NOT_STARTED', message: '客户尚未保存，请稍后重试。' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'not-started-operation', nickname: 'Synthetic Customer', phone: '13800000010', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })).rejects.toMatchObject({ code: 'HTTP_502', serverCode: 'CUSTOMER_SAVE_NOT_STARTED' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('CLIENT_TIMEOUT_BOUNDED also covers a response body that never finishes', async () => {
