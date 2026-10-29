@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
+import { CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -69,6 +69,11 @@ describe('HTTP environment diagnostics', () => {
     await pending
     expect(CLIENT_SOURCE_SAVE_TIMEOUT_MS).toBeGreaterThan(CLIENT_DEFAULT_TIMEOUT_MS)
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: expect.any(AbortSignal) })
+  })
+
+  it('switches a delayed customer create to operation-status recovery before the generic timeout', async () => {
+    expect(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS).toBeLessThan(CLIENT_DEFAULT_TIMEOUT_MS)
+    expect(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS).toBe(8_000)
   })
 
   it('CLIENT_TIMEOUT_BOUNDED also covers a response body that never finishes', async () => {

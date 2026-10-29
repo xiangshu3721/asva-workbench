@@ -114,12 +114,14 @@ export interface CustomerMutationResult {
   createdCustomerId: string
   customerCreated: boolean
   persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'
+  enrollmentStatus?: 'COMPLETED' | 'PENDING'
+  enrollmentMessage?: string
   mutation?: CustomerMutationState
 }
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
-export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; updatedAt?: string | null }
-export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
+export interface CustomerMutationState { operationId: string; customerId: string; kind: 'CREATE' | 'UPDATE'; status: CustomerMutationStateStatus; enrollmentStatus?: 'COMPLETED' | 'PENDING'; updatedAt?: string | null }
+export interface CustomerSaveStatusResponse { operationId: string; customerId: string; status: CustomerMutationStateStatus; updatedAt?: string | null; customer?: Customer | null; enrollments?: Database['enrollments']; profileChanges?: Database['profileChanges']; createdCustomerId?: string; customerCreated?: boolean; persistenceStatus?: 'PERSISTED' | 'COMMITTED' | 'DELAYED'; enrollmentStatus?: 'COMPLETED' | 'PENDING'; enrollmentMessage?: string; resultSnapshotAvailable?: boolean; resultChangedSinceOperation?: boolean; mutation?: CustomerMutationState }
 
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
@@ -218,6 +220,9 @@ export function clearPendingCustomerMutation(operationId?: string) {
 }
 
 export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
+// Customer creation has a durable operation record and an explicit status
+// readback. Fail over early instead of making the form look stuck for 20s.
+export const CLIENT_CUSTOMER_SAVE_TIMEOUT_MS = 8_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
 const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
 
@@ -324,7 +329,11 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     if (!base) throw new ApiError({ code: 'CONFIGURATION_ERROR', message: '未配置真实 API 地址。请设置 VITE_API_BASE_URL 后重启前端；如需演示，请明确设置 VITE_APP_ENV=mock。' })
     let response: Response
     let payload: Record<string, any> | null = null
-    const timeoutMs = path === '/api/sources' && method === 'POST' ? CLIENT_SOURCE_SAVE_TIMEOUT_MS : CLIENT_DEFAULT_TIMEOUT_MS
+    const timeoutMs = path === '/api/sources' && method === 'POST'
+      ? CLIENT_SOURCE_SAVE_TIMEOUT_MS
+      : path === '/api/customers' && method === 'POST'
+        ? CLIENT_CUSTOMER_SAVE_TIMEOUT_MS
+        : CLIENT_DEFAULT_TIMEOUT_MS
     const controller = new AbortController()
     let timedOut = false
     const timeoutHandle = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
@@ -367,9 +376,9 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
           : `/api/customer-save-status?operationId=${encodeURIComponent(operationId)}`
         const status = await request<CustomerSaveStatusResponse>(path, actorId)
         if (status.status === 'FAILED') throw new ApiError({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', serverCode: 'CUSTOMER_SAVE_CONFIRMED_FAILED', message: '客户保存已确认失败，填写内容仍保留。' })
-        if (status.status === 'COMMITTED' && status.customer) {
-          emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)
-          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation }
+        if ((status.status === 'PERSISTED' || status.status === 'COMMITTED') && status.customer) {
+          emitCustomerSaveState(operationId, status.status, status.customerId)
+          return { customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || status.status, enrollmentStatus: status.enrollmentStatus || status.mutation?.enrollmentStatus || 'COMPLETED', enrollmentMessage: status.enrollmentMessage, mutation: status.mutation }
         }
         if (status.status === 'COMMITTED' && !status.customer) {
           emitCustomerSaveState(operationId, 'COMMITTED', status.customerId)

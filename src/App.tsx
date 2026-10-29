@@ -360,9 +360,9 @@ function WorkbenchApp() {
     workbenchApi.customerSaveStatus(activeStaff.id, pending.operationId, pending.customerId).then((status) => {
       if (cancelled) return
       if ((status.status === 'PERSISTED' || status.status === 'COMMITTED') && status.customer) {
-        applyCustomerMutation({ customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', mutation: status.mutation })
+        applyCustomerMutation({ customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', enrollmentStatus: status.enrollmentStatus || status.mutation?.enrollmentStatus || 'COMPLETED', enrollmentMessage: status.enrollmentMessage, mutation: status.mutation })
         clearPendingCustomerMutation(pending.operationId)
-        setCustomerSaveRecoveryMessage('已恢复并确认上一笔客户保存结果。')
+        setCustomerSaveRecoveryMessage(status.enrollmentStatus === 'PENDING' ? '客户已创建，课程待同步；请稍后在客户档案中确认课程关联。' : '已恢复并确认上一笔客户保存结果。')
       } else if (status.status === 'UNKNOWN') {
         setCustomerSaveRecoveryMessage('上一笔客户保存结果暂时无法确认，原操作仍保留，请稍后重试。')
       } else if (status.status === 'FAILED') {
@@ -500,7 +500,8 @@ function WorkbenchApp() {
     clearPendingCustomerMutation(input.operationId)
     logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) })
     applyCustomerMutation(saved)
-    if (!upload) { setManualCustomerOpen(false); return }
+    if (saved.enrollmentStatus === 'PENDING') setCustomerSaveRecoveryMessage(saved.enrollmentMessage || '客户已创建，课程待同步；请稍后在客户档案中确认课程关联。')
+    if (!upload) { setManualCustomerOpen(false); openCustomer(saved.createdCustomerId); return }
     const customerId = saved.createdCustomerId
     await saveCustomerUpload(customerId, upload, input.operationId || '')
     setManualCustomerOpen(false)

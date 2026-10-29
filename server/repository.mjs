@@ -114,13 +114,16 @@ export const sanitizeMutationStates = (value) => {
     status: state.status,
     payloadHash: typeof state.payloadHash === 'string' ? state.payloadHash : '',
     resultFingerprint: typeof state.resultFingerprint === 'string' ? state.resultFingerprint : '',
+    enrollmentStatus: state.enrollmentStatus === 'PENDING' ? 'PENDING' : 'COMPLETED',
+    enrollmentDrafts: Array.isArray(state.enrollmentDrafts) ? normalizeMutationEnrollments(state.enrollmentDrafts).items : [],
+    enrollmentErrorCode: typeof state.enrollmentErrorCode === 'string' ? state.enrollmentErrorCode : '',
     updatedAt: typeof state.updatedAt === 'string' ? state.updatedAt : null,
   }])
   const pending = entries.filter(([, state]) => state.status !== 'COMMITTED')
   const committed = entries.filter(([, state]) => state.status === 'COMMITTED').slice(-CUSTOMER_MUTATION_STATE_LIMIT)
   return Object.fromEntries([...pending, ...committed])
 }
-const publicMutationState = (state) => state ? { operationId: state.operationId, customerId: state.customerId, kind: state.kind, status: state.status, updatedAt: state.updatedAt || null } : null
+const publicMutationState = (state) => state ? { operationId: state.operationId, customerId: state.customerId, kind: state.kind, status: state.status, enrollmentStatus: state.enrollmentStatus || 'COMPLETED', updatedAt: state.updatedAt || null } : null
 const incompleteMutationError = (state) => Object.assign(new Error('该保存操作尚未完成，请查询原操作状态后再继续。'), { code: 'CUSTOMER_SAVE_INCOMPLETE', status: 409, mutationStatus: state?.status || 'UNKNOWN' })
 const confirmedMutationFailureError = () => Object.assign(new Error('客户保存已确认失败，不能自动重放原操作。'), { code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', status: 409 })
 const mentorCreateLocks = new Map()
@@ -185,6 +188,7 @@ export function publicCustomerMutationDto(database, actorId, customerId, custome
     createdCustomerId: customerId,
     customerCreated,
     persistenceStatus,
+    enrollmentStatus: mutation?.enrollmentStatus || 'COMPLETED',
     ...(mutation ? { mutation } : {}),
   }
 }
@@ -631,7 +635,11 @@ async function mergeEnrollments(database, customerId, drafts, operatorId, operat
     }
     const enrolledAt = draft.enrolledAt || now()
     const enrollmentId = operationId ? stableOperationId(`${operationId}:${product.id}`, 'ENR') : `E-${Date.now()}-${Math.floor(Math.random() * 1000)}`
-    await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', { enrollment_id: enrollmentId, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: now(), status: 'ACTIVE' }), { operation: 'enrollment.create', operationId: enrollmentId, customerId, entityType: 'enrollments', idempotency: { field: mapField('enrollments', 'enrollment_id'), value: enrollmentId } })
+    const createdAt = now()
+    const writeValues = { enrollment_id: enrollmentId, customer_id: customerId, product_id: product.id, product_name: product.name, enrollment_source: 'MANUAL', payment_status: paymentStatus, paid: paymentStatus === 'PAID', amount: draft.amount ?? null, enrolled_at: enrolledAt, paid_at: draft.paidAt || null, operator_id: operatorId, created_at: createdAt, status: 'ACTIVE' }
+    const writeResult = await createRecord(config.feishu.tables.enrollments, mapFields('enrollments', writeValues), { operation: 'enrollment.create', operationId: enrollmentId, customerId, entityType: 'enrollments', idempotency: { field: mapField('enrollments', 'enrollment_id'), value: enrollmentId } })
+    const recordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id || ''
+    database.enrollments = [...database.enrollments, enrollment({ record_id: recordId, fields: mapFields('enrollments', writeValues) })]
     changed = true
   }
   if (replace) {
@@ -704,35 +712,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
   if (!changed.length) return { customerRecord, writeResult: null, changes: [] }
-  const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
-    const next = {
-      ...latestCustomer,
-      profileFields: { ...(latestCustomer.profileFields || {}) },
-      profileFieldMeta: { ...(latestCustomer.profileFieldMeta || {}) },
-      profileVersion: Number(latestCustomer.profileVersion || 0) + 1,
-      profileUpdatedAt: updatedAt,
-      profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION,
-    }
-    for (const change of changed) {
-      next.profileFields[change.field] = change.value
-      next.profileFieldMeta[change.field] = customerRecord.profileFieldMeta[change.field]
-      if (change.field === 'current_core_issue' && typeof change.value === 'string') next.need = change.value
-      if (change.field === 'current_expectation' && typeof change.value === 'string') next.helpExpectation = change.value
-      if (change.field === 'current_goal' && typeof change.value === 'string') next.goal = change.value
-      if (change.field === 'intended_course') next.intendedCourse = typeof change.value === 'string' ? change.value : null
-      if (change.field === 'paid' && typeof change.value === 'boolean') next.paid = change.value
-      if (change.field === 'grade' && typeof change.value === 'string') next.grade = change.value
-      if (change.field === 'current_mentor_id' && typeof change.value === 'string') next.mentorId = change.value
-      if (change.field === 'birth_date') {
-        const year = derivedBirthYear(change.value)
-        const age = derivedAge(change.value)
-        if (year !== null) next.profileFields.birth_year = year
-        if (age !== null) next.profileFields.age = age
-      }
-    }
-    return profileFieldsForWrite(next, changed)
-  }, (latestCustomer) => changed.every((change) => sameProfileValue(latestCustomer.profileFields?.[change.field], change.value)))
-  const writeResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
+  const writeResult = await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed))
   const persistedChanges = []
   for (const change of changed.filter((item) => customerHistoryPolicy(item.field) === 'TRACK' || (item.field === 'age' && !customerRecord.profileFields.birth_date))) {
     const changeId = provenanceContext.updateBatchId ? stableOperationId(`${provenanceContext.updateBatchId}:${change.field}`, 'PCH') : `PCH-${crypto.randomUUID()}`
@@ -1034,7 +1014,10 @@ export class FeishuRepository {
     const sourceOperationId = stableOperationId(`${customerId}:${contentHash(normalizedText)}`, 'AUTO-SOURCE')
     try {
       const source = await this.createSource(actorId, { customerId, sourceType: 'TEXT_INPUT', rawText: normalizedText, operationId: sourceOperationId, sourcePerspective: 'STAFF_REPORTED', notes: `${AUTO_PROFILE_SOURCE_PREFIX}${reason}` })
-      await this.clearAutomaticProfilePending(customerId, automaticProfilePendingMarker(normalizedText, actorId, reason)).catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
+      // Clearing the recovery marker is best-effort housekeeping. It must not
+      // keep a successful source enqueue (or the customer-save response) open.
+      void this.clearAutomaticProfilePending(customerId, automaticProfilePendingMarker(normalizedText, actorId, reason))
+        .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
       if (!['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) this.scheduleAutomaticProcessing(actorId, source.id)
       return { status: 'QUEUED', sourceId: source.id }
     } catch (error) {
@@ -1096,6 +1079,13 @@ export class FeishuRepository {
       staff: staffRows.map(staff), customers, appointments: [], sessions: [], followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [],
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
     }
+  }
+
+  async loadCustomerSaveContext({ force = false } = {}) {
+    // Keep isolated repository tests and injected providers on their supplied
+    // data source while production uses the small directory projection.
+    if (this.load !== FeishuRepository.prototype.load) return this.load({ force })
+    return this.loadDirectory({ force })
   }
 
   async load({ force = false } = {}) {
@@ -1263,7 +1253,14 @@ export class FeishuRepository {
       if (parsed.id !== targetCustomerId) throw Object.assign(new Error('写入回读客户不匹配'), { code: 'CUSTOMER_READBACK_MISMATCH', status: 502 })
       return { row, parsed }
     }, { delays: READ_AFTER_WRITE_DELAYS_MS })
-    if (!result.value) return this.loadAfterWrite(writeResult, targetCustomerId)
+    if (!result.value) {
+      // Feishu has acknowledged the write. Keep the targeted result path bounded;
+      // a delayed readback must not trigger an unrelated 11-table reload.
+      console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: recordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
+      const next = cloneDatabase(baseDatabase)
+      this.lastKnownGoodByCustomer.set(targetCustomerId, cloneDatabase(next))
+      return { ...next, _persistenceStatus: 'COMMITTED', _dataFreshness: 'DELAYED' }
+    }
     const next = cloneDatabase(baseDatabase)
     next.customers = next.customers.some((item) => item.id === targetCustomerId)
       ? next.customers.map((item) => item.id === targetCustomerId ? result.value.parsed : item)
@@ -1616,12 +1613,15 @@ export class FeishuRepository {
     return createProfileDraft({ text: textInput, existing: current.profileFields || {} })
   }
   async previewCustomer(actorId, input) {
-    const database = await this.load()
+    const startedAt = Date.now()
+    const database = await this.loadCustomerSaveContext()
     scope(database, actorId)
     const normalized = validateManualCustomer(input)
     const identity = resolveCustomerIdentity(database.customers, normalized)
     // Preview only resolves identity and duplicates. AI extraction must stay outside the customer save critical path.
-    return { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates: [] }
+    const response = { duplicates: duplicateMatches(database, input), identity: { result: identity.result, matched_customer_id: identity.matched_customer_id, match_reasons: identity.match_reasons, confidence: identity.confidence }, updates: [] }
+    console.info('[ASVA_CUSTOMER_SAVE]', JSON.stringify({ operation: 'customer.preview', operation_id: text(input?.operationId).trim() || undefined, preview_ms: Date.now() - startedAt, result: 'SUCCESS' }))
+    return response
   }
   async persistCustomerMutationState(database, customerId, operationId, state) {
     if (!operationId) return null
@@ -1645,7 +1645,7 @@ export class FeishuRepository {
   async customerSaveStatus(actorId, customerId, operationId) {
     const normalizedOperationId = text(operationId).trim()
     if (!normalizedOperationId) throw Object.assign(new Error('缺少操作编号'), { code: 'CUSTOMER_SAVE_OPERATION_REQUIRED', status: 400 })
-    const database = await this.load()
+    const database = await this.loadCustomerSaveContext()
     const visible = scope(database, actorId)
     const customerRecord = customerId
       ? visible.customers.find((item) => item.id === customerId)
@@ -1666,8 +1666,36 @@ export class FeishuRepository {
     }
     return response
   }
+  async resumePendingCustomerEnrollment(actorId, customerId, input, operationId, inputHash, { compactResponse = false } = {}) {
+    // This path only runs after a Customer record has already been proven
+    // durable. A full read is acceptable here: it is a bounded recovery of a
+    // failed enrollment sync, never part of the normal create critical path.
+    let current = await this.load({ force: true })
+    scope(current, actorId)
+    const customerRecord = current.customers.find((item) => item.id === customerId)
+    const previousMutation = customerRecord?.mutationStates?.[operationId]
+    if (!customerRecord || !previousMutation || previousMutation.payloadHash !== inputHash || previousMutation.status !== 'PERSISTED' || previousMutation.enrollmentStatus !== 'PENDING') {
+      throw incompleteMutationError(previousMutation)
+    }
+    try {
+      await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
+    } catch (error) {
+      this.audit('RECOVER_CUSTOMER_ENROLLMENT', customerId, actorId, 'PENDING', error?.code || 'ENROLLMENT_SYNC_FAILED')
+      const response = compactResponse
+        ? publicCustomerMutationDto(current, actorId, customerId, false, operationId)
+        : Object.assign(scope(current, actorId), { createdCustomerId: customerId, customerCreated: false })
+      return { ...response, enrollmentStatus: 'PENDING', enrollmentMessage: partialEnrollmentFailureMessage() }
+    }
+    const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, {
+      kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, enrollmentStatus: 'COMPLETED', enrollmentDrafts: [], enrollmentErrorCode: '', updatedAt: now(),
+    })
+    if (mutationWrite) current = await this.loadCustomerAfterWrite(mutationWrite, customerId, current)
+    const response = compactResponse
+      ? publicCustomerMutationDto(current, actorId, customerId, false, operationId)
+      : Object.assign(scope(current, actorId), { createdCustomerId: customerId, customerCreated: false })
+    return { ...response, enrollmentStatus: 'COMPLETED' }
+  }
   async createCustomer(actorId, input, requestId = '', { compactResponse = false } = {}) {
-    this.invalidateDatabaseCache()
     const startedAt = Date.now()
     const timings = { identity_resolution_ms: 0, customer_write_ms: 0, enrollment_write_ms: 0, profile_change_ms: 0, ai_ms: 0 }
     const operationId = text(input?.operationId).trim()
@@ -1675,7 +1703,7 @@ export class FeishuRepository {
     let result = 'ERROR'
     try {
       const identityStartedAt = Date.now()
-      const database = await this.load()
+      const database = input?.profileUpdates?.length ? await this.load() : await this.loadCustomerSaveContext()
       scope(database, actorId)
       const normalized = validateManualCustomer(input)
       const existingId = operationId ? customerIdForOperation(operationId) : ''
@@ -1686,6 +1714,10 @@ export class FeishuRepository {
         if (!previousMutation) throw Object.assign(new Error('保存结果暂时无法确认，请查询原操作状态后再继续。'), { code: 'CUSTOMER_SAVE_UNKNOWN', status: 409 })
         if (previousMutation.payloadHash && previousMutation.payloadHash !== inputHash) throw Object.assign(new Error('同一操作编号对应的资料已发生变化，请使用新的操作编号。'), { code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
         if (previousMutation.status === 'FAILED') throw confirmedMutationFailureError()
+        if (previousMutation.status === 'PERSISTED' && previousMutation.enrollmentStatus === 'PENDING') {
+          result = 'RECOVERING_ENROLLMENT'
+          return this.resumePendingCustomerEnrollment(actorId, existing.id, input, operationId, inputHash, { compactResponse })
+        }
         if (previousMutation.status !== 'COMMITTED') throw incompleteMutationError(previousMutation)
         result = 'SUCCESS'
         return compactResponse
@@ -1711,15 +1743,22 @@ export class FeishuRepository {
         const actor = database.staff.find((item) => item.id === actorId)
         const assignedMentorId = actor?.permissionRole === 'MENTOR' ? actor.id : text(input?.mentorId).trim()
         if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
-        const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, updatedAt: createdAt } } : {}
+        const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, enrollmentStatus: Array.isArray(input.enrollments) && input.enrollments.length ? 'PENDING' : 'COMPLETED', enrollmentDrafts: normalizeMutationEnrollments(input.enrollments).items, updatedAt: createdAt } } : {}
         const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfileArchivingAllowedForCustomer(customerId) && automaticText ? automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_SAVE') : null, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
         const writeResult = await createRecord(config.feishu.tables.customers, mapFields('customers', writeValues), { operation: 'customer.create', operationId: customerId, customerId, entityType: 'customers', idempotency: { field: mapField('customers', 'customer_id'), value: customerId } })
-        current = input.profileUpdates?.length
-          ? await this.loadAfterWrite(writeResult, customerId)
-          : await this.loadCustomerAfterWrite(writeResult, customerId, current)
+        const writeRecordId = writeResult?.record?.record_id || writeResult?.record_id || writeResult?.record?.id || ''
+        const optimisticRow = { record_id: writeRecordId, fields: mapFields('customers', writeValues) }
+        const optimisticCustomer = customer(optimisticRow)
+        current = {
+          ...cloneDatabase(current),
+          customers: [...current.customers.filter((item) => item.id !== customerId), optimisticCustomer],
+          _rows: { ...(current._rows || {}), customers: [...(current._rows?.customers || []).filter((item) => item.record_id !== writeRecordId && text(get('customers', item.fields, 'customer_id')) !== customerId), optimisticRow] },
+        }
+        this.invalidateDatabaseCache()
+        current = await this.loadCustomerAfterWrite(writeResult, customerId, current)
         timings.customer_write_ms = Date.now() - customerWriteStartedAt
       }
       if (input.profileUpdates?.length) {
@@ -1731,33 +1770,52 @@ export class FeishuRepository {
       }
       const enrollmentStartedAt = Date.now()
       let enrollmentsChanged = false
+      let enrollmentError = null
       try {
         enrollmentsChanged = await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
       } catch (error) {
-        throw Object.assign(new Error(partialEnrollmentFailureMessage()), { code: 'CUSTOMER_ENROLLMENT_PARTIAL_FAILURE', status: 502, cause: error })
+        enrollmentError = error
       }
       timings.enrollment_write_ms = Date.now() - enrollmentStartedAt
       const automaticProfile = automaticText
         ? this.scheduleAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_SAVE')
         : { status: 'NOT_REQUIRED' }
-      result = 'SUCCESS'
+      result = enrollmentError ? 'PARTIAL' : 'SUCCESS'
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
-      if (enrollmentsChanged) current = await this.loadAfterWrite(undefined, customerId)
       if (operationId && !existing) {
-        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, { kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
+        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, {
+          kind: 'CREATE',
+          status: enrollmentError ? 'PERSISTED' : 'COMMITTED',
+          payloadHash: inputHash,
+          enrollmentStatus: enrollmentError ? 'PENDING' : 'COMPLETED',
+          enrollmentDrafts: enrollmentError ? normalizeMutationEnrollments(input.enrollments).items : [],
+          enrollmentErrorCode: enrollmentError?.code || (enrollmentError ? 'ENROLLMENT_SYNC_FAILED' : ''),
+          updatedAt: now(),
+        })
         if (mutationWrite) current = await this.loadCustomerAfterWrite(mutationWrite, customerId, current)
+      }
+      if (enrollmentError && operationId) {
+        // One best-effort retry after the response has been released. It uses
+        // the same deterministic operation and enrollment IDs, so it cannot
+        // create a second Customer record or an extra enrollment.
+        setImmediate(() => {
+          void this.resumePendingCustomerEnrollment(actorId, customerId, input, operationId, inputHash, { compactResponse: true })
+            .catch((error) => this.audit('RECOVER_CUSTOMER_ENROLLMENT', customerId, actorId, 'PENDING', error?.code || 'ENROLLMENT_SYNC_FAILED'))
+        })
       }
       const latest = current
       if (!existing) this.recentCustomerWrites.set(customerId, Date.now())
       const response = compactResponse
         ? publicCustomerMutationDto(latest, actorId, customerId, !existing, operationId)
         : Object.assign(scope(latest, actorId), { createdCustomerId: customerId, customerCreated: !existing })
-      return { ...response, automaticProfile }
+      return { ...response, automaticProfile, ...(enrollmentError ? { enrollmentStatus: 'PENDING', enrollmentMessage: partialEnrollmentFailureMessage() } : {}) }
     } finally {
       const total = Date.now() - startedAt
       const measured = timings.identity_resolution_ms + timings.customer_write_ms + timings.enrollment_write_ms + timings.profile_change_ms + timings.ai_ms
-      this.saveTraces.unshift({ request_id: requestId || undefined, operation_id: traceOperationId, result, customer_save_total_ms: total, ...timings, other_ms: Math.max(0, total - measured) })
+      const trace = { request_id: requestId || undefined, operation_id: traceOperationId, result, customer_save_total_ms: total, ...timings, other_ms: Math.max(0, total - measured) }
+      this.saveTraces.unshift(trace)
       this.saveTraces = this.saveTraces.slice(0, 50)
+      console.info('[ASVA_CUSTOMER_SAVE]', JSON.stringify({ operation: 'customer.create', ...trace }))
     }
   }
   async updateCustomer(actorId, customerId, input, { compactResponse = false } = {}) { return this.customerWriteQueue.run(customerId, () => this.updateCustomerUnsafe(actorId, customerId, input, { compactResponse })) }
