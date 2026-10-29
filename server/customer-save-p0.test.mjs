@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   updateCalls: [],
   listCalls: [],
   createFailure: null,
+  createAfterWriteFailure: null,
   readbackFailures: 0,
   commitUpdateFailures: 0,
 }))
@@ -59,6 +60,11 @@ vi.mock('./feishu.mjs', async () => {
       const recordId = `rec-p0-${state.nextRecordId++}`
       const row = { record_id: recordId, fields: clone(fields) }
       table(tableId).set(recordId, row)
+      if (state.createAfterWriteFailure) {
+        const error = state.createAfterWriteFailure
+        state.createAfterWriteFailure = null
+        throw error
+      }
       return { record: clone(row) }
     },
     updateRecord: async (tableId, recordId, fields) => {
@@ -90,7 +96,7 @@ process.env.FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID = state.tableIds.profileUpd
 process.env.FEISHU_EVIDENCE_CONFLICTS_TABLE_ID = state.tableIds.evidenceConflicts
 
 const { FeishuRepository, customerIdForOperation } = await import('./repository.mjs')
-const { FeishuUnavailableError } = await import('./feishu.mjs')
+const { FeishuUnavailableError, createFeishuGateway } = await import('./feishu.mjs')
 const { fields } = await import('./field-mapping.mjs')
 
 const seed = () => {
@@ -100,6 +106,7 @@ const seed = () => {
   state.updateCalls = []
   state.listCalls = []
   state.createFailure = null
+  state.createAfterWriteFailure = null
   state.readbackFailures = 0
   state.commitUpdateFailures = 0
   const put = (tableId, recordId, values) => table(tableId).set(recordId, { record_id: recordId, fields: fields(tableId === state.tableIds.customers ? 'customers' : tableId === state.tableIds.staff ? 'staff' : tableId === state.tableIds.products ? 'products' : tableId === state.tableIds.enrollments ? 'enrollments' : 'profileChanges', values) })
@@ -159,6 +166,91 @@ describe('customer save P0 recovery path', () => {
     state.createFailure = null
     const retried = await repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
     expect(retried.createdCustomerId).toBe(customerIdForOperation(payload.operationId))
+    expect(customerRows()).toHaveLength(1)
+  })
+
+  it('only treats a write as not started when the request was never dispatched', async () => {
+    const gatewayOptions = { maxAttempts: 1, sleepImpl: async () => {}, baseUrl: 'https://feishu.test', appId: 'app-id', appSecret: 'app-secret', baseToken: 'app-token' }
+    const tokenFailure = createFeishuGateway({
+      ...gatewayOptions,
+      fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { code: 'ECONNRESET' }) },
+    })
+    await expect(tokenFailure.createRecord('tbl', { a: 1 }, { operation: 'customer.create' })).rejects.toMatchObject({
+      code: 'FEISHU_NETWORK_ERROR',
+      writeDispatched: false,
+    })
+
+    const writeFailure = createFeishuGateway({
+      ...gatewayOptions,
+      fetchImpl: async (url) => {
+        if (String(url).includes('tenant_access_token')) return new Response(JSON.stringify({ code: 0, tenant_access_token: 'token', expire: 7200 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        throw Object.assign(new TypeError('fetch failed'), { code: 'ECONNRESET' })
+      },
+    })
+    await expect(writeFailure.createRecord('tbl', { a: 1 }, { operation: 'customer.create' })).rejects.toMatchObject({
+      code: 'FEISHU_NETWORK_ERROR',
+      writeDispatched: true,
+    })
+  })
+
+  it('treats a write request that was already sent as UNKNOWN instead of NOT_STARTED', async () => {
+    const repository = new FeishuRepository()
+    const payload = input('p0-post-send-unknown')
+    state.createFailure = new FeishuUnavailableError('模拟写入请求超时', { code: 'FEISHU_TIMEOUT', retryable: true, writeDispatched: true })
+
+    await expect(repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })).rejects.toMatchObject({
+      code: 'FEISHU_TIMEOUT',
+      writeDispatched: true,
+    })
+    expect(customerRows()).toHaveLength(0)
+
+    state.createFailure = null
+    const status = await new FeishuRepository().customerSaveStatus('MENTOR-1', '', payload.operationId)
+    expect(status).toMatchObject({ status: 'UNKNOWN', customer: null })
+  })
+
+  it('recovers a write whose response was lost without creating a duplicate', async () => {
+    const repository = new FeishuRepository()
+    const payload = input('p0-lost-response')
+    state.createAfterWriteFailure = new FeishuUnavailableError('模拟响应丢失', { code: 'FEISHU_TIMEOUT', retryable: true, writeDispatched: true })
+
+    await expect(repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })).rejects.toMatchObject({ code: 'FEISHU_TIMEOUT' })
+    expect(customerRows()).toHaveLength(1)
+
+    const reader = new FeishuRepository()
+    const status = await reader.customerSaveStatus('MENTOR-1', '', payload.operationId)
+    expect(['PERSISTED', 'COMMITTED']).toContain(status.status)
+    expect(status).toMatchObject({
+      customerId: customerIdForOperation(payload.operationId),
+      customer: { id: customerIdForOperation(payload.operationId), name: payload.nickname },
+    })
+
+    const retried = await reader.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+    expect(retried.createdCustomerId).toBe(customerIdForOperation(payload.operationId))
+    expect(customerRows()).toHaveLength(1)
+  })
+
+  it('recovers a PERSISTED create by operationId when the background COMMITTED write never runs', async () => {
+    const writer = new FeishuRepository()
+    const payload = input('p0-no-background-commit')
+    state.commitUpdateFailures = 100
+
+    const created = await writer.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+    expect(created.persistenceStatus).toBe('PERSISTED')
+    await settle()
+    expect(mutationOf(rowFor(created.createdCustomerId), payload.operationId)?.status).toBe('PERSISTED')
+
+    const reader = new FeishuRepository()
+    const status = await reader.customerSaveStatus('MENTOR-1', '', payload.operationId)
+    expect(status).toMatchObject({
+      status: 'PERSISTED',
+      customerId: created.createdCustomerId,
+      customerCreated: true,
+      customer: { id: created.createdCustomerId, name: payload.nickname },
+    })
+
+    const retried = await reader.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+    expect(retried.createdCustomerId).toBe(created.createdCustomerId)
     expect(customerRows()).toHaveLength(1)
   })
 

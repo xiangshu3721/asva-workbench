@@ -1916,9 +1916,10 @@ export class FeishuRepository {
         : Object.assign(scope(latest, actorId), { createdCustomerId: customerId, customerCreated: !existing })
       return { ...response, automaticProfile, ...(enrollmentError ? { enrollmentStatus: 'PENDING', enrollmentMessage: partialEnrollmentFailureMessage() } : {}) }
     } catch (error) {
-      if (!writeStarted && error instanceof FeishuUnavailableError) {
-        // Nothing reached the Customers table. Tell the client to retry
-        // directly instead of spending the whole recovery window.
+      if (!writeStarted && error instanceof FeishuUnavailableError && error.writeDispatched !== true) {
+        // Only failures raised before the write request left the process are
+        // definitively "not started". Timeouts or lost responses after the
+        // request was sent must stay UNKNOWN and go through operation recovery.
         throw Object.assign(error, { code: 'CUSTOMER_SAVE_NOT_STARTED', writeStatus: 'NOT_STARTED', status: 502 })
       }
       throw error

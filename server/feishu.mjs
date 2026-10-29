@@ -27,6 +27,9 @@ export class FeishuUnavailableError extends Error {
     this.attempt = details.attempt
     this.customerId = details.customerId
     this.entityType = details.entityType
+    // True once a write request has been handed to fetch. Timeouts and lost
+    // responses after this point cannot be treated as "not started".
+    this.writeDispatched = details.writeDispatched === true
   }
 }
 
@@ -110,6 +113,7 @@ export function createFeishuGateway({
     const retryEnabled = context.retry !== false
     const operationId = context.operationId || options.operationId
     let refreshedAfterTokenError = false
+    let writeDispatched = false
     let lastError
     for (let attempt = 0; attempt < (retryEnabled ? maxAttempts : 1); attempt += 1) {
       try {
@@ -118,6 +122,7 @@ export function createFeishuGateway({
         if (operationId) headers['X-Idempotency-Key'] = String(operationId)
         const startedAt = now(); metrics.requests += 1
         let response
+        if (isWrite) writeDispatched = true
         try { response = await fetchImpl(`${baseUrl}${path}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(timeoutMs) }) } catch (error) {
           const timeout = isTimeout(error)
           if (timeout) metrics.timeoutCount += 1
@@ -135,6 +140,7 @@ export function createFeishuGateway({
         return payload?.data ?? payload
       } catch (error) {
         lastError = error
+        if (isWrite && writeDispatched && error instanceof FeishuUnavailableError) error.writeDispatched = true
         if (error?.code === FEISHU_ERROR_CODES.TOKEN_EXPIRED && !refreshedAfterTokenError) { tokenCache = null; refreshedAfterTokenError = true; metrics.retryCount += 1; continue }
         recordFailure(error)
         const canRetry = retryEnabled && isRetryableFeishuError(error) && attempt < maxAttempts - 1
@@ -151,7 +157,7 @@ export function createFeishuGateway({
         await sleepImpl(Math.round(baseDelay * (0.5 + random())))
       }
     }
-    throw lastError || new FeishuUnavailableError('飞书请求未完成', { code: FEISHU_ERROR_CODES.TEMPORARILY_UNAVAILABLE, retryable: true, operation })
+    throw lastError || new FeishuUnavailableError('飞书请求未完成', { code: FEISHU_ERROR_CODES.TEMPORARILY_UNAVAILABLE, retryable: true, operation, writeDispatched: isWrite && writeDispatched })
   }
   async function listPaged(pathFactory, operation, context = {}) {
     const rows = []; let pageToken = ''

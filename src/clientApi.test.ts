@@ -137,6 +137,19 @@ describe('HTTP environment diagnostics', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=stable-customer-save-1')
   })
 
+  it('treats a durable PERSISTED create from operation status as success when COMMITTED never arrives', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'FEISHU_TIMEOUT', message: '响应丢失' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-without-commit', customerId: 'CUS-PERSISTED', status: 'PERSISTED', customer: { id: 'CUS-PERSISTED', name: 'Durable Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-PERSISTED', customerCreated: true, persistenceStatus: 'PERSISTED', enrollmentStatus: 'COMPLETED', mutation: { operationId: 'persisted-without-commit', customerId: 'CUS-PERSISTED', kind: 'CREATE', status: 'PERSISTED', enrollmentStatus: 'COMPLETED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-without-commit', nickname: 'Durable Customer', phone: '13800000011', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
+
+    expect(result).toMatchObject({ createdCustomerId: 'CUS-PERSISTED', customer: { id: 'CUS-PERSISTED' }, persistenceStatus: 'PERSISTED' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=persisted-without-commit')
+  })
+
   it('does not treat PERSISTED as a final successful save', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn()
