@@ -1859,7 +1859,11 @@ export class FeishuRepository {
     const dialogueContext = parseDialogueContext(source.notes)
     const allExistingEvidence = (database._allEvidenceItems || database.evidenceItems).filter((item) => item.sourceId === sourceId)
     const existingEvidence = database.evidenceItems.filter((item) => item.sourceId === sourceId)
-    if (!force && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length) return this.sourceDetail(actorId, sourceId)
+    // REVIEW_REQUIRED with unactivated persisted Evidence is recoverable: the
+    // prior readback failed before the batch pointer was committed. Do not
+    // confuse it with a genuine review-required outcome.
+    const hasUnactivatedEvidenceBatch = source.processingStatus === 'REVIEW_REQUIRED' && existingEvidence.length > 0 && !source.lastBatchId
+    if (!force && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
     const processingVersion = Number(source.processingVersion || 1) + 1
     const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)

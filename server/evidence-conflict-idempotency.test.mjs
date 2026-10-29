@@ -96,7 +96,7 @@ describe('structured archive completion criteria', () => {
     const source = activeDatabase.sourceRecords[0]
     const evidenceCount = activeDatabase._allEvidenceItems.length
     const writesBeforeRecovery = createRecordMock.mock.calls.length
-    source.processingStatus = 'FAILED'
+    source.processingStatus = 'REVIEW_REQUIRED'
     source.lastBatchId = ''
     const extractor = vi.fn(async () => { throw new Error('recovery must not call extractor') })
     const recovery = setupRepository(extractor)
