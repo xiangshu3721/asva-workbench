@@ -11,9 +11,15 @@ import { responseHeaders } from './cors.mjs'
 
 const repository = new FeishuRepository()
 repository.startAutomaticProcessingRecovery?.()
+repository.startEnrollmentRecovery?.()
 if (repository.recoverAutomaticProcessing) {
   void repository.recoverAutomaticProcessing().catch((error) => {
     repository.audit?.('START_AUTOMATIC_PROCESSING_RECOVERY', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_START_FAILED')
+  })
+}
+if (repository.recoverPendingEnrollments) {
+  void repository.recoverPendingEnrollments().catch((error) => {
+    repository.audit?.('START_ENROLLMENT_RECOVERY', '', '', 'FAIL', error?.code || 'ENROLLMENT_RECOVERY_START_FAILED')
   })
 }
 
@@ -166,12 +172,22 @@ async function handle(request, response, requestId) {
     const compactResponse = request.headers['x-asva-response-mode'] === 'customer-mutation-v1'
     return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
   }
-  const enrollmentRecovery = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)
-  if (request.method === 'POST' && enrollmentRecovery) {
-    const actor = await guardAdmin(request)
+  // Admin manual recovery endpoint for failed enrollments (after 5 retries)
+  const manualRecoveryMatch = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)
+  if (request.method === 'POST' && manualRecoveryMatch) {
+    const actorId = await guardAdmin(request)
+    const customerId = decodeURIComponent(manualRecoveryMatch[1])
     const body = await readBody(request)
-    if (!body.operationId) return send(request, response, 400, { code: 'OPERATION_ID_REQUIRED', message: '手动恢复需要提供 operationId' }, requestId)
-    return send(request, response, 200, await repository.recoverPendingEnrollmentsForCustomer(actor, decodeURIComponent(enrollmentRecovery[1]), String(body.operationId)), requestId)
+    const operationId = body.operationId
+    if (!operationId) {
+      return send(request, response, 400, { code: 'OPERATION_ID_REQUIRED', message: '手动恢复需要提供 operationId' }, requestId)
+    }
+    try {
+      const result = await repository.recoverPendingEnrollmentsForCustomer(customerId, operationId)
+      return send(request, response, 200, { success: true, ...result }, requestId)
+    } catch (error) {
+      return send(request, response, status(error), { success: false, code: error.code || 'MANUAL_RECOVERY_FAILED', message: error.message }, requestId)
+    }
   }
   const customerEdit = url.pathname.match(/^\/api\/customers\/([^/]+)$/)
   if (request.method === 'PATCH' && customerEdit) {
@@ -228,6 +244,10 @@ export const server = http.createServer((request, response) => {
     const operatorId = await (async () => { try { return await actorId(request) } catch { return '' } })()
     console.error('[ASVA_API_ERROR]', JSON.stringify({ timestamp: new Date().toISOString(), request_id: requestId, operator_id: operatorId || undefined, operation: `${request.method} ${request.url}`, provider_operation: error?.operation, entity: 'api', status: statusCode, duration: Date.now() - startedAt, error_code: code, provider_code: error?.providerCode, provider_message: typeof error?.providerMessage === 'string' ? error.providerMessage.slice(0, 160) : undefined, provider_request_id: error?.providerRequestId, provider_http_status: error?.httpStatus, retryable: error?.retryable, write_status: error?.writeStatus, readback_status: error?.readbackStatus }))
     const message = code === 'AUTH_INVALID' ? '登录信息验证失败' : code === 'AUTH_RATE_LIMITED' ? '登录尝试过于频繁，请稍后再试' : safeMessage(error, code)
-    send(request, response, statusCode, { success: false, code, message, request_id: requestId }, requestId)
+    const errorBody = { success: false, code, message, request_id: requestId }
+    // 包含额外的错误数据（如重复客户的 matches）
+    if (error?.matches) errorBody.matches = error.matches
+    if (error?.identity) errorBody.identity = error.identity
+    send(request, response, statusCode, errorBody, requestId)
   })
 }).listen(config.port, config.host, () => console.log(`ASVA API listening on http://${config.host}:${config.port}`))

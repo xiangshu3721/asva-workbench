@@ -500,7 +500,7 @@ function WorkbenchApp() {
     clearPendingCustomerMutation(input.operationId)
     logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) })
     applyCustomerMutation(saved)
-    if (saved.enrollmentStatus === 'PENDING') setCustomerSaveRecoveryMessage(saved.enrollmentMessage || '客户已创建，课程待同步；请稍后在客户档案中确认课程关联。')
+    if (saved.enrollmentStatus === 'PENDING') setCustomerSaveRecoveryMessage(saved.enrollmentMessage || '客户已保存，课程正在同步')
     if (!upload) { setManualCustomerOpen(false); openCustomer(saved.createdCustomerId); return }
     const customerId = saved.createdCustomerId
     await saveCustomerUpload(customerId, upload, input.operationId || '')
@@ -1546,7 +1546,9 @@ function ManualCustomerDialog({ database, onClose, onPreview, onExtractDocument,
       setDialogueReview(null); setDialogueSpeakerId(''); setDialogueConfirmed(false); setDialogueOwnership('UNSET')
     } catch (confirmError) { setError(confirmError instanceof Error ? confirmError.message : '资料归属确认失败') } finally { setSaving(false) }
   }
-  const preview = async (event: FormEvent) => { event.preventDefault(); if (!canStartCustomerSave(saving) || !validateContacts()) return; setError(''); setSaving(true); const payload = input(); try { const result = await onPreview(payload); setDraft({ duplicates: result.duplicates, identity: result.identity, updates: [] }); if (result.duplicates.length) setStep('duplicate'); else await saveWithDialogueGate(payload, uploadInput(), undefined, 'create') } catch (submitError) { setError(customerSaveFailureMessage(submitError)) } finally { setSaving(false) } }
+  // R048.11: 移除 preview 调用，直接提交创建请求
+  // 服务端负责重复检测，返回结构化错误
+  const preview = async (event: FormEvent) => { event.preventDefault(); if (!canStartCustomerSave(saving) || !validateContacts()) return; setError(''); setSaving(true); const payload = input(); try { await saveWithDialogueGate(payload, uploadInput(), undefined, 'create') } catch (submitError) { const error = submitError as { serverCode?: string; matches?: any[]; identity?: any }; if (error?.serverCode === 'CUSTOMER_DUPLICATE' && error.matches?.length) { setDraft({ duplicates: error.matches, identity: error.identity, updates: [] }); setStep('duplicate') } else { setError(customerSaveFailureMessage(submitError)) } } finally { setSaving(false) } }
   const submit = async (payload = input()) => { if (!canStartCustomerSave(saving) || !validateContacts()) return; setSaving(true); setSavePhase('SUBMITTING'); setError(''); try { await saveWithDialogueGate(payload, uploadInput(), undefined, 'create') } catch (submitError) { setError(customerSaveFailureMessage(submitError)) } finally { setSaving(false) } }
   const updateExisting = async () => { const match = draft.duplicates[0]; if (!match || !canStartCustomerSave(saving) || !validateContacts()) return; setSaving(true); setSavePhase('SUBMITTING'); setError(''); try { await saveWithDialogueGate(input(), uploadInput(), match.customer.id, 'update') } catch (submitError) { setError(customerSaveFailureMessage(submitError)) } finally { setSaving(false) } }
   const selectedProductNames = selectedProductIds.map((id) => products.find((product) => product.id === id)?.name).filter(Boolean)
