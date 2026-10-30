@@ -1,12 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS, CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
+import { readAccessToken, writeAccessToken } from './auth-storage'
 
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); delete (globalThis as { window?: unknown }).window })
 
 describe('HTTP environment diagnostics', () => {
   it('classifies HTTP auth failures while preserving the server error code', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ code: 'AUTH_INVALID', message: '登录信息验证失败' }), { status: 401, headers: { 'Content-Type': 'application/json' } })))
     await expect(createHttpApi('http://127.0.0.1:8788').login('15000000000', 'bad')).rejects.toMatchObject({ code: 'HTTP_401', serverCode: 'AUTH_INVALID', httpStatus: 401 })
+  })
+
+  it('preserves duplicate matches and identity from a customer-create failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      code: 'CUSTOMER_DUPLICATE',
+      message: '该联系方式已匹配到现有客户',
+      matches: [{ customer: { id: 'CUS-EXISTING' }, matchedBy: 'phone' }],
+      identity: { result: 'EXACT_MATCH' },
+    }), { status: 409, headers: { 'Content-Type': 'application/json' } })))
+    await expect(createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', {
+      operationId: 'duplicate-operation', nickname: 'Synthetic Customer', phone: '13800000000', wechat: '', introducer: '', situation: '', needsFollowup: false, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [],
+    })).rejects.toMatchObject({
+      serverCode: 'CUSTOMER_DUPLICATE',
+      matches: [{ customer: { id: 'CUS-EXISTING' }, matchedBy: 'phone' }],
+      identity: { result: 'EXACT_MATCH' },
+    })
   })
 
   it('reports an invalid successful response explicitly', async () => {
@@ -22,6 +39,16 @@ describe('HTTP environment diagnostics', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
     await expect(createHttpApi('https://api.example.com').health()).rejects.toMatchObject({ code: 'NETWORK_UNREACHABLE', message: '请求未完成，请检查网络或稍后重试。' })
     expect(classifyFetchFailure(new TypeError('Load failed')).code).toBe('NETWORK_UNREACHABLE')
+  })
+
+  it('keeps a valid login token after a network timeout', async () => {
+    const values = new Map<string, string>()
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: storage, sessionStorage: storage, dispatchEvent: vi.fn() } })
+    writeAccessToken('valid-session-token')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await expect(createHttpApi('https://api.example.com').health()).rejects.toMatchObject({ code: 'NETWORK_UNREACHABLE' })
+    expect(readAccessToken()).toBe('valid-session-token')
   })
 
   it('reports CORS only when the browser error contains explicit CORS evidence', async () => {
@@ -77,13 +104,15 @@ describe('HTTP environment diagnostics', () => {
     expect(CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS).toBeGreaterThan(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS)
   })
 
-  it('stops waiting at the soft customer-save timeout without aborting the underlying write', async () => {
+  it('aborts the browser-side customer POST before one bounded operation-status check', async () => {
     vi.useFakeTimers()
-    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
-    }))
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes('/api/customer-save-status')) return Promise.resolve(new Response(JSON.stringify({ operationId: 'soft-timeout-operation', customerId: 'CUS-1', status: 'UNKNOWN', customer: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
+    })
     vi.stubGlobal('fetch', fetchMock)
     const pending = createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', {
+      operationId: 'soft-timeout-operation',
       nickname: 'Soft timeout customer',
       phone: '13800000009',
       wechat: '',
@@ -97,12 +126,11 @@ describe('HTTP environment diagnostics', () => {
     }).catch((error) => error)
 
     await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_SAVE_TIMEOUT_MS)
-    await expect(pending).resolves.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await expect(pending).resolves.toMatchObject({ code: 'CUSTOMER_SAVE_UNKNOWN' })
     const firstCall = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(firstCall[1].signal?.aborted).toBe(false)
-
-    await vi.advanceTimersByTimeAsync(CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS - CLIENT_CUSTOMER_SAVE_TIMEOUT_MS)
     expect(firstCall[1].signal?.aborted).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[0])).toContain('/api/customer-save-status?operationId=')
   })
 
   it('does not enter operation recovery when the server confirms nothing was written', async () => {
@@ -150,26 +178,20 @@ describe('HTTP environment diagnostics', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/customer-save-status?operationId=persisted-without-commit')
   })
 
-  it('R048.11: treats PERSISTED as a final successful save without waiting for COMMITTED', async () => {
-    // R048.11: PERSISTED 状态现在被视为成功,不再等待 COMMITTED
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-success', customerId: 'CUS-1', status: 'PERSISTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-success', customerId: 'CUS-1', kind: 'CREATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  it('returns a PERSISTED create without waiting for a COMMITTED status read', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-committed', customerId: 'CUS-1', status: 'PERSISTED', customer: { id: 'CUS-1', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], createdCustomerId: 'CUS-1', customerCreated: true, persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-committed', customerId: 'CUS-1', kind: 'CREATE', status: 'PERSISTED' } }), { status: 201, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
-    const result = await createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-success', nickname: 'Synthetic Customer', phone: '13800000003', wechat: '', introducer: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
-    // PERSISTED 立即返回成功,不再轮询 COMMITTED
+    const result = await createHttpApi('http://127.0.0.1:8788').createCustomer('STAFF-1', { operationId: 'persisted-then-committed', nickname: 'Synthetic Customer', phone: '13800000003', wechat: '', introducer: '', situation: '', needsFollowup: false, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
     expect(result).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('R048.11: treats PERSISTED write as success even when later state becomes FAILED', async () => {
-    // R048.11: PERSISTED 现在被视为成功,即使后续状态变为 FAILED
-    // 前端直接返回 PERSISTED 成功,不再轮询后续状态
+  it('does not turn a confirmed FAILED response into a successful update', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'PERSISTED', customer: { id: 'CUS-2', name: 'Synthetic Customer' }, enrollments: [], profileChanges: [], persistenceStatus: 'PERSISTED', mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'PERSISTED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'FEISHU_TIMEOUT', message: '响应丢失' }), { status: 502, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ operationId: 'persisted-then-failed', customerId: 'CUS-2', status: 'FAILED', customer: null, mutation: { operationId: 'persisted-then-failed', customerId: 'CUS-2', kind: 'UPDATE', status: 'FAILED' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
-    const result = await createHttpApi('http://127.0.0.1:8788').updateCustomer('STAFF-1', 'CUS-2', { operationId: 'persisted-then-failed', nickname: 'Synthetic Customer', phone: '13800000004', wechat: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })
-    // PERSISTED 立即返回成功,不再检测 FAILED
-    expect(result).toMatchObject({ persistenceStatus: 'PERSISTED', mutation: { status: 'PERSISTED' } })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expect(createHttpApi('http://127.0.0.1:8788').updateCustomer('STAFF-1', 'CUS-2', { operationId: 'persisted-then-failed', nickname: 'Synthetic Customer', phone: '13800000004', wechat: '', situation: '', needsFollowup: false, mentorId: null, source: 'Synthetic', caseSource: 'SYNTHETIC', enrollments: [] })).rejects.toMatchObject({ code: 'CUSTOMER_SAVE_CONFIRMED_FAILED' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

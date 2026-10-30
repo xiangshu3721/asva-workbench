@@ -225,12 +225,12 @@ export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
 // Customer creation has a durable operation record and an explicit status
 // readback. Fail over early instead of making the form look stuck for 20s.
 export const CLIENT_CUSTOMER_SAVE_TIMEOUT_MS = 8_000
-// After the soft customer-save timeout the request is allowed to finish so the
-// server can complete the Customers write while the client verifies the
-// operation. This is a hard ceiling, not a longer blocking wait.
+// Kept as a ceiling for environments that explicitly opt into a longer wait.
+// Customer saves abort the browser-side wait at the soft limit before doing a
+// bounded status check; the operation id remains the source of truth.
 export const CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS = 30_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
-const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
+const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0]
 
 function emitCustomerSaveState(operationId: string, status: CustomerMutationStateStatus, customerId?: string) {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('asva-customer-save-state', { detail: { operationId, status, customerId: customerId || '' } }))
@@ -324,7 +324,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
 
 export function createHttpApi(baseUrl: string): WorkbenchApi {
   const base = baseUrl.replace(/\/$/, '')
-  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit, options: { softTimeoutMs?: number; hardTimeoutMs?: number } = {}): Promise<T> {
+  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit, options: { softTimeoutMs?: number; hardTimeoutMs?: number; abortOnSoftTimeout?: boolean } = {}): Promise<T> {
     const startedAt = performance.now()
     const method = init?.method || 'GET'
     const headers = new Headers(init?.headers)
@@ -351,6 +351,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       softTimeoutHandle = setTimeout(() => {
         softTimedOut = true
         reject(Object.assign(new Error('请求等待时间较长'), { __softTimeout: true }))
+        if (options.abortOnSoftTimeout) controller.abort()
       }, softTimeoutMs)
     }) : null
     const execution = (async () => {
@@ -362,8 +363,10 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       }
       return { response: nextResponse, payload: nextPayload }
     })()
-    // A soft timeout only stops the caller waiting; the HTTP request keeps
-    // running so the server can finish the Customers write.
+    // For customer saves the caller aborts its browser-side request before
+    // recovery starts. This prevents an in-flight POST and repeated status
+    // reads from running concurrently; the server-side operation id remains
+    // idempotent even if the provider has already accepted the write.
     execution.finally(() => clearTimeout(hardTimeoutHandle)).catch(() => {})
     let completed: { response: Response; payload: Record<string, any> | null }
     try {
@@ -446,9 +449,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       const operationId = input.operationId || ''
       emitCustomerSaveState(operationId, 'PROCESSING')
       try {
-        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers }, { softTimeoutMs: CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, hardTimeoutMs: CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS })
+        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers }, { softTimeoutMs: CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, hardTimeoutMs: CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS, abortOnSoftTimeout: true })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
-        // R048.11: PERSISTED 和 COMMITTED 都是成功状态，不强制等待 COMMITTED
         if (operationId && mutation.mutation && mutation.mutation.status !== 'PERSISTED' && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, mutation.createdCustomerId)
         if (operationId) emitCustomerSaveState(operationId, mutation.mutation?.status || 'COMMITTED', mutation.createdCustomerId)
         return mutation
@@ -465,7 +467,6 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       try {
         const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
-        // R048.11: PERSISTED 和 COMMITTED 都是成功状态，不强制等待 COMMITTED
         if (operationId && mutation.mutation && mutation.mutation.status !== 'PERSISTED' && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, customerId)
         if (operationId) emitCustomerSaveState(operationId, mutation.mutation?.status || 'COMMITTED', customerId)
         return mutation
