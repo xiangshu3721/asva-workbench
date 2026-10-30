@@ -51,6 +51,16 @@ describe('HTTP environment diagnostics', () => {
     expect(readAccessToken()).toBe('valid-session-token')
   })
 
+  it('keeps a valid login token when the current-session request is temporarily unavailable', async () => {
+    const values = new Map<string, string>()
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: storage, sessionStorage: storage, dispatchEvent: vi.fn() } })
+    writeAccessToken('valid-session-token')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await expect(createHttpApi('https://api.example.com').staff('')).rejects.toMatchObject({ code: 'NETWORK_UNREACHABLE' })
+    expect(readAccessToken()).toBe('valid-session-token')
+  })
+
   it('reports CORS only when the browser error contains explicit CORS evidence', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Blocked by CORS policy: preflight request failed') }))
     await expect(createHttpApi('https://api.example.com').health()).rejects.toMatchObject({ code: 'CORS_PREFLIGHT_FAILED' })

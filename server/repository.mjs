@@ -889,14 +889,14 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.pendingEnrollmentRecoveryKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.pendingEnrollmentRecoveryKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.profileReadCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.understandingConflictCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
     if (this.auditLogs.length > 200) this.auditLogs.length = 200
     console.info('[ASVA_AUDIT]', JSON.stringify(entry))
   }
-  invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1; this.directoryCache.data = null; this.directoryCache.savedAt = 0; this.directoryCache.promise = null; this.directoryCache.generation += 1; this.staffCache.data = null; this.staffCache.savedAt = 0; this.staffCache.promise = null; this.staffCache.generation += 1 }
+  invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1; this.directoryCache.data = null; this.directoryCache.savedAt = 0; this.directoryCache.promise = null; this.directoryCache.generation += 1; this.staffCache.data = null; this.staffCache.savedAt = 0; this.staffCache.promise = null; this.staffCache.generation += 1; this.profileReadCache.data = null; this.profileReadCache.savedAt = 0; this.profileReadCache.promise = null; this.profileReadCache.generation += 1; this.understandingConflictCache.data = null; this.understandingConflictCache.savedAt = 0; this.understandingConflictCache.promise = null; this.understandingConflictCache.generation += 1 }
 
   startAutomaticProcessingRecovery() {
     if (!config.features.automaticProfileArchiving) return
@@ -1082,6 +1082,78 @@ export class FeishuRepository {
     }
   }
 
+  freshFullDatabase() {
+    const nowMs = Date.now()
+    return this.databaseCache.data && nowMs - this.databaseCache.savedAt < 45_000 ? cloneDatabase(this.databaseCache.data) : null
+  }
+
+  customerReadDatabase({ customerRows = [], staffRows = [], sourceRows = [], evidenceRows = [], conflictRows = [] } = {}) {
+    const sourceRecords = sourceRows.map(sourceRecord)
+    const allEvidenceItems = evidenceRows.map(evidenceItem)
+    const evidenceItems = allEvidenceItems.filter((item) => {
+      if (item.reviewStatus === 'CONFIRMED') return true
+      if (item.reviewStatus !== 'PENDING_REVIEW') return false
+      const source = sourceRecords.find((candidate) => candidate.id === item.sourceId)
+      return !source?.lastBatchId || source.lastBatchId === item.extractionBatchId
+    })
+    const activeEvidenceIds = new Set(evidenceItems.map((item) => item.id))
+    return {
+      staff: staffRows.map(staff), customers: customerRows.map(customer), appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords, evidenceItems,
+      profileUpdateProposals: [], evidenceConflicts: conflictRows.map(conflictRecord).filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId)),
+      _missingRepositories: [], _allEvidenceItems: allEvidenceItems,
+      _rows: { appointments: [], customers: customerRows, services: [], staff: staffRows, products: [], enrollments: [], profileChanges: [], sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: [], evidenceConflicts: conflictRows },
+    }
+  }
+
+  async loadProfileRead({ force = false } = {}) {
+    if (this.load !== FeishuRepository.prototype.load) return this.load({ force })
+    const full = !force ? this.freshFullDatabase() : null
+    if (full) return full
+    const nowMs = Date.now()
+    if (!force && this.profileReadCache.data && nowMs - this.profileReadCache.savedAt < 45_000) return cloneDatabase(this.profileReadCache.data)
+    if (!force && this.profileReadCache.promise) return this.profileReadCache.promise.then(cloneDatabase)
+    const generation = this.profileReadCache.generation
+    const request = this.loadProfileReadFresh().then((database) => {
+      if (this.profileReadCache.generation === generation) { this.profileReadCache.data = cloneDatabase(database); this.profileReadCache.savedAt = Date.now() }
+      return database
+    })
+    this.profileReadCache.promise = request
+    request.finally(() => { if (this.profileReadCache.promise === request) this.profileReadCache.promise = null }).catch(() => {})
+    return request.then(cloneDatabase)
+  }
+
+  async loadProfileReadFresh() {
+    const entries = [['customers', config.feishu.tables.customers], ['staff', config.feishu.tables.staff], ['sourceRecords', config.feishu.tables.sourceRecords], ['evidenceItems', config.feishu.tables.evidenceItems]]
+    const rows = await Promise.all(entries.map(async ([table, tableId]) => tableId ? listRecords(tableId) : []))
+    const [customerRows, staffRows, sourceRows, evidenceRows] = rows
+    return this.customerReadDatabase({ customerRows, staffRows, sourceRows, evidenceRows })
+  }
+
+  async loadUnderstandingConflicts({ force = false } = {}) {
+    const nowMs = Date.now()
+    if (!force && this.understandingConflictCache.data && nowMs - this.understandingConflictCache.savedAt < 45_000) return this.understandingConflictCache.data.map((item) => ({ ...item }))
+    if (!force && this.understandingConflictCache.promise) return this.understandingConflictCache.promise.then((items) => items.map((item) => ({ ...item })))
+    const generation = this.understandingConflictCache.generation
+    const request = (async () => {
+      const rows = config.feishu.tables.evidenceConflicts ? await listRecords(config.feishu.tables.evidenceConflicts) : []
+      const records = rows.map(conflictRecord)
+      if (this.understandingConflictCache.generation === generation) { this.understandingConflictCache.data = records; this.understandingConflictCache.savedAt = Date.now() }
+      return records
+    })()
+    this.understandingConflictCache.promise = request
+    request.finally(() => { if (this.understandingConflictCache.promise === request) this.understandingConflictCache.promise = null }).catch(() => {})
+    return request.then((items) => items.map((item) => ({ ...item })))
+  }
+
+  async loadUnderstandingRead({ force = false } = {}) {
+    if (this.load !== FeishuRepository.prototype.load) return this.load({ force })
+    const full = !force ? this.freshFullDatabase() : null
+    if (full) return full
+    const [profileDatabase, conflicts] = await Promise.all([this.loadProfileRead({ force }), this.loadUnderstandingConflicts({ force })])
+    const activeEvidenceIds = new Set(profileDatabase.evidenceItems.map((item) => item.id))
+    return { ...profileDatabase, evidenceConflicts: conflicts.filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId)) }
+  }
+
   async loadCustomerSaveContext({ force = false, maxAgeMs = 45_000 } = {}) {
     // Keep isolated repository tests and injected providers on their supplied
     // data source while production uses the small directory projection.
@@ -1203,7 +1275,7 @@ export class FeishuRepository {
 
   async customerProfile(actorId, customerId) {
     requireStage2Tables()
-    const database = await this.load()
+    const database = await this.loadProfileRead()
     const visibleDatabase = scope(database, actorId)
     const customer = visibleDatabase.customers.find((item) => item.id === customerId)
     if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
@@ -1410,7 +1482,7 @@ export class FeishuRepository {
   async customer(actorId, customerId) { return (await this.customerDetail(actorId, customerId)).customers.find((item) => item.id === customerId) }
 
   async getCustomerUnderstanding(actorId, customerId) {
-    const database = await this.load()
+    const database = await this.loadUnderstandingRead()
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
