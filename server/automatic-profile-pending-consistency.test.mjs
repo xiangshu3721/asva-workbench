@@ -413,4 +413,70 @@ describe('automatic profile pending consistency', () => {
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalled()
     release({ status: 'QUEUED', sourceId: 'SRC-FAST' })
   })
+
+
+  it('late stamp/ensure must not overwrite newer pending hash', async () => {
+    const repository = new FeishuRepository()
+    const older = { contentHash: contentHash('旧资料原文'), actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE', createdAt: '2026-10-30T00:00:00.000Z' }
+    const newer = { contentHash: contentHash('新资料已写入'), actorId: 'ADMIN-1', reason: 'CUSTOMER_UPDATE', createdAt: '2026-10-30T01:00:00.000Z' }
+    const recordId = 'rec-race-1'
+    table(state.tableIds.customers).set(recordId, {
+      record_id: recordId,
+      fields: fields('customers', {
+        customer_id: 'CUS-RACE-1',
+        nickname: 'Race',
+        notes: '新资料已写入',
+        created_by_staff_id: 'ADMIN-1',
+        sabc: 'C',
+        is_paid: false,
+        created_at: '2026-10-30T00:00:00.000Z',
+        profile_field_meta_json: JSON.stringify({
+          _profile_version: 1,
+          _fields: {},
+          _automatic_profile_pending: newer,
+          _mutation_states: {},
+        }),
+      }),
+    })
+    repository.invalidateDatabaseCache()
+
+    await expect(repository.stampAutomaticProfilePendingError('CUS-RACE-1', older, 'AUTO_SOURCE_QUEUE_FAILED')).resolves.toBe(false)
+    await expect(repository.ensureAutomaticProfilePending('CUS-RACE-1', older)).resolves.toBe(false)
+
+    const pending = metaOf(rowFor('CUS-RACE-1'))._automatic_profile_pending
+    expect(pending).toMatchObject({ contentHash: newer.contentHash, reason: 'CUSTOMER_UPDATE' })
+    expect(pending.lastErrorCode).toBeUndefined()
+  })
+
+  it('stamp only applies when current pending hash matches marker', async () => {
+    const repository = new FeishuRepository()
+    const marker = { contentHash: contentHash('同 hash 可 stamp'), actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE', createdAt: '2026-10-30T00:00:00.000Z' }
+    const recordId = 'rec-stamp-ok'
+    table(state.tableIds.customers).set(recordId, {
+      record_id: recordId,
+      fields: fields('customers', {
+        customer_id: 'CUS-STAMP-OK',
+        nickname: 'StampOk',
+        notes: '同 hash 可 stamp',
+        created_by_staff_id: 'ADMIN-1',
+        sabc: 'C',
+        is_paid: false,
+        created_at: '2026-10-30T00:00:00.000Z',
+        profile_field_meta_json: JSON.stringify({
+          _profile_version: 1,
+          _fields: {},
+          _automatic_profile_pending: marker,
+          _mutation_states: {},
+        }),
+      }),
+    })
+    repository.invalidateDatabaseCache()
+    await expect(repository.stampAutomaticProfilePendingError('CUS-STAMP-OK', marker, 'AUTO_SOURCE_QUEUE_FAILED')).resolves.toBe(true)
+    expect(metaOf(rowFor('CUS-STAMP-OK'))._automatic_profile_pending).toMatchObject({
+      contentHash: marker.contentHash,
+      lastErrorCode: 'AUTO_SOURCE_QUEUE_FAILED',
+    })
+  })
+
+
 })
