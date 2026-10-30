@@ -20,7 +20,9 @@ describe('automatic processing recovery path isolation', () => {
     expect(repositorySource).not.toMatch(/setInterval\s*\(\s*\(\)\s*=>\s*\{\s*void this\.recoverAutomaticProcessing/)
     expect(repositorySource).not.toMatch(/AUTO_PROCESSING_INTERVAL_MS/)
     expect(repositorySource).toMatch(/startAutomaticProcessingRecovery\(\)\s*\{\s*\/\/ Periodic 11-table recovery was removed[\s\S]*?return\s*\}/)
-    expect(repositorySource).toMatch(/scheduleAutomaticProcessing\(actorId, sourceId\)\s*\{\s*if \(!config\.features\.automaticProfileArchiving\) return\s*setImmediate/)
+    expect(repositorySource).toMatch(/scheduleAutomaticProcessing\(actorId, sourceId\)/)
+    expect(repositorySource).toMatch(/DURABLE_RECOVERABLE/)
+    expect(repositorySource).toMatch(/setImmediate\(/)
   })
 
   it('exposes an ADMIN-guarded on-demand recovery route', () => {

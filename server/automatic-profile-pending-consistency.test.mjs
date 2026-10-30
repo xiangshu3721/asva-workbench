@@ -28,9 +28,21 @@ const rowFields = (row) => row?.fields || {}
 
 vi.mock('./feishu.mjs', async () => {
   const actual = await vi.importActual('./feishu.mjs')
+  const matchSearch = (fields, filter) => {
+    const conditions = filter?.conditions || []
+    if (!conditions.length) return true
+    const conjunction = String(filter?.conjunction || 'and').toLowerCase()
+    const results = conditions.map((condition) => {
+      const actualValue = fields?.[condition.field_name]
+      const expected = Array.isArray(condition.value) ? condition.value[0] : condition.value
+      return condition.operator === 'is' ? String(actualValue ?? '') === String(expected ?? '') : false
+    })
+    return conjunction === 'or' ? results.some(Boolean) : results.every(Boolean)
+  }
   return {
     ...actual,
     listRecords: async (tableId) => [...table(tableId).values()].map(clone),
+    searchRecords: async (tableId, filter) => [...table(tableId).values()].filter((row) => matchSearch(row?.fields || {}, filter)).map(clone),
     getRecord: async (tableId, recordId) => {
       const row = table(tableId).get(recordId)
       return row ? clone(row) : null
