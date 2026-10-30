@@ -669,36 +669,34 @@ function CustomersPage({ staff, database, directoryLoading, dataReady, directory
             </div>
             <button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button>
           </div>
-          <label className="search-field">
-            <span>⌕</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={canSeeAll ? '搜索昵称、手机号、问题或负责人／创建人' : '搜索昵称、手机号或主要问题'}
-              disabled={showDirectoryLoading}
-            />
-          </label>
-          {canSeeAll && (
-            <div className="customer-filters">
-              <label className="customer-owner-filter">
-                <span>当前负责人</span>
-                <select
-                  value={ownerFilter}
-                  onChange={(event) => setOwnerFilter(event.target.value as OwnerFilterValue)}
-                  disabled={showDirectoryLoading}
-                  aria-label="按当前负责人筛选"
-                >
-                  <option value="">全部</option>
-                  {ownerOptions.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}{item.status === 'INACTIVE' ? '（已停用）' : ''}{item.permissionRole === 'ADMIN' ? ' · 管理员' : ''}
-                    </option>
-                  ))}
-                  <option value={UNASSIGNED_OWNER_FILTER}>未分配导师</option>
-                </select>
-              </label>
-            </div>
-          )}
+          <div className="customer-filter-row">
+            <label className="search-field">
+              <span>⌕</span>
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={canSeeAll ? '搜索昵称、手机号、问题或负责人／创建人' : '搜索昵称、手机号或主要问题'}
+                disabled={showDirectoryLoading}
+              />
+            </label>
+            {canSeeAll && (
+              <select
+                className="customer-owner-select"
+                value={ownerFilter}
+                onChange={(event) => setOwnerFilter(event.target.value as OwnerFilterValue)}
+                disabled={showDirectoryLoading}
+                aria-label="按当前负责人筛选"
+              >
+                <option value="">全部</option>
+                {ownerOptions.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}{item.status === 'INACTIVE' ? '（已停用）' : ''}{item.permissionRole === 'ADMIN' ? ' · 管理员' : ''}
+                  </option>
+                ))}
+                <option value={UNASSIGNED_OWNER_FILTER}>未分配导师</option>
+              </select>
+            )}
+          </div>
           {!showDirectoryLoading && (
             <div className="customer-result-count" aria-live="polite">共 {list.length} 位客户</div>
           )}
