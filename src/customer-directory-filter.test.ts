@@ -51,6 +51,7 @@ function customer(partial: Partial<Customer> & Pick<Customer, 'id' | 'name' | 'm
 describe('customer-directory-filter', () => {
   const team = [
     staff({ id: 'admin-1', name: '管理员甲', permissionRole: 'ADMIN' }),
+    staff({ id: 'admin-2', name: '管理员乙', permissionRole: 'ADMIN' }),
     staff({ id: 'mentor-a', name: '导师张', permissionRole: 'MENTOR' }),
     staff({ id: 'mentor-b', name: '导师李', permissionRole: 'MENTOR', status: 'INACTIVE' }),
   ]
@@ -67,21 +68,48 @@ describe('customer-directory-filter', () => {
       createdByName: '管理员甲',
       need: '关系',
     }),
+    customer({ id: 'c5', name: '匿名未分配', mentorId: null, need: '方向' }),
+    customer({ id: 'c6', name: '乙创建未分配', mentorId: null, createdByStaffId: 'admin-2', createdByName: '管理员乙', need: '起步' }),
   ]
 
   it('owner options include inactive mentors and admins', () => {
     const options = ownerFilterStaffOptions(team)
-    expect(options.map((item) => item.id)).toEqual(['admin-1', 'mentor-b', 'mentor-a'].sort((a, b) => {
-      const names: Record<string, string> = { 'admin-1': '管理员甲', 'mentor-a': '导师张', 'mentor-b': '导师李' }
-      return names[a].localeCompare(names[b], 'zh') || a.localeCompare(b)
-    }))
+    expect(options.map((item) => item.id).sort()).toEqual(['admin-1', 'admin-2', 'mentor-a', 'mentor-b'].sort())
   })
 
-  it('filters by current owner mentorId only, never createdBy*', () => {
-    expect(matchesOwnerFilter(customers[3], 'admin-1')).toBe(false)
-    expect(matchesOwnerFilter(customers[3], 'mentor-a')).toBe(true)
+  it('mentor option matches mentorId only; assigned creator stays under mentor', () => {
+    expect(matchesOwnerFilter(customers[3], 'mentor-a', team)).toBe(true)
+    expect(matchesOwnerFilter(customers[3], 'admin-1', team)).toBe(false)
+    expect(matchesOwnerFilter(customers[0], 'mentor-a', team)).toBe(true)
+    expect(matchesOwnerFilter(customers[0], UNASSIGNED_OWNER_FILTER)).toBe(false)
+  })
+
+  it('admin option includes only that admin’s still-unassigned created customers', () => {
+    expect(matchesOwnerFilter(customers[1], 'admin-1', team)).toBe(true)
+    expect(matchesOwnerFilter(customers[5], 'admin-1', team)).toBe(false)
+    expect(matchesOwnerFilter(customers[5], 'admin-2', team)).toBe(true)
+    // Unassigned but not created by admin-1
+    expect(matchesOwnerFilter(customers[4], 'admin-1', team)).toBe(false)
+    // Created by admin-1 but already assigned → mentor bucket only
+    expect(matchesOwnerFilter(customers[3], 'admin-1', team)).toBe(false)
+  })
+
+  it('未分配 includes all empty mentorId regardless of creator', () => {
     expect(matchesOwnerFilter(customers[1], UNASSIGNED_OWNER_FILTER)).toBe(true)
+    expect(matchesOwnerFilter(customers[4], UNASSIGNED_OWNER_FILTER)).toBe(true)
+    expect(matchesOwnerFilter(customers[5], UNASSIGNED_OWNER_FILTER)).toBe(true)
     expect(matchesOwnerFilter(customers[3], UNASSIGNED_OWNER_FILTER)).toBe(false)
+
+    const unassigned = filterCustomerDirectory(customers, { query: '', ownerFilter: UNASSIGNED_OWNER_FILTER, staff: team })
+    expect(unassigned.map((item) => item.id).sort()).toEqual(['c2', 'c5', 'c6'])
+  })
+
+  it('admin filter directory returns creator-unassigned only', () => {
+    const byAdmin1 = filterCustomerDirectory(customers, { query: '', ownerFilter: 'admin-1', staff: team })
+    expect(byAdmin1.map((item) => item.id)).toEqual(['c2'])
+
+    const byAdmin2 = filterCustomerDirectory(customers, { query: '', ownerFilter: 'admin-2', staff: team })
+    expect(byAdmin2.map((item) => item.id)).toEqual(['c6'])
   })
 
   it('keyword matches mentor/admin names via staff lookup AND combines with owner filter', () => {
@@ -101,6 +129,13 @@ describe('customer-directory-filter', () => {
       staff: team,
     })
     expect(assignedToMentorAAndCreator.map((item) => item.id)).toEqual(['c4'])
+
+    const adminBucketAndKeyword = filterCustomerDirectory(customers, {
+      query: '叶承安',
+      ownerFilter: 'admin-1',
+      staff: team,
+    })
+    expect(adminBucketAndKeyword.map((item) => item.id)).toEqual(['c2'])
   })
 
   it('inactive mentor historical customers remain filterable by staff.id', () => {

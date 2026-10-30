@@ -1,13 +1,18 @@
-import type { Customer, Staff } from './domain'
+import type { Customer, PermissionRole, Staff } from './domain'
 
 /** Sentinel for owner filter: customers with no assigned mentor (mentorId null/empty). */
 export const UNASSIGNED_OWNER_FILTER = '__unassigned__'
 
 /**
  * Ownership semantics (do not mix):
- * - 「当前负责人」= customer.mentorId (assigned mentor; null ⇒ 未分配)
+ * - 「当前负责人」= customer.mentorId (assigned mentor; null/empty ⇒ 未分配)
  * - 「创建人」= customer.createdByStaffId / createdByName (who created the record)
- * createdBy* must NEVER override mentor ownership for the owner dropdown filter.
+ *
+ * Owner dropdown matching:
+ * - Mentor option: mentorId === staffId (assigned customers stay under their mentor)
+ * - Admin option: createdByStaffId === adminId AND still unassigned — does NOT pull
+ *   customers already assigned to another mentor into the admin bucket
+ * - 「未分配」: all customers with empty mentorId
  */
 
 export type OwnerFilterValue = '' | typeof UNASSIGNED_OWNER_FILTER | string
@@ -15,6 +20,12 @@ export type OwnerFilterValue = '' | typeof UNASSIGNED_OWNER_FILTER | string
 export function buildStaffNameIndex(staff: Staff[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const item of staff) map.set(item.id, item.name)
+  return map
+}
+
+export function buildStaffRoleIndex(staff: Staff[]): Map<string, PermissionRole> {
+  const map = new Map<string, PermissionRole>()
+  for (const item of staff) map.set(item.id, item.permissionRole)
   return map
 }
 
@@ -35,6 +46,10 @@ function staffName(staffById: Map<string, string>, id?: string | null) {
   return staffById.get(id) || ''
 }
 
+function isUnassignedMentor(customer: Customer) {
+  return !customer.mentorId
+}
+
 /** Keyword haystack: customer fields + current owner name + creator name (via staff lookup / createdByName). */
 export function customerKeywordHaystack(customer: Customer, staffById: Map<string, string>) {
   const ownerName = staffName(staffById, customer.mentorId)
@@ -52,10 +67,33 @@ export function customerKeywordHaystack(customer: Customer, staffById: Map<strin
   ].join(' ').toLowerCase()
 }
 
-export function matchesOwnerFilter(customer: Customer, ownerFilter: OwnerFilterValue) {
+/**
+ * @param staffRoles role lookup for the selected owner option (from database.staff).
+ * When the selected id is an ADMIN, match creator+unassigned; MENTOR matches mentorId only.
+ * Unknown ids fall back to mentorId equality (safe default).
+ */
+export function matchesOwnerFilter(
+  customer: Customer,
+  ownerFilter: OwnerFilterValue,
+  staffRoles?: Map<string, PermissionRole> | Staff[],
+) {
   if (!ownerFilter) return true
-  // Current owner only — mentorId. Never use createdBy* here.
-  if (ownerFilter === UNASSIGNED_OWNER_FILTER) return !customer.mentorId
+  if (ownerFilter === UNASSIGNED_OWNER_FILTER) return isUnassignedMentor(customer)
+
+  const roles = staffRoles instanceof Map
+    ? staffRoles
+    : Array.isArray(staffRoles)
+      ? buildStaffRoleIndex(staffRoles)
+      : undefined
+  const role = roles?.get(ownerFilter)
+
+  if (role === 'ADMIN') {
+    // Admin bucket: only still-unassigned customers created by this admin.
+    // Assigned customers remain under their mentor option — never pulled into the admin bucket.
+    return isUnassignedMentor(customer) && customer.createdByStaffId === ownerFilter
+  }
+
+  // Mentor (or unknown id): current owner = mentorId only.
   return customer.mentorId === ownerFilter
 }
 
@@ -71,9 +109,10 @@ export function filterCustomerDirectory(
 ) {
   const normalizedQuery = options.query.trim().toLowerCase()
   const staffById = buildStaffNameIndex(options.staff)
+  const staffRoles = buildStaffRoleIndex(options.staff)
   return customers.filter(
     (customer) =>
       matchesKeywordFilter(customer, normalizedQuery, staffById)
-      && matchesOwnerFilter(customer, options.ownerFilter),
+      && matchesOwnerFilter(customer, options.ownerFilter, staffRoles),
   )
 }
