@@ -128,7 +128,6 @@ const incompleteMutationError = (state) => Object.assign(new Error('该保存操
 const confirmedMutationFailureError = () => Object.assign(new Error('客户保存已确认失败，不能自动重放原操作。'), { code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', status: 409 })
 const mentorCreateLocks = new Map()
 const AUTO_PROFILE_SOURCE_PREFIX = 'AUTO_PROFILE_ORGANIZE:'
-const AUTO_PROCESSING_INTERVAL_MS = 30_000
 const publicSource = (source, { includeRaw = false } = {}) => {
   const { rawText, _recordId, processingError, ...safe } = source || {}
   return { ...safe, notes: stripDialogueContext(safe.notes), ...(includeRaw ? { rawText: rawText || '' } : {}), processingError: processingErrorMessage(processingError) || null }
@@ -899,15 +898,13 @@ export class FeishuRepository {
   invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1; this.directoryCache.data = null; this.directoryCache.savedAt = 0; this.directoryCache.promise = null; this.directoryCache.generation += 1; this.staffCache.data = null; this.staffCache.savedAt = 0; this.staffCache.promise = null; this.staffCache.generation += 1; this.profileReadCache.data = null; this.profileReadCache.savedAt = 0; this.profileReadCache.promise = null; this.profileReadCache.generation += 1; this.understandingConflictCache.data = null; this.understandingConflictCache.savedAt = 0; this.understandingConflictCache.promise = null; this.understandingConflictCache.generation += 1 }
 
   startAutomaticProcessingRecovery() {
-    if (!config.features.automaticProfileArchiving) return
-    if (this.autoProcessingRecoveryTimer) return
-    this.autoProcessingRecoveryTimer = setInterval(() => { void this.recoverAutomaticProcessing().catch((error) => this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_RECOVERY_FAILED')) }, AUTO_PROCESSING_INTERVAL_MS)
-    this.autoProcessingRecoveryTimer.unref?.()
+    // Periodic 11-table recovery was removed from the request path. Keep this
+    // method as a no-op so callers and older module entrypoints stay safe.
+    return
   }
 
   scheduleAutomaticProcessing(actorId, sourceId) {
     if (!config.features.automaticProfileArchiving) return
-    this.startAutomaticProcessingRecovery()
     setImmediate(() => { void this.processSource(actorId, sourceId).catch((error) => this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')) })
   }
 
@@ -968,14 +965,16 @@ export class FeishuRepository {
   }
 
   async recoverAutomaticProcessing() {
-    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
-    if (this.autoProcessingRecoveryRunning) return
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', scheduledCustomers: 0, scheduledSources: 0 }
+    if (this.autoProcessingRecoveryRunning) return { status: 'RUNNING', scheduledCustomers: 0, scheduledSources: 0 }
     this.resetAutoRecoveryCircuitIfNeeded()
     if (this.autoRecoveryCircuit.paused) {
       this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', 'AUTO_RECOVERY_CIRCUIT_OPEN')
-      return { status: 'CIRCUIT_OPEN' }
+      return { status: 'CIRCUIT_OPEN', scheduledCustomers: 0, scheduledSources: 0 }
     }
     this.autoProcessingRecoveryRunning = true
+    let scheduledCustomers = 0
+    let scheduledSources = 0
     try {
       const database = await this.load({ force: true })
       const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
@@ -987,9 +986,11 @@ export class FeishuRepository {
           this.audit('RECOVER_AUTOMATIC_PROCESSING', customer.id, actorId || '', 'PENDING', 'AUTOMATIC_PROFILE_REFERENCE_CHANGED')
           continue
         }
-        if (actorId) this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
+        if (actorId) {
+          this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
+          scheduledCustomers += 1
+        }
       }
-      let scheduledSources = 0
       for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && automaticProfileEventAllowed(item.createdAt || item.uploadedAt || item.occurredAt || item.processingStartedAt))) {
         if (!shouldAutoRecoverSource(source)) {
           if (hasReachedAutoRetryCap(source) && ['FAILED', 'PROCESSING'].includes(source.processingStatus)) await this.stampAutoRetryCapReached(source)
@@ -1002,6 +1003,7 @@ export class FeishuRepository {
         this.scheduleAutomaticProcessing(actorId, source.id)
         scheduledSources += 1
       }
+      return { status: 'OK', scheduledCustomers, scheduledSources }
     } finally {
       this.autoProcessingRecoveryRunning = false
     }
@@ -1387,13 +1389,14 @@ export class FeishuRepository {
     return record
   }
   async validateSession(staffId, authVersion, sessionAuthMode = '') {
-    const account = await this.staff(staffId)
-    let credential = null
-    if (config.authMode === 'PASSWORD') {
-      if (sessionAuthMode !== 'PASSWORD') throw invalidLogin()
-      credential = await this.authRepository.findByStaffId(staffId)
-      if (!credential || credential.credentialStatus === 'DISABLED' || Number(credential.authVersion || 0) !== Number(authVersion || 0)) throw invalidLogin()
-    }
+    // Preserve both authorization checks, but do not serialize independent
+    // Staff and AuthCredentials reads on a cold CloudBase instance.
+    if (config.authMode === 'PASSWORD' && sessionAuthMode !== 'PASSWORD') throw invalidLogin()
+    const [account, credential] = await Promise.all([
+      this.staff(staffId),
+      config.authMode === 'PASSWORD' ? this.authRepository.findByStaffId(staffId) : Promise.resolve(null),
+    ])
+    if (config.authMode === 'PASSWORD' && (!credential || credential.credentialStatus === 'DISABLED' || Number(credential.authVersion || 0) !== Number(authVersion || 0))) throw invalidLogin()
     return { account, credential }
   }
   async authenticate(phone, secret, ip = 'unknown') {

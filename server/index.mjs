@@ -10,12 +10,9 @@ import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
 
 const repository = new FeishuRepository()
-repository.startAutomaticProcessingRecovery?.()
-if (repository.recoverAutomaticProcessing) {
-  void repository.recoverAutomaticProcessing().catch((error) => {
-    repository.audit?.('START_AUTOMATIC_PROCESSING_RECOVERY', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_START_FAILED')
-  })
-}
+// Do not run the 11-table recoverAutomaticProcessing scan on module load or via a
+// 30s timer. Event-driven scheduleAutomaticProcessing / scheduleAutomaticCustomerProfile
+// still archive on write. Pending markers are restored only via the admin on-demand route.
 
 function send(request, response, statusCode, body, requestId) {
   if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|customers(?:\/directory|\/[^/]+\/detail)?|staff\/mentors)/.test(request.url || '')) {
@@ -206,6 +203,16 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && url.pathname === '/api/ai/query-logs') return send(request, response, 200, await repository.assistantQueryLogs(await guardAdmin(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/debug/save-traces') return send(request, response, 200, await repository.savePerformanceTraces(await guardAdmin(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/debug/evidence') return send(request, response, 200, await repository.evidenceDebug(await guardAdmin(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/admin/recover-automatic-processing') {
+    const actor = await guardAdmin(request)
+    const result = await repository.recoverAutomaticProcessing()
+    repository.audit?.('RECOVER_AUTOMATIC_PROCESSING_ON_DEMAND', '', actor, 'SUCCESS', result?.status || 'OK')
+    return send(request, response, 200, {
+      status: result?.status || 'OK',
+      scheduledCustomers: Number(result?.scheduledCustomers || 0),
+      scheduledSources: Number(result?.scheduledSources || 0),
+    }, requestId)
+  }
   if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(request, response, 200, await createServiceSummary(await readBody(request)), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(request, response, 200, { brief: await createBrief(await readBody(request)) }, requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/customer-intelligence') { await guardAdmin(request); return send(request, response, 200, await createCustomerIntelligence(await readBody(request)), requestId) }
@@ -225,7 +232,14 @@ export const server = http.createServer((request, response) => {
   handle(request, response, requestId).catch(async (error) => {
     const code = error?.code || (error instanceof FeishuUnavailableError ? 'FEISHU_UNAVAILABLE' : error instanceof DeepSeekUnavailableError ? 'DEEPSEEK_UNAVAILABLE' : 'REQUEST_FAILED')
     const statusCode = status(error)
-    const operatorId = await (async () => { try { return await actorId(request) } catch { return '' } })()
+    // Error logging must never re-enter Feishu-dependent session validation.
+    // Extract only a locally verified session identity, or leave it blank.
+    const operatorId = (() => {
+      try {
+        const token = bearerToken(request)
+        return token ? String(verifySession(token).sub || '') : ''
+      } catch { return '' }
+    })()
     console.error('[ASVA_API_ERROR]', JSON.stringify({ timestamp: new Date().toISOString(), request_id: requestId, operator_id: operatorId || undefined, operation: `${request.method} ${request.url}`, provider_operation: error?.operation, entity: 'api', status: statusCode, duration: Date.now() - startedAt, error_code: code, provider_code: error?.providerCode, provider_message: typeof error?.providerMessage === 'string' ? error.providerMessage.slice(0, 160) : undefined, provider_request_id: error?.providerRequestId, provider_http_status: error?.httpStatus, retryable: error?.retryable, write_status: error?.writeStatus, readback_status: error?.readbackStatus }))
     const message = code === 'AUTH_INVALID' ? '登录信息验证失败' : code === 'AUTH_RATE_LIMITED' ? '登录尝试过于频繁，请稍后再试' : safeMessage(error, code)
     // Duplicate-customer resolution is rendered by the client from these

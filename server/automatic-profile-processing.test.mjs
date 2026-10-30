@@ -21,7 +21,7 @@ describe('automatic customer profile processing', () => {
     repository.startAutomaticProcessingRecovery = vi.fn()
 
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-OFF', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
-    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'DISABLED' })
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'DISABLED', scheduledCustomers: 0, scheduledSources: 0 })
     expect(repository.createSource).not.toHaveBeenCalled()
     expect(repository.startAutomaticProcessingRecovery).not.toHaveBeenCalled()
   })
@@ -188,9 +188,45 @@ describe('automatic customer profile processing', () => {
     repository.load = vi.fn()
     repository.scheduleAutomaticProcessing = vi.fn()
 
-    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'CIRCUIT_OPEN' })
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'CIRCUIT_OPEN', scheduledCustomers: 0, scheduledSources: 0 })
     expect(repository.load).not.toHaveBeenCalled()
     expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
+  })
+
+
+  it('does not create a periodic recovery timer from start or schedule paths', async () => {
+    vi.useFakeTimers()
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.processSource = vi.fn(async () => ({ id: 'SRC-1' }))
+    const recoverSpy = vi.spyOn(repository, 'recoverAutomaticProcessing')
+
+    repository.startAutomaticProcessingRecovery()
+    repository.scheduleAutomaticProcessing('ADMIN-1', 'SRC-TIMER-1')
+    expect(repository.autoProcessingRecoveryTimer).toBeNull()
+
+    await vi.runOnlyPendingTimersAsync()
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-TIMER-1')
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(recoverSpy).not.toHaveBeenCalled()
+    expect(repository.autoProcessingRecoveryTimer).toBeNull()
+    recoverSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('returns scheduled counts when on-demand recovery finds pending work', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-AUTO-1', notes: '待恢复资料', need: '', helpExpectation: '', goal: '', automaticProfilePending: { contentHash: contentHash('待恢复资料'), actorId: 'ADMIN-1', reason: 'RECOVERY' } }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [{ id: 'SRC-AUTO-1', customerId: 'CUS-AUTO-1', processingStatus: 'UPLOADED', uploadedBy: 'ADMIN-1' }],
+    }))
+    repository.scheduleAutomaticCustomerProfile = vi.fn()
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'OK', scheduledCustomers: 1, scheduledSources: 1 })
+    expect(repository.scheduleAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-1', '待恢复资料', 'RECOVERY')
+    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledWith('ADMIN-1', 'SRC-AUTO-1')
   })
 
 })
