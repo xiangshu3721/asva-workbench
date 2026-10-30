@@ -1060,21 +1060,25 @@ export class FeishuRepository {
     const database = await this.load({ force: true })
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!row) return false
+    const existing = customer(row).automaticProfilePending
+    // Never stamp/write an old marker over a newer or missing different pending.
+    if (existing?.contentHash !== marker.contentHash) return false
     const stamped = {
-      ...marker,
+      ...existing,
       lastErrorCode: text(errorCode) || 'AUTO_SOURCE_QUEUE_FAILED',
       lastErrorAt: now(),
     }
     try {
       await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
         const current = latestCustomer.automaticProfilePending
-        const next = current?.contentHash === marker.contentHash
-          ? { ...current, lastErrorCode: stamped.lastErrorCode, lastErrorAt: stamped.lastErrorAt }
-          : stamped
-        return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: next }) })
+        if (current?.contentHash !== marker.contentHash) {
+          throw Object.assign(new Error('automatic profile pending hash mismatch'), { code: 'AUTO_PENDING_HASH_MISMATCH', status: 409 })
+        }
+        return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: { ...current, lastErrorCode: stamped.lastErrorCode, lastErrorAt: stamped.lastErrorAt } }) })
       }, (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === marker.contentHash && latestCustomer.automaticProfilePending?.lastErrorCode === stamped.lastErrorCode)
       return true
     } catch (error) {
+      if (error?.code === 'AUTO_PENDING_HASH_MISMATCH') return false
       this.audit('STAMP_AUTOMATIC_PROFILE_PENDING_ERROR', customerId, marker.actorId || '', 'PENDING', error?.code || 'AUTO_PENDING_STAMP_FAILED')
       return false
     }
@@ -1085,15 +1089,24 @@ export class FeishuRepository {
     const database = await this.load({ force: true })
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!row) return false
+    const existing = customer(row).automaticProfilePending
+    if (existing?.contentHash === marker.contentHash) return true
+    // Different hash means a newer/other pending already exists — never overwrite.
+    if (existing?.contentHash && existing.contentHash !== marker.contentHash) return false
     try {
       await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
-        if (latestCustomer.automaticProfilePending?.contentHash === marker.contentHash) {
+        const current = latestCustomer.automaticProfilePending
+        if (current?.contentHash === marker.contentHash) {
           return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer) })
+        }
+        if (current?.contentHash && current.contentHash !== marker.contentHash) {
+          throw Object.assign(new Error('newer automatic profile pending present'), { code: 'AUTO_PENDING_NEWER_EXISTS', status: 409 })
         }
         return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: marker }) })
       }, (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === marker.contentHash)
       return true
     } catch (error) {
+      if (error?.code === 'AUTO_PENDING_NEWER_EXISTS') return false
       this.audit('ENSURE_AUTOMATIC_PROFILE_PENDING', customerId, marker.actorId || '', 'PENDING', error?.code || 'AUTO_PENDING_ENSURE_FAILED')
       return false
     }
@@ -1255,7 +1268,10 @@ export class FeishuRepository {
 
     const reason = customer.automaticProfilePending?.reason || 'RECOVERY'
     const marker = automaticProfilePendingMarker(recoveredText, resolvedActorId, reason)
-    await this.ensureAutomaticProfilePending(requestedCustomerId, marker)
+    const ensured = await this.ensureAutomaticProfilePending(requestedCustomerId, marker)
+    if (!ensured) {
+      return { status: 'PENDING', customerId: requestedCustomerId, errorCode: 'AUTO_PENDING_ENSURE_FAILED' }
+    }
     const queued = await this.queueAutomaticCustomerProfile(resolvedActorId, requestedCustomerId, recoveredText, reason)
     if (queued.status === 'QUEUED') {
       return {

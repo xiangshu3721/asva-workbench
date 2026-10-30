@@ -268,4 +268,27 @@ describe('automatic customer profile processing', () => {
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-MISS', notes, 'RECOVERY')
   })
 
+
+  it('recoverAutomaticCustomerProfile does not queue when ensure pending fails', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    const notes = 'ensure 失败须阻断 queue'
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-ENSURE-FAIL', notes, need: '', helpExpectation: '', goal: '', automaticProfilePending: null, createdAt: '2026-10-30T00:00:00.000Z' }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [],
+      _rows: { customers: [{ record_id: 'rec-ensure-fail', fields: {} }] },
+    }))
+    repository.ensureAutomaticProfilePending = vi.fn(async () => false)
+    repository.queueAutomaticCustomerProfile = vi.fn(async () => ({ status: 'QUEUED', sourceId: 'SRC-SHOULD-NOT' }))
+
+    await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-ENSURE-FAIL')).resolves.toEqual({
+      status: 'PENDING',
+      customerId: 'CUS-ENSURE-FAIL',
+      errorCode: 'AUTO_PENDING_ENSURE_FAILED',
+    })
+    expect(repository.ensureAutomaticProfilePending).toHaveBeenCalled()
+    expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
+  })
+
+
 })
