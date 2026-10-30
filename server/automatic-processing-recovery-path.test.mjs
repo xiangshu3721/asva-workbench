@@ -25,7 +25,9 @@ describe('automatic processing recovery path isolation', () => {
 
   it('exposes an ADMIN-guarded on-demand recovery route', () => {
     expect(indexSource).toMatch(/url\.pathname === '\/api\/admin\/recover-automatic-processing'/)
-    expect(indexSource).toMatch(/POST' && url\.pathname === '\/api\/admin\/recover-automatic-processing'[\s\S]*?await guardAdmin\(request\)[\s\S]*?recoverAutomaticProcessing\(\)/)
+    expect(indexSource).toMatch(/POST' && url\.pathname === '\/api\/admin\/recover-automatic-processing'[\s\S]*?await guardAdmin\(request\)/)
+    expect(indexSource).toMatch(/recoverAutomaticCustomerProfile\(actor, customerId\)/)
+    expect(indexSource).toMatch(/recoverAutomaticProcessing\(\)/)
   })
 
   it('keeps frozen login hotfixes: parallel validateSession and local verifySession error logging', () => {
@@ -57,6 +59,11 @@ class SyntheticRepository {
     return state.lastRecoverResult
   }
 
+  async recoverAutomaticCustomerProfile(_actor, customerId) {
+    state.recoverCalls += 1
+    return { status: 'SOURCE_CREATED', customerId, sourceId: 'SRC-SYNTH', reused: false, scheduledProcessing: true }
+  }
+
   audit() {}
 }
 
@@ -80,7 +87,7 @@ beforeEach(() => {
   state.lastRecoverResult = { status: 'OK', scheduledCustomers: 2, scheduledSources: 3 }
 })
 
-async function request(path, { staffId = 'ADMIN-RECOVERY', method = 'POST' } = {}) {
+async function request(path, { staffId = 'ADMIN-RECOVERY', method = 'POST', body } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -88,7 +95,7 @@ async function request(path, { staffId = 'ADMIN-RECOVERY', method = 'POST' } = {
       'Content-Type': 'application/json',
       'X-Staff-Id': staffId,
     },
-    body: method === 'POST' ? '{}' : undefined,
+    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
   })
   const payload = response.status === 204 ? null : await response.json()
   return { response, payload }
@@ -114,5 +121,10 @@ describe('on-demand admin recovery HTTP route', () => {
     expect(ok.response.status).toBe(200)
     expect(ok.payload).toEqual({ status: 'OK', scheduledCustomers: 2, scheduledSources: 3 })
     expect(state.recoverCalls).toBe(1)
+
+    const scoped = await request('/api/admin/recover-automatic-processing', { staffId: 'ADMIN-RECOVERY', body: { customerId: 'CUS-TARGET-1' } })
+    expect(scoped.response.status).toBe(200)
+    expect(scoped.payload).toMatchObject({ status: 'SOURCE_CREATED', customerId: 'CUS-TARGET-1', sourceId: 'SRC-SYNTH', reused: false })
+    expect(state.recoverCalls).toBe(2)
   })
 })
