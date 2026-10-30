@@ -17,6 +17,7 @@ import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
 import { canCommitCustomerResponse, createCustomerScopedState, isCustomerScopedStateFor, type CustomerScopedState } from './customer-switch-safety'
+import { UNASSIGNED_OWNER_FILTER, filterCustomerDirectory, ownerFilterStaffOptions, type OwnerFilterValue } from './customer-directory-filter'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
@@ -631,10 +632,171 @@ function ResourceBanners() {
 
 function CustomersPage({ staff, database, directoryLoading, dataReady, directoryError, onDirectoryRetry, canSeeAll, selectedCustomer, resourceCache, onSelect, onGenerateBrief, onGenerateIntelligence, onRefreshCustomerSummary, onGetUnderstanding, onRefreshUnderstanding, onGetSalesUnderstanding, onRefreshSalesUnderstanding, onGetSafetyAssessment, onRefreshSafetyAssessment, onSaveBrief, onSaveReferrer, onGenerateProfile, onConfirmProfile, onUpdateEnrollments, onLoadCustomerProfile, onSourceWorkspace, onSourceStatus, onExtractDocument, onCreateSource, onProcessSource, onReviewProposal, onResolveConflict, onOverrideServiceNecessity, onAddCustomer, profileRefreshRevision }: { staff: Staff; database: Database; directoryLoading: boolean; dataReady: boolean; directoryError: string; onDirectoryRetry: () => void; canSeeAll: boolean; selectedCustomer?: Customer; resourceCache: ResourceCache; onSelect: (id: string) => void; onGenerateBrief: (input: { name: string; need: string; expectation: string }) => Promise<string>; onGenerateIntelligence: (customer: Customer, database: Database) => Promise<{ summary: AiCoreSummary; brief: AiBrief }>; onRefreshCustomerSummary: (customerId: string) => Promise<Customer | undefined>; onGetUnderstanding: (customerId: string) => Promise<CustomerUnderstandingResponse>; onRefreshUnderstanding: (customerId: string, force?: boolean) => Promise<CustomerUnderstandingResponse>; onGetSalesUnderstanding: (customerId: string) => Promise<CustomerSalesUnderstandingResponse>; onRefreshSalesUnderstanding: (customerId: string, force?: boolean) => Promise<CustomerSalesUnderstandingResponse>; onGetSafetyAssessment: (customerId: string) => Promise<SafetyAssessmentResponse>; onRefreshSafetyAssessment: (customerId: string, force?: boolean) => Promise<SafetyAssessmentResponse>; onSaveBrief: (customerId: string, brief: string) => Promise<Customer | undefined>; onSaveReferrer: (customerId: string, referrerName: string) => Promise<Customer | undefined>; onGenerateProfile: (customerId: string, text: string) => Promise<ProfileDraft>; onConfirmProfile: (customerId: string, updates: ProfileUpdate[]) => Promise<Customer>; onUpdateEnrollments: (customerId: string, enrollments: EnrollmentDraft[]) => Promise<void>; onLoadCustomerProfile: (customerId: string) => Promise<CustomerProfileResponse>; onSourceWorkspace: (customerId: string) => Promise<SourceWorkspace>; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreateSource: (input: SourceCreateInput) => Promise<SourceRecord>; onProcessSource: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onReviewProposal: (proposalId: string, decision: 'CONFIRM' | 'REJECT') => Promise<void>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace>; onAddCustomer: () => void; profileRefreshRevision: number }) {
   const [query, setQuery] = useState('')
+  // ADMIN-only owner filter; values are staff.id or UNASSIGNED_OWNER_FILTER. Current owner = mentorId (not createdBy*).
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilterValue>('')
+  const detailScrollRef = useRef<HTMLDivElement>(null)
   const showDirectoryLoading = directoryLoading || !dataReady
-  const normalizedQuery = query.trim().toLowerCase()
-  const list = database.customers.filter((customer) => !normalizedQuery || `${customer.name} ${customer.phone} ${customer.wechat || ''} ${customer.need} ${customer.notes}`.toLowerCase().includes(normalizedQuery))
-  return <div className="customer-page"><div className="customer-list-column"><div className="page-heading"><div><div className="eyebrow">CUSTOMERS</div><h1>客户</h1><p>{canSeeAll ? '查看所有客户与客户档案。' : `${staff.name} 创建的客户档案。`}</p></div><button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button></div><label className="search-field"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索昵称、手机号或主要问题" disabled={showDirectoryLoading} /></label>{showDirectoryLoading ? <div className="customer-list customer-list-loading" aria-busy="true"><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /></div> : <div className="customer-list">{list.map((customer) => { const course = database.enrollments.find((item) => item.customerId === customer.id && item.status !== 'CANCELLED'); const product = course ? database.products.find((item) => item.id === course.productId) : undefined; const tags = [product?.name || ''].filter(Boolean).slice(0, 2); const coverage = customer.profileMaterialization?.coverage.percentage ?? 0; const helper = product?.name || (coverage < 50 ? '档案较少' : customer.profileUpdatedAt ? `最近更新 ${detailDate(customer.profileUpdatedAt).split(' ')[0]}` : '档案已建立'); return <button key={customer.id} className={`customer-list-item ${selectedCustomer?.id === customer.id ? 'selected' : ''}`} onClick={() => onSelect(customer.id)}><span className="customer-avatar">{customer.initials}</span><span className="customer-list-main"><strong>{customer.name}{tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}</strong><span>{customer.need || '尚未记录当前困扰'}</span><small>{helper}</small></span><span className="list-chevron">›</span></button> })}</div>}{!showDirectoryLoading && list.length === 0 && <div className="list-empty">{directoryError ? <><p>{directoryError}</p><button className="secondary-button small" type="button" onClick={onDirectoryRetry}>重新加载</button></> : '暂时没有匹配的客户。'}</div>}</div>{selectedCustomer ? <CustomerDetail customer={selectedCustomer} database={database} canSeeAll={canSeeAll} resourceCache={resourceCache} staffId={staff.id} permissionRole={staff.permissionRole} profileRefreshRevision={profileRefreshRevision} onGenerateBrief={onGenerateBrief} onGenerateIntelligence={onGenerateIntelligence} onRefreshCustomerSummary={onRefreshCustomerSummary} onGetUnderstanding={onGetUnderstanding} onRefreshUnderstanding={onRefreshUnderstanding} onGetSalesUnderstanding={onGetSalesUnderstanding} onRefreshSalesUnderstanding={onRefreshSalesUnderstanding} onGetSafetyAssessment={onGetSafetyAssessment} onRefreshSafetyAssessment={onRefreshSafetyAssessment} onSaveBrief={onSaveBrief} onSaveReferrer={onSaveReferrer} onGenerateProfile={onGenerateProfile} onConfirmProfile={onConfirmProfile} onUpdateEnrollments={onUpdateEnrollments} onLoadCustomerProfile={onLoadCustomerProfile} onSourceWorkspace={onSourceWorkspace} onSourceStatus={onSourceStatus} onExtractDocument={onExtractDocument} onCreateSource={onCreateSource} onProcessSource={onProcessSource} onReviewProposal={onReviewProposal} onResolveConflict={onResolveConflict} onOverrideServiceNecessity={onOverrideServiceNecessity} /> : <div className="empty-detail"><span>客</span><h2>{showDirectoryLoading ? '正在准备客户列表' : '选择一位客户'}</h2><p>{showDirectoryLoading ? '客户列表会先显示，详细资料按需加载。' : '从左侧列表打开客户档案。'}</p></div>}</div>
+  const effectiveOwnerFilter: OwnerFilterValue = canSeeAll ? ownerFilter : ''
+  const ownerOptions = canSeeAll ? ownerFilterStaffOptions(database.staff) : []
+  const list = filterCustomerDirectory(database.customers, {
+    query,
+    ownerFilter: effectiveOwnerFilter,
+    staff: database.staff,
+  })
+  const selectedInResults = Boolean(selectedCustomer && list.some((item) => item.id === selectedCustomer.id))
+  useEffect(() => {
+    if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0
+  }, [selectedCustomer?.id])
+  const emptyDetailTitle = showDirectoryLoading
+    ? '正在准备客户列表'
+    : selectedCustomer && !selectedInResults
+      ? '当前客户不在筛选结果中'
+      : '选择一位客户'
+  const emptyDetailCopy = showDirectoryLoading
+    ? '客户列表会先显示，详细资料按需加载。'
+    : selectedCustomer && !selectedInResults
+      ? '请从左侧结果中选择一位客户，或调整搜索／负责人筛选。'
+      : '从左侧列表打开客户档案。'
+  return (
+    <div className="customer-page">
+      <div className="customer-list-column">
+        <div className="customer-list-toolbar">
+          <div className="page-heading">
+            <div>
+              <div className="eyebrow">CUSTOMERS</div>
+              <h1>客户</h1>
+              <p>{canSeeAll ? '查看所有客户与客户档案。' : `${staff.name} 可见的客户档案。`}</p>
+            </div>
+            <button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button>
+          </div>
+          <label className="search-field">
+            <span>⌕</span>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={canSeeAll ? '搜索昵称、手机号、问题或负责人／创建人' : '搜索昵称、手机号或主要问题'}
+              disabled={showDirectoryLoading}
+            />
+          </label>
+          {canSeeAll && (
+            <div className="customer-filters">
+              <label className="customer-owner-filter">
+                <span>当前负责人</span>
+                <select
+                  value={ownerFilter}
+                  onChange={(event) => setOwnerFilter(event.target.value as OwnerFilterValue)}
+                  disabled={showDirectoryLoading}
+                  aria-label="按当前负责人筛选"
+                >
+                  <option value="">全部</option>
+                  {ownerOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}{item.status === 'INACTIVE' ? '（已停用）' : ''}{item.permissionRole === 'ADMIN' ? ' · 管理员' : ''}
+                    </option>
+                  ))}
+                  <option value={UNASSIGNED_OWNER_FILTER}>未分配导师</option>
+                </select>
+              </label>
+            </div>
+          )}
+          {!showDirectoryLoading && (
+            <div className="customer-result-count" aria-live="polite">共 {list.length} 位客户</div>
+          )}
+        </div>
+        <div className="customer-list-scroll">
+          {showDirectoryLoading ? (
+            <div className="customer-list customer-list-loading" aria-busy="true">
+              <div className="customer-list-skeleton" />
+              <div className="customer-list-skeleton" />
+              <div className="customer-list-skeleton" />
+            </div>
+          ) : (
+            <div className="customer-list">
+              {list.map((customer) => {
+                const course = database.enrollments.find((item) => item.customerId === customer.id && item.status !== 'CANCELLED')
+                const product = course ? database.products.find((item) => item.id === course.productId) : undefined
+                const tags = [product?.name || ''].filter(Boolean).slice(0, 2)
+                const coverage = customer.profileMaterialization?.coverage.percentage ?? 0
+                const helper = product?.name || (coverage < 50 ? '档案较少' : customer.profileUpdatedAt ? `最近更新 ${detailDate(customer.profileUpdatedAt).split(' ')[0]}` : '档案已建立')
+                return (
+                  <button
+                    key={customer.id}
+                    className={`customer-list-item ${selectedCustomer?.id === customer.id ? 'selected' : ''}`}
+                    onClick={() => onSelect(customer.id)}
+                  >
+                    <span className="customer-avatar">{customer.initials}</span>
+                    <span className="customer-list-main">
+                      <strong>
+                        {customer.name}
+                        {tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}
+                      </strong>
+                      <span>{customer.need || '尚未记录当前困扰'}</span>
+                      <small>{helper}</small>
+                    </span>
+                    <span className="list-chevron">›</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {!showDirectoryLoading && list.length === 0 && (
+            <div className="list-empty">
+              {directoryError ? (
+                <>
+                  <p>{directoryError}</p>
+                  <button className="secondary-button small" type="button" onClick={onDirectoryRetry}>重新加载</button>
+                </>
+              ) : (
+                '暂时没有匹配的客户。'
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      {selectedInResults && selectedCustomer ? (
+        <div className="customer-detail-scroll" ref={detailScrollRef}>
+          <CustomerDetail
+            customer={selectedCustomer}
+            database={database}
+            canSeeAll={canSeeAll}
+            resourceCache={resourceCache}
+            staffId={staff.id}
+            permissionRole={staff.permissionRole}
+            profileRefreshRevision={profileRefreshRevision}
+            onGenerateBrief={onGenerateBrief}
+            onGenerateIntelligence={onGenerateIntelligence}
+            onRefreshCustomerSummary={onRefreshCustomerSummary}
+            onGetUnderstanding={onGetUnderstanding}
+            onRefreshUnderstanding={onRefreshUnderstanding}
+            onGetSalesUnderstanding={onGetSalesUnderstanding}
+            onRefreshSalesUnderstanding={onRefreshSalesUnderstanding}
+            onGetSafetyAssessment={onGetSafetyAssessment}
+            onRefreshSafetyAssessment={onRefreshSafetyAssessment}
+            onSaveBrief={onSaveBrief}
+            onSaveReferrer={onSaveReferrer}
+            onGenerateProfile={onGenerateProfile}
+            onConfirmProfile={onConfirmProfile}
+            onUpdateEnrollments={onUpdateEnrollments}
+            onLoadCustomerProfile={onLoadCustomerProfile}
+            onSourceWorkspace={onSourceWorkspace}
+            onSourceStatus={onSourceStatus}
+            onExtractDocument={onExtractDocument}
+            onCreateSource={onCreateSource}
+            onProcessSource={onProcessSource}
+            onReviewProposal={onReviewProposal}
+            onResolveConflict={onResolveConflict}
+            onOverrideServiceNecessity={onOverrideServiceNecessity}
+          />
+        </div>
+      ) : (
+        <div className="customer-detail-scroll empty-detail">
+          <span>客</span>
+          <h2>{emptyDetailTitle}</h2>
+          <p>{emptyDetailCopy}</p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function LegacyCustomerDetail({ customer, database, canSeeAll, onAssign, onComplete, onFeedback, onGenerateBrief, onSaveBrief, onSaveReferrer }: { customer: Customer; database: Database; canSeeAll: boolean; onAssign: (id: string) => void; onComplete: (id: string) => Promise<void>; onFeedback: (id: string) => void; onGenerateBrief: (input: { name: string; need: string; expectation: string }) => Promise<string>; onSaveBrief: (customerId: string, brief: string) => Promise<Customer | undefined>; onSaveReferrer: (customerId: string, referrerName: string) => Promise<Customer | undefined> }) {
