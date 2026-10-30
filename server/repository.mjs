@@ -117,15 +117,10 @@ export const sanitizeMutationStates = (value) => {
     enrollmentStatus: state.enrollmentStatus === 'PENDING' ? 'PENDING' : 'COMPLETED',
     enrollmentDrafts: Array.isArray(state.enrollmentDrafts) ? normalizeMutationEnrollments(state.enrollmentDrafts).items : [],
     enrollmentErrorCode: typeof state.enrollmentErrorCode === 'string' ? state.enrollmentErrorCode : '',
-    enrollmentRetryCount: Number.isFinite(state.enrollmentRetryCount) ? state.enrollmentRetryCount : 0,
-    enrollmentLastAttemptAt: typeof state.enrollmentLastAttemptAt === 'string' ? state.enrollmentLastAttemptAt : null,
-    enrollmentNextRetryAt: typeof state.enrollmentNextRetryAt === 'string' ? state.enrollmentNextRetryAt : null,
     updatedAt: typeof state.updatedAt === 'string' ? state.updatedAt : null,
   }])
-  // PENDING states with enrollment drafts must not be pruned: they are the
-  // durable task queue for background enrollment recovery.
-  const pending = entries.filter(([, state]) => state.status !== 'COMMITTED' || (state.enrollmentStatus === 'PENDING' && state.enrollmentDrafts.length > 0))
-  const committed = entries.filter(([, state]) => state.status === 'COMMITTED' && !(state.enrollmentStatus === 'PENDING' && state.enrollmentDrafts.length > 0)).slice(-CUSTOMER_MUTATION_STATE_LIMIT)
+  const pending = entries.filter(([, state]) => state.status !== 'COMMITTED')
+  const committed = entries.filter(([, state]) => state.status === 'COMMITTED').slice(-CUSTOMER_MUTATION_STATE_LIMIT)
   return Object.fromEntries([...pending, ...committed])
 }
 const publicMutationState = (state) => state ? { operationId: state.operationId, customerId: state.customerId, kind: state.kind, status: state.status, enrollmentStatus: state.enrollmentStatus || 'COMPLETED', updatedAt: state.updatedAt || null } : null
@@ -134,7 +129,6 @@ const confirmedMutationFailureError = () => Object.assign(new Error('客户保�
 const mentorCreateLocks = new Map()
 const AUTO_PROFILE_SOURCE_PREFIX = 'AUTO_PROFILE_ORGANIZE:'
 const AUTO_PROCESSING_INTERVAL_MS = 30_000
-const ENROLLMENT_RECOVERY_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes as per PRD
 const publicSource = (source, { includeRaw = false } = {}) => {
   const { rawText, _recordId, processingError, ...safe } = source || {}
   return { ...safe, notes: stripDialogueContext(safe.notes), ...(includeRaw ? { rawText: rawText || '' } : {}), processingError: processingErrorMessage(processingError) || null }
@@ -895,7 +889,7 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.pendingEnrollmentRecoveryKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -909,74 +903,6 @@ export class FeishuRepository {
     if (this.autoProcessingRecoveryTimer) return
     this.autoProcessingRecoveryTimer = setInterval(() => { void this.recoverAutomaticProcessing().catch((error) => this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_RECOVERY_FAILED')) }, AUTO_PROCESSING_INTERVAL_MS)
     this.autoProcessingRecoveryTimer.unref?.()
-  }
-
-  startEnrollmentRecovery() {
-    if (this.enrollmentRecoveryTimer) return
-    this.enrollmentRecoveryTimer = setInterval(() => { void this.recoverPendingEnrollments().catch((error) => this.audit('RECOVER_ENROLLMENTS', '', '', 'FAIL', error?.code || 'ENROLLMENT_RECOVERY_FAILED')) }, ENROLLMENT_RECOVERY_INTERVAL_MS)
-    this.enrollmentRecoveryTimer.unref?.()
-  }
-
-  async recoverPendingEnrollments() {
-    // Periodic scanner: finds all customers with PERSISTED + PENDING enrollments
-    // that are ready for retry (nextRetryAt has passed or is null).
-    if (this.enrollmentRecoveryRunning) return { status: 'ALREADY_RUNNING' }
-    this.enrollmentRecoveryRunning = true
-    try {
-      const database = await this.load({ force: true })
-      const adminActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
-      if (!adminActor) {
-        this.audit('RECOVER_ENROLLMENTS', '', '', 'FAIL', 'NO_ADMIN_ACTOR')
-        return { status: 'NO_ADMIN_ACTOR' }
-      }
-      let recovered = 0
-      let failed = 0
-      const nowMs = Date.now()
-      for (const customer of database.customers) {
-        for (const [operationId, state] of Object.entries(customer.mutationStates || {})) {
-          if (state.status !== 'PERSISTED' || state.enrollmentStatus !== 'PENDING') continue
-          if (!Array.isArray(state.enrollmentDrafts) || state.enrollmentDrafts.length === 0) continue
-          const retryCount = state.enrollmentRetryCount || 0
-          if (retryCount >= 5) continue // Max retries reached, requires manual intervention
-          const nextRetryAt = state.enrollmentNextRetryAt ? new Date(state.enrollmentNextRetryAt).getTime() : 0
-          if (nextRetryAt > nowMs) continue // Not ready for retry yet
-          // Build a minimal input object for resumePendingCustomerEnrollment
-          const input = {
-            enrollments: state.enrollmentDrafts.map((draft) => ({ productId: draft.productId })),
-          }
-          try {
-            await this.resumePendingCustomerEnrollment(adminActor, customer.id, input, operationId, state.payloadHash, { compactResponse: true })
-            recovered++
-          } catch (error) {
-            this.audit('RECOVER_ENROLLMENTS', customer.id, adminActor, 'FAIL', error?.code || 'ENROLLMENT_RECOVERY_FAILED')
-            failed++
-          }
-        }
-      }
-      return { status: 'COMPLETED', recovered, failed }
-    } finally {
-      this.enrollmentRecoveryRunning = false
-    }
-  }
-
-  async recoverPendingEnrollmentsForCustomer(customerId, operationId) {
-    // Targeted recovery for a specific customer's pending enrollments.
-    const database = await this.load({ force: true })
-    const adminActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
-    if (!adminActor) throw Object.assign(new Error('No admin actor available for enrollment recovery'), { code: 'NO_ADMIN_ACTOR' })
-    const customer = database.customers.find((item) => item.id === customerId)
-    if (!customer) throw Object.assign(new Error('Customer not found'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const state = customer.mutationStates?.[operationId]
-    if (!state || state.status !== 'PERSISTED' || state.enrollmentStatus !== 'PENDING') {
-      throw incompleteMutationError(state)
-    }
-    if (!Array.isArray(state.enrollmentDrafts) || state.enrollmentDrafts.length === 0) {
-      return { status: 'NO_ENROLLMENTS' }
-    }
-    const input = {
-      enrollments: state.enrollmentDrafts.map((draft) => ({ productId: draft.productId })),
-    }
-    return await this.resumePendingCustomerEnrollment(adminActor, customerId, input, operationId, state.payloadHash, { compactResponse: true })
   }
 
   scheduleAutomaticProcessing(actorId, sourceId) {
@@ -1414,7 +1340,10 @@ export class FeishuRepository {
         throw invalidLogin()
       }
       loginRateLimiter.clear(phone, ip)
-      await this.authRepository.recordSuccessfulLogin(account.id)
+      // 非阻塞记录登录成功，避免飞书写入延迟影响登录响应
+      this.authRepository.recordSuccessfulLogin(account.id).catch(err => {
+        console.warn('[AUTH] recordSuccessfulLogin failed:', err?.message || err)
+      })
       return { ...account, authVersion: Number(credential.authVersion || 0), mustChangePassword: credential.mustChangePassword === true, authMode: 'PASSWORD' }
     }
     if (config.dataMode === 'production' && !config.adminLoginCode) throw Object.assign(new Error('生产认证未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
@@ -1816,37 +1745,55 @@ export class FeishuRepository {
     if (!customerRecord || !previousMutation || previousMutation.payloadHash !== inputHash || previousMutation.status !== 'PERSISTED' || previousMutation.enrollmentStatus !== 'PENDING') {
       throw incompleteMutationError(previousMutation)
     }
-    const attemptAt = now()
-    const retryCount = (previousMutation.enrollmentRetryCount || 0) + 1
-    const retryDelaysMs = [60_000, 300_000, 1_800_000, 7_200_000, 28_800_000] // 1min, 5min, 30min, 2hr, 8hr
-    const nextRetryAt = retryCount < retryDelaysMs.length ? new Date(Date.now() + retryDelaysMs[retryCount]).toISOString() : null
-    const manualReviewRequired = retryCount >= retryDelaysMs.length
     try {
       await mergeEnrollments(current, customerId, input.enrollments, actorId, operationId)
     } catch (error) {
       this.audit('RECOVER_CUSTOMER_ENROLLMENT', customerId, actorId, 'PENDING', error?.code || 'ENROLLMENT_SYNC_FAILED')
-      // Track retry state in the mutation record so periodic recovery can pick it up.
-      await this.persistCustomerMutationState(current, customerId, operationId, {
-        ...previousMutation,
-        enrollmentRetryCount: retryCount,
-        enrollmentLastAttemptAt: attemptAt,
-        enrollmentNextRetryAt: nextRetryAt,
-        enrollmentErrorCode: error?.code || 'ENROLLMENT_SYNC_FAILED',
-        updatedAt: attemptAt,
-      })
       const response = compactResponse
         ? publicCustomerMutationDto(current, actorId, customerId, false, operationId)
         : Object.assign(scope(current, actorId), { createdCustomerId: customerId, customerCreated: false })
       return { ...response, enrollmentStatus: 'PENDING', enrollmentMessage: partialEnrollmentFailureMessage() }
     }
     const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, {
-      kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, enrollmentStatus: 'COMPLETED', enrollmentDrafts: [], enrollmentErrorCode: '', enrollmentRetryCount: retryCount, enrollmentLastAttemptAt: attemptAt, enrollmentNextRetryAt: null, updatedAt: attemptAt,
+      kind: 'CREATE', status: 'COMMITTED', payloadHash: inputHash, enrollmentStatus: 'COMPLETED', enrollmentDrafts: [], enrollmentErrorCode: '', updatedAt: now(),
     })
     if (mutationWrite) current = await this.loadCustomerAfterWrite(mutationWrite, customerId, current)
     const response = compactResponse
       ? publicCustomerMutationDto(current, actorId, customerId, false, operationId)
       : Object.assign(scope(current, actorId), { createdCustomerId: customerId, customerCreated: false })
     return { ...response, enrollmentStatus: 'COMPLETED' }
+  }
+  async recoverPendingEnrollmentsForCustomer(actorId, customerId, operationId) {
+    const database = await this.load({ force: true })
+    const visible = scope(database, actorId)
+    const customerRecord = visible.customers.find((item) => item.id === customerId)
+    const state = customerRecord?.mutationStates?.[operationId]
+    if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+    if (!state || state.status !== 'PERSISTED' || state.enrollmentStatus !== 'PENDING') throw incompleteMutationError(state)
+    return this.resumePendingCustomerEnrollment(actorId, customerId, { enrollments: state.enrollmentDrafts }, operationId, state.payloadHash, { compactResponse: true })
+  }
+  schedulePendingCustomerEnrollmentRecovery(actorId, customerId, input, operationId, inputHash) {
+    const key = `${customerId}:${operationId}`
+    if (this.pendingEnrollmentRecoveryKeys.has(key)) return
+    this.pendingEnrollmentRecoveryKeys.add(key)
+    // Enrollment writes are deliberately outside the customer-save response.
+    // The operation id and enrollment ids make this retry safe if the client
+    // submits the same save again while this task is still running.
+    setImmediate(() => {
+      void this.resumePendingCustomerEnrollment(actorId, customerId, input, operationId, inputHash, { compactResponse: true })
+        .catch((error) => this.audit('RECOVER_CUSTOMER_ENROLLMENT', customerId, actorId, 'PENDING', error?.code || 'ENROLLMENT_SYNC_FAILED'))
+        .finally(() => this.pendingEnrollmentRecoveryKeys.delete(key))
+    })
+  }
+  scheduleLegacyCustomerEnrollmentSync(actorId, customerId, input) {
+    // Older callers may omit operationId. Keep their course behavior, but do
+    // not put the writes back on the customer-save critical path.
+    setImmediate(() => {
+      void this.load({ force: true }).then((database) => {
+        scope(database, actorId)
+        return mergeEnrollments(database, customerId, input.enrollments, actorId, '')
+      }).catch((error) => this.audit('RECOVER_CUSTOMER_ENROLLMENT', customerId, actorId, 'PENDING', error?.code || 'ENROLLMENT_SYNC_FAILED'))
+    })
   }
   async createCustomer(actorId, input, requestId = '', { compactResponse = false } = {}) {
     const startedAt = Date.now()
@@ -1873,8 +1820,11 @@ export class FeishuRepository {
         if (previousMutation.payloadHash && previousMutation.payloadHash !== inputHash) throw Object.assign(new Error('同一操作编号对应的资料已发生变化，请使用新的操作编号。'), { code: 'CUSTOMER_SAVE_OPERATION_CONFLICT', status: 409 })
         if (previousMutation.status === 'FAILED') throw confirmedMutationFailureError()
         if (previousMutation.status === 'PERSISTED' && previousMutation.enrollmentStatus === 'PENDING') {
-          result = 'RECOVERING_ENROLLMENT'
-          return this.resumePendingCustomerEnrollment(actorId, existing.id, input, operationId, inputHash, { compactResponse })
+          this.schedulePendingCustomerEnrollmentRecovery(actorId, existing.id, input, operationId, inputHash)
+          result = 'SUCCESS'
+          return compactResponse
+            ? publicCustomerMutationDto(database, actorId, existing.id, false, operationId)
+            : Object.assign(scope(database, actorId), { createdCustomerId: existing.id, customerCreated: false })
         }
         if (previousMutation.status === 'PERSISTED' && previousMutation.enrollmentStatus === 'COMPLETED' && !previousMutation.enrollmentErrorCode && !input.profileUpdates?.length && !(Array.isArray(input.enrollments) && input.enrollments.length)) {
           // All requested customer data is durable; only the COMMITTED marker
@@ -1932,11 +1882,10 @@ export class FeishuRepository {
           _rows: { ...(current._rows || {}), customers: [...(current._rows?.customers || []).filter((item) => item.record_id !== writeRecordId && text(get('customers', item.fields, 'customer_id')) !== customerId), optimisticRow] },
         }
         this.invalidateDatabaseCache()
-        phase = 'READBACK'
-        const readbackStartedAt = Date.now()
-        current = await this.loadCustomerAfterWrite(writeResult, customerId, current, { delays: [0, 500] })
-        timings.readback_ms = Date.now() - readbackStartedAt
-        timings.customer_write_ms = timings.write_ack_ms + timings.readback_ms
+        // The create response already contains the acknowledged record id and
+        // the exact fields written above. Avoid a synchronous GET: the durable
+        // PERSISTED mutation state is part of the same Customers write.
+        timings.customer_write_ms = timings.write_ack_ms
       }
       if (input.profileUpdates?.length) {
         phase = 'PROFILE'
@@ -1946,9 +1895,6 @@ export class FeishuRepository {
         if (profileWrite.changes?.length) current.profileChanges = [...(current.profileChanges || []), ...profileWrite.changes]
         timings.profile_change_ms = Date.now() - profileStartedAt
       }
-      // R048.11: 课程报名改为后台异步处理,不阻塞主流程
-      // 将课程信息保存到 mutation state,由后台恢复机制处理
-      const enrollmentDrafts = hasEnrollments ? normalizeMutationEnrollments(input.enrollments).items : []
       const automaticProfile = automaticText
         ? this.scheduleAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_SAVE')
         : { status: 'NOT_REQUIRED' }
@@ -1960,24 +1906,19 @@ export class FeishuRepository {
           status: 'PERSISTED',
           payloadHash: inputHash,
           enrollmentStatus: hasEnrollments ? 'PENDING' : 'COMPLETED',
-          enrollmentDrafts,
+          enrollmentDrafts: normalizeMutationEnrollments(input.enrollments).items,
           enrollmentErrorCode: '',
           updatedAt: now(),
         }
-        commitMode = hasEnrollments ? 'DEFERRED' : 'ASYNC'
-        // 立即写入 PERSISTED 状态,包含课程待处理信息
-        phase = 'COMMIT'
-        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, mutationState)
-        if (mutationWrite) current = this.applyCustomerMutationRow(current, mutationWrite.record, customerId)
-        // 后台异步处理后续任务,不阻塞响应
+        // The initial Customers write already persisted this state. The only
+        // follow-up is explicitly background work: a marker transition for a
+        // no-course save, or enrollment recovery for a course save.
         if (hasEnrollments) {
-          // 有课程:触发课程同步,课程恢复成功后会写入 COMMITTED
-          setImmediate(() => {
-            void this.recoverPendingEnrollmentsForCustomer(customerId, operationId)
-              .catch((error) => this.audit('RECOVER_CUSTOMER_ENROLLMENT', customerId, actorId, 'PENDING', error?.code || 'ENROLLMENT_SYNC_FAILED'))
-          })
+          commitMode = 'ASYNC_ENROLLMENT'
+          if (operationId) this.schedulePendingCustomerEnrollmentRecovery(actorId, customerId, input, operationId, inputHash)
+          else this.scheduleLegacyCustomerEnrollmentSync(actorId, customerId, input)
         } else {
-          // 无课程:异步写入 COMMITTED 标记
+          commitMode = 'ASYNC'
           this.scheduleCustomerMutationCommit(current, customerId, operationId, mutationState, actorId)
         }
       }
@@ -1987,7 +1928,7 @@ export class FeishuRepository {
       const response = compactResponse
         ? publicCustomerMutationDto(latest, actorId, customerId, !existing, operationId)
         : Object.assign(scope(latest, actorId), { createdCustomerId: customerId, customerCreated: !existing })
-      return { ...response, automaticProfile, ...(hasEnrollments ? { enrollmentStatus: 'PENDING', enrollmentMessage: '客户已保存，课程正在同步' } : {}) }
+      return { ...response, automaticProfile, ...(hasEnrollments ? { enrollmentStatus: 'PENDING', enrollmentMessage: '客户已保存，课程正在后台同步。' } : {}) }
     } catch (error) {
       if (!writeStarted && error instanceof FeishuUnavailableError && error.writeDispatched !== true) {
         // Only failures raised before the write request left the process are

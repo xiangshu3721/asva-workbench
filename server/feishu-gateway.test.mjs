@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createFeishuGateway, createFeishuWriteClient, FEISHU_ERROR_CODES } from './feishu.mjs'
+import { createFeishuGateway, createFeishuWriteClient, FEISHU_ERROR_CODES, feishuClientToken } from './feishu.mjs'
 
 function response(payload, { status = 200, headers = {} } = {}) {
   return { ok: status >= 200 && status < 300, status, headers: { get: (name) => headers[name] || null }, json: async () => payload }
@@ -18,6 +18,39 @@ function gatewayWith(sequence, options = {}) {
 }
 
 describe('FeishuGateway', () => {
+  it('adds stable Feishu client_token to real customer/enrollment create operations and preserves duplicate results', async () => {
+    const records = new Map()
+    const calls = []
+    const gateway = createFeishuGateway({
+      appId: 'app', appSecret: 'secret', baseToken: 'base', maxAttempts: 1,
+      fetchImpl: async (url, request) => {
+        calls.push({ url: String(url), request })
+        if (String(url).includes('/tenant_access_token/')) return response({ tenant_access_token: 'token-1', expire: 7200 })
+        const parsed = new URL(String(url))
+        const token = parsed.searchParams.get('client_token')
+        const operation = request.headers['X-Idempotency-Key']
+        const key = `${operation}:${token}`
+        if (!records.has(key)) records.set(key, { record_id: `rec-${records.size + 1}`, fields: { operation } })
+        return response({ data: { record: records.get(key) } })
+      },
+    })
+
+    const customerContext = { operation: 'customer.create', operationId: 'CUS-OP-1', table: 'tbl-customers', idempotency: { field: 'customer_id', value: 'CUS-OP-1' } }
+    const first = await gateway.createRecord('tbl-customers', { customer_id: 'CUS-OP-1' }, customerContext)
+    const repeated = await gateway.createRecord('tbl-customers', { customer_id: 'CUS-OP-1' }, customerContext)
+    const enrollmentContext = { operation: 'enrollment.create', operationId: 'ENR-OP-1', table: 'tbl-enrollments', idempotency: { field: 'enrollment_id', value: 'ENR-OP-1' } }
+    await gateway.createRecord('tbl-enrollments', { enrollment_id: 'ENR-OP-1' }, enrollmentContext)
+
+    const writes = calls.filter(({ url }) => url.includes('/records?'))
+    expect(writes).toHaveLength(3)
+    expect(new URL(writes[0].url).searchParams.get('client_token')).toBe(feishuClientToken('CUS-OP-1', 'tbl-customers'))
+    expect(new URL(writes[1].url).searchParams.get('client_token')).toBe(feishuClientToken('CUS-OP-1', 'tbl-customers'))
+    expect(new URL(writes[2].url).searchParams.get('client_token')).toBe(feishuClientToken('ENR-OP-1', 'tbl-enrollments'))
+    expect(writes[0].request.headers['X-Idempotency-Key']).toBe('CUS-OP-1')
+    expect(writes[2].request.headers['X-Idempotency-Key']).toBe('ENR-OP-1')
+    expect(repeated).toEqual(first)
+  })
+
   it('caches the tenant token and shares one refresh promise', async () => {
     let tokenCalls = 0
     const fetchImpl = async (url) => {

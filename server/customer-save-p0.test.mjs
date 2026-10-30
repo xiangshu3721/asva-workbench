@@ -69,24 +69,9 @@ vi.mock('./feishu.mjs', async () => {
     },
     updateRecord: async (tableId, recordId, fields) => {
       state.updateCalls.push([tableId, recordId])
-      // R048.11: 仅拦截 COMMITTED 状态写入,允许 PERSISTED 写入通过
-      // 因为现在 PERSISTED 写入是同步的,必须成功
       if (state.commitUpdateFailures > 0) {
-        const metaField = fields['档案字段元数据']
-        let isCommittedWrite = false
-        if (metaField) {
-          try {
-            const meta = JSON.parse(String(metaField))
-            const mutationStates = meta._mutation_states || {}
-            isCommittedWrite = Object.values(mutationStates).some((s) => s.status === 'COMMITTED')
-          } catch {
-            // Ignore parse errors
-          }
-        }
-        if (isCommittedWrite) {
-          state.commitUpdateFailures -= 1
-          throw unavailable('模拟 COMMITTED 状态更新失败')
-        }
+        state.commitUpdateFailures -= 1
+        throw unavailable('模拟 COMMITTED 状态更新失败')
       }
       const row = table(tableId).get(recordId)
       if (!row) throw unavailable('模拟更新记录不存在')
@@ -132,6 +117,7 @@ const seed = () => {
 }
 
 const customerRows = () => [...table(state.tableIds.customers).values()]
+const putProductForTest = (productId) => table(state.tableIds.products).set(`rec-${productId}`, { record_id: `rec-${productId}`, fields: fields('products', { product_id: productId, product_name: `课程 ${productId}`, status: '在售' }) })
 const rowFor = (customerId) => customerRows().find((row) => String(rowFields(row)['客户ID'] ?? '') === customerId)
 const mutationOf = (row, operationId) => {
   try { return JSON.parse(String(rowFields(row)['档案字段元数据'] || '{}'))._mutation_states?.[operationId] || null } catch { return null }
@@ -269,7 +255,7 @@ describe('customer save P0 recovery path', () => {
     expect(customerRows()).toHaveLength(1)
   })
 
-  it('keeps a successful create successful when the post-write readback times out', async () => {
+  it('keeps a successful create without requiring a post-write readback', async () => {
     const repository = new FeishuRepository()
     const payload = input('p0-readback-timeout')
     state.readbackFailures = 2
@@ -371,6 +357,52 @@ describe('customer save P0 recovery path', () => {
     expect(repository.saveTraces[0].readback_ms).toBeGreaterThanOrEqual(0)
     await waitForMutationStatus(payload.operationId)
     expect(mutationOf(rowFor(created.createdCustomerId), payload.operationId)).toMatchObject({ status: 'COMMITTED', enrollmentStatus: 'COMPLETED' })
+  })
+
+  it('confirms a no-course create after one Customers write without readback or sync metadata update', async () => {
+    const repository = new FeishuRepository()
+    vi.spyOn(repository, 'scheduleCustomerMutationCommit').mockImplementation(() => {})
+    const payload = input('p0-single-customers-write', { phone: '13900000008' })
+
+    const created = await repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+
+    expect(created.persistenceStatus).toBe('PERSISTED')
+    expect(state.createCalls.map((call) => call.tableId)).toEqual([state.tableIds.customers])
+    expect(state.getRecordCalls).toHaveLength(0)
+    expect(state.updateCalls).toHaveLength(0)
+    expect(repository.saveTraces[0]).toMatchObject({ customer_write_ms: repository.saveTraces[0].write_ack_ms, readback_ms: 0, commit_mode: 'ASYNC' })
+  })
+
+  it('returns a two-course create before any enrollment write and recovers courses in the background', async () => {
+    const repository = new FeishuRepository()
+    const payload = input('p0-two-course-background', { phone: '13900000009', enrollments: [{ productId: 'PRODUCT-1' }, { productId: 'PRODUCT-2' }] })
+    putProductForTest('PRODUCT-2')
+
+    const created = await repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+
+    expect(created).toMatchObject({ persistenceStatus: 'PERSISTED', enrollmentStatus: 'PENDING' })
+    expect(state.createCalls.map((call) => call.tableId)).toEqual([state.tableIds.customers])
+    expect(state.updateCalls).toHaveLength(0)
+    expect(state.getRecordCalls).toHaveLength(0)
+
+    await new Promise((resolve) => setImmediate(resolve))
+    await settle()
+    expect(state.createCalls.filter((call) => call.tableId === state.tableIds.enrollments)).toHaveLength(2)
+    expect(customerRows()).toHaveLength(1)
+    expect(mutationOf(rowFor(created.createdCustomerId), payload.operationId)).toMatchObject({ status: 'COMMITTED', enrollmentStatus: 'COMPLETED' })
+  })
+
+  it('does not synchronously resume a repeated PERSISTED+PENDING operation', async () => {
+    const repository = new FeishuRepository()
+    putProductForTest('PRODUCT-2')
+    const payload = input('p0-repeat-pending', { phone: '13900000010', enrollments: [{ productId: 'PRODUCT-1' }, { productId: 'PRODUCT-2' }] })
+    const first = await repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+    const second = await repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+
+    expect(first.enrollmentStatus).toBe('PENDING')
+    expect(second).toMatchObject({ createdCustomerId: first.createdCustomerId, customerCreated: false, enrollmentStatus: 'PENDING' })
+    expect(state.createCalls.filter((call) => call.tableId === state.tableIds.enrollments)).toHaveLength(0)
+    expect(state.createCalls.filter((call) => call.tableId === state.tableIds.customers)).toHaveLength(1)
   })
 
   it('enforces staff identity and operation/result fingerprints on status lookups', async () => {

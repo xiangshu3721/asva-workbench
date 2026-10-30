@@ -6,24 +6,19 @@ const DEFAULT_MAX_ATTEMPTS = 4
 const DEFAULT_BACKOFF_MS = [500, 1_000, 2_000, 4_000]
 const TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1_000
 
-// Generate stable UUIDv4 from operationId + tableId for Feishu client_token
-// Deterministic: same (operationId, tableId) → same UUID
-// Different operations → different UUIDs
-// Different tables (Customers vs Enrollments) → different UUIDs
+// Feishu requires a UUID-shaped client_token for create-record idempotency.
+// Keep it deterministic so retries and repeated requests for one operation
+// address the same provider-side idempotency key.
 export function feishuClientToken(operationId, tableId) {
   if (!operationId || !tableId) return null
-  // Use SHA-256 hash of namespace:tableId:operationId
-  const hash = crypto.createHash('sha256')
-    .update(`asva-feishu-v1:${tableId}:${operationId}`)
-    .digest('hex')
-  // Format as UUIDv4 (version=4, variant=10xx)
+  const hash = crypto.createHash('sha256').update(`asva-feishu-v1:${tableId}:${operationId}`).digest('hex')
   const hex = hash.slice(0, 32)
   return [
     hex.slice(0, 8),
     hex.slice(8, 12),
-    '4' + hex.slice(13, 16),  // version 4
-    ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20),  // variant 10xx
-    hex.slice(20, 32)
+    `4${hex.slice(13, 16)}`,
+    `${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
   ].join('-')
 }
 
@@ -134,16 +129,9 @@ export function createFeishuGateway({
     const isWrite = !['GET', 'HEAD'].includes(method)
     const retryEnabled = context.retry !== false
     const operationId = context.operationId || options.operationId
-    // Generate stable client_token for create_record operations (Feishu official idempotency)
-    let finalPath = path
-    let clientToken = null
-    if (isWrite && operation === 'create_record' && operationId && context.table) {
-      clientToken = feishuClientToken(operationId, context.table)
-      if (clientToken) {
-        const separator = path.includes('?') ? '&' : '?'
-        finalPath = `${path}${separator}client_token=${clientToken}`
-      }
-    }
+    const isCreateRecord = method === 'POST' && context.table && operationId && (operation === 'create_record' || operation.endsWith('.create'))
+    const clientToken = isCreateRecord ? feishuClientToken(operationId, context.table) : null
+    const requestPath = clientToken ? `${path}${path.includes('?') ? '&' : '?'}client_token=${encodeURIComponent(clientToken)}` : path
     let refreshedAfterTokenError = false
     let writeDispatched = false
     let lastError
@@ -151,12 +139,11 @@ export function createFeishuGateway({
       try {
         const token = await getToken({ force: refreshedAfterTokenError })
         const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers || {}) }
-        // Keep X-Idempotency-Key header for backward compatibility (supplementary protection)
         if (operationId) headers['X-Idempotency-Key'] = String(operationId)
         const startedAt = now(); metrics.requests += 1
         let response
         if (isWrite) writeDispatched = true
-        try { response = await fetchImpl(`${baseUrl}${finalPath}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(timeoutMs) }) } catch (error) {
+        try { response = await fetchImpl(`${baseUrl}${requestPath}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(timeoutMs) }) } catch (error) {
           const timeout = isTimeout(error)
           if (timeout) metrics.timeoutCount += 1
           throw new FeishuUnavailableError(timeout ? '飞书请求超时' : '飞书网络请求暂时不可用', { code: timeout ? FEISHU_ERROR_CODES.TIMEOUT : FEISHU_ERROR_CODES.NETWORK, retryable: true, operation, attempt, customerId: context.customerId, entityType: context.entityType })
@@ -177,7 +164,6 @@ export function createFeishuGateway({
         if (error?.code === FEISHU_ERROR_CODES.TOKEN_EXPIRED && !refreshedAfterTokenError) { tokenCache = null; refreshedAfterTokenError = true; metrics.retryCount += 1; continue }
         recordFailure(error)
         const canRetry = retryEnabled && isRetryableFeishuError(error) && attempt < maxAttempts - 1
-        // Supplementary protection: search for existing record if idempotency context provided
         if (isWrite && context.idempotency && isRetryableFeishuError(error)) {
           const existing = await findExistingRecord(context.table, context.idempotency).catch(() => null)
           if (existing) { metrics.duplicatePreventedCount += 1; logger.warn?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, result: 'DUPLICATE_PREVENTED' })); return { record: existing, idempotency_recovered: true } }

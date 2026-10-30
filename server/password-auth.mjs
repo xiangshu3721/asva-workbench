@@ -96,9 +96,27 @@ function assertTable(tableId) {
 }
 
 export class FeishuAuthCredentialRepository {
-  constructor(tableId = config.feishu.tables.authCredentials) { this.tableId = tableId }
+  constructor(tableId = config.feishu.tables.authCredentials) {
+    this.tableId = tableId
+    this.cache = { data: null, savedAt: 0, promise: null }
+  }
   assertConfigured() { assertTable(this.tableId) }
-  async list() { this.assertConfigured(); return (await listRecords(this.tableId)).map(credential) }
+  async list() {
+    this.assertConfigured()
+    const nowMs = Date.now()
+    if (this.cache.data && nowMs - this.cache.savedAt < 45_000) return this.cache.data
+    if (this.cache.promise) return this.cache.promise
+    const request = (async () => {
+      const records = (await listRecords(this.tableId)).map(credential)
+      this.cache.data = records
+      this.cache.savedAt = Date.now()
+      return records
+    })()
+    this.cache.promise = request
+    request.finally(() => { if (this.cache.promise === request) this.cache.promise = null }).catch(() => {})
+    return request
+  }
+  invalidateCache() { this.cache.data = null; this.cache.savedAt = 0; this.cache.promise = null }
   async findByPhone(phone) { if (!this.tableId) return null; return (await this.list()).find((item) => item.loginPhone === normalizePhone(phone)) }
   async findByStaffId(staffId) { if (!this.tableId) return null; return (await this.list()).find((item) => item.staffId === staffId) }
   async create(input) {
@@ -107,6 +125,7 @@ export class FeishuAuthCredentialRepository {
     if (existing.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 })
     const values = { credential_id: input.credentialId || `cred-${crypto.randomUUID()}`, staff_id: input.staffId, login_phone: normalizePhone(input.loginPhone), password_hash: input.passwordHash, password_algorithm: input.passwordAlgorithm || 'scrypt', must_change_password: input.mustChangePassword === true, auth_version: input.authVersion || 1, credential_status: input.credentialStatus || 'ACTIVE', password_changed_at: input.passwordChangedAt || null, created_at: input.createdAt || now(), updated_at: input.updatedAt || now(), last_login_at: input.lastLoginAt || null }
     const result = await createRecord(this.tableId, fields('authCredentials', values), { operation: 'auth-credential.create', operationId: values.credential_id, entityType: 'authCredentials', idempotency: { field: field('authCredentials', 'credential_id'), value: values.credential_id } })
+    this.invalidateCache()
     return { ...input, id: result?.record?.record_id || result?.record_id || values.credential_id, ...values, loginPhone: values.login_phone, staffId: values.staff_id, passwordHash: values.password_hash, authVersion: values.auth_version, mustChangePassword: values.must_change_password, _recordId: result?.record?.record_id || result?.record_id }
   }
   async update(credentialRecord, patch) {
@@ -115,6 +134,7 @@ export class FeishuAuthCredentialRepository {
     for (const [key, value] of Object.entries(patch)) if (value !== undefined) values[key] = value
     values.updated_at ??= now()
     await updateRecord(this.tableId, credentialRecord._recordId, fields('authCredentials', values))
+    this.invalidateCache()
     return { ...credentialRecord, ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value])) }
   }
   async updateByStaffId(staffId, patch) {
