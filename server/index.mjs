@@ -222,6 +222,31 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && url.pathname === '/api/ai/query-logs') return send(request, response, 200, await repository.assistantQueryLogs(await guardAdmin(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/debug/save-traces') return send(request, response, 200, await repository.savePerformanceTraces(await guardAdmin(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/debug/evidence') return send(request, response, 200, await repository.evidenceDebug(await guardAdmin(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/admin/recover-automatic-processing') {
+    const actor = await guardAdmin(request)
+    const body = await readBody(request)
+    const customerId = typeof body?.customerId === 'string' ? body.customerId.trim() : ''
+    if (customerId) {
+      const result = await repository.recoverAutomaticCustomerProfile(actor, customerId)
+      repository.audit?.('RECOVER_AUTOMATIC_CUSTOMER_PROFILE_ON_DEMAND', customerId, actor, result?.status === 'FAILED' ? 'FAIL' : 'SUCCESS', result?.status || 'OK')
+      return send(request, response, 200, {
+        status: result?.status || 'FAILED',
+        customerId,
+        sourceId: result?.sourceId || null,
+        reused: Boolean(result?.reused),
+        scheduledProcessing: Boolean(result?.scheduledProcessing),
+        errorCode: result?.errorCode || undefined,
+        reason: result?.reason || undefined,
+      }, requestId)
+    }
+    const result = await repository.recoverAutomaticProcessing()
+    repository.audit?.('RECOVER_AUTOMATIC_PROCESSING_ON_DEMAND', '', actor, 'SUCCESS', result?.status || 'OK')
+    return send(request, response, 200, {
+      status: result?.status || 'OK',
+      scheduledCustomers: Number(result?.scheduledCustomers || 0),
+      scheduledSources: Number(result?.scheduledSources || 0),
+    }, requestId)
+  }
   if (request.method === 'POST' && url.pathname === '/api/ai/service-summary') { await guardAdmin(request); return send(request, response, 200, await createServiceSummary(await readBody(request)), requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/brief') { await guardAdmin(request); return send(request, response, 200, { brief: await createBrief(await readBody(request)) }, requestId) }
   if (request.method === 'POST' && url.pathname === '/api/ai/customer-intelligence') { await guardAdmin(request); return send(request, response, 200, await createCustomerIntelligence(await readBody(request)), requestId) }

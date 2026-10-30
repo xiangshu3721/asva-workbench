@@ -315,7 +315,6 @@ function customer(row) {
     if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
   }
   const referrerName = text(get('customers', f, 'referrer_name'))
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
   return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
 }
 
@@ -784,7 +783,7 @@ function automaticProfileTextFromCustomer(customer) {
   return automaticProfileText({
     profileUpdates: [
       { field: 'current_core_issue', value: customer?.need || '' },
-      { field: 'current_expectation', value: customer?.helpExpectation || '' },
+      { field: 'help_expectation', value: customer?.helpExpectation || '' },
       { field: 'current_goal', value: customer?.goal || '' },
     ],
   }, customer?.notes || '')
@@ -802,6 +801,32 @@ function automaticProfilePendingMarker(rawText, actorId, reason) {
 
 function isAutomaticProfileSource(source) {
   return String(source?.notes || '').startsWith(AUTO_PROFILE_SOURCE_PREFIX)
+}
+
+function automaticProfileSourceIdForText(customerId, rawText) {
+  const normalizedText = normalizeSourceRawText(rawText)
+  const sourceOperationId = stableOperationId(`${customerId}:${contentHash(normalizedText)}`, 'AUTO-SOURCE')
+  return stableId('SRC', `${customerId}:${sourceOperationId}`)
+}
+
+function automaticProfileSourceIdForContentHash(customerId, hash) {
+  const sourceOperationId = stableOperationId(`${customerId}:${hash}`, 'AUTO-SOURCE')
+  return stableId('SRC', `${customerId}:${sourceOperationId}`)
+}
+
+function findMatchingAutomaticProfileSource(sourceRecords, customerId, contentHashValue) {
+  const expectedSourceId = automaticProfileSourceIdForContentHash(customerId, contentHashValue)
+  return (sourceRecords || []).find((item) => item.customerId === customerId && (item.id === expectedSourceId || (item.contentHash === contentHashValue && isAutomaticProfileSource(item)))) || null
+}
+
+function mapAutomaticProfileStageFromSource(source) {
+  if (!source) return 'PENDING'
+  if (source.processingStatus === 'UPLOADED') return 'SOURCE_CREATED'
+  if (source.processingStatus === 'PROCESSING') return 'PROCESSING'
+  if (source.processingStatus === 'COMPLETED') return 'COMPLETED'
+  if (source.processingStatus === 'REVIEW_REQUIRED') return 'REVIEW_REQUIRED'
+  if (source.processingStatus === 'FAILED') return 'FAILED'
+  return 'SOURCE_CREATED'
 }
 
 function automaticProfileArchivingAllowedForCustomer(customerId) {
@@ -1004,12 +1029,87 @@ export class FeishuRepository {
   }
 
   async clearAutomaticProfilePending(customerId, marker) {
+    if (!marker?.contentHash) return false
     const database = await this.load({ force: true })
-    const customer = database.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
-    if (!customer || !row || customer.automaticProfilePending?.contentHash !== marker?.contentHash) return false
-    await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(customer, { automaticProfilePending: null }) }))
-    return true
+    if (!row) return false
+    const matchingSource = findMatchingAutomaticProfileSource(database.sourceRecords, customerId, marker.contentHash)
+    // Only clear after a durable SourceRecords row is visible. A successful
+    // createSource() promise alone is not enough when persistence is delayed
+    // or a concurrent meta writer could otherwise erase recovery intent.
+    if (!matchingSource) {
+      this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, marker.actorId || '', 'PENDING', 'SOURCE_NOT_VISIBLE')
+      return false
+    }
+    try {
+      await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
+        if (latestCustomer.automaticProfilePending?.contentHash !== marker.contentHash) {
+          return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer) })
+        }
+        return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: null }) })
+      }, (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash !== marker.contentHash)
+      return true
+    } catch (error) {
+      this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, marker.actorId || '', 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED')
+      return false
+    }
+  }
+
+  async stampAutomaticProfilePendingError(customerId, marker, errorCode) {
+    if (!customerId || !marker?.contentHash) return false
+    const database = await this.load({ force: true })
+    const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
+    if (!row) return false
+    const existing = customer(row).automaticProfilePending
+    // Never stamp/write an old marker over a newer or missing different pending.
+    if (existing?.contentHash !== marker.contentHash) return false
+    const stamped = {
+      ...existing,
+      lastErrorCode: text(errorCode) || 'AUTO_SOURCE_QUEUE_FAILED',
+      lastErrorAt: now(),
+    }
+    try {
+      await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
+        const current = latestCustomer.automaticProfilePending
+        if (current?.contentHash !== marker.contentHash) {
+          throw Object.assign(new Error('automatic profile pending hash mismatch'), { code: 'AUTO_PENDING_HASH_MISMATCH', status: 409 })
+        }
+        return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: { ...current, lastErrorCode: stamped.lastErrorCode, lastErrorAt: stamped.lastErrorAt } }) })
+      }, (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === marker.contentHash && latestCustomer.automaticProfilePending?.lastErrorCode === stamped.lastErrorCode)
+      return true
+    } catch (error) {
+      if (error?.code === 'AUTO_PENDING_HASH_MISMATCH') return false
+      this.audit('STAMP_AUTOMATIC_PROFILE_PENDING_ERROR', customerId, marker.actorId || '', 'PENDING', error?.code || 'AUTO_PENDING_STAMP_FAILED')
+      return false
+    }
+  }
+
+  async ensureAutomaticProfilePending(customerId, marker) {
+    if (!customerId || !marker?.contentHash) return false
+    const database = await this.load({ force: true })
+    const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
+    if (!row) return false
+    const existing = customer(row).automaticProfilePending
+    if (existing?.contentHash === marker.contentHash) return true
+    // Different hash means a newer/other pending already exists — never overwrite.
+    if (existing?.contentHash && existing.contentHash !== marker.contentHash) return false
+    try {
+      await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
+        const current = latestCustomer.automaticProfilePending
+        if (current?.contentHash === marker.contentHash) {
+          return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer) })
+        }
+        if (current?.contentHash && current.contentHash !== marker.contentHash) {
+          throw Object.assign(new Error('newer automatic profile pending present'), { code: 'AUTO_PENDING_NEWER_EXISTS', status: 409 })
+        }
+        return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: marker }) })
+      }, (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === marker.contentHash)
+      return true
+    } catch (error) {
+      if (error?.code === 'AUTO_PENDING_NEWER_EXISTS') return false
+      this.audit('ENSURE_AUTOMATIC_PROFILE_PENDING', customerId, marker.actorId || '', 'PENDING', error?.code || 'AUTO_PENDING_ENSURE_FAILED')
+      return false
+    }
   }
 
   resetAutoRecoveryCircuitIfNeeded() {
@@ -1042,14 +1142,16 @@ export class FeishuRepository {
   }
 
   async recoverAutomaticProcessing() {
-    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
-    if (this.autoProcessingRecoveryRunning) return
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', scheduledCustomers: 0, scheduledSources: 0 }
+    if (this.autoProcessingRecoveryRunning) return { status: 'RUNNING', scheduledCustomers: 0, scheduledSources: 0 }
     this.resetAutoRecoveryCircuitIfNeeded()
     if (this.autoRecoveryCircuit.paused) {
       this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', 'AUTO_RECOVERY_CIRCUIT_OPEN')
-      return { status: 'CIRCUIT_OPEN' }
+      return { status: 'CIRCUIT_OPEN', scheduledCustomers: 0, scheduledSources: 0 }
     }
     this.autoProcessingRecoveryRunning = true
+    let scheduledCustomers = 0
+    let scheduledSources = 0
     try {
       const database = await this.load({ force: true })
       const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
@@ -1061,9 +1163,11 @@ export class FeishuRepository {
           this.audit('RECOVER_AUTOMATIC_PROCESSING', customer.id, actorId || '', 'PENDING', 'AUTOMATIC_PROFILE_REFERENCE_CHANGED')
           continue
         }
-        if (actorId) this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
+        if (actorId) {
+          this.scheduleAutomaticCustomerProfile(actorId, customer.id, recoveredText, pending.reason || 'RECOVERY')
+          scheduledCustomers += 1
+        }
       }
-      let scheduledSources = 0
       for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && automaticProfileEventAllowed(item.createdAt || item.uploadedAt || item.occurredAt || item.processingStartedAt))) {
         if (!shouldAutoRecoverSource(source)) {
           if (hasReachedAutoRetryCap(source) && ['FAILED', 'PROCESSING'].includes(source.processingStatus)) await this.stampAutoRetryCapReached(source)
@@ -1076,6 +1180,7 @@ export class FeishuRepository {
         this.scheduleAutomaticProcessing(actorId, source.id)
         scheduledSources += 1
       }
+      return { status: 'OK', scheduledCustomers, scheduledSources }
     } finally {
       this.autoProcessingRecoveryRunning = false
     }
@@ -1085,19 +1190,102 @@ export class FeishuRepository {
     if (!automaticProfileArchivingAllowedForCustomer(customerId)) return { status: 'DISABLED' }
     const normalizedText = normalizeSourceRawText(rawText)
     if (!normalizedText) return { status: 'NOT_REQUIRED' }
+    const marker = automaticProfilePendingMarker(normalizedText, actorId, reason)
     const sourceOperationId = stableOperationId(`${customerId}:${contentHash(normalizedText)}`, 'AUTO-SOURCE')
     try {
       const source = await this.createSource(actorId, { customerId, sourceType: 'TEXT_INPUT', rawText: normalizedText, operationId: sourceOperationId, sourcePerspective: 'STAFF_REPORTED', notes: `${AUTO_PROFILE_SOURCE_PREFIX}${reason}` })
       // Clearing the recovery marker is best-effort housekeeping. It must not
       // keep a successful source enqueue (or the customer-save response) open.
-      void this.clearAutomaticProfilePending(customerId, automaticProfilePendingMarker(normalizedText, actorId, reason))
+      // clearAutomaticProfilePending now also requires a visible SourceRecords row.
+      void this.clearAutomaticProfilePending(customerId, marker)
         .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
       if (!['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) this.scheduleAutomaticProcessing(actorId, source.id)
       return { status: 'QUEUED', sourceId: source.id }
     } catch (error) {
+      if (error?.code === 'SOURCE_DUPLICATE' && error?.sourceId) {
+        void this.clearAutomaticProfilePending(customerId, marker)
+          .catch((clearError) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', clearError?.code || 'AUTO_PENDING_CLEAR_FAILED'))
+        this.scheduleAutomaticProcessing(actorId, error.sourceId)
+        return { status: 'QUEUED', sourceId: error.sourceId, reused: true }
+      }
       this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'PENDING', error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
+      void this.stampAutomaticProfilePendingError(customerId, marker, error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
+        .catch((stampError) => this.audit('STAMP_AUTOMATIC_PROFILE_PENDING_ERROR', customerId, actorId, 'PENDING', stampError?.code || 'AUTO_PENDING_STAMP_FAILED'))
       return { status: 'PENDING', errorCode: error?.code || 'AUTO_SOURCE_QUEUE_FAILED' }
     }
+  }
+
+  async recoverAutomaticCustomerProfile(actorId, customerId) {
+    const requestedCustomerId = text(customerId).trim()
+    if (!requestedCustomerId) throw Object.assign(new Error('customerId 必填'), { code: 'CUSTOMER_ID_REQUIRED', status: 400 })
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', customerId: requestedCustomerId }
+    if (!automaticProfileArchivingAllowedForCustomer(requestedCustomerId)) return { status: 'DISABLED', customerId: requestedCustomerId }
+
+    const database = await this.load({ force: true })
+    const customer = database.customers.find((item) => item.id === requestedCustomerId)
+    if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+
+    const recoveredText = automaticProfileTextFromCustomer(customer)
+    if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId }
+
+    const eventAt = customer.automaticProfilePending?.createdAt || customer.createdAt || now()
+    if (!automaticProfileEventAllowed(eventAt)) return { status: 'DISABLED', customerId: requestedCustomerId, reason: 'BEFORE_ENABLED_AT' }
+
+    const textHash = contentHash(recoveredText)
+    const existingSource = findMatchingAutomaticProfileSource(database.sourceRecords, requestedCustomerId, textHash)
+    const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
+    const resolvedActorId = database.staff.some((item) => item.id === actorId && item.status === 'ACTIVE')
+      ? actorId
+      : (customer.automaticProfilePending?.actorId && database.staff.some((item) => item.id === customer.automaticProfilePending.actorId && item.status === 'ACTIVE')
+        ? customer.automaticProfilePending.actorId
+        : fallbackActor)
+    if (!resolvedActorId) return { status: 'FAILED', customerId: requestedCustomerId, errorCode: 'NO_ACTIVE_ACTOR' }
+
+    if (existingSource) {
+      if (customer.automaticProfilePending?.contentHash === textHash) {
+        void this.clearAutomaticProfilePending(requestedCustomerId, customer.automaticProfilePending)
+          .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', requestedCustomerId, resolvedActorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
+      }
+      const stage = mapAutomaticProfileStageFromSource(existingSource)
+      if (['SOURCE_CREATED', 'PROCESSING', 'FAILED'].includes(stage) && !hasReachedAutoRetryCap(existingSource) && !isNonRetryableAutoProcessingError(existingSource.processingError)) {
+        this.scheduleAutomaticProcessing(resolvedActorId, existingSource.id)
+        return {
+          status: stage === 'FAILED' ? 'PROCESSING' : stage,
+          customerId: requestedCustomerId,
+          sourceId: existingSource.id,
+          reused: true,
+          scheduledProcessing: true,
+        }
+      }
+      return {
+        status: stage,
+        customerId: requestedCustomerId,
+        sourceId: existingSource.id,
+        reused: true,
+        scheduledProcessing: false,
+      }
+    }
+
+    const reason = customer.automaticProfilePending?.reason || 'RECOVERY'
+    const marker = automaticProfilePendingMarker(recoveredText, resolvedActorId, reason)
+    const ensured = await this.ensureAutomaticProfilePending(requestedCustomerId, marker)
+    if (!ensured) {
+      return { status: 'PENDING', customerId: requestedCustomerId, errorCode: 'AUTO_PENDING_ENSURE_FAILED' }
+    }
+    const queued = await this.queueAutomaticCustomerProfile(resolvedActorId, requestedCustomerId, recoveredText, reason)
+    if (queued.status === 'QUEUED') {
+      return {
+        status: 'SOURCE_CREATED',
+        customerId: requestedCustomerId,
+        sourceId: queued.sourceId,
+        reused: Boolean(queued.reused),
+        scheduledProcessing: true,
+      }
+    }
+    if (queued.status === 'PENDING') {
+      return { status: 'PENDING', customerId: requestedCustomerId, errorCode: queued.errorCode || 'AUTO_SOURCE_QUEUE_FAILED' }
+    }
+    return { status: queued.status || 'FAILED', customerId: requestedCustomerId, errorCode: queued.errorCode }
   }
 
   async loadStaffRecords({ force = false } = {}) {
@@ -1717,6 +1905,9 @@ export class FeishuRepository {
     const row = database._rows?.customers?.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const nextState = { ...state, operationId, customerId, updatedAt: state.updatedAt || now() }
+    // Always merge from the latest Feishu row. Never pass automaticProfilePending
+    // here: a COMMITTED transition must not clear or overwrite a pending marker
+    // that still awaits a durable SourceRecords row.
     const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
       const mutationState = nextState.status === 'COMMITTED' ? { ...nextState, resultFingerprint: customerResultFingerprint(latestCustomer) } : nextState
       const mutationStates = { ...sanitizeMutationStates(latestCustomer.mutationStates), [operationId]: mutationState }
@@ -2082,10 +2273,16 @@ export class FeishuRepository {
         }), (latestCustomer) => latestCustomer.mutationStates?.[operationId]?.status === 'PERSISTED' && latestCustomer.mutationStates?.[operationId]?.payloadHash === inputHash)
         customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
       } else {
-        const values = automaticProfileArchivingAllowedForCustomer(customerId) && automaticText
-          ? { ...customerValues, profile_field_meta_json: serializeCustomerDerivedMeta(current, { automaticProfilePending: automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE') }) }
-          : customerValues
-        customerWriteResult = await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', values))
+        if (automaticProfileArchivingAllowedForCustomer(customerId) && automaticText) {
+          const pendingMarker = automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE')
+          const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
+            ...customerValues,
+            profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: pendingMarker }),
+          }), (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === pendingMarker.contentHash)
+          customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
+        } else {
+          customerWriteResult = await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues))
+        }
       }
     } else if (operationId) {
       const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
@@ -3037,7 +3234,22 @@ export class FeishuRepository {
     if (profileUpdates.length || directUpdates.length) await persistCustomerProfile(database, appointment.customerId, [...profileUpdates, ...directUpdates], serviceRecordId, actorId)
     await updateRecord(config.feishu.tables.appointments, appointment._recordId, mapFields('appointments', { followup_info_completed: true, status: 'COMPLETED', completed_at: now }))
     const customerRow = database._rows.customers.find((row) => text(get('customers', row.fields, 'customer_id')) === appointment.customerId)
-    if (customerRow) await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { current_issue: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, current_core_issue: input.coreNeed, ...(automaticProfileArchivingAllowedForCustomer(appointment.customerId) && automaticText ? { profile_field_meta_json: serializeCustomerDerivedMeta(customer, { automaticProfilePending: automaticProfilePendingMarker(automaticText, actorId, 'SERVICE_RECORD') }) } : {}) }))
+    if (customerRow) {
+      if (automaticProfileArchivingAllowedForCustomer(appointment.customerId) && automaticText) {
+        const pendingMarker = automaticProfilePendingMarker(automaticText, actorId, 'SERVICE_RECORD')
+        await updateCustomerRecordSafely(customerRow.record_id, appointment.customerId, (latestCustomer) => mapFields('customers', {
+          current_issue: input.coreNeed,
+          is_paid: input.paid,
+          sabc: input.grade,
+          intended_course: input.intendedCourse || '',
+          notes: input.notes,
+          current_core_issue: input.coreNeed,
+          profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: pendingMarker }),
+        }), (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === pendingMarker.contentHash)
+      } else {
+        await updateRecord(config.feishu.tables.customers, customerRow.record_id, mapFields('customers', { current_issue: input.coreNeed, is_paid: input.paid, sabc: input.grade, intended_course: input.intendedCourse || '', notes: input.notes, current_core_issue: input.coreNeed }))
+      }
+    }
       const automaticProfile = automaticText
         ? this.scheduleAutomaticCustomerProfile(actorId, appointment.customerId, automaticText, 'SERVICE_RECORD')
         : { status: 'NOT_REQUIRED' }
