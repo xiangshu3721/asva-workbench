@@ -13,6 +13,7 @@ import { DebugPanel, ReleaseIndicator } from './DebugPanel'
 import { canStartCustomerSave } from './save-contract'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { isStaleProcessing, shouldResumeSource } from './processing-contract'
+import { attachmentFailureToast, shouldKickoffAfterCreateSave, shouldResumeAutoArchive } from './customer-auto-archive-flow'
 import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
@@ -353,6 +354,7 @@ function WorkbenchApp() {
   const [customerSaveToast, setCustomerSaveToast] = useState<{ text: string; tone: 'success' | 'warning' } | null>(null)
   const customerSaveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoArchiveResumeInFlight = useRef(new Set<string>())
+  const autoArchiveKickoffAt = useRef(new Map<string, number>())
 
   const showCustomerSaveToast = (text: string, tone: 'success' | 'warning') => {
     setCustomerSaveToast({ text, tone })
@@ -499,16 +501,10 @@ function WorkbenchApp() {
   const refreshCustomerSalesUnderstanding = async (customerId: string, force = false) => { const result = await workbenchApi.refreshCustomerSalesUnderstanding(activeStaff.id, customerId, force); setDatabase((current) => current ? { ...current, customers: current.customers.map((item) => item.id === customerId ? { ...item, salesUnderstanding: result.salesUnderstanding || undefined, salesUnderstandingStatus: result.status, salesUnderstandingMeta: result.meta } : item) } : current); return result }
   const loadCustomerProfile = async (customerId: string) => {
     const profile = await workbenchApi.customerProfile(activeStaff.id, customerId)
-    // Safe resume: same HTTP auto-archive entry, idempotent Source/processSource.
-    if (profile?.autoOrganizeStatus === 'PENDING' || profile?.autoOrganizeStatus === 'FAILED' || profile?.autoOrganizeStatus === 'PROCESSING') {
-      if (!autoArchiveResumeInFlight.current.has(customerId)) {
-        autoArchiveResumeInFlight.current.add(customerId)
-        void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId)
-          .then((result) => {
-            if (result?.status === 'COMPLETED' || result?.status === 'REVIEW_REQUIRED') setRevision((value) => value + 1)
-          })
-          .finally(() => { autoArchiveResumeInFlight.current.delete(customerId) })
-      }
+    // Safe resume: CREATE-origin tasks only (server ignores UPDATE pending).
+    // PROCESSING must be stale before another HTTP kick; share in-flight with save kickoff.
+    if (shouldResumeAutoArchive({ status: profile?.autoOrganizeStatus, kickoffAt: autoArchiveKickoffAt.current.get(customerId) ?? null })) {
+      kickoffCustomerAutoArchive(customerId, 'PROFILE_RESUME')
     }
     return profile
   }
@@ -521,30 +517,40 @@ function WorkbenchApp() {
     const sourceInput: SourceCreateInput = { customerId, sourceType: 'FILE_UPLOAD', rawText: upload.extractedText, operationId: upload.operationId, customerOperationId, dialogueConfirmation: upload.dialogueConfirmation || '', sourcePerspective: 'STAFF_REPORTED', notes: '新增客户上传资料', document: { filename: upload.filename, mimeType: upload.mimeType, extension: upload.extension, size: upload.size, fileHash: upload.fileHash, charCount: upload.charCount, extractedText: upload.extractedText } }
     let source: SourceRecord | null = null
     let recoveredAfterTimeout = false
-    try { source = await workbenchApi.createSource(activeStaff.id, sourceInput) } catch {
+    try { source = await workbenchApi.createSource(activeStaff.id, sourceInput) } catch (error) {
       const recovered = await workbenchApi.sourceStatus(activeStaff.id, customerId, upload.operationId).catch(() => null)
       if (recovered?.source) { source = recovered.source; recoveredAfterTimeout = true }
-      else throw new Error('客户已创建，资料保存待确认，可稍后重试。')
+      else {
+        const code = (error as { serverCode?: string; code?: string })?.serverCode || (error as { code?: string })?.code || 'SOURCE_SAVE_FAILED'
+        throw Object.assign(new Error('客户已保存，但附件未保存'), { code, serverCode: code, phase: 'SOURCE_SAVE' })
+      }
     }
     if (source?.id) logAppPerformance('SOURCE_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
+    return source
   }
   const kickoffCustomerAutoArchive = (customerId: string, reason = 'SAVE') => {
     if (!customerId) return
+    if (autoArchiveResumeInFlight.current.has(customerId)) return
+    autoArchiveResumeInFlight.current.add(customerId)
+    autoArchiveKickoffAt.current.set(customerId, Date.now())
     const startedAt = performance.now()
     void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId)
       .then((result) => {
-        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: result?.status || '', phase: result?.phase || '', reason, source_id: result?.sourceId || '' })
+        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: result?.status || '', phase: result?.phase || '', reason, source_id: result?.sourceId || '', error: result?.errorCode || '' })
         if (result?.status === 'COMPLETED' || result?.status === 'REVIEW_REQUIRED') {
           showCustomerSaveToast(result.status === 'REVIEW_REQUIRED' ? 'AI整理完成，部分信息待核实' : 'AI整理完成', 'success')
           setRevision((value) => value + 1)
         } else if (result?.status === 'FAILED') {
-          showCustomerSaveToast('AI整理失败，原始资料已保留，可稍后自动重试', 'warning')
+          const phase = result?.phase || 'PROCESS_SOURCE'
+          showCustomerSaveToast(`AI整理失败（${phase}），原始资料已保留，可稍后自动重试`, 'warning')
         }
       })
-      .catch((error: Error & { code?: string }) => {
-        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: 'FAILED', phase: 'CLIENT', reason, error: error?.code || error?.message || 'AUTO_ARCHIVE_FAILED' })
-        // Do not undo the successful customer save; phase-2 failure is non-blocking.
+      .catch((error: Error & { code?: string; serverCode?: string }) => {
+        const code = error?.serverCode || error?.code || error?.message || 'AUTO_ARCHIVE_FAILED'
+        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: 'FAILED', phase: 'CLIENT', reason, error: code })
+        showCustomerSaveToast(`AI整理暂时失败（${code}），原始资料已保留，可稍后重试`, 'warning')
       })
+      .finally(() => { autoArchiveResumeInFlight.current.delete(customerId) })
   }
   const saveManualCustomer = async (input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
     const saveStartedAt = performance.now()
@@ -557,18 +563,53 @@ function WorkbenchApp() {
     if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success')
     else showCustomerSaveToast('客户已保存', 'success')
     const customerId = saved.createdCustomerId
-    // Phase 2: independent HTTP; never await on the save UX path.
+    // Order: customer PERSISTED → attachment Source confirmed → then phase-2 archive.
+    // Never kickoff AI before upload persistence; upload must not await full AI.
+    let uploadFailed = false
+    if (upload) {
+      try {
+        await saveCustomerUpload(customerId, upload, input.operationId || '')
+      } catch (error) {
+        uploadFailed = true
+        showCustomerSaveToast(attachmentFailureToast(), 'warning')
+        logAppPerformance('SOURCE_SAVE_PERSIST_MS', { duration_ms: 0, recovered: false, error: (error as { code?: string })?.code || 'SOURCE_SAVE_FAILED' })
+      }
+    }
     const auto = saved.automaticProfile
-    if (auto?.status === 'PENDING' || Boolean(input.situation?.trim()) || Boolean(upload)) {
+    if (shouldKickoffAfterCreateSave({
+      uploadFailed,
+      automaticProfileStatus: auto?.status,
+      hasSituation: Boolean(input.situation?.trim()),
+      hasUpload: Boolean(upload),
+    })) {
       kickoffCustomerAutoArchive(customerId, 'CREATE_SAVE')
     }
-    if (!upload) { setManualCustomerOpen(false); openCustomer(customerId); return }
-    await saveCustomerUpload(customerId, upload, input.operationId || '')
     setManualCustomerOpen(false)
     openCustomer(customerId)
   }
   const previewManualCustomer = (input: ManualCustomerInput): Promise<CustomerDraftPreview> => workbenchApi.previewCustomer(activeStaff.id, input)
-  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => { const saveStartedAt = performance.now(); rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() }); let saved: CustomerMutationResult; try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) { if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId); throw error }; clearPendingCustomerMutation(input.operationId); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success'); else showCustomerSaveToast('客户已保存', 'success'); if (upload) await saveCustomerUpload(customerId, upload); setManualCustomerOpen(false); openCustomer(customerId) }
+  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
+    const saveStartedAt = performance.now()
+    rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() })
+    let saved: CustomerMutationResult
+    try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) {
+      if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId)
+      throw error
+    }
+    clearPendingCustomerMutation(input.operationId)
+    logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) })
+    applyCustomerMutation(saved)
+    if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success')
+    else showCustomerSaveToast('客户已保存', 'success')
+    // UPDATE never kicks auto-archive (CREATE-only).
+    if (upload) {
+      try { await saveCustomerUpload(customerId, upload) } catch {
+        showCustomerSaveToast(attachmentFailureToast(), 'warning')
+      }
+    }
+    setManualCustomerOpen(false)
+    openCustomer(customerId)
+  }
   const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabaseSnapshot(saved); refresh() }
   const sourceWorkspace = (customerId: string) => workbenchApi.sourceWorkspace(activeStaff.id, customerId)
   const sourceStatus = (customerId: string, operationId: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId)

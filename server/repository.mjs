@@ -915,7 +915,9 @@ function automaticProfileStatus(sources, evidenceItems, customerId, customer = n
     .sort((a, b) => String(b.occurredAt || b.uploadedAt || b.createdAt || '').localeCompare(String(a.occurredAt || a.uploadedAt || a.createdAt || '')))[0]
   if (!latest) {
     // Durable pending without Source yet → PENDING (frontend 待处理), not silent NOT_STARTED.
-    if (customer?.automaticProfilePending?.contentHash) return 'PENDING'
+    // UPDATE-origin pending must never drive new-customer archive resume.
+    const pendingReason = text(customer?.automaticProfilePending?.reason || '')
+    if (customer?.automaticProfilePending?.contentHash && pendingReason !== 'CUSTOMER_UPDATE') return 'PENDING'
     return 'NOT_STARTED'
   }
   if (latest.processingStatus === 'UPLOADED' || latest.processingStatus === 'PROCESSING') return 'PROCESSING'
@@ -1533,7 +1535,7 @@ export class FeishuRepository {
     }
   }
 
-  async queueAutomaticCustomerProfile(actorId, customerId, rawText, reason) {
+  async queueAutomaticCustomerProfile(actorId, customerId, rawText, reason, { scheduleProcessing = true } = {}) {
     if (!automaticProfileArchivingAllowedForCustomer(customerId)) return { status: 'DISABLED' }
     const normalizedText = normalizeSourceRawText(rawText)
     if (!normalizedText) return { status: 'NOT_REQUIRED' }
@@ -1546,13 +1548,13 @@ export class FeishuRepository {
       // clearAutomaticProfilePending now also requires a visible SourceRecords row.
       void this.clearAutomaticProfilePending(customerId, marker)
         .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
-      if (!['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) this.scheduleAutomaticProcessing(actorId, source.id)
+      if (scheduleProcessing !== false && !['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) this.scheduleAutomaticProcessing(actorId, source.id)
       return { status: 'QUEUED', sourceId: source.id }
     } catch (error) {
       if (error?.code === 'SOURCE_DUPLICATE' && error?.sourceId) {
         void this.clearAutomaticProfilePending(customerId, marker)
           .catch((clearError) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', clearError?.code || 'AUTO_PENDING_CLEAR_FAILED'))
-        this.scheduleAutomaticProcessing(actorId, error.sourceId)
+        if (scheduleProcessing !== false) this.scheduleAutomaticProcessing(actorId, error.sourceId)
         return { status: 'QUEUED', sourceId: error.sourceId, reused: true }
       }
       this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'PENDING', error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
@@ -1599,23 +1601,46 @@ export class FeishuRepository {
         return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'BEFORE_ENABLED_AT', reason: 'BEFORE_ENABLED_AT', timings, durationMs: Date.now() - startedAt }
       }
 
+      // CREATE-only: never archive from UPDATE-origin pending markers.
+      const pendingReason = text(customer.automaticProfilePending?.reason || '')
+      if (pendingReason === 'CUSTOMER_UPDATE') {
+        return {
+          status: 'NOT_REQUIRED',
+          customerId: requestedCustomerId,
+          phase: 'UPDATE_SKIPPED',
+          reason: 'CREATE_ONLY',
+          timings,
+          durationMs: Date.now() - startedAt,
+        }
+      }
+      const hasCreatePending = Boolean(customer.automaticProfilePending?.contentHash) && (pendingReason === 'CUSTOMER_SAVE' || pendingReason === 'HTTP_AUTO_ARCHIVE' || !pendingReason)
+      const hasRecoverableSource = customerHasRecoverableAutomaticProfileSource(visible.sourceRecords, requestedCustomerId)
+      const hasAutoProfileSource = (visible.sourceRecords || []).some((item) => item.customerId === requestedCustomerId && isAutomaticProfileSource(item))
+      // Idempotent re-entry allowed when CREATE Source already exists (ALREADY_DONE / resume).
+      if (!force && !hasCreatePending && !hasRecoverableSource && !hasAutoProfileSource) {
+        return {
+          status: 'NOT_REQUIRED',
+          customerId: requestedCustomerId,
+          phase: 'CREATE_ONLY',
+          reason: 'NO_CREATE_PENDING_OR_SOURCE',
+          timings,
+          durationMs: Date.now() - startedAt,
+        }
+      }
+
       phase = 'CREATE_SOURCE'
       const queueStarted = Date.now()
-      // Reuse queueAutomaticCustomerProfile for stable operationId/contentHash + idempotent Source,
-      // but intercept scheduling: temporarily no-op scheduleAutomaticProcessing during queue.
-      const originalSchedule = this.scheduleAutomaticProcessing.bind(this)
-      let scheduledSourceId = null
-      this.scheduleAutomaticProcessing = (scheduleActorId, sourceId, ...rest) => {
-        scheduledSourceId = sourceId
-        this.audit('HTTP_AUTO_ARCHIVE_DEFER_PROCESS', sourceId, scheduleActorId, 'QUEUED', 'AWAIT_INLINE_PROCESS')
-        return { status: 'DEFERRED_TO_HTTP' }
-      }
-      let queueResult
-      try {
-        queueResult = await this.queueAutomaticCustomerProfile(actorId, requestedCustomerId, recoveredText, customer.automaticProfilePending?.reason || 'HTTP_AUTO_ARCHIVE')
-      } finally {
-        this.scheduleAutomaticProcessing = originalSchedule
-      }
+      // Explicit scheduleProcessing:false — never monkey-patch shared instance methods.
+      const queueReason = (pendingReason === 'CUSTOMER_SAVE' || pendingReason === 'HTTP_AUTO_ARCHIVE')
+        ? pendingReason
+        : 'HTTP_AUTO_ARCHIVE'
+      const queueResult = await this.queueAutomaticCustomerProfile(
+        actorId,
+        requestedCustomerId,
+        recoveredText,
+        queueReason,
+        { scheduleProcessing: false },
+      )
       timings.source_ms = Date.now() - queueStarted
 
       if (queueResult?.status === 'DISABLED' || queueResult?.status === 'NOT_REQUIRED') {
@@ -1632,7 +1657,7 @@ export class FeishuRepository {
         }
       }
 
-      const sourceId = queueResult.sourceId || scheduledSourceId
+      const sourceId = queueResult.sourceId
       if (!sourceId) {
         return {
           status: 'FAILED',
@@ -2933,25 +2958,16 @@ export class FeishuRepository {
     let customerWriteResult = null
     if (Object.keys(customerValues).length) {
       if (operationId) {
+        // CREATE-only archive: UPDATE must never write _automatic_profile_pending.
         const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
           ...customerValues,
           profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, {
-            ...(automaticProfileArchivingAllowedForCustomer(customerId) && automaticText ? { automaticProfilePending: automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE') } : {}),
             mutationStates: { ...latestCustomer.mutationStates, [operationId]: persistedState },
           }),
         }), (latestCustomer) => latestCustomer.mutationStates?.[operationId]?.status === 'PERSISTED' && latestCustomer.mutationStates?.[operationId]?.payloadHash === inputHash)
         customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
       } else {
-        if (automaticProfileArchivingAllowedForCustomer(customerId) && automaticText) {
-          const pendingMarker = automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE')
-          const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
-            ...customerValues,
-            profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: pendingMarker }),
-          }), (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === pendingMarker.contentHash)
-          customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
-        } else {
-          customerWriteResult = await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues))
-        }
+        customerWriteResult = await updateRecord(config.feishu.tables.customers, row.record_id, mapFields('customers', customerValues))
       }
     } else if (operationId) {
       const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
@@ -2979,11 +2995,9 @@ export class FeishuRepository {
     }
     // Customer updates do not create or mutate Appointment in Stage 1.
     if (enrollmentsChanged) latest = await this.loadAfterWrite(undefined, customerId)
-    // Formal open / customer UPDATE must not auto-schedule historical AI backfill.
-    // New-customer archive is owned by POST /api/customers/:id/auto-archive (phase 2).
-    const automaticProfile = automaticText && automaticProfileArchivingAllowedForCustomer(customerId)
-      ? { status: 'PENDING', mode: 'HTTP_PHASE2', reason: 'CUSTOMER_UPDATE', deferred: true }
-      : { status: automaticText ? 'DISABLED' : 'NOT_REQUIRED' }
+    // Formal open / customer UPDATE must not write pending or schedule archive.
+    // New-customer archive is CREATE-only via POST /api/customers/:id/auto-archive.
+    const automaticProfile = { status: 'NOT_REQUIRED', reason: 'UPDATE_SKIPPED', deferred: true }
     if (operationId) {
       const mutationWrite = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
       if (mutationWrite) latest = await this.loadCustomerAfterWrite(mutationWrite, customerId, latest)

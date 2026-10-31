@@ -14,7 +14,7 @@ const state = vi.hoisted(() => {
   process.env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING = 'true'
   process.env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE = 'canary'
   process.env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY = 'true'
-  process.env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS = 'CUS-a61e57990749ae442014'
+  process.env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS = 'CUS-a61e57990749ae442014,CUS-86e6d67e5e4bbd047806,CUS-288f80a87468e5faccb1,CUS-5d54f38b220e30f5ad74'
   process.env.FEISHU_CUSTOMERS_TABLE_ID = 'tbl-tp-customers'
   process.env.FEISHU_STAFF_TABLE_ID = 'tbl-tp-staff'
   process.env.FEISHU_PRODUCTS_TABLE_ID = 'tbl-tp-products'
@@ -228,5 +228,202 @@ describe('two-phase HTTP auto archive', () => {
     const notesField = customerRow.fields[Object.keys(customerRow.fields).find((k) => String(customerRow.fields[k]).includes('客户本人') || String(customerRow.fields[k]).includes('转行')) || '']
     // notes persisted on create — raw situation remains on Customers record
     expect(JSON.stringify(customerRow.fields)).toContain('转行')
+  })
+
+  it('P0: concurrent customers do not monkey-patch shared scheduleAutomaticProcessing', async () => {
+    const repository = new FeishuRepository()
+    const originalSchedule = repository.scheduleAutomaticProcessing
+    const scheduleCalls = []
+    const scheduleSpy = vi.spyOn(repository, 'scheduleAutomaticProcessing').mockImplementation((actorId, sourceId) => {
+      scheduleCalls.push({ actorId, sourceId })
+      return { status: 'QUEUED' }
+    })
+
+    const createdA = await repository.createCustomer('ADMIN-1', {
+      operationId: 'ASVA-SYNTH-CONCURRENT-A-20261031',
+      nickname: '并发客户A',
+      phone: '19900002001',
+      situation: '客户A备注：想做产品经理转行规划。',
+      enrollments: [],
+    }, '', { compactResponse: true })
+    const createdB = await repository.createCustomer('ADMIN-1', {
+      operationId: 'ASVA-SYNTH-CONCURRENT-B-20261031',
+      nickname: '并发客户B',
+      phone: '19900002002',
+      situation: '客户B备注：希望梳理职业方向与学习路径。',
+      enrollments: [],
+    }, '', { compactResponse: true })
+    expect(createdA.createdCustomerId).toBe('CUS-86e6d67e5e4bbd047806')
+    expect(createdB.createdCustomerId).toBe('CUS-288f80a87468e5faccb1')
+
+    const processCalls = []
+    repository.processSource = vi.fn(async (_actor, sourceId) => {
+      processCalls.push(sourceId)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return {
+        source: { id: sourceId, processingStatus: 'COMPLETED' },
+        evidenceItems: [{ id: `EV-${sourceId}`, sourceId }],
+        proposals: [],
+        conflicts: [],
+      }
+    })
+
+    const [resultA, resultB] = await Promise.all([
+      repository.runCustomerAutoArchive('ADMIN-1', createdA.createdCustomerId),
+      repository.runCustomerAutoArchive('ADMIN-1', createdB.createdCustomerId),
+    ])
+
+    expect(resultA.status).toBe('COMPLETED')
+    expect(resultB.status).toBe('COMPLETED')
+    expect(resultA.sourceId).toBeTruthy()
+    expect(resultB.sourceId).toBeTruthy()
+    expect(resultA.sourceId).not.toBe(resultB.sourceId)
+    expect(processCalls).toHaveLength(2)
+    // Must never replace the instance method (shared concurrent customers).
+    expect(repository.scheduleAutomaticProcessing).toBe(scheduleSpy)
+    expect(scheduleCalls).toHaveLength(0)
+    expect(typeof originalSchedule).toBe('function')
+  })
+
+  it('P0: same customer concurrent archive is idempotent and does not duplicate process thrash', async () => {
+    const repository = new FeishuRepository()
+    await repository.createCustomer('ADMIN-1', {
+      operationId: SYNTH_OPERATION_ID,
+      nickname: '同客并发',
+      phone: '19900002003',
+      situation: NOTES,
+      enrollments: [],
+    }, '', { compactResponse: true })
+
+    let processCount = 0
+    const evidenceBySource = new Map()
+    repository.processSource = vi.fn(async (_actor, sourceId) => {
+      processCount += 1
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      if (!evidenceBySource.has(sourceId)) evidenceBySource.set(sourceId, [{ id: `EV-${sourceId}`, sourceId }])
+      return {
+        source: { id: sourceId, customerId: SYNTH_CUSTOMER_ID, processingStatus: 'COMPLETED' },
+        evidenceItems: evidenceBySource.get(sourceId),
+        proposals: [],
+        conflicts: [],
+      }
+    })
+    vi.spyOn(repository, 'scheduleAutomaticProcessing')
+
+    const [first, second] = await Promise.all([
+      repository.runCustomerAutoArchive('ADMIN-1', SYNTH_CUSTOMER_ID),
+      repository.runCustomerAutoArchive('ADMIN-1', SYNTH_CUSTOMER_ID),
+    ])
+    expect(first.sourceId).toBeTruthy()
+    expect(second.sourceId).toBe(first.sourceId)
+    expect(first.status === 'COMPLETED' || second.status === 'COMPLETED').toBe(true)
+    // Stable operationId/contentHash → one Source; process may run 1–2 times via lock, never N sources.
+    expect(new Set([first.sourceId, second.sourceId]).size).toBe(1)
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
+    expect(evidenceBySource.get(first.sourceId)).toHaveLength(1)
+  })
+
+  it('P0: UPDATE old customer must not write pending or archive on profile status', async () => {
+    const repository = new FeishuRepository()
+    const created = await repository.createCustomer('ADMIN-1', {
+      operationId: 'ASVA-SYNTH-UPDATE-OLD-20261031',
+      nickname: '旧客户不补历史',
+      phone: '19900002004',
+      situation: '初次备注',
+      enrollments: [],
+    }, '', { compactResponse: true })
+    const customerId = created.createdCustomerId
+    expect(customerId).toBe('CUS-5d54f38b220e30f5ad74')
+
+    // Simulate completed create-archive then clear pending by running archive once.
+    repository.processSource = vi.fn(async (_actor, sourceId) => ({
+      source: { id: sourceId, customerId, processingStatus: 'COMPLETED' },
+      evidenceItems: [{ id: 'EV-DONE', sourceId }],
+      proposals: [],
+      conflicts: [],
+    }))
+    await repository.runCustomerAutoArchive('ADMIN-1', customerId)
+
+    const updated = await repository.updateCustomer('ADMIN-1', customerId, {
+      operationId: 'ASVA-SYNTH-UPDATE-OLD-PATCH-20261031',
+      nickname: '旧客户不补历史',
+      phone: '19900002004',
+      situation: '编辑后的新备注，绝不触发补历史归档',
+      enrollments: [],
+    }, { compactResponse: true })
+
+    expect(updated.automaticProfile).toMatchObject({ status: 'NOT_REQUIRED', reason: 'UPDATE_SKIPPED' })
+
+    const database = await repository.load({ force: true })
+    const customer = database.customers.find((item) => item.id === customerId)
+    expect(customer.notes).toContain('编辑后的新备注')
+    expect(customer.automaticProfilePending).toBeFalsy()
+
+    const profile = await repository.customerProfile('ADMIN-1', customerId)
+    // UPDATE must not surface PENDING that would cause frontend resume AI.
+    expect(profile.autoOrganizeStatus).not.toBe('PENDING')
+    expect(profile.autoOrganizeStatus).not.toBe('FAILED')
+
+    const skipped = await repository.runCustomerAutoArchive('ADMIN-1', customerId)
+    // Existing COMPLETED create source → idempotent ALREADY_DONE / COMPLETED, not a new UPDATE archive.
+    expect(['COMPLETED', 'REVIEW_REQUIRED', 'NOT_REQUIRED'].includes(skipped.status)).toBe(true)
+    if (skipped.phase === 'UPDATE_SKIPPED' || skipped.phase === 'CREATE_ONLY') {
+      expect(skipped.status).toBe('NOT_REQUIRED')
+    }
+  })
+
+  it('P0: leftover CUSTOMER_UPDATE pending is ignored by status and archive entry', async () => {
+    const repository = new FeishuRepository()
+    const customerId = 'CUS-a61e57990749ae442014'
+    // Seed an "old" customer row with UPDATE pending only (no CREATE source).
+    const notes = '历史客户被错误写了 UPDATE pending'
+    table(state.tableIds.customers).set('rec-old-update', {
+      record_id: 'rec-old-update',
+      fields: fields('customers', {
+        customer_id: customerId,
+        nickname: '历史客户',
+        phone: '19900002005',
+        notes,
+        created_by_staff_id: 'ADMIN-1',
+        created_at: '2026-10-01T00:00:00.000Z',
+        profile_field_meta_json: JSON.stringify({
+          _profile_version: 1,
+          _fields: {},
+          _automatic_profile_pending: {
+            contentHash: contentHash(notes),
+            actorId: 'ADMIN-1',
+            reason: 'CUSTOMER_UPDATE',
+            createdAt: '2026-10-30T12:00:00.000Z',
+            sourceReference: { kind: 'CUSTOMER_FIELDS', fields: ['notes'] },
+          },
+          _mutation_states: {},
+        }),
+      }),
+    })
+
+    const profile = await repository.customerProfile('ADMIN-1', customerId)
+    expect(profile.autoOrganizeStatus).toBe('NOT_STARTED')
+
+    const processSpy = vi.fn()
+    repository.processSource = processSpy
+    const result = await repository.runCustomerAutoArchive('ADMIN-1', customerId)
+    expect(result).toMatchObject({ status: 'NOT_REQUIRED', phase: 'UPDATE_SKIPPED' })
+    expect(processSpy).not.toHaveBeenCalled()
+  })
+
+  it('P0: queueAutomaticCustomerProfile scheduleProcessing:false never calls scheduleAutomaticProcessing', async () => {
+    const repository = new FeishuRepository()
+    await repository.createCustomer('ADMIN-1', {
+      operationId: SYNTH_OPERATION_ID,
+      nickname: '显式参数',
+      phone: '19900002006',
+      situation: NOTES,
+      enrollments: [],
+    }, '', { compactResponse: true })
+    const scheduleSpy = vi.spyOn(repository, 'scheduleAutomaticProcessing')
+    const queued = await repository.queueAutomaticCustomerProfile('ADMIN-1', SYNTH_CUSTOMER_ID, NOTES, 'HTTP_AUTO_ARCHIVE', { scheduleProcessing: false })
+    expect(queued.status).toBe('QUEUED')
+    expect(queued.sourceId).toBeTruthy()
+    expect(scheduleSpy).not.toHaveBeenCalled()
   })
 })
