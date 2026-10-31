@@ -4,7 +4,7 @@
  * - Starts from existing production.env (preserves live keys)
  * - Forces canary + CUS-dfc908cf932532e89834 allowlist
  * - Ensures ASVA_AI_ARCHIVE_INVOKE_SECRET (generate if missing)
- * - Injects temporary STS from `tcb secrets get` (TENCENTCLOUD_* + SESSIONTOKEN)
+ * - Injects temporary STS from `tcb secrets get` as CLOUDBASE_SECRET_ID/KEY/SESSIONTOKEN (SCF forbids TENCENTCLOUD_ prefix)
  * - Optionally injects CLOUDBASE_APIKEY from a local secure file
  *
  * Usage:
@@ -114,10 +114,10 @@ async function main() {
     ASVA_AI_ARCHIVE_INVOKE_MODE: 'event',
     ASVA_AI_ARCHIVE_INVOKE_SECRET: invoke.secret,
     CLOUDBASE_ENV_ID: 'root-journey-prod-d4d7pzd0a8f805',
-    TENCENTCLOUD_SECRETID: sts.secretId,
-    TENCENTCLOUD_SECRETKEY: sts.secretKey,
-    TENCENTCLOUD_SESSIONTOKEN: sts.token,
-    TENCENTCLOUD_REGION: 'ap-shanghai',
+    // SCF rejects TENCENTCLOUD_* env keys; store STS under CLOUDBASE_* aliases (credentials() reads these).
+    CLOUDBASE_SECRET_ID: sts.secretId,
+    CLOUDBASE_SECRET_KEY: sts.secretKey,
+    CLOUDBASE_SESSIONTOKEN: sts.token,
   }
   if (apiKey.present) values.CLOUDBASE_APIKEY = apiKey.value
 

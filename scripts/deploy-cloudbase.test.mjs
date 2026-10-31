@@ -158,7 +158,7 @@ describe('AI archive deploy order and effective config', () => {
 })
 
 describe('temporary STS session token forwarding', () => {
-  it('forwards TENCENTCLOUD_SESSIONTOKEN for temporary STS canary credentials', () => {
+  it('maps temporary STS TENCENTCLOUD_* into CLOUDBASE_* (SCF forbids TENCENTCLOUD_ prefix)', () => {
     const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'true' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'canary' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
     values.ASVA_DEPLOY_MODE = 'canary'
     values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY = 'true'
@@ -169,8 +169,12 @@ describe('temporary STS session token forwarding', () => {
     values.TENCENTCLOUD_SESSIONTOKEN = 'tmpToken'
     values.ASVA_AI_ARCHIVE_INVOKE_SECRET = 'invoke-secret'
     const env = buildProductionEnvVariables(values, { releaseCounter: 1, releasePatch: 0, gitCommit: 'abc', gitBranch: 'main', buildTime: 't' })
-    expect(env.TENCENTCLOUD_SESSIONTOKEN).toBe('tmpToken')
-    expect(env.TENCENTCLOUD_SECRETID).toBe('AKIDtmp')
+    // SCF forbids TENCENTCLOUD_* env keys; deploy maps STS into CLOUDBASE_* aliases.
+    expect(env.TENCENTCLOUD_SESSIONTOKEN).toBeUndefined()
+    expect(env.TENCENTCLOUD_SECRETID).toBeUndefined()
+    expect(env.CLOUDBASE_SESSIONTOKEN).toBe('tmpToken')
+    expect(env.CLOUDBASE_SECRET_ID).toBe('AKIDtmp')
+    expect(env.CLOUDBASE_SECRET_KEY).toBe('tmpSecret')
   })
 })
 
