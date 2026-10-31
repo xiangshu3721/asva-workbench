@@ -1,0 +1,135 @@
+{
+  "customerId": "CUS-db3032dea6f71877dc42",
+  "notesPreserved": true,
+  "autoOrganizeStatus": "COMPLETED",
+  "sourceCountReported": 1,
+  "sources": [
+    {
+      "id": "SRC-d179313a2dda70c92736e93a",
+      "processingStatus": "COMPLETED",
+      "processingError": null,
+      "lastBatchId": "EXT-162969c530012baac7953858",
+      "sourceType": null,
+      "notes": null
+    }
+  ],
+  "evidenceCount": 6,
+  "evidenceIds": [
+    "EVD-0b1c7c2b622224d94b44ad34",
+    "EVD-1ff62b76944f7af30e2b7d0a",
+    "EVD-975c2622b8d0b0280ea9a7b1",
+    "EVD-f84a2a29bcf120f106ae4036",
+    "EVD-c3cb88abed8a98903e6b8320",
+    "EVD-537a400302bfdcf6d97d4777"
+  ],
+  "proposalCount": 6,
+  "proposalIds": [
+    "PRP-c920e8a17b8e753d367b0a12",
+    "PRP-a5cd2429a290ff91e571e19c",
+    "PRP-e2d3fa32c960d807cf76c302",
+    "PRP-c9052db6b06c953658e2db71",
+    "PRP-ffceffb578f13da9a4b38701",
+    "PRP-3b6dd9331fe66ede9fa6f42b"
+  ],
+  "customersFields": {
+    "need": {
+      "valueLen": 7,
+      "shortPreview": "不会写 PRD"
+    },
+    "goal": {
+      "valueLen": 16,
+      "shortPreview": "梳理能力缺口与 90 天学习路径"
+    },
+    "helpExpectation": {
+      "valueLen": 21,
+      "shortPreview": "可执行的转行计划、作品集建议、面试准备节奏"
+    },
+    "current_core_issue": {
+      "valueLen": 7,
+      "shortPreview": "不会写 PRD"
+    },
+    "current_goal": {
+      "valueLen": 16,
+      "shortPreview": "梳理能力缺口与 90 天学习路径"
+    },
+    "current_expectation": {
+      "valueLen": 21,
+      "shortPreview": "可执行的转行计划、作品集建议、面试准备节奏"
+    },
+    "career_goal": {
+      "valueLen": 2,
+      "shortPreview": "运营"
+    },
+    "notes": {
+      "valueLen": 129,
+      "shortPreview": "【ASVA-ISOLATION-PR56-FINAL-RERUN】我是客户本人。\n最近在考虑从运营转产品经理，希望梳理能力缺口与 90 天学习路径。\n当前最大困"
+    }
+  },
+  "profileFieldMeta": {
+    "phone": {
+      "confirmed": true,
+      "verificationLabel": null,
+      "source": "STRUCTURED_INPUT",
+      "sourceRecordId": null,
+      "evidenceId": null,
+      "extractionBatchId": null,
+      "contentSource": null
+    },
+    "wechat": {
+      "confirmed": true,
+      "verificationLabel": null,
+      "source": "STRUCTURED_INPUT",
+      "sourceRecordId": null,
+      "evidenceId": null,
+      "extractionBatchId": null,
+      "contentSource": null
+    },
+    "career_goal": {
+      "confirmed": false,
+      "verificationLabel": "AI整理·待核实",
+      "source": "AI_EXTRACTED",
+      "sourceRecordId": "SRC-d179313a2dda70c92736e93a",
+      "evidenceId": "EVD-0b1c7c2b622224d94b44ad34",
+      "extractionBatchId": "EXT-162969c530012baac7953858",
+      "contentSource": "STAFF_TRANSCRIBED_CUSTOMER"
+    },
+    "current_core_issue": {
+      "confirmed": false,
+      "verificationLabel": "AI整理·待核实",
+      "source": "AI_EXTRACTED",
+      "sourceRecordId": "SRC-d179313a2dda70c92736e93a",
+      "evidenceId": "EVD-975c2622b8d0b0280ea9a7b1",
+      "extractionBatchId": "EXT-162969c530012baac7953858",
+      "contentSource": "STAFF_TRANSCRIBED_CUSTOMER"
+    },
+    "secondary_issues": {
+      "confirmed": false,
+      "verificationLabel": "AI整理·待核实",
+      "source": "AI_EXTRACTED",
+      "sourceRecordId": "SRC-d179313a2dda70c92736e93a",
+      "evidenceId": "EVD-f84a2a29bcf120f106ae4036",
+      "extractionBatchId": "EXT-162969c530012baac7953858",
+      "contentSource": "STAFF_TRANSCRIBED_CUSTOMER"
+    },
+    "current_expectation": {
+      "confirmed": false,
+      "verificationLabel": "AI整理·待核实",
+      "source": "AI_EXTRACTED",
+      "sourceRecordId": "SRC-d179313a2dda70c92736e93a",
+      "evidenceId": "EVD-c3cb88abed8a98903e6b8320",
+      "extractionBatchId": "EXT-162969c530012baac7953858",
+      "contentSource": "STAFF_TRANSCRIBED_CUSTOMER"
+    },
+    "current_goal": {
+      "confirmed": false,
+      "verificationLabel": "AI整理·待核实",
+      "source": "AI_EXTRACTED",
+      "sourceRecordId": "SRC-d179313a2dda70c92736e93a",
+      "evidenceId": "EVD-537a400302bfdcf6d97d4777",
+      "extractionBatchId": "EXT-162969c530012baac7953858",
+      "contentSource": "STAFF_TRANSCRIBED_CUSTOMER"
+    }
+  },
+  "provisionalCount": 1,
+  "desensitization": "full notes body omitted; business short previews kept for synthetic fiction text"
+}

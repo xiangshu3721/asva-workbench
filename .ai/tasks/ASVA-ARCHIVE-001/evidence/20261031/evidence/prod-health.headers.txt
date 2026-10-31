@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+access-control-allow-headers: Content-Type, Authorization, X-Staff-Id, X-Operation-Id, X-Idempotency-Key, X-ASVA-Response-Mode
+access-control-allow-methods: GET, POST, PATCH, PUT, OPTIONS
+access-control-expose-headers: X-Request-Id
+cache-control: no-store, no-cache, must-revalidate, max-age=0
+content-disposition: attachment
+content-type: application/json; charset=utf-8
+date: Sat, 31 Oct 2026 13:18:32 GMT
+expires: 0
+last-modified: Sat, 31 Oct 2026 13:18:32 GMT
+pragma: no-cache
+server: tcbgw
+vary: Accept-Encoding,Origin,Accept-Encoding
+x-cloudbase-request-id: 342f6fef-b449-4b2c-8f4f-ab5ff1414937
+x-cloudbase-session-id: 342f6fef-b449-4b2c-8f4f-ab5ff1414937
+x-cloudbase-upstream-status-code: 200
+x-cloudbase-upstream-timecost: 533
+x-cloudbase-upstream-type: Tencent-SCF_HTTP
+x-request-id: 342f6fef-b449-4b2c-8f4f-ab5ff1414937
+transfer-encoding: chunked
+

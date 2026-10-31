@@ -1,0 +1,271 @@
+{
+  "protocol": "XSH_AI_DEV_V1",
+  "kind": "result",
+  "task_id": "ASVA-ARCHIVE-001",
+  "spec_version": "1.0.0",
+  "spec_sha256": "7ac6dd4a02d3dde23301d2db3f5825c370cdf4c2d76deed603ef725d99f6741a",
+  "executor": "Grok Bot (Mac isolation evidence)",
+  "result_state": "BLOCKED",
+  "base_sha": "5764f8a2dc1a749e0b7c670ebd48e665697ab97a",
+  "head_sha": "5764f8a2dc1a749e0b7c670ebd48e665697ab97a",
+  "branch": "fix/two-phase-new-customer-archive-20261031",
+  "acceptance_results": [
+    {
+      "acceptance_id": "AT001",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "external_readback",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/feishu-readback-desensitized.json",
+          "summary": "合成客户 notesPreserved；Customers 物理字段与原文业务短句一致；AI 失败不影响已保存原文（主路径 COMPLETED）",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "external_readback",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-pr56-final-closed-loop-20261031/READBACK-rerun.json",
+          "summary": "原始隔离读回（含合成 notes；勿公开提交原文仓库）",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "基于既有隔离闭环 rerun 读回；本轮未新建客户。customerId=CUS-db3032dea6f71877dc42。"
+    },
+    {
+      "acceptance_id": "AT002",
+      "status": "NOT_TESTED",
+      "evidence_refs": [
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/api-trace-desensitized.json",
+          "summary": "SAVE_CUSTOMER 4450ms < 8000ms；AI_TOTAL 独立于 SAVE",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/timing.json",
+          "summary": "SAVE/EXTRACT/FINALIZE/FINALIZE2/AI_TOTAL 墙钟",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "SAVE 墙钟已由隔离脚本证明≤8s，但 evidence_required 还要求 browser_e2e（保存成功 toast、用户不等待 AI）。本轮无法登录隔离前端，故整体 NOT_TESTED，不把 API 计时单独升级为 PASS。"
+    },
+    {
+      "acceptance_id": "AT003",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/api-trace-desensitized.json",
+          "summary": "EXTRACT 阶段 DeepSeek evidence.extract 成功；sourceId=SRC-d179… batchId=EXT-162969…",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "external_readback",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/feishu-readback-desensitized.json",
+          "summary": "6 Evidence ID 列表可复核，归属同一合成客户主 Source",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "真实 DeepSeek（deepseek-flash）完成 extract；非 vitest mock。"
+    },
+    {
+      "acceptance_id": "AT004",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "external_readback",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/feishu-readback-desensitized.json",
+          "summary": "Proposal×6；Customers 物理字段 current_core_issue/goal/expectation 等；meta confirmed=false + verificationLabel=AI整理·待核实；phone/wechat confirmed=true 未覆盖",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "只读物理字段与元数据；中间表非空之外的 Customers 列已核对。"
+    },
+    {
+      "acceptance_id": "AT005",
+      "status": "NOT_TESTED",
+      "evidence_refs": [
+        {
+          "kind": "browser_e2e",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/browser-e2e.md",
+          "summary": "记录无法登录隔离前端的原因；无截图",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "Chrome 可用但缺 ADMIN 密码交互；生产 Pages 指向 tip 115b163 不能替代候选 UI。禁止伪造截图。"
+    },
+    {
+      "acceptance_id": "AT006",
+      "status": "FAIL",
+      "evidence_refs": [
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/timing.json",
+          "summary": "EXTRACT=44943ms FINALIZE=52299ms（均<60s 网关）；AI_TOTAL=97242ms",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "test_log",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/timeout-resume-test.json",
+          "summary": "非 force finalize 重入 4848ms → FAILED ARCHIVE_FINALIZE_NO_EVIDENCE，命中孤儿 SRC-b6d499",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "test_log",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/second-source-fail-diagnosis.md",
+          "summary": "超时恢复路径被 contentHash 漂移破坏",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "分阶段墙钟达标，但 expected 要求验证超时恢复：当前恢复/重入 FAIL，故 AT006=FAIL。"
+    },
+    {
+      "acceptance_id": "AT007",
+      "status": "FAIL",
+      "evidence_refs": [
+        {
+          "kind": "test_log",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/timeout-resume-test.json",
+          "summary": "重复 finalize：未新建 Source/Evidence/Proposal、无 MODEL；但结果 FAILED 且命中孤儿 Source，非 ALREADY_DONE",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "external_readback",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/timeout-resume-test.json",
+          "summary": "前后 Source 仍为 2 条（主 COMPLETED + 孤儿 UPLOADED）；物理字段未丢",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/api-trace-desensitized.json",
+          "summary": "初跑 FINALIZE2 已创建 SRC-b6d499 并 HTTP_AUTO_ARCHIVE_PROCESS FAIL",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "幂等不满足「安全续跑到 COMPLETED/REVIEW_REQUIRED」；孤儿 Source 导致重复请求返回 FAIL。"
+    },
+    {
+      "acceptance_id": "AT008",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/api-trace-desensitized.json",
+          "summary": "完整定位 sourceId/customerId/actor/operation/error_code/requestId/trigger",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "api_trace",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/second-source-fail-diagnosis.md",
+          "summary": "结论 (b)+(d)：重复 kickoff + contentHash 漂移；非 SERVICE_RECORD；无额外归档 DeepSeek；无 Evidence 暴增；主路径资料未丢",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "test_log",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/timeout-resume-test.json",
+          "summary": "孤儿 Source 仍 UPLOADED；重入 errorCode=ARCHIVE_FINALIZE_NO_EVIDENCE；modelCalls=0",
+          "environment": "staging",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "未知 FAIL 已定位。证明不影响主新增落盘；残留孤儿 Source 与幂等 FAIL 记入 blockers/AT006-007，不假装无残留。"
+    },
+    {
+      "acceptance_id": "AT009",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "manual_check",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/release-readiness.md",
+          "summary": "生产 115b163/R048.11 健康；PR#56 Draft dirty；Canary 草稿仅合成客户、回滚 115b163；未部署",
+          "environment": "development",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "manual_check",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/prod-health.json",
+          "summary": "只读 /api/health 身份字段",
+          "environment": "production",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "manual_check",
+          "location": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/pr56-status.json",
+          "summary": "draft=true mergeable=false dirty",
+          "environment": "development",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "完成发布闸门文档；deployment.performed=false。"
+    },
+    {
+      "acceptance_id": "AT010",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "commit",
+          "location": "https://github.com/xiangshu3721/asva-workbench/commit/5764f8a2dc1a749e0b7c670ebd48e665697ab97a",
+          "summary": "两段 HTTP extract/finalize、Customers 未核实元数据、自动归档入口可定位",
+          "environment": "repository",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        },
+        {
+          "kind": "commit",
+          "location": "https://github.com/xiangshu3721/asva-workbench/pull/56",
+          "summary": "PR#56 Draft 候选；仅结构审阅，不等价外部接口验收",
+          "environment": "repository",
+          "observed_at": "2026-10-31T21:20:10+08:00"
+        }
+      ],
+      "note": "静态结构审阅 PASS；不把源码审查当作集成 PASS。"
+    }
+  ],
+  "deployment": {
+    "performed": false,
+    "environment": "none",
+    "reference": null,
+    "production_writes_performed": false
+  },
+  "blockers": [
+    "AT002 NOT_TESTED：缺真实浏览器保存成功 toast / 不等待 AI 的证据",
+    "AT005 NOT_TESTED：未登录隔离前端，无 ui-screenshot",
+    "AT006 FAIL：分阶段耗时达标但超时恢复/重入命中孤儿 Source 并 FAILED",
+    "AT007 FAIL：非 force 重复 finalize 不能安全回到 COMPLETED/ALREADY_DONE",
+    "残留孤儿 Source SRC-b6d4994db33bad45f52aa33f（UPLOADED，HTTP_AUTO_ARCHIVE，contentHash 漂移）",
+    "PR#56 仍为 Draft 且 mergeable_state=dirty；生产仍为 115b163，候选未部署（符合本任务禁止部署）"
+  ],
+  "deviations": [
+    "隔离主证据复用 asva-pr56-final-closed-loop-20261031 rerun，本轮未重跑全量新建客户",
+    "本轮对合成客户做了一次非 force finalize 诊断重入（未 force、未新建客户、未部署）",
+    "AT002 因缺 browser_e2e 整体 NOT_TESTED，尽管 SAVE 4450ms 已记录"
+  ],
+  "improvement_proposals": [
+    {
+      "issue": "finalize 后 automaticProfileTextFromCustomer 拼入物理字段导致 contentHash 漂移，重入新建孤儿 Source 并 ARCHIVE_FINALIZE_NO_EVIDENCE",
+      "proposal": "HTTP finalize/重入应优先锁定已有 COMPLETED/可恢复 auto-profile Source；禁止因字段回填改变 kickoff hash；finalize-only 默认不 createSource",
+      "evidence": "/Users/xiangshu/Troublehut/_verify/asva-archive-001-20261031/evidence/second-source-fail-diagnosis.md"
+    },
+    {
+      "issue": "PROCESS_SOURCE_EXTRACT 成功时审计仍带 error_code=OPERATION_FAILED（语义噪音）",
+      "proposal": "EXTRACT_READY 成功路径不要写 OPERATION_FAILED，避免误判",
+      "evidence": "/Users/xiangshu/Troublehut/_verify/asva-pr56-final-closed-loop-20261031/run-rerun.log"
+    }
+  ],
+  "summary_for_user": "ASVA-ARCHIVE-001 对 tip 5764f8a 补齐了脱敏证据与二次 Source FAIL 定位：主路径 SAVE/EXTRACT/FINALIZE 与飞书物理字段仍成立，但非 force 重入会因 contentHash 漂移命中孤儿 SRC-b6d499 并 FAIL；真实浏览器未做成；生产仍为 115b163 且未部署。ready_for_release=false。",
+  "ready_for_release": false
+}

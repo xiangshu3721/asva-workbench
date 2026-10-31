@@ -1,0 +1,14 @@
+# asva-api CloudBase function detail (redacted)
+Environment ID: root-journey-prod-d4d7pzd0a8f805
+Function: asva-api
+Status: Deployment completed
+Memory: 512 MB
+Timeout: 60 s
+Runtime: Nodejs20.19
+Identity (from /api/health + env):
+  ASVA_GIT_COMMIT=115b163abc8a65b85d1aa2c7f002558c1d82f547
+  release=R048.11
+  ASVA_BUILD_TIME=2026-10-31T03:24:17.280Z
+  FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE=production
+  AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS=(empty)
+Secrets and table tokens omitted from this summary.
