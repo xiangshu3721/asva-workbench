@@ -21,7 +21,7 @@ describe('automatic customer profile processing', () => {
     repository.startAutomaticProcessingRecovery = vi.fn()
 
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-OFF', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
-    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'DISABLED' })
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'DISABLED', scheduledCustomers: 0, scheduledSources: 0 })
     expect(repository.createSource).not.toHaveBeenCalled()
     expect(repository.startAutomaticProcessingRecovery).not.toHaveBeenCalled()
   })
@@ -188,9 +188,142 @@ describe('automatic customer profile processing', () => {
     repository.load = vi.fn()
     repository.scheduleAutomaticProcessing = vi.fn()
 
-    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'CIRCUIT_OPEN' })
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'CIRCUIT_OPEN', scheduledCustomers: 0, scheduledSources: 0 })
     expect(repository.load).not.toHaveBeenCalled()
     expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
   })
+
+
+  it('does not create a periodic recovery timer from start or schedule paths', async () => {
+    vi.useFakeTimers()
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.processSource = vi.fn(async () => ({ id: 'SRC-1' }))
+    const recoverSpy = vi.spyOn(repository, 'recoverAutomaticProcessing')
+
+    repository.startAutomaticProcessingRecovery()
+    repository.scheduleAutomaticProcessing('ADMIN-1', 'SRC-TIMER-1')
+    expect(repository.autoProcessingRecoveryTimer).toBeNull()
+
+    await vi.runOnlyPendingTimersAsync()
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-TIMER-1')
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(recoverSpy).not.toHaveBeenCalled()
+    expect(repository.autoProcessingRecoveryTimer).toBeNull()
+    recoverSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('returns scheduled counts when on-demand recovery finds pending work', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-AUTO-1', notes: '待恢复资料', need: '', helpExpectation: '', goal: '', automaticProfilePending: { contentHash: contentHash('待恢复资料'), actorId: 'ADMIN-1', reason: 'RECOVERY' } }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [{ id: 'SRC-AUTO-1', customerId: 'CUS-AUTO-1', processingStatus: 'UPLOADED', uploadedBy: 'ADMIN-1' }],
+    }))
+    repository.scheduleAutomaticCustomerProfile = vi.fn()
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    await expect(repository.recoverAutomaticProcessing()).resolves.toEqual({ status: 'OK', scheduledCustomers: 1, scheduledSources: 1 })
+    expect(repository.scheduleAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-1', '待恢复资料', 'RECOVERY')
+    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledWith('ADMIN-1', 'SRC-AUTO-1')
+  })
+
+
+  it('recoverAutomaticCustomerProfile returns NOT_REQUIRED when notes are empty', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-EMPTY', notes: '', need: '', helpExpectation: '', goal: '', automaticProfilePending: null }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [],
+    }))
+    await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-EMPTY')).resolves.toEqual({ status: 'NOT_REQUIRED', customerId: 'CUS-EMPTY' })
+  })
+
+  it('recoverAutomaticCustomerProfile reuses an existing Source and awaits processSource', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    const notes = '已有 Source 可复用'
+    const hash = contentHash(notes)
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-EXIST', notes, need: '', helpExpectation: '', goal: '', automaticProfilePending: { contentHash: hash, actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE' }, createdAt: '2026-10-30T00:00:00.000Z' }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [{ id: 'SRC-EXIST', customerId: 'CUS-EXIST', contentHash: hash, notes: 'AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE', processingStatus: 'UPLOADED', uploadedBy: 'ADMIN-1' }],
+    }))
+    repository.clearAutomaticProfilePending = vi.fn(async () => true)
+    repository.scheduleAutomaticProcessing = vi.fn()
+    repository.queueAutomaticCustomerProfile = vi.fn()
+    repository.processSource = vi.fn(async () => ({
+      source: { id: 'SRC-EXIST', processingStatus: 'REVIEW_REQUIRED', customerId: 'CUS-EXIST' },
+      evidenceItems: [{ id: 'EVD-1', sourceId: 'SRC-EXIST' }],
+      proposals: [],
+      conflicts: [],
+    }))
+
+    await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-EXIST')).resolves.toMatchObject({
+      status: 'REVIEW_REQUIRED',
+      customerId: 'CUS-EXIST',
+      sourceId: 'SRC-EXIST',
+      reused: true,
+      processed: true,
+      scheduledProcessing: false,
+    })
+    expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-EXIST')
+  })
+
+  it('recoverAutomaticCustomerProfile rebuilds pending and awaits process when Source is missing', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    const notes = '无 Source 时按原文重建'
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-MISS', notes, need: '', helpExpectation: '', goal: '', automaticProfilePending: null, createdAt: '2026-10-30T00:00:00.000Z' }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [],
+      _rows: { customers: [{ record_id: 'rec-miss', fields: {} }] },
+    }))
+    repository.ensureAutomaticProfilePending = vi.fn(async () => true)
+    repository.queueAutomaticCustomerProfile = vi.fn(async () => ({ status: 'QUEUED', sourceId: 'SRC-NEW' }))
+    repository.processSource = vi.fn(async () => ({
+      source: { id: 'SRC-NEW', processingStatus: 'COMPLETED', customerId: 'CUS-MISS' },
+      evidenceItems: [{ id: 'EVD-NEW' }],
+      proposals: [],
+      conflicts: [],
+    }))
+
+    await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-MISS')).resolves.toMatchObject({
+      status: 'COMPLETED',
+      customerId: 'CUS-MISS',
+      sourceId: 'SRC-NEW',
+      reused: false,
+      processed: true,
+      scheduledProcessing: false,
+    })
+    expect(repository.ensureAutomaticProfilePending).toHaveBeenCalled()
+    expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-MISS', notes, 'RECOVERY')
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-NEW')
+  })
+
+
+  it('recoverAutomaticCustomerProfile does not queue when ensure pending fails', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    const notes = 'ensure 失败须阻断 queue'
+    repository.load = vi.fn(async () => ({
+      customers: [{ id: 'CUS-ENSURE-FAIL', notes, need: '', helpExpectation: '', goal: '', automaticProfilePending: null, createdAt: '2026-10-30T00:00:00.000Z' }],
+      staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+      sourceRecords: [],
+      _rows: { customers: [{ record_id: 'rec-ensure-fail', fields: {} }] },
+    }))
+    repository.ensureAutomaticProfilePending = vi.fn(async () => false)
+    repository.queueAutomaticCustomerProfile = vi.fn(async () => ({ status: 'QUEUED', sourceId: 'SRC-SHOULD-NOT' }))
+
+    await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-ENSURE-FAIL')).resolves.toEqual({
+      status: 'PENDING',
+      customerId: 'CUS-ENSURE-FAIL',
+      errorCode: 'AUTO_PENDING_ENSURE_FAILED',
+    })
+    expect(repository.ensureAutomaticProfilePending).toHaveBeenCalled()
+    expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
+  })
+
 
 })
