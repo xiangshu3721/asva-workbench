@@ -64,6 +64,11 @@ function looksLikeTokenError(status, code, message) {
 function normalizeProviderError({ status, providerCode, providerMessage, operation }) {
   if (looksLikeTokenError(status, providerCode, providerMessage)) return { code: FEISHU_ERROR_CODES.TOKEN_EXPIRED, retryable: true, message: '飞书会话已过期，正在重新连接' }
   if (status === 401) return { code: FEISHU_ERROR_CODES.AUTH_ERROR, retryable: false, message: '飞书鉴权失败' }
+  // Feishu returns HTTP 403 + 1254608 for repeated client_token / identical submits.
+  // That is an idempotency conflict, not a table/field ACL denial.
+  if (Number(providerCode) === 1254608 || /submitted repeatedly|重复提交|请求重复/.test(String(providerMessage || ''))) {
+    return { code: FEISHU_ERROR_CODES.CONFLICT, retryable: false, message: '飞书重复提交' }
+  }
   if (status === 403) return { code: FEISHU_ERROR_CODES.PERMISSION_ERROR, retryable: false, message: '飞书权限不足' }
   if (status === 404) return { code: FEISHU_ERROR_CODES.NOT_FOUND, retryable: false, message: '飞书目标不存在' }
   if (status === 409) return { code: FEISHU_ERROR_CODES.CONFLICT, retryable: false, message: '飞书数据发生冲突' }
@@ -178,9 +183,10 @@ export function createFeishuGateway({
         if (error?.code === FEISHU_ERROR_CODES.TOKEN_EXPIRED && !refreshedAfterTokenError) { tokenCache = null; refreshedAfterTokenError = true; metrics.retryCount += 1; continue }
         recordFailure(error)
         const canRetry = retryEnabled && isRetryableFeishuError(error) && attempt < maxAttempts - 1
-        if (isWrite && context.idempotency && isRetryableFeishuError(error)) {
+        const duplicateSubmit = Number(error?.providerCode) === 1254608 || error?.code === FEISHU_ERROR_CODES.CONFLICT
+        if (isWrite && context.idempotency && (isRetryableFeishuError(error) || duplicateSubmit)) {
           const existing = await findExistingRecord(context.table, context.idempotency).catch(() => null)
-          if (existing) { metrics.duplicatePreventedCount += 1; logger.warn?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, result: 'DUPLICATE_PREVENTED' })); return { record: existing, idempotency_recovered: true } }
+          if (existing) { metrics.duplicatePreventedCount += 1; logger.warn?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, result: 'DUPLICATE_PREVENTED', provider_code: error?.providerCode })); return { record: existing, idempotency_recovered: true } }
         }
         if (!canRetry) {
           if (isWrite) logger.error?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, result: 'FAILED', normalized_error: error?.code || 'FEISHU_UNAVAILABLE', http_status: error?.httpStatus, provider_code: error?.providerCode, provider_message: error?.providerMessage, provider_request_id: error?.providerRequestId }))

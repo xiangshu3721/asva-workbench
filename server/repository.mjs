@@ -956,8 +956,12 @@ async function createMappedRecord(tableKey, operation, values) {
     ? Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'change_id'))
     : values
   const mapped = mapFields(tableKey, persistedValues)
-  const operationId = text(values.operationId || values.source_id || values.change_id || values.evidence_id || values.proposal_id || values.enrollment_id || values.service_record_id)
-  const uniqueKey = tableKey === 'profileChanges' ? null : ['source_id', 'change_id', 'evidence_id', 'proposal_id', 'enrollment_id', 'service_record_id'].find((key) => text(values[key]))
+  // Prefer the row's own durable id for client_token / idempotency.
+  // Using source_id first made every Evidence/Proposal under one Source share
+  // the same Feishu client_token → HTTP 403 provider 1254608
+  // "Same API requests are submitted repeatedly." (misread as permission).
+  const operationId = text(values.operationId || values.evidence_id || values.proposal_id || values.conflict_id || values.change_id || values.enrollment_id || values.service_record_id || values.assessment_id || values.source_id)
+  const uniqueKey = tableKey === 'profileChanges' ? null : ['evidence_id', 'proposal_id', 'conflict_id', 'change_id', 'enrollment_id', 'service_record_id', 'assessment_id', 'source_id'].find((key) => text(values[key]))
   try {
     return await createRecord(config.feishu.tables[tableKey], mapped, { operation, operationId, customerId: text(values.customer_id), entityType: tableKey, ...(uniqueKey ? { idempotency: { field: mapField(tableKey, uniqueKey), value: values[uniqueKey] } } : {}) })
   } catch (error) {
@@ -966,7 +970,7 @@ async function createMappedRecord(tableKey, operation, values) {
 }
 async function updateMappedRecord(tableKey, operation, recordId, values) {
   const mapped = mapFields(tableKey, values)
-  const operationId = text(values.operationId || values.source_id || values.change_id || values.evidence_id || values.proposal_id || values.enrollment_id || values.service_record_id)
+  const operationId = text(values.operationId || values.evidence_id || values.proposal_id || values.conflict_id || values.change_id || values.enrollment_id || values.service_record_id || values.assessment_id || values.source_id)
   try {
     return await updateRecord(config.feishu.tables[tableKey], recordId, mapped, { operation, operationId, customerId: text(values.customer_id), entityType: tableKey })
   } catch (error) {
