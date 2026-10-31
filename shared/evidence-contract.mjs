@@ -66,7 +66,7 @@ export function chunkText(value, maxChars = 4000) {
   return chunks.filter((item) => item.text.trim())
 }
 
-export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extractionBatchId, model = 'deepseek-chat', modelVersion = 'v1', promptVersion = 'evidence-v1', trustedCustomerSubmission = false } = {}) {
+export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extractionBatchId, model = 'deepseek-chat', modelVersion = 'v1', promptVersion = 'evidence-v1', trustedCustomerSubmission = false, staffReportedAttribution = null } = {}) {
   if (!candidate || typeof candidate !== 'object') return null
   const evidenceType = String(candidate.evidence_type || '').toUpperCase()
   const semanticKind = String(candidate.semantic_kind || '').toUpperCase()
@@ -86,7 +86,18 @@ export function normalizeEvidenceCandidate(candidate, { sourceId, chunk, extract
   // not prove that the customer submitted the material. That proof must come
   // from a server-controlled, authenticated customer-submission channel; the
   // model output and the staff-entered excerpt are never trusted for it.
-  if (contentSource === 'CUSTOMER_DIRECT' && trustedCustomerSubmission !== true) contentSource = 'UNKNOWN'
+  // Staff-entered single-customer notes may be attributed as STAFF_TRANSCRIBED_CUSTOMER
+  // or MENTOR_REPORTED (待核实), never silently upgraded to CUSTOMER_DIRECT.
+  const staffAttribution = CONTENT_SOURCES.has(String(staffReportedAttribution || '').toUpperCase())
+    && !['CUSTOMER_DIRECT', 'UNKNOWN', 'MIXED'].includes(String(staffReportedAttribution || '').toUpperCase())
+    ? String(staffReportedAttribution).toUpperCase()
+    : null
+  if (contentSource === 'CUSTOMER_DIRECT' && trustedCustomerSubmission !== true) {
+    contentSource = staffAttribution || 'UNKNOWN'
+  } else if (contentSource === 'UNKNOWN' && staffAttribution && verificationStatus !== 'CONFLICTED' && informationNature !== 'AI_INFERENCE') {
+    // Mentor-entered single-customer Source with grounded excerpt: store as staff-reported, not CUSTOMER_DIRECT.
+    contentSource = staffAttribution
+  }
   if (contentSource === 'MENTOR_OBSERVATION' && candidate.evidence_type !== 'OBSERVATION' && informationNature !== 'BEHAVIOR_OBSERVATION') contentSource = 'MENTOR_REPORTED'
   return {
     sourceId: sourceId || null,

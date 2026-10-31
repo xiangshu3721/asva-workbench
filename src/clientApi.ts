@@ -117,6 +117,7 @@ export interface CustomerMutationResult {
   enrollmentStatus?: 'COMPLETED' | 'PENDING'
   enrollmentMessage?: string
   mutation?: CustomerMutationState
+  automaticProfile?: { status?: string; mode?: string; reason?: string; contentHash?: string; deferred?: boolean }
 }
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
@@ -129,6 +130,25 @@ function customerMutationFromDatabase(database: Database & Partial<CustomerMutat
   return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
 }
 export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export interface CustomerAutoArchiveResult {
+  status?: string
+  customerId?: string
+  sourceId?: string
+  phase?: string
+  reason?: string
+  errorCode?: string
+  errorMessage?: string
+  reused?: boolean
+  needsFinalize?: boolean
+  evidenceCount?: number
+  proposalCount?: number
+  pendingUnconfirmedFieldCount?: number
+  physicalFields?: Record<string, unknown> | null
+  timings?: Record<string, unknown>
+  durationMs?: number
+  automaticProfileStatus?: AutomaticProfileStatus | string
+  source?: SourceRecord
+}
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
 export interface WorkbenchApi {
@@ -182,6 +202,8 @@ export interface WorkbenchApi {
   sourceStatus(actorId: string, customerId: string, operationId: string): Promise<SourceSaveStatus>
   createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
+  autoArchiveCustomer(actorId: string, customerId: string, options?: { force?: boolean; stage?: 'extract' | 'finalize' | 'all'; finalize?: boolean; sourceId?: string }): Promise<CustomerAutoArchiveResult>
+  finalizeCustomerArchive(actorId: string, customerId: string, sourceId?: string): Promise<CustomerAutoArchiveResult>
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
   reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
   resolveConflict(actorId: string, conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN'): Promise<SourceWorkspace>
@@ -225,12 +247,12 @@ export const CLIENT_DEFAULT_TIMEOUT_MS = 20_000
 // Customer creation has a durable operation record and an explicit status
 // readback. Fail over early instead of making the form look stuck for 20s.
 export const CLIENT_CUSTOMER_SAVE_TIMEOUT_MS = 8_000
-// After the soft customer-save timeout the request is allowed to finish so the
-// server can complete the Customers write while the client verifies the
-// operation. This is a hard ceiling, not a longer blocking wait.
+// Kept as a ceiling for environments that explicitly opt into a longer wait.
+// Customer saves abort the browser-side wait at the soft limit before doing a
+// bounded status check; the operation id remains the source of truth.
 export const CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS = 30_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
-const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
+const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0]
 
 function emitCustomerSaveState(operationId: string, status: CustomerMutationStateStatus, customerId?: string) {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('asva-customer-save-state', { detail: { operationId, status, customerId: customerId || '' } }))
@@ -316,6 +338,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     sourceStatus: async () => ({ status: 'NOT_FOUND', source: null }),
     createSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
     processSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
+    autoArchiveCustomer: async () => { throw new Error('本地 Demo 不支持自动归档') },
+    finalizeCustomerArchive: async () => { throw new Error('本地 Demo 不支持自动归档') },
     overrideServiceNecessity: async () => { throw new Error('本地 Demo 不支持隐私策略调整') },
     reviewProposal: async () => { throw new Error('本地 Demo 不支持资料分析') },
     resolveConflict: async () => { throw new Error('本地 Demo 不支持资料分析') },
@@ -324,7 +348,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
 
 export function createHttpApi(baseUrl: string): WorkbenchApi {
   const base = baseUrl.replace(/\/$/, '')
-  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit, options: { softTimeoutMs?: number; hardTimeoutMs?: number } = {}): Promise<T> {
+  async function request<T>(path: string, staffId: string | undefined, init?: RequestInit, options: { softTimeoutMs?: number; hardTimeoutMs?: number; abortOnSoftTimeout?: boolean } = {}): Promise<T> {
     const startedAt = performance.now()
     const method = init?.method || 'GET'
     const headers = new Headers(init?.headers)
@@ -351,6 +375,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       softTimeoutHandle = setTimeout(() => {
         softTimedOut = true
         reject(Object.assign(new Error('请求等待时间较长'), { __softTimeout: true }))
+        if (options.abortOnSoftTimeout) controller.abort()
       }, softTimeoutMs)
     }) : null
     const execution = (async () => {
@@ -362,8 +387,10 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       }
       return { response: nextResponse, payload: nextPayload }
     })()
-    // A soft timeout only stops the caller waiting; the HTTP request keeps
-    // running so the server can finish the Customers write.
+    // For customer saves the caller aborts its browser-side request before
+    // recovery starts. This prevents an in-flight POST and repeated status
+    // reads from running concurrently; the server-side operation id remains
+    // idempotent even if the provider has already accepted the write.
     execution.finally(() => clearTimeout(hardTimeoutHandle)).catch(() => {})
     let completed: { response: Response; payload: Record<string, any> | null }
     try {
@@ -446,9 +473,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       const operationId = input.operationId || ''
       emitCustomerSaveState(operationId, 'PROCESSING')
       try {
-        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers }, { softTimeoutMs: CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, hardTimeoutMs: CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS })
+        const result = await request<CustomerCreateResult | Database>('/api/customers', actorId, { method: 'POST', body: JSON.stringify(input), headers }, { softTimeoutMs: CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, hardTimeoutMs: CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS, abortOnSoftTimeout: true })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result as Database & Partial<CustomerMutationResult>, (result as Database & Partial<CustomerMutationResult>).createdCustomerId, (result as Database & Partial<CustomerMutationResult>).customerCreated === true)
-        // R048.11: PERSISTED 和 COMMITTED 都是成功状态，不强制等待 COMMITTED
         if (operationId && mutation.mutation && mutation.mutation.status !== 'PERSISTED' && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, mutation.createdCustomerId)
         if (operationId) emitCustomerSaveState(operationId, mutation.mutation?.status || 'COMMITTED', mutation.createdCustomerId)
         return mutation
@@ -465,7 +491,6 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
       try {
         const result = await request<CustomerMutationResult | Database>(`/api/customers/${encodeURIComponent(customerId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input), headers })
         const mutation = 'customer' in result ? result : customerMutationFromDatabase(result, customerId, false)
-        // R048.11: PERSISTED 和 COMMITTED 都是成功状态，不强制等待 COMMITTED
         if (operationId && mutation.mutation && mutation.mutation.status !== 'PERSISTED' && mutation.mutation.status !== 'COMMITTED') return recoverCustomerMutation(actorId, operationId, customerId)
         if (operationId) emitCustomerSaveState(operationId, mutation.mutation?.status || 'COMMITTED', customerId)
         return mutation
@@ -506,6 +531,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     sourceStatus: (actorId, customerId, operationId) => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}`, actorId),
     createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),
     processSource: (actorId, sourceId, force = false) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/process`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
+    autoArchiveCustomer: (actorId, customerId, options: { force?: boolean; stage?: 'extract' | 'finalize' | 'all'; finalize?: boolean; sourceId?: string } = {}) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive`, actorId, { method: 'POST', body: JSON.stringify({ force: options.force === true && options.finalize !== true && options.stage !== 'finalize', stage: options.finalize ? 'finalize' : (options.stage || 'extract'), finalize: options.finalize === true || options.stage === 'finalize', sourceId: options.sourceId || undefined }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
+    finalizeCustomerArchive: (actorId, customerId, sourceId?: string) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive/finalize`, actorId, { method: 'POST', body: JSON.stringify({ finalize: true, sourceId: sourceId || undefined }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
     overrideServiceNecessity: (actorId, input) => request<SourceWorkspace>('/api/privacy/service-necessity', actorId, { method: 'POST', body: JSON.stringify(input) }),
     reviewProposal: (actorId, proposalId, decision) => request<SourceWorkspace>(`/api/profile-proposals/${encodeURIComponent(proposalId)}/review`, actorId, { method: 'POST', body: JSON.stringify({ decision }) }),
     resolveConflict: (actorId, conflictId, resolution) => request<SourceWorkspace>(`/api/evidence-conflicts/${encodeURIComponent(conflictId)}/resolve`, actorId, { method: 'POST', body: JSON.stringify({ resolution }) }),

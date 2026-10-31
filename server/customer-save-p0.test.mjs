@@ -129,6 +129,7 @@ const seed = () => {
   put(state.tableIds.staff, 'rec-staff-2', { staff_id: 'MENTOR-2', nickname: 'P0 其他导师', permission_role: 'MENTOR', status: 'ACTIVE', login_enabled: true })
   put(state.tableIds.staff, 'rec-admin-1', { staff_id: 'ADMIN-1', nickname: 'P0 管理员', permission_role: 'ADMIN', status: 'ACTIVE', login_enabled: true })
   put(state.tableIds.products, 'rec-product-1', { product_id: 'PRODUCT-1', product_name: 'P0 合成课程', status: '在售' })
+  put(state.tableIds.products, 'rec-product-2', { product_id: 'PRODUCT-2', product_name: 'P0 第二门课程', status: '在售' })
 }
 
 const customerRows = () => [...table(state.tableIds.customers).values()]
@@ -371,6 +372,30 @@ describe('customer save P0 recovery path', () => {
     expect(repository.saveTraces[0].readback_ms).toBeGreaterThanOrEqual(0)
     await waitForMutationStatus(payload.operationId)
     expect(mutationOf(rowFor(created.createdCustomerId), payload.operationId)).toMatchObject({ status: 'COMMITTED', enrollmentStatus: 'COMPLETED' })
+  })
+
+  it('returns after the Customers acknowledgement when two courses are pending', async () => {
+    const repository = new FeishuRepository()
+    const payload = input('p0-two-courses', {
+      nickname: '两门课程客户',
+      phone: '13900000008',
+      enrollments: [{ productId: 'PRODUCT-1' }, { productId: 'PRODUCT-2' }],
+    })
+
+    const created = await repository.createCustomer('MENTOR-1', payload, '', { compactResponse: true })
+
+    expect(created).toMatchObject({
+      customerCreated: true,
+      createdCustomerId: customerIdForOperation(payload.operationId),
+      enrollmentStatus: 'PENDING',
+    })
+    expect(state.createCalls).toHaveLength(1)
+    expect(state.createCalls[0].tableId).toBe(state.tableIds.customers)
+    expect(repository.saveTraces[0]).toMatchObject({ phase: 'DONE', commit_mode: 'ASYNC_ENROLLMENT', enrollment_write_ms: 0, readback_ms: 0 })
+
+    await settle()
+    expect(state.createCalls.filter((call) => call.tableId === state.tableIds.enrollments)).toHaveLength(2)
+    expect(customerRows()).toHaveLength(1)
   })
 
   it('enforces staff identity and operation/result fingerprints on status lookups', async () => {

@@ -107,3 +107,20 @@ describe('FeishuGateway', () => {
     await expect(client.updateRecord('tbl-customers', 'rec-1', { 状态: '待同步' }, { operation: 'customer.update', operationId: 'CUS-1', entityType: 'customers' })).rejects.toBe(failure)
   })
 })
+
+
+describe('FeishuGateway records/search', () => {
+  it('searchRecords posts filter body to records/search and pages results', async () => {
+    const { gateway, calls } = gatewayWith([
+      response({ tenant_access_token: 'token-1', expire: 7200 }),
+      response({ data: { items: [{ record_id: 'rec-1' }], has_more: true, page_token: 'p2' } }),
+      response({ data: { items: [{ record_id: 'rec-2' }], has_more: false } }),
+    ])
+    const filter = { conjunction: 'and', conditions: [{ field_name: '客户ID', operator: 'is', value: ['CUS-1'] }] }
+    await expect(gateway.searchRecords('tbl-customers', filter)).resolves.toEqual([{ record_id: 'rec-1' }, { record_id: 'rec-2' }])
+    expect(calls).toHaveLength(3)
+    expect(String(calls[1].url)).toContain('/records/search')
+    expect(JSON.parse(calls[1].request.body)).toMatchObject({ filter, page_size: 500 })
+    expect(JSON.parse(calls[2].request.body)).toMatchObject({ page_token: 'p2' })
+  })
+})
