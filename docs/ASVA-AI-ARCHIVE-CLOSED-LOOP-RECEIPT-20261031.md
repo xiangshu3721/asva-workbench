@@ -4,7 +4,7 @@
 - 架构选择：**A — 独立普通云函数 worker `asva-ai-archive`**（个人版可建；异步 SCF Invoke Event；无固定升配；勿开预置并发）
 - 起点 tip：`e3853c2c0f0dc8adbdedf6dfb96256d0e9b7aa89`
 - 分支：`fix/ai-archive-closed-loop-20261031`
-- **后端 tip SHA**：`748c96159297ca1e35c33dcf746b753ba5272ce9`
+- **后端 tip SHA**：`405016d0a9f2b14892f894373954a918708889d2`
 - **未部署、未写生产飞书、未批量恢复/改生产客户、未 merge dirty PR#54**
 
 ## 架构
@@ -105,7 +105,7 @@
 
 ## Git
 
-- 后端 tip：`748c96159297ca1e35c33dcf746b753ba5272ce9`
+- 后端 tip：`405016d0a9f2b14892f894373954a918708889d2`
 - 分支：`fix/ai-archive-closed-loop-20261031`
-- Draft PR：见 GitHub（本轮创建）
+- Draft PR：https://github.com/xiangshu3721/asva-workbench/pull/55 （draft，未 merge）
 - 前端：无
