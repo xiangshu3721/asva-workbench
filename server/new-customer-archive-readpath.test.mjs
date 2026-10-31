@@ -254,4 +254,59 @@ describe('new customer archive read path', () => {
     expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-other', '资料', 'CUSTOMER_SAVE')).toEqual({ status: 'DISABLED' })
     expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', SYNTH_CUSTOMER_ID, '资料', 'CUSTOMER_SAVE')).toMatchObject({ status: 'QUEUED' })
   })
+
+  it('scoped search unwraps Evidence confidence Text segments so isSnapshotEvidence can pass', async () => {
+    const { isSnapshotEvidence } = await import('../shared/profile-materialization.mjs')
+    table(state.tableIds.sourceRecords).set('rec-src', {
+      record_id: 'rec-src',
+      fields: fields('sourceRecords', {
+        source_id: 'SRC-CONF-1',
+        customer_id: SYNTH_CUSTOMER_ID,
+        subject_id: SYNTH_CUSTOMER_ID,
+        subject_type: 'PERSON',
+        source_type: 'TEXT_INPUT',
+        title: '客户补充资料',
+        raw_text: '职业目标是转行做产品经理',
+        processing_status: 'REVIEW_REQUIRED',
+        processing_version: '2',
+        source_version: '1',
+        last_batch_id: 'EXT-CONF-1',
+        uploaded_by: 'ADMIN-1',
+        source_role: 'ADMIN',
+      }),
+    })
+    table(state.tableIds.evidenceItems).set('rec-evd', {
+      record_id: 'rec-evd',
+      fields: fields('evidenceItems', {
+        evidence_id: 'EVD-CONF-1',
+        customer_id: SYNTH_CUSTOMER_ID,
+        subject_id: SYNTH_CUSTOMER_ID,
+        subject_type: 'PERSON',
+        source_id: 'SRC-CONF-1',
+        evidence_type: 'FACT',
+        semantic_kind: 'CURRENT_STATE',
+        field_key: 'career_goal',
+        standard_value: '"转行做产品经理"',
+        display_text: '职业目标是转行做产品经理',
+        source_excerpt: '职业目标是转行做产品经理',
+        confidence: '0.9',
+        review_status: 'PENDING_REVIEW',
+        extraction_batch_id: 'EXT-CONF-1',
+        content_source: 'UNKNOWN',
+        information_nature: 'PERSONAL_STATEMENT',
+        verification_status: 'SOURCE_SUPPORTED',
+        privacy_level: 'NORMAL',
+      }),
+    })
+    const repository = new FeishuRepository()
+    const database = await repository.loadCustomerScoped(SYNTH_CUSTOMER_ID, { force: true, scene: 'TEST_CONFIDENCE_UNWRAP' })
+    const evidence = database.evidenceItems.find((item) => item.id === 'EVD-CONF-1')
+    expect(evidence).toBeTruthy()
+    expect(evidence.confidence).toBe(0.9)
+    expect(Number.isNaN(evidence.confidence)).toBe(false)
+    expect(isSnapshotEvidence(evidence)).toBe(true)
+    const source = database.sourceRecords.find((item) => item.id === 'SRC-CONF-1')
+    expect(source?.processingVersion).toBe(2)
+    expect(source?.sourceVersion).toBe(1)
+  })
 })
