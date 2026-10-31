@@ -405,7 +405,7 @@ describe('automatic profile pending consistency', () => {
     expect(String(rowFields(rowFor(created.createdCustomerId))['备注'] || '')).toBe(situation)
   })
 
-  it('customer save returns before automatic queue work starts', async () => {
+  it('customer save best-effort kickoff times out instead of hanging when queue stalls', async () => {
     const repository = new FeishuRepository()
     let release
     const gate = new Promise((resolve) => { release = resolve })
@@ -418,10 +418,12 @@ describe('automatic profile pending consistency', () => {
       situation: '保存主链路不等待 AI',
       enrollments: [],
     }, '', { compactResponse: true })
-    expect(Date.now() - started).toBeLessThan(1500)
+    const elapsed = Date.now() - started
+    // Same-request kickoff awaits up to ~3500ms; a stalled queue must not block forever.
+    expect(elapsed).toBeLessThan(5000)
     expect(created.automaticProfile?.status).toBe('QUEUED')
-    expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
-    await new Promise((resolve) => setImmediate(resolve))
+    expect(created.automaticProfile?.kickoffStatus).toBe('BUDGET_EXCEEDED')
+    // During the budget wait, setImmediate must have started the queue.
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalled()
     release({ status: 'QUEUED', sourceId: 'SRC-FAST' })
   })
