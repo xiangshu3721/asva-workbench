@@ -20,7 +20,8 @@
   "deployment": {
     "performed": false,
     "environment": "none",
-    "reference": null
+    "reference": null,
+    "production_writes_performed": false
   },
   "blockers": [
     "这是示例回执，任务尚未批准或执行"
