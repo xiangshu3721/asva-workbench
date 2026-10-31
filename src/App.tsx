@@ -389,7 +389,7 @@ function WorkbenchApp() {
     setDatabase(cachedDatabase ?? null)
     setLoadError('')
     const forceRefresh = revision > 0
-    dataCache.load(dashboardKey, () => workbenchApi.customerDirectory(staffId), { ttlMs: DATABASE_TTL_MS, force: forceRefresh }).then((next) => { if (!cancelled) { setDatabase((current) => mergeDirectoryDatabase(current, next)); logAppPerformance('CUSTOMER_DIRECTORY_READY_MS', { duration_ms: Math.round(performance.now() - startedAt), from_cache: Boolean(cachedDatabase) }) } }).catch((error: Error) => { if (!cancelled && !dataCache.get<Database>(dashboardKey)) setLoadError(error.message) })
+    dataCache.load(dashboardKey, () => workbenchApi.customerDirectory(staffId), { ttlMs: DATABASE_TTL_MS, force: forceRefresh }).then((next) => { if (!cancelled) { setDatabase((current) => mergeDirectoryDatabase(current, next)); logAppPerformance('CUSTOMER_DIRECTORY_READY_MS', { duration_ms: Math.round(performance.now() - startedAt), from_cache: Boolean(cachedDatabase) }) } }).catch((error: Error) => { if (!cancelled && !dataCache.get<Database>(dashboardKey)) { setDatabase(emptyDirectoryDatabase(currentStaff)); setLoadError(error.message) } })
     void dataCache.load(basicDashboardCacheKey(staffId), () => workbenchApi.basicDashboard(staffId), { ttlMs: DASHBOARD_TTL_MS, force: forceRefresh }).catch(() => undefined)
     const prefetchMentors = () => { if (currentStaff.permissionRole === 'ADMIN') void dataCache.load(mentorCacheKey(staffId), () => workbenchApi.teamSnapshot(staffId), { ttlMs: MENTOR_TTL_MS }).catch(() => undefined) }
     const idleApi = window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void }
