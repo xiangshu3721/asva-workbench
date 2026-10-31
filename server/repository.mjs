@@ -3361,7 +3361,35 @@ export class FeishuRepository {
           const write = await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: evidence.contentSource, information_nature: evidence.informationNature, verification_status: evidence.verificationStatus, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, privacy_level: evidence.privacyLevel || 'NORMAL', privacy_meta_json: stage2Json(evidence.privacyMeta || {}), mentor_safe_text: evidence.mentorSafeText || evidence.displayText, created_at: now(), updated_at: now() })
           evidence._recordId = write?.record?.record_id || write?.record_id || ''
         } catch (error) {
-          throw Object.assign(error instanceof Error ? error : new Error('Evidence 批次写入失败'), { code: 'EVIDENCE_WRITE_FAILED', causeCode: processingErrorCode(error) })
+          // Preserve Feishu provider diagnostics before rewriting the domain code.
+          // Isolation/prod logs previously only kept EVIDENCE_WRITE_FAILED and lost
+          // providerCode/msg/requestId, which made 403 root-cause analysis impossible.
+          const causeCode = error?.causeCode || processingErrorCode(error)
+          const providerCode = error?.providerCode
+          const providerMessage = error?.providerMessage
+          const providerRequestId = error?.providerRequestId
+          const httpStatus = error?.httpStatus
+          console.error('[ASVA_EVIDENCE_WRITE_FAILED]', JSON.stringify({
+            source_id: sourceId,
+            evidence_id: evidence.id,
+            field_key: evidence.fieldKey || '',
+            table: config.feishu.tables.evidenceItems,
+            cause_code: causeCode,
+            normalized_error: error?.code || 'FEISHU_UNAVAILABLE',
+            http_status: httpStatus,
+            provider_code: providerCode,
+            provider_message: providerMessage,
+            provider_request_id: providerRequestId,
+            integration: error?.integrationContext || null,
+          }))
+          throw Object.assign(error instanceof Error ? error : new Error('Evidence 批次写入失败'), {
+            code: 'EVIDENCE_WRITE_FAILED',
+            causeCode,
+            providerCode,
+            providerMessage,
+            providerRequestId,
+            httpStatus,
+          })
         }
         createdEvidence.push(evidence)
       }

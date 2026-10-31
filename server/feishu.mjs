@@ -159,12 +159,15 @@ export function createFeishuGateway({
           if (timeout) metrics.timeoutCount += 1
           throw new FeishuUnavailableError(timeout ? '飞书请求超时' : '飞书网络请求暂时不可用', { code: timeout ? FEISHU_ERROR_CODES.TIMEOUT : FEISHU_ERROR_CODES.NETWORK, retryable: true, operation, attempt, customerId: context.customerId, entityType: context.entityType })
         }
-        const payload = await response.json().catch(() => null)
-        if (!response.ok || payload?.code) {
+        const rawText = await response.text().catch(() => '')
+        let payload = null
+        try { payload = rawText ? JSON.parse(rawText) : null } catch { payload = { msg: String(rawText || '').slice(0, 300), non_json_body: true } }
+        // Feishu success is HTTP 200 with code === 0. Any other provider code or non-2xx is an error.
+        if (!response.ok || (payload && payload.code !== undefined && Number(payload.code) !== 0)) {
           const normalized = normalizeProviderError({ status: response.status, providerCode: payload?.code, providerMessage: payload?.msg, operation })
           if (normalized.code === FEISHU_ERROR_CODES.RATE_LIMITED) metrics.rateLimitCount += 1
           if (normalized.code === FEISHU_ERROR_CODES.SERVER_ERROR) metrics.serverErrorCount += 1
-          throw new FeishuUnavailableError(normalized.message, { ...normalized, providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, operation, attempt, customerId: context.customerId, entityType: context.entityType })
+          throw new FeishuUnavailableError(normalized.message, { ...normalized, providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, operation, attempt, customerId: context.customerId, entityType: context.entityType, table: context.table })
         }
         metrics.successes += 1; recordSuccess(attempt)
         if (isWrite) logger.info?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ request_id: requestId(response, payload), operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, latency_ms: now() - startedAt, result: 'SUCCESS' }))
@@ -180,7 +183,7 @@ export function createFeishuGateway({
           if (existing) { metrics.duplicatePreventedCount += 1; logger.warn?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, result: 'DUPLICATE_PREVENTED' })); return { record: existing, idempotency_recovered: true } }
         }
         if (!canRetry) {
-          if (isWrite) logger.error?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, result: 'FAILED', normalized_error: error?.code || 'FEISHU_UNAVAILABLE', http_status: error?.httpStatus }))
+          if (isWrite) logger.error?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, result: 'FAILED', normalized_error: error?.code || 'FEISHU_UNAVAILABLE', http_status: error?.httpStatus, provider_code: error?.providerCode, provider_message: error?.providerMessage, provider_request_id: error?.providerRequestId }))
           throw error
         }
         metrics.retryCount += 1
