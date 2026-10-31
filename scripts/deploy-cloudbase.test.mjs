@@ -153,6 +153,6 @@ describe('AI archive deploy order and effective config', () => {
     expect(apiWriteIdx).toBeGreaterThan(workerIdx)
     expect(apiDeployIdx).toBeGreaterThan(apiWriteIdx)
     expect(source).toMatch(/writeFile\(path\.join\(tempDir, 'cloudbaserc\.json'\)/)
-    expect(source).toMatch(/--config', rcPath|--config', path\.join\(tempDir, 'cloudbaserc\.json'\)/)
+    expect(source).toMatch(/--config-file', rcPath|--config-file', path\.join\(tempDir, 'cloudbaserc\.json'\)/)
   })
 })

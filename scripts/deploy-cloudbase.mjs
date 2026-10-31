@@ -221,7 +221,7 @@ export async function deployProduction() {
     const functionsJsonStart = functionsOutput.indexOf('{')
     const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
     const hasExistingTarget = (functions.data || []).some((item) => item.name === functionName)
-    const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes', '--config', path.join(tempDir, 'cloudbaserc.json')]
+    const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes', '--config-file', path.join(tempDir, 'cloudbaserc.json')]
     if (hasExistingTarget) functionArgs.push('--force')
     functionArgs.push('--json')
     await run(tcb, functionArgs, tempDir)
@@ -298,14 +298,14 @@ export async function deployAiArchiveWorker({ tcb, envId: targetEnvId, envVariab
   const functionsJsonStart = functionsOutput.indexOf('{')
   const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
   const hasExistingTarget = (functions.data || []).some((item) => item.name === aiArchiveFunctionName)
-  // Ordinary Event function: do not pass --httpFn; pass --config so settings apply.
+  // Ordinary Event function: do not pass --httpFn; pass --config-file so settings apply.
   const functionArgs = [
     'fn', 'deploy', aiArchiveFunctionName,
     '--dir', workerDir,
     '--runtime', 'Nodejs20.19',
     '--install-dependency', 'false',
     '--yes',
-    '--config', rcPath,
+    '--config-file', rcPath,
   ]
   if (hasExistingTarget) functionArgs.push('--force')
   functionArgs.push('--json')
