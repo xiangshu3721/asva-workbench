@@ -147,8 +147,10 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ...(values.ASVA_AI_ARCHIVE_INVOKE_SECRET ? { ASVA_AI_ARCHIVE_INVOKE_SECRET: values.ASVA_AI_ARCHIVE_INVOKE_SECRET } : {}),
     ...(values.TENCENTCLOUD_SECRETID ? { TENCENTCLOUD_SECRETID: values.TENCENTCLOUD_SECRETID } : {}),
     ...(values.TENCENTCLOUD_SECRETKEY ? { TENCENTCLOUD_SECRETKEY: values.TENCENTCLOUD_SECRETKEY } : {}),
+    ...(values.TENCENTCLOUD_SESSIONTOKEN ? { TENCENTCLOUD_SESSIONTOKEN: values.TENCENTCLOUD_SESSIONTOKEN } : {}),
     ...(values.CLOUDBASE_SECRET_ID ? { CLOUDBASE_SECRET_ID: values.CLOUDBASE_SECRET_ID } : {}),
     ...(values.CLOUDBASE_SECRET_KEY ? { CLOUDBASE_SECRET_KEY: values.CLOUDBASE_SECRET_KEY } : {}),
+    ...(values.CLOUDBASE_SESSIONTOKEN ? { CLOUDBASE_SESSIONTOKEN: values.CLOUDBASE_SESSIONTOKEN } : {}),
     ...(values.CLOUDBASE_APIKEY ? { CLOUDBASE_APIKEY: values.CLOUDBASE_APIKEY } : {}),
   }
 }
@@ -245,7 +247,8 @@ export async function deployProduction() {
  * First release checklist (manual; this script does not grant IAM):
  * 1) npm run build:cloudbase:ai-archive
  * 2) Deploy worker + asva-api with ASVA_DEPLOY_ENV_FILE
- * 3) Ensure asva-api runtime has TENCENTCLOUD_SECRETID/KEY (or CLOUDBASE_*) with SCF Invoke permission on asva-ai-archive
+ * 3) Ensure asva-api runtime has TENCENTCLOUD_SECRETID/KEY with SCF Invoke permission on asva-ai-archive
+ *    Temporary STS from `tcb secrets get` also needs TENCENTCLOUD_SESSIONTOKEN (short-lived canary only)
  * 4) Set ASVA_AI_ARCHIVE_INVOKE_MODE=event and matching ASVA_AI_ARCHIVE_INVOKE_SECRET on both functions
  * 5) Do NOT enable provisioned concurrency
  * Memory default 512 to match live asva-api strategy. Timeout 120s for AI+Feishu budget.

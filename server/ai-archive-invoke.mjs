@@ -2,6 +2,8 @@
  * Async AI archive worker invoke.
  * Production: SCF Invoke InvocationType=Event (detaches from asva-api HTTP lifecycle).
  * Local/mock: runs the worker handler in-process (test double for Event invoke).
+ * Runtime needs TENCENTCLOUD_SECRETID/KEY (long-term CAM or temporary STS).
+ * Temporary STS also needs TENCENTCLOUD_SESSIONTOKEN (X-TC-Token). Deploy-time tcb login alone is not enough.
  * Never expose credentials to the frontend; only asva-api / worker use this module.
  */
 import crypto from 'node:crypto'
@@ -33,8 +35,10 @@ export function aiArchiveEnvId() {
 function credentials() {
   const secretId = env('TENCENTCLOUD_SECRETID', env('CLOUDBASE_SECRET_ID'))
   const secretKey = env('TENCENTCLOUD_SECRETKEY', env('CLOUDBASE_SECRET_KEY'))
+  // Temporary STS (tcb login / tcb secrets get) requires X-TC-Token; long-term CAM keys leave this empty.
+  const sessionToken = env('TENCENTCLOUD_SESSIONTOKEN', env('CLOUDBASE_SESSIONTOKEN'))
   const apiKey = env('CLOUDBASE_APIKEY')
-  return { secretId, secretKey, apiKey }
+  return { secretId, secretKey, sessionToken, apiKey }
 }
 
 function sha256Hex(payload) {
@@ -128,7 +132,7 @@ export function buildScfInvokeRequestBody({ functionName, namespace, clientConte
 
 /** SCF Invoke with InvocationType=Event — returns as soon as the event is accepted. */
 export async function invokeScfEvent({ functionName, namespace, payload, qualifier = '$LATEST' }) {
-  const { secretId, secretKey } = credentials()
+  const { secretId, secretKey, sessionToken } = credentials()
   if (!secretId || !secretKey) {
     throw Object.assign(new Error('缺少腾讯云密钥，无法异步 Invoke AI 归档 worker'), { code: 'AI_ARCHIVE_INVOKE_CREDENTIALS_MISSING' })
   }
@@ -144,17 +148,19 @@ export async function invokeScfEvent({ functionName, namespace, payload, qualifi
     qualifier,
   }))
   const authorization = tc3Sign({ secretId, secretKey, service, host, action, payload: requestPayload, timestamp })
+  const headers = {
+    Authorization: authorization,
+    'Content-Type': 'application/json; charset=utf-8',
+    Host: host,
+    'X-TC-Action': action,
+    'X-TC-Timestamp': String(timestamp),
+    'X-TC-Version': '2018-04-16',
+    'X-TC-Region': env('TENCENTCLOUD_REGION', 'ap-shanghai'),
+  }
+  if (sessionToken) headers['X-TC-Token'] = sessionToken
   const response = await httpsJsonRequest({
     hostname: host,
-    headers: {
-      Authorization: authorization,
-      'Content-Type': 'application/json; charset=utf-8',
-      Host: host,
-      'X-TC-Action': action,
-      'X-TC-Timestamp': String(timestamp),
-      'X-TC-Version': '2018-04-16',
-      'X-TC-Region': env('TENCENTCLOUD_REGION', 'ap-shanghai'),
-    },
+    headers,
     body: requestPayload,
     timeoutMs: Number(env('ASVA_AI_ARCHIVE_INVOKE_TIMEOUT_MS', '5000')) || 5000,
   })

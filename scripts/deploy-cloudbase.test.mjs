@@ -156,3 +156,21 @@ describe('AI archive deploy order and effective config', () => {
     expect(source).toMatch(/--config-file', rcPath|--config-file', path\.join\(tempDir, 'cloudbaserc\.json'\)/)
   })
 })
+
+describe('temporary STS session token forwarding', () => {
+  it('forwards TENCENTCLOUD_SESSIONTOKEN for temporary STS canary credentials', () => {
+    const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'true' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'canary' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
+    values.ASVA_DEPLOY_MODE = 'canary'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY = 'true'
+    values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS = 'CUS-SYNTH-1'
+    values.FEISHU_AUTH_CREDENTIALS_TABLE_ID = 'tbl-auth'
+    values.TENCENTCLOUD_SECRETID = 'AKIDtmp'
+    values.TENCENTCLOUD_SECRETKEY = 'tmpSecret'
+    values.TENCENTCLOUD_SESSIONTOKEN = 'tmpToken'
+    values.ASVA_AI_ARCHIVE_INVOKE_SECRET = 'invoke-secret'
+    const env = buildProductionEnvVariables(values, { releaseCounter: 1, releasePatch: 0, gitCommit: 'abc', gitBranch: 'main', buildTime: 't' })
+    expect(env.TENCENTCLOUD_SESSIONTOKEN).toBe('tmpToken')
+    expect(env.TENCENTCLOUD_SECRETID).toBe('AKIDtmp')
+  })
+})
+
