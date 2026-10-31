@@ -63,10 +63,9 @@ function fieldStatusLabel(fieldMeta, evidenceItems) {
   const source = fieldMeta?.source
   if (fieldMeta?.confirmed === false) {
     if (source === 'AI_INFERENCE') return 'AI推断 · 待验证'
-    if (source === 'AI_EXTRACTED') return 'AI整理 · 待核实'
     if (source === 'MENTOR_OBSERVATION') return '导师观察 · 待核实'
     if (source === 'MENTOR_FACTUAL_INPUT') return '导师记录 · 待核实'
-    return 'AI整理 · 待核实'
+    return '待核实'
   }
   if (evidenceItems.length) {
     if (source === 'AI_EXTRACTED_CONFIRMED') return 'AI提取 · 人工确认'
