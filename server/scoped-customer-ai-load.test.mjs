@@ -3,7 +3,8 @@ import { contentHash } from '../shared/evidence-contract.mjs'
 import { writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 
-const EVIDENCE_DIR = '/Users/xiangshu/Troublehut/_verify/asva-scoped-load-fix-20261031'
+const EVIDENCE_DIR = process.env.ASVA_SCOPED_P0_EVIDENCE_DIR
+  || (process.env.HOME ? `${process.env.HOME}/Troublehut/_verify/asva-scoped-load-p0-20261031` : path.resolve('_verify/asva-scoped-load-p0-20261031'))
 
 const state = vi.hoisted(() => ({
   tableIds: {
@@ -409,5 +410,142 @@ describe('scoped customer AI load (isolation)', () => {
       expect(db.sourceRecords).toHaveLength(1)
       expect(db.evidenceItems).toHaveLength(1)
     }
+  })
+
+  it('createCustomer entry auto-kickoff creates Source without calling queue directly', async () => {
+    // Seed only staff + empty related tables; createCustomer writes the customer itself.
+    put(state.tableIds.staff, 'rec-admin', fields('staff', {
+      staff_id: 'ADMIN-1', nickname: '管理员', permission_role: 'ADMIN', status: 'ACTIVE', login_enabled: true, phone: '13800000000',
+    }))
+    const repository = new FeishuRepository({
+      authRepository: {},
+      evidenceExtractor: async () => [{
+        evidence_type: 'FACT',
+        field_key: 'current_goal',
+        value: '提升表达能力',
+        display_text: '提升表达能力',
+        source_excerpt: '希望提升表达能力',
+        locator: { char_start: 0, char_end: 8 },
+        confidence: 0.9,
+        semantic_kind: 'GOAL',
+        content_source: 'STAFF_REPORTED',
+        information_nature: 'OBSERVED_FACT',
+        verification_status: 'UNVERIFIED',
+        review_status: 'PENDING_REVIEW',
+      }],
+    })
+    // Keep processSource off the save path so this test isolates SOURCE_CREATED durability.
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    const situation = '入口测试客户：希望提升表达能力，近期工作压力较大。'
+    const startedAt = Date.now()
+    const created = await repository.createCustomer('ADMIN-1', {
+      operationId: `op-entry-${Date.now()}`,
+      nickname: '入口测试客户',
+      phone: '13900001111',
+      wechat: '',
+      introducer: '',
+      situation,
+      enrollments: [],
+    }, '', { compactResponse: true })
+    const createMs = Date.now() - startedAt
+    const customerId = created.createdCustomerId || created.id
+    expect(customerId).toBeTruthy()
+    expect(created.automaticProfile?.status).toBe('QUEUED')
+    expect(['DONE', 'BUDGET_EXCEEDED', 'FAILED', 'MISSING']).toContain(created.automaticProfile?.kickoffStatus)
+
+    const sources = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+    if (created.automaticProfile?.kickoffStatus === 'DONE') {
+      expect(sources.length).toBeGreaterThanOrEqual(1)
+      expect(created.automaticProfile.sourceId).toBeTruthy()
+    } else {
+      // Budget exceeded: durable pending must remain and maybeResume must pick it up.
+      const customerRow = [...table(state.tableIds.customers).values()].find((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+      const meta = JSON.parse(String(rowFields(customerRow)['档案字段元数据'] || '{}'))
+      expect(meta._automatic_profile_pending?.contentHash).toBeTruthy()
+      const resumed = await repository.maybeResumeAutomaticCustomerProfile('ADMIN-1', customerId)
+      expect(['SOURCE_CREATED', 'PROCESSING', 'COMPLETED', 'REVIEW_REQUIRED', 'QUEUED']).toContain(resumed.status)
+      const sourcesAfterResume = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+      expect(sourcesAfterResume.length).toBeGreaterThanOrEqual(1)
+    }
+
+    // Idempotent: resume / second queue must not create a duplicate source for same text.
+    const before = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length
+    await repository.maybeResumeAutomaticCustomerProfile('ADMIN-1', customerId)
+    const after = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length
+    expect(after).toBe(before)
+
+    await mkdir(EVIDENCE_DIR, { recursive: true })
+    await writeFile(path.join(EVIDENCE_DIR, 'create-customer-entry-kickoff.json'), JSON.stringify({
+      customerId,
+      automaticProfile: created.automaticProfile,
+      createMs,
+      sourceCount: [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length,
+    }, null, 2))
+  })
+
+  it('processSource query budget stays far below per-stage x6 explosion', async () => {
+    const customerId = 'CUS-BUDGET-1'
+    const notes = '查询预算客户：希望改善睡眠质量，最近压力偏大。'
+    seedProductionScale({ targetCustomerId: customerId, targetNotes: notes, customerCount: 400 })
+    for (const [recordId, row] of [...table(state.tableIds.sourceRecords).entries()]) {
+      if (String(rowFields(row)['客户ID'] || '') === customerId) table(state.tableIds.sourceRecords).delete(recordId)
+    }
+    for (const [recordId, row] of [...table(state.tableIds.evidenceItems).entries()]) {
+      if (String(rowFields(row)['客户ID'] || '') === customerId) table(state.tableIds.evidenceItems).delete(recordId)
+    }
+
+    const repository = new FeishuRepository({
+      authRepository: {},
+      evidenceExtractor: async () => [{
+        evidence_type: 'FACT',
+        field_key: 'current_core_issue',
+        value: '压力偏大',
+        display_text: '压力偏大',
+        source_excerpt: '最近压力偏大',
+        locator: { char_start: notes.indexOf('最近压力偏大'), char_end: notes.indexOf('最近压力偏大') + '最近压力偏大'.length },
+        confidence: 0.92,
+        semantic_kind: 'ISSUE',
+        content_source: 'STAFF_REPORTED',
+        information_nature: 'OBSERVED_FACT',
+        verification_status: 'UNVERIFIED',
+        review_status: 'PENDING_REVIEW',
+      }],
+    })
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    const queued = await repository.queueAutomaticCustomerProfile('ADMIN-1', customerId, notes, 'CUSTOMER_SAVE')
+    expect(queued.status).toBe('QUEUED')
+
+    state.listCalls = []
+    state.searchCalls = []
+    const startedAt = Date.now()
+    const processed = await repository.processSource('ADMIN-1', queued.sourceId)
+    const durationMs = Date.now() - startedAt
+    const summary = summarizeCalls()
+    const totalQueries = summary.listCallCount + summary.searchCallCount
+
+    expect(['COMPLETED', 'REVIEW_REQUIRED']).toContain(processed.source.processingStatus)
+    // Without scoped cache, force load x ~5 stages x ~6 tables ≈ 30+. Budget must stay well below that.
+    // Current measured steady state is ~22 with partial dirty refresh + staff cache.
+    expect(totalQueries).toBeLessThanOrEqual(24)
+    expect(totalQueries).toBeLessThan(30)
+    expect(summary.totalDistinctTables.length).toBeLessThan(11)
+    expect(durationMs).toBeLessThan(60_000)
+
+    await mkdir(EVIDENCE_DIR, { recursive: true })
+    await writeFile(path.join(EVIDENCE_DIR, 'process-source-query-budget.json'), JSON.stringify({
+      sourceId: queued.sourceId,
+      processStatus: processed.source.processingStatus,
+      durationMs,
+      totalQueries,
+      listCallCount: summary.listCallCount,
+      searchCallCount: summary.searchCallCount,
+      listTables: summary.listTables,
+      searchTables: summary.searchTables,
+      totalDistinctTables: summary.totalDistinctTables,
+      budgetLimit: 24,
+      uncachedExplosionEstimate: 30,
+    }, null, 2))
   })
 })

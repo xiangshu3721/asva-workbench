@@ -135,7 +135,9 @@ export function createFeishuGateway({
     assertConfigured(); ensureCircuit()
     const operation = context.operation || options.method || 'GET'
     const method = String(options.method || 'GET').toUpperCase()
-    const isWrite = !['GET', 'HEAD'].includes(method)
+    // records/search is POST but read-only; keep write logs/idempotency for true mutations only.
+    const readOnlyOperations = new Set(['search_records', 'list_records', 'list_fields', 'list_tables', 'get_record'])
+    const isWrite = !['GET', 'HEAD'].includes(method) && !readOnlyOperations.has(operation)
     const retryEnabled = context.retry !== false
     const operationId = context.operationId || options.operationId
     const isCreateRecord = method === 'POST' && context.table && operationId && (operation === 'create_record' || operation.endsWith('.create'))
