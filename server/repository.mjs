@@ -881,6 +881,11 @@ function mapAutomaticProfileStageFromSource(source) {
   return 'SOURCE_CREATED'
 }
 
+/** Durable resume signal independent of pending / in-memory Set: UPLOADED or recoverable FAILED auto-profile Source. */
+function customerHasRecoverableAutomaticProfileSource(sourceRecords, customerId) {
+  return (sourceRecords || []).some((source) => source.customerId === customerId && isAutomaticProfileSource(source) && shouldAutoRecoverSource(source))
+}
+
 function automaticProfileArchivingAllowedForCustomer(customerId) {
   if (!config.features.automaticProfileArchiving) return false
   if (config.features.automaticProfileArchivingMode === 'canary' || config.features.automaticProfileArchivingCanary) return config.features.automaticProfileCanaryCustomerIds.has(text(customerId))
@@ -1038,7 +1043,9 @@ export class FeishuRepository {
     setImmediate(() => {
       this.queueAutomaticCustomerProfile(actorId, customerId, normalizedText, reason)
         .then((result) => {
-          if (result?.status === 'QUEUED' && result?.sourceId) this.instancePendingAutoProfiles.delete(customerId)
+          // Keep instancePending until processSource/resume clears it. Deleting here
+          // after SOURCE_CREATED alone recreated the UPLOADED+pending-cleared dead corner
+          // when the process setImmediate never ran.
           resolveJob(result)
         })
         .catch((error) => {
@@ -1050,7 +1057,7 @@ export class FeishuRepository {
     return { status: 'QUEUED' }
   }
 
-  async awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs = 3500 } = {}) {
+  async awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs = 2000 } = {}) {
     const job = this.localAutoProfileJobs.get(customerId)
     if (!job?.promise) return { status: 'MISSING' }
     let timer
@@ -1558,14 +1565,33 @@ export class FeishuRepository {
           .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', requestedCustomerId, resolvedActorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
       }
       const stage = mapAutomaticProfileStageFromSource(existingSource)
-      if (['SOURCE_CREATED', 'PROCESSING', 'FAILED'].includes(stage) && !hasReachedAutoRetryCap(existingSource) && !isNonRetryableAutoProcessingError(existingSource.processingError)) {
-        this.scheduleAutomaticProcessing(resolvedActorId, existingSource.id)
-        return {
-          status: stage === 'FAILED' ? 'PROCESSING' : stage,
-          customerId: requestedCustomerId,
-          sourceId: existingSource.id,
-          reused: true,
-          scheduledProcessing: true,
+      // Await processSource (same work as POST /api/sources/:id/process) so a stuck
+      // UPLOADED/FAILED Source cannot stop at SOURCE_CREATED after pending was cleared.
+      // setImmediate-only scheduling is not durable across CloudBase freeze.
+      if (shouldAutoRecoverSource(existingSource)) {
+        try {
+          const processed = await this.processSource(resolvedActorId, existingSource.id)
+          const finalStage = mapAutomaticProfileStageFromSource(processed?.source || existingSource)
+          this.instancePendingAutoProfiles.delete(requestedCustomerId)
+          return {
+            status: finalStage,
+            customerId: requestedCustomerId,
+            sourceId: existingSource.id,
+            reused: true,
+            processed: true,
+            scheduledProcessing: false,
+          }
+        } catch (error) {
+          this.audit('PROCESS_SOURCE_AUTOMATIC', existingSource.id, resolvedActorId, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')
+          return {
+            status: 'FAILED',
+            customerId: requestedCustomerId,
+            sourceId: existingSource.id,
+            reused: true,
+            processed: false,
+            scheduledProcessing: false,
+            errorCode: error?.code || 'AUTO_PROCESSING_FAILED',
+          }
         }
       }
       return {
@@ -1573,6 +1599,7 @@ export class FeishuRepository {
         customerId: requestedCustomerId,
         sourceId: existingSource.id,
         reused: true,
+        processed: false,
         scheduledProcessing: false,
       }
     }
@@ -1585,12 +1612,39 @@ export class FeishuRepository {
     }
     const queued = await this.queueAutomaticCustomerProfile(resolvedActorId, requestedCustomerId, recoveredText, reason)
     if (queued.status === 'QUEUED') {
-      return {
-        status: 'SOURCE_CREATED',
-        customerId: requestedCustomerId,
-        sourceId: queued.sourceId,
-        reused: Boolean(queued.reused),
-        scheduledProcessing: true,
+      if (!queued.sourceId) {
+        return {
+          status: 'SOURCE_CREATED',
+          customerId: requestedCustomerId,
+          sourceId: null,
+          reused: Boolean(queued.reused),
+          processed: false,
+          scheduledProcessing: true,
+        }
+      }
+      try {
+        const processed = await this.processSource(resolvedActorId, queued.sourceId)
+        const finalStage = mapAutomaticProfileStageFromSource(processed?.source || { processingStatus: 'UPLOADED' })
+        this.instancePendingAutoProfiles.delete(requestedCustomerId)
+        return {
+          status: finalStage,
+          customerId: requestedCustomerId,
+          sourceId: queued.sourceId,
+          reused: Boolean(queued.reused),
+          processed: true,
+          scheduledProcessing: false,
+        }
+      } catch (error) {
+        this.audit('PROCESS_SOURCE_AUTOMATIC', queued.sourceId, resolvedActorId, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')
+        return {
+          status: 'FAILED',
+          customerId: requestedCustomerId,
+          sourceId: queued.sourceId,
+          reused: Boolean(queued.reused),
+          processed: false,
+          scheduledProcessing: false,
+          errorCode: error?.code || 'AUTO_PROCESSING_FAILED',
+        }
       }
     }
     if (queued.status === 'PENDING') {
@@ -1864,9 +1918,15 @@ export class FeishuRepository {
     const visibleDatabase = scope(database, actorId)
     const customer = visibleDatabase.customers.find((item) => item.id === customerId)
     if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    // Single-customer auto resume: if durable pending remains (e.g. prior setImmediate lost
-    // after CloudBase freeze), kick recover without restoring 11-table / 30s scanners.
-    if (customer.automaticProfilePending?.contentHash || this.instancePendingAutoProfiles.has(customerId)) {
+    // Single-customer auto resume — independent of pending:
+    // Source=UPLOADED / recoverable FAILED stays durable on SourceRecords even after
+    // clearAutomaticProfilePending + instancePending delete (CloudBase freeze gap).
+    // Do not restore 11-table / 30s scanners.
+    if (
+      customer.automaticProfilePending?.contentHash
+      || this.instancePendingAutoProfiles.has(customerId)
+      || customerHasRecoverableAutomaticProfileSource(visibleDatabase.sourceRecords, customerId)
+    ) {
       void this.maybeResumeAutomaticCustomerProfile(actorId, customerId)
     }
     const actor = database.staff.find((item) => item.id === actorId)
@@ -2568,7 +2628,7 @@ export class FeishuRepository {
       // Await briefly so CloudBase can finish createSource before the instance freezes;
       // never fail the save if the budget is exceeded — single-customer resume continues later.
       if (automaticProfile.status === 'QUEUED') {
-        const kickoff = await this.awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs: 3500 })
+        const kickoff = await this.awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs: 2000 })
         automaticProfile.kickoffStatus = kickoff.status
         if (kickoff.status === 'DONE' && kickoff.value?.sourceId) {
           automaticProfile.sourceId = kickoff.value.sourceId

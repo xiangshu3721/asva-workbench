@@ -5,6 +5,8 @@ import path from 'node:path'
 
 const EVIDENCE_DIR = process.env.ASVA_SCOPED_P0_EVIDENCE_DIR
   || (process.env.HOME ? `${process.env.HOME}/Troublehut/_verify/asva-scoped-load-p0-20261031` : path.resolve('_verify/asva-scoped-load-p0-20261031'))
+const UPLOADED_RESUME_EVIDENCE_DIR = process.env.ASVA_UPLOADED_RESUME_P0_EVIDENCE_DIR
+  || (process.env.HOME ? `${process.env.HOME}/Troublehut/_verify/asva-uploaded-resume-p0-20261031` : path.resolve('_verify/asva-uploaded-resume-p0-20261031'))
 
 const state = vi.hoisted(() => ({
   tableIds: {
@@ -275,7 +277,7 @@ describe('scoped customer AI load (isolation)', () => {
         review_status: 'PENDING_REVIEW',
       }],
     })
-    // Disable background setImmediate racing; call process explicitly after recover.
+    // Disable background setImmediate racing; recover now awaits processSource itself.
     repository.scheduleAutomaticProcessing = vi.fn()
 
     state.listCalls = []
@@ -285,22 +287,15 @@ describe('scoped customer AI load (isolation)', () => {
     const recoverMs = Date.now() - startedAt
     const recoverSummary = summarizeCalls()
 
-    expect(recovered.status).toBe('SOURCE_CREATED')
+    // Must not stop at SOURCE_CREATED — recover awaits processSource to a terminal archive state.
+    expect(['COMPLETED', 'REVIEW_REQUIRED']).toContain(recovered.status)
     expect(recovered.sourceId).toBeTruthy()
-    expect(recovered.scheduledProcessing).toBe(true)
+    expect(recovered.processed).toBe(true)
+    expect(recovered.scheduledProcessing).toBe(false)
     expect(recoverSummary.totalDistinctTables.length).toBeLessThan(11)
     expect(recoverSummary.listTables.every((name) => name === 'staff')).toBe(true)
     expect(recoverSummary.searchTables).toContain('customers')
     expect(recoverSummary.searchTables).toContain('sourceRecords')
-
-    // SOURCE_CREATED is not final success — process to terminal state.
-    state.listCalls = []
-    state.searchCalls = []
-    const processed = await repository.processSource('ADMIN-1', recovered.sourceId)
-    const processSummary = summarizeCalls()
-    expect(['COMPLETED', 'REVIEW_REQUIRED']).toContain(processed.source.processingStatus)
-    expect(processSummary.totalDistinctTables.length).toBeLessThan(11)
-    expect(processSummary.listTables.every((name) => name === 'staff')).toBe(true)
 
     const sources = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
     const evidence = [...table(state.tableIds.evidenceItems).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
@@ -312,8 +307,7 @@ describe('scoped customer AI load (isolation)', () => {
       recover: recovered,
       recoverMs,
       recoverSummary,
-      processSummary,
-      processStatus: processed.source.processingStatus,
+      processStatus: recovered.status,
       sourceCount: sources.length,
       evidenceCount: evidence.length,
     }, null, 2))
@@ -464,7 +458,9 @@ describe('scoped customer AI load (isolation)', () => {
       const meta = JSON.parse(String(rowFields(customerRow)['档案字段元数据'] || '{}'))
       expect(meta._automatic_profile_pending?.contentHash).toBeTruthy()
       const resumed = await repository.maybeResumeAutomaticCustomerProfile('ADMIN-1', customerId)
-      expect(['SOURCE_CREATED', 'PROCESSING', 'COMPLETED', 'REVIEW_REQUIRED', 'QUEUED']).toContain(resumed.status)
+      expect(['SOURCE_CREATED', 'PROCESSING', 'COMPLETED', 'REVIEW_REQUIRED', 'QUEUED', 'FAILED']).toContain(resumed.status)
+      // SOURCE_CREATED alone is not success when resume processed a stuck source.
+      if (resumed.processed) expect(['COMPLETED', 'REVIEW_REQUIRED']).toContain(resumed.status)
       const sourcesAfterResume = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
       expect(sourcesAfterResume.length).toBeGreaterThanOrEqual(1)
     }
@@ -481,6 +477,83 @@ describe('scoped customer AI load (isolation)', () => {
       automaticProfile: created.automaticProfile,
       createMs,
       sourceCount: [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length,
+    }, null, 2))
+  })
+
+
+  it('UPLOADED Source with pending cleared still resumes to Evidence (CloudBase freeze dead corner)', async () => {
+    // Simulate: Source persisted, clearAutomaticProfilePending done, process setImmediate lost / instance restarted.
+    const customerId = 'CUS-UPLOADED-STUCK'
+    const notes = '死角恢复客户：希望提升表达能力，近期工作压力较大，需要结构化整理。'
+    seedProductionScale({ targetCustomerId: customerId, targetNotes: notes, customerCount: 80 })
+    for (const [recordId, row] of [...table(state.tableIds.sourceRecords).entries()]) {
+      if (String(rowFields(row)['客户ID'] || '') === customerId) table(state.tableIds.sourceRecords).delete(recordId)
+    }
+    for (const [recordId, row] of [...table(state.tableIds.evidenceItems).entries()]) {
+      if (String(rowFields(row)['客户ID'] || '') === customerId) table(state.tableIds.evidenceItems).delete(recordId)
+    }
+
+    const repository = new FeishuRepository({
+      authRepository: {},
+      evidenceExtractor: async () => [{
+        evidence_type: 'FACT',
+        field_key: 'current_goal',
+        value: '提升表达能力',
+        display_text: '提升表达能力',
+        source_excerpt: '希望提升表达能力',
+        locator: { char_start: notes.indexOf('希望提升表达能力'), char_end: notes.indexOf('希望提升表达能力') + '希望提升表达能力'.length },
+        confidence: 0.91,
+        semantic_kind: 'GOAL',
+        content_source: 'STAFF_REPORTED',
+        information_nature: 'OBSERVED_FACT',
+        verification_status: 'UNVERIFIED',
+        review_status: 'PENDING_REVIEW',
+      }],
+    })
+
+    // 1) Create Source only — swallow process scheduling (freeze before processSource).
+    repository.scheduleAutomaticProcessing = vi.fn()
+    const queued = await repository.queueAutomaticCustomerProfile('ADMIN-1', customerId, notes, 'CUSTOMER_SAVE')
+    expect(queued.status).toBe('QUEUED')
+    expect(queued.sourceId).toBeTruthy()
+
+    // 2) Force the dead corner: pending cleared, instance pending gone, Source stays UPLOADED, Evidence=0.
+    const customerRow = [...table(state.tableIds.customers).values()].find((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+    const meta = JSON.parse(String(rowFields(customerRow)['档案字段元数据'] || '{}'))
+    meta._automatic_profile_pending = null
+    customerRow.fields = { ...rowFields(customerRow), '档案字段元数据': JSON.stringify(meta) }
+    repository.instancePendingAutoProfiles.clear()
+    repository.localAutoProfileJobs.clear()
+    repository.automaticProfilePendingKeys.clear()
+
+    const sourceRow = [...table(state.tableIds.sourceRecords).values()].find((row) => String(rowFields(row)['资料ID'] || '') === queued.sourceId)
+    expect(sourceRow).toBeTruthy()
+    expect(String(rowFields(sourceRow)['处理状态'] || '')).toBe('UPLOADED')
+    expect([...table(state.tableIds.evidenceItems).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)).toHaveLength(0)
+
+    // 3) Old gate (pending-only) would no-op. New path: recover/maybeResume awaits processSource → Evidence.
+    const resumed = await repository.maybeResumeAutomaticCustomerProfile('ADMIN-1', customerId)
+    expect(resumed.processed).toBe(true)
+    expect(['COMPLETED', 'REVIEW_REQUIRED']).toContain(resumed.status)
+    expect(resumed.status).not.toBe('SOURCE_CREATED')
+    expect(resumed.sourceId).toBe(queued.sourceId)
+
+    const evidence = [...table(state.tableIds.evidenceItems).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+    expect(evidence.length).toBeGreaterThanOrEqual(1)
+
+    const profileDb = await repository.load({ force: true })
+    const customer = profileDb.customers.find((item) => item.id === customerId)
+    expect(customer.automaticProfilePending?.contentHash).toBeFalsy()
+
+    await mkdir(UPLOADED_RESUME_EVIDENCE_DIR, { recursive: true })
+    await writeFile(path.join(UPLOADED_RESUME_EVIDENCE_DIR, 'uploaded-pending-cleared-resume.json'), JSON.stringify({
+      customerId,
+      sourceId: queued.sourceId,
+      resumed,
+      evidenceCount: evidence.length,
+      pendingAfterClear: customer.automaticProfilePending || null,
+      finalStatus: resumed.status,
+      note: 'SOURCE_CREATED is not treated as success; Evidence + terminal archive required',
     }, null, 2))
   })
 
