@@ -20,9 +20,12 @@ describe('automatic processing recovery path isolation', () => {
     expect(repositorySource).not.toMatch(/setInterval\s*\(\s*\(\)\s*=>\s*\{\s*void this\.recoverAutomaticProcessing/)
     expect(repositorySource).not.toMatch(/AUTO_PROCESSING_INTERVAL_MS/)
     expect(repositorySource).toMatch(/startAutomaticProcessingRecovery\(\)\s*\{\s*\/\/ Periodic 11-table recovery was removed[\s\S]*?return\s*\}/)
-    expect(repositorySource).toMatch(/scheduleAutomaticProcessing\(actorId, sourceId\)/)
+    expect(repositorySource).toMatch(/scheduleAutomaticProcessing\(actorId, sourceId/)
     expect(repositorySource).toMatch(/DURABLE_RECOVERABLE/)
-    expect(repositorySource).toMatch(/setImmediate\(/)
+    expect(repositorySource).toMatch(/scheduleAiArchiveJob|enqueueAiArchiveJob/)
+    expect(repositorySource).toMatch(/asva-ai-archive|AI_ARCHIVE_WORKER/)
+    // Same-function void processSource after HTTP send is forbidden; worker owns process.
+    expect(indexSource).not.toMatch(/void repository\.processSource\(/)
   })
 
   it('exposes an ADMIN-guarded on-demand recovery route', () => {

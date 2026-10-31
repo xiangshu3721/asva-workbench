@@ -8,6 +8,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const envId = 'root-journey-prod-d4d7pzd0a8f805'
 const functionName = 'asva-api'
 const servicePath = 'asva-api'
+const aiArchiveFunctionName = 'asva-ai-archive'
+const aiArchiveFunctionDir = path.join(root, 'cloudbase/functions/asva-ai-archive')
 const serviceUrl = 'https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.com/asva-api'
 const functionDir = path.join(root, 'cloudbase/functions/asva-api')
 
@@ -139,8 +141,29 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ASVA_BUILD_TIME: buildMetadata.buildTime,
     HOST: '0.0.0.0',
     PORT: '9000',
+    ASVA_AI_ARCHIVE_FUNCTION_NAME: values.ASVA_AI_ARCHIVE_FUNCTION_NAME || 'asva-ai-archive',
+    ASVA_AI_ARCHIVE_INVOKE_MODE: values.ASVA_AI_ARCHIVE_INVOKE_MODE || 'event',
+    CLOUDBASE_ENV_ID: values.CLOUDBASE_ENV_ID || values.TCB_ENV_ID || 'root-journey-prod-d4d7pzd0a8f805',
+    ...(values.ASVA_AI_ARCHIVE_INVOKE_SECRET ? { ASVA_AI_ARCHIVE_INVOKE_SECRET: values.ASVA_AI_ARCHIVE_INVOKE_SECRET } : {}),
+    ...(values.TENCENTCLOUD_SECRETID ? { TENCENTCLOUD_SECRETID: values.TENCENTCLOUD_SECRETID } : {}),
+    ...(values.TENCENTCLOUD_SECRETKEY ? { TENCENTCLOUD_SECRETKEY: values.TENCENTCLOUD_SECRETKEY } : {}),
+    ...(values.CLOUDBASE_SECRET_ID ? { CLOUDBASE_SECRET_ID: values.CLOUDBASE_SECRET_ID } : {}),
+    ...(values.CLOUDBASE_SECRET_KEY ? { CLOUDBASE_SECRET_KEY: values.CLOUDBASE_SECRET_KEY } : {}),
+    ...(values.CLOUDBASE_APIKEY ? { CLOUDBASE_APIKEY: values.CLOUDBASE_APIKEY } : {}),
   }
 }
+
+export function buildAiArchiveEnvVariables(values, buildMetadata) {
+  const apiEnv = buildProductionEnvVariables(values, buildMetadata)
+  return {
+    ...apiEnv,
+    // Worker is Event-triggered; keep invoke mode local-disabled inside worker itself.
+    ASVA_AI_ARCHIVE_INVOKE_MODE: 'disabled',
+    HOST: '0.0.0.0',
+    PORT: '9001',
+  }
+}
+
 
 function run(command, args, cwd, environment = process.env) {
   return new Promise((resolve, reject) => {
@@ -205,11 +228,74 @@ export async function deployProduction() {
     const hasService = (services.data || []).some((item) => item.path === `/${servicePath}` && item.name === functionName)
     if (!hasService) await run(tcb, ['service', 'create', '--env-id', envId, '--service-path', servicePath, '--function', functionName, '--json'], root)
     console.log(`ASVA CloudBase API base: ${serviceUrl}`)
+
+    if (!process.argv.includes('--skip-ai-archive-worker')) {
+      await deployAiArchiveWorker({ tcb, envId, envVariables: buildAiArchiveEnvVariables(values, buildMetadata), tempDir })
+    } else {
+      console.log('Skipped asva-ai-archive worker deploy (--skip-ai-archive-worker)')
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
 }
 
+/**
+ * Deploy the Event worker used for AI archive closed loop.
+ * First release checklist (manual; this script does not grant IAM):
+ * 1) npm run build:cloudbase:ai-archive
+ * 2) Deploy worker + asva-api with ASVA_DEPLOY_ENV_FILE
+ * 3) Ensure asva-api runtime has TENCENTCLOUD_SECRETID/KEY (or CLOUDBASE_*) with SCF Invoke permission on asva-ai-archive
+ * 4) Set ASVA_AI_ARCHIVE_INVOKE_MODE=event and matching ASVA_AI_ARCHIVE_INVOKE_SECRET on both functions
+ * 5) Do NOT enable provisioned concurrency
+ * Memory default 512 to match live asva-api strategy. Timeout 120s for AI+Feishu budget.
+ */
+export async function deployAiArchiveWorker({ tcb, envId: targetEnvId, envVariables, tempDir }) {
+  const workerDir = aiArchiveFunctionDir
+  const workerRc = {
+    envId: targetEnvId,
+    functionRoot: path.dirname(workerDir),
+    functions: [{
+      name: aiArchiveFunctionName,
+      // Event / ordinary function (not HTTP)
+      handler: 'index.main',
+      runtime: 'Nodejs20.19',
+      timeout: 120,
+      memorySize: 512,
+      envVariables,
+    }],
+  }
+  await writeFile(path.join(tempDir, 'cloudbaserc.ai-archive.json'), JSON.stringify(workerRc, null, 2))
+  const functionsOutput = await runCapture(tcb, ['fn', 'list', '--env-id', targetEnvId, '--json'], root)
+  const functionsJsonStart = functionsOutput.indexOf('{')
+  const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
+  const hasExistingTarget = (functions.data || []).some((item) => item.name === aiArchiveFunctionName)
+  // Ordinary Event function: do not pass --httpFn
+  const functionArgs = ['fn', 'deploy', aiArchiveFunctionName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
+  if (hasExistingTarget) functionArgs.push('--force')
+  functionArgs.push('--json')
+  await run(tcb, functionArgs, tempDir)
+  console.log(`ASVA AI archive worker deployed: ${aiArchiveFunctionName} (Event, memory=512, timeout=120). Tip: deploy by tip SHA; do not merge dirty PR#54.`)
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  await deployProduction()
+  if (process.argv.includes('--worker-only')) {
+    if (!process.env.ASVA_DEPLOY_ENV_FILE) throw new Error('生产部署必须显式设置 ASVA_DEPLOY_ENV_FILE，禁止回退到仓库默认配置')
+    const envPath = path.resolve(process.env.ASVA_DEPLOY_ENV_FILE)
+    const values = parseEnv(await readFile(envPath, 'utf8'))
+    const buildMetadata = JSON.parse(await readFile(path.join(root, 'build-meta.json'), 'utf8'))
+    validateProductionEnv(values, envPath)
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'asva-cloudbase-worker-'))
+    try {
+      await deployAiArchiveWorker({
+        tcb: process.env.TCB_BIN || 'tcb',
+        envId,
+        envVariables: buildAiArchiveEnvVariables(values, buildMetadata),
+        tempDir,
+      })
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  } else {
+    await deployProduction()
+  }
 }

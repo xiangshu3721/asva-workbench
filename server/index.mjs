@@ -11,8 +11,9 @@ import { responseHeaders } from './cors.mjs'
 
 const repository = new FeishuRepository()
 // Do not run the 11-table recoverAutomaticProcessing scan on module load or via a
-// 30s timer. Event-driven scheduleAutomaticProcessing / scheduleAutomaticCustomerProfile
-// still archive on write. Pending markers are restored only via the admin on-demand route.
+// 30s timer. Customer save schedules an async Event worker (asva-ai-archive) via
+// scheduleAutomaticCustomerProfile; profile GET / admin recover remain resume兜底.
+// Pending markers stay durable on Customers until Source/Evidence settle.
 
 function send(request, response, statusCode, body, requestId) {
   if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|customers(?:\/directory|\/[^/]+\/detail)?|staff\/mentors)/.test(request.url || '')) {
@@ -164,18 +165,11 @@ async function handle(request, response, requestId) {
     const actor = await guard(request)
     const body = await readBody(request)
     const created = await repository.createCustomer(actor, body, requestId, { compactResponse })
-    // Save response first (≤8s budget). Kick off process as an independent continuation
-    // reusing POST /api/sources/:sourceId/process semantics (await processSource), so archival
-    // does not sit on the save critical path. Durable Source=UPLOADED + profile/admin resume
-    // cover CloudBase freeze before this continuation runs.
-    send(request, response, 201, created, requestId)
-    const sourceId = created?.automaticProfile?.sourceId
-    if (sourceId && created?.automaticProfile?.kickoffStatus === 'DONE') {
-      void repository.processSource(actor, sourceId).catch((error) => {
-        repository.audit?.('PROCESS_SOURCE_AUTOMATIC', sourceId, actor, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')
-      })
-    }
-    return
+    // Save returns immediately. AI archival is owned by the independent asva-ai-archive
+    // worker (async Event invoke from scheduleAutomaticCustomerProfile). Do NOT void
+    // processSource after send — same-function continuation is not durable across freeze.
+    // Fallback: GET profile / ADMIN recover-automatic-processing by customerId.
+    return send(request, response, 201, created, requestId)
   }
   const enrollmentRecovery = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)
   if (request.method === 'POST' && enrollmentRecovery) {

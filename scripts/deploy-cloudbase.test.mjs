@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, deployProduction, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
+import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, buildAiArchiveEnvVariables, deployProduction, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
 
 function validProductionValues() {
   const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'false' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'off' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
@@ -71,5 +71,19 @@ describe('CloudBase production deployment preflight', () => {
     expect(env.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT).toBe('')
     expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY).toBe('false')
     expect(env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS).toBe('')
+  })
+})
+
+describe('AI archive worker deploy helpers', () => {
+  it('builds worker env with invoke disabled inside the worker itself', () => {
+    const values = validProductionValues()
+    values.ASVA_AI_ARCHIVE_INVOKE_SECRET = 'secret-for-test'
+    values.TENCENTCLOUD_SECRETID = 'AKIDtest'
+    values.TENCENTCLOUD_SECRETKEY = 'secret'
+    const env = buildAiArchiveEnvVariables(values, { releaseCounter: 49, releasePatch: 0, gitCommit: 'tip', gitBranch: 'fix/ai-archive-closed-loop-20261031', buildTime: 'now' })
+    expect(env.ASVA_AI_ARCHIVE_FUNCTION_NAME).toBe('asva-ai-archive')
+    expect(env.ASVA_AI_ARCHIVE_INVOKE_MODE).toBe('disabled')
+    expect(env.ASVA_AI_ARCHIVE_INVOKE_SECRET).toBe('secret-for-test')
+    expect(JSON.stringify(env)).not.toContain('super-secret')
   })
 })

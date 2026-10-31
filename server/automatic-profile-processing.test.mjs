@@ -72,7 +72,7 @@ describe('automatic customer profile processing', () => {
 
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
     expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'DISABLED' })
-    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'QUEUED' })
+    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'QUEUED', workerScheduled: true })
     expect(repository.createSource).not.toHaveBeenCalled()
   })
 
@@ -108,7 +108,7 @@ describe('automatic customer profile processing', () => {
     let release
     repository.queueAutomaticCustomerProfile = vi.fn(() => new Promise((resolve) => { release = resolve }))
     const result = repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
-    expect(result).toEqual({ status: 'QUEUED' })
+    expect(result).toEqual({ status: 'QUEUED', workerScheduled: true })
     expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
     await new Promise((resolve) => setImmediate(resolve))
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
@@ -201,11 +201,12 @@ describe('automatic customer profile processing', () => {
     const recoverSpy = vi.spyOn(repository, 'recoverAutomaticProcessing')
 
     repository.startAutomaticProcessingRecovery()
-    repository.scheduleAutomaticProcessing('ADMIN-1', 'SRC-TIMER-1')
+    const scheduled = repository.scheduleAutomaticProcessing('ADMIN-1', 'SRC-TIMER-1')
     expect(repository.autoProcessingRecoveryTimer).toBeNull()
-
+    expect(scheduled.status).toBe('QUEUED')
+    // Worker invoke owns processing — same-instance processSource must not be scheduled via timers.
     await vi.runOnlyPendingTimersAsync()
-    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-TIMER-1')
+    expect(repository.processSource).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(120_000)
     expect(recoverSpy).not.toHaveBeenCalled()

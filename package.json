@@ -24,10 +24,11 @@
     "stage1:integration": "node scripts/stage1-integration-test.mjs",
     "stage0:write-test": "node scripts/stage0-write-test.mjs",
     "build": "npm run build:meta && tsc -p tsconfig.json --noEmit && vite build",
-    "build:cloudbase": "node scripts/build-cloudbase-function.mjs",
+    "build:cloudbase": "node scripts/build-cloudbase-function.mjs && node scripts/build-cloudbase-ai-archive.mjs",
     "deploy:cloudbase": "npm run build:meta && npm run build:cloudbase && node scripts/deploy-cloudbase.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:cloudbase:ai-archive": "node scripts/build-cloudbase-ai-archive.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

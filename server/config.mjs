@@ -59,6 +59,11 @@ export const config = {
   maxDocumentSizeMb: Number(value('MAX_DOCUMENT_SIZE_MB', '20')) || 20,
   frontendOrigin,
   corsAllowedOrigins,
+  aiArchive: {
+    functionName: value('ASVA_AI_ARCHIVE_FUNCTION_NAME', 'asva-ai-archive'),
+    invokeMode: value('ASVA_AI_ARCHIVE_INVOKE_MODE', ''),
+    envId: value('CLOUDBASE_ENV_ID', value('TCB_ENV_ID', 'root-journey-prod-d4d7pzd0a8f805')),
+  },
   features: {
     externalAppointment: value('FEATURE_EXTERNAL_APPOINTMENT', 'false') === 'true',
     automaticProfileArchiving: value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING', 'false') === 'true',

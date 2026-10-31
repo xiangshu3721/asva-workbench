@@ -21,6 +21,7 @@ import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
 import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
+import { scheduleAiArchiveJob, enqueueAiArchiveJob, aiArchiveInvokeMode } from './ai-archive-invoke.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
@@ -899,11 +900,15 @@ function automaticProfileEventAllowed(eventAt) {
   return Number.isFinite(enabledAt) && Number.isFinite(occurredAt) && occurredAt >= enabledAt
 }
 
-function automaticProfileStatus(sources, evidenceItems, customerId) {
+function automaticProfileStatus(sources, evidenceItems, customerId, customer = null) {
   const latest = (sources || [])
     .filter((source) => source.customerId === customerId && isAutomaticProfileSource(source))
     .sort((a, b) => String(b.occurredAt || b.uploadedAt || b.createdAt || '').localeCompare(String(a.occurredAt || a.uploadedAt || a.createdAt || '')))[0]
-  if (!latest) return 'NOT_STARTED'
+  if (!latest) {
+    // Durable pending without Source yet → 待处理 (frontend PENDING), not silent NOT_STARTED.
+    if (customer?.automaticProfilePending?.contentHash) return 'PENDING'
+    return 'NOT_STARTED'
+  }
   if (latest.processingStatus === 'UPLOADED' || latest.processingStatus === 'PROCESSING') return 'PROCESSING'
   if (latest.processingStatus === 'FAILED') return 'FAILED'
   if (latest.processingStatus === 'REVIEW_REQUIRED') return 'REVIEW_REQUIRED'
@@ -1013,12 +1018,26 @@ export class FeishuRepository {
     return
   }
 
-  scheduleAutomaticProcessing(actorId, sourceId) {
-    if (!config.features.automaticProfileArchiving) return
-    // DURABLE_RECOVERABLE: SourceRecords.processing_status (UPLOADED/PROCESSING/FAILED)
-    // plus /api/admin/recover-automatic-processing. setImmediate only accelerates the live path.
+  scheduleAutomaticProcessing(actorId, sourceId, { customerId = '', reason = 'PROCESS_SOURCE' } = {}) {
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
+    // DURABLE_RECOVERABLE: SourceRecords.processing_status + pending markers + profile/admin resume.
+    // Main path: async Event invoke of asva-ai-archive (or local worker double). Never void processSource after HTTP send.
     this.audit('SCHEDULE_AUTOMATIC_PROCESSING', sourceId, actorId, 'QUEUED')
-    setImmediate(() => { void this.processSource(actorId, sourceId).catch((error) => this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')) })
+    const scheduled = scheduleAiArchiveJob({
+      mode: sourceId ? 'process' : 'recover',
+      sourceId,
+      customerId,
+      actorId,
+      reason,
+    })
+    void scheduled.ack.then((result) => {
+      if (result?.status === 'FAILED' || result?.status === 'DISABLED') {
+        this.audit('SCHEDULE_AUTOMATIC_PROCESSING', sourceId, actorId, 'FAIL', result.errorCode || result.status || 'AI_ARCHIVE_INVOKE_FAILED')
+      } else {
+        this.audit('SCHEDULE_AUTOMATIC_PROCESSING', sourceId, actorId, 'SUCCESS')
+      }
+    })
+    return { status: 'QUEUED', invoke: scheduled }
   }
 
   scheduleAutomaticCustomerProfile(actorId, customerId, rawText, reason) {
@@ -1029,32 +1048,44 @@ export class FeishuRepository {
     if (this.automaticProfilePendingKeys.has(pendingKey)) return { status: 'QUEUED' }
     this.automaticProfilePendingKeys.add(pendingKey)
     // Durable marker is customers.profile_field_meta_json._automatic_profile_pending
-    // (written by ensureAutomaticProfilePending / save paths). Recover entry:
-    // recoverAutomaticCustomerProfile / maybeResumeAutomaticCustomerProfile.
-    // setImmediate still defers past customerWriteQueue holders (updateCustomer),
-    // but the Promise is tracked so createCustomer can best-effort await SOURCE_CREATED
-    // before the CloudBase instance freezes after the HTTP response.
+    // (written by ensureAutomaticProfilePending / save paths). Main execution path:
+    // async Event worker (asva-ai-archive) recover by customerId. Optional same-instance
+    // queue accelerates Source creation for kickoff status; worker remains authoritative.
     this.audit('SCHEDULE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'QUEUED')
     let resolveJob
     let rejectJob
     const jobPromise = new Promise((resolve, reject) => { resolveJob = resolve; rejectJob = reject })
     this.localAutoProfileJobs.set(customerId, { promise: jobPromise, startedAt: Date.now(), actorId, reason, pendingKey })
     this.instancePendingAutoProfiles.set(customerId, { actorId, reason, createdAt: Date.now(), contentHash: contentHash(normalizedText) })
+
+    const worker = scheduleAiArchiveJob({
+      mode: 'recover',
+      customerId,
+      actorId,
+      reason,
+    })
+    void worker.ack.then((result) => {
+      if (result?.status === 'FAILED') {
+        this.audit('AI_ARCHIVE_WORKER_INVOKE', customerId, actorId, 'FAIL', result.errorCode || 'AI_ARCHIVE_INVOKE_FAILED')
+        void this.stampAutomaticProfilePendingError(customerId, automaticProfilePendingMarker(normalizedText, actorId, reason), result.errorCode || 'AI_ARCHIVE_INVOKE_FAILED')
+          .catch((stampError) => this.audit('STAMP_AUTOMATIC_PROFILE_PENDING_ERROR', customerId, actorId, 'PENDING', stampError?.code || 'AUTO_PENDING_STAMP_FAILED'))
+      } else {
+        this.audit('AI_ARCHIVE_WORKER_INVOKE', customerId, actorId, 'SUCCESS')
+      }
+    })
+
+    // Best-effort same-instance Source ensure for kickoff/readback only.
+    // Processing is owned by the worker invoke above (or profile/admin resume兜底).
     setImmediate(() => {
       this.queueAutomaticCustomerProfile(actorId, customerId, normalizedText, reason)
-        .then((result) => {
-          // Keep instancePending until processSource/resume clears it. Deleting here
-          // after SOURCE_CREATED alone recreated the UPLOADED+pending-cleared dead corner
-          // when the process setImmediate never ran.
-          resolveJob(result)
-        })
+        .then((result) => resolveJob({ ...result, workerInvoke: 'SCHEDULED' }))
         .catch((error) => {
           this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'FAIL', error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
           rejectJob(error)
         })
         .finally(() => this.automaticProfilePendingKeys.delete(pendingKey))
     })
-    return { status: 'QUEUED' }
+    return { status: 'QUEUED', workerScheduled: true }
   }
 
   async awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs = 2000 } = {}) {
@@ -1514,13 +1545,16 @@ export class FeishuRepository {
       // clearAutomaticProfilePending now also requires a visible SourceRecords row.
       void this.clearAutomaticProfilePending(customerId, marker)
         .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
-      if (!['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) this.scheduleAutomaticProcessing(actorId, source.id)
+      // Do not schedule same-instance processSource here — worker Event invoke (or resume) owns AI.
+      if (!['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) {
+        this.scheduleAutomaticProcessing(actorId, source.id, { customerId, reason })
+      }
       return { status: 'QUEUED', sourceId: source.id }
     } catch (error) {
       if (error?.code === 'SOURCE_DUPLICATE' && error?.sourceId) {
         void this.clearAutomaticProfilePending(customerId, marker)
           .catch((clearError) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', clearError?.code || 'AUTO_PENDING_CLEAR_FAILED'))
-        this.scheduleAutomaticProcessing(actorId, error.sourceId)
+        this.scheduleAutomaticProcessing(actorId, error.sourceId, { customerId, reason })
         return { status: 'QUEUED', sourceId: error.sourceId, reused: true }
       }
       this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'PENDING', error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
@@ -1932,7 +1966,7 @@ export class FeishuRepository {
     const actor = database.staff.find((item) => item.id === actorId)
     const evidenceItems = profileMaterializationEvidence({ evidenceItems: visibleDatabase.evidenceItems, sourceRecords: visibleDatabase.sourceRecords, customer, actor })
     const profileMaterialization = materializeCustomerProfile({ customer, evidenceItems, summaryMeta: customer.aiSummaryMeta })
-    return publicCustomerProfile(customer, profileMaterialization, automaticProfileStatus(database.sourceRecords, database.evidenceItems, customer.id))
+    return publicCustomerProfile(customer, profileMaterialization, automaticProfileStatus(database.sourceRecords, database.evidenceItems, customer.id, customer))
   }
 
   async loadAfterWrite(writeResult, targetCustomerId, { allowMissingCustomerRetry = Boolean(writeResult && targetCustomerId) } = {}) {

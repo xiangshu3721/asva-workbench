@@ -4,6 +4,7 @@ dist
 .env.*
 !.env.example
 cloudbase/functions/asva-api/index.js
+cloudbase/functions/asva-ai-archive/index.js
 .DS_Store
 stage0-backup/
 stage1-backup/
