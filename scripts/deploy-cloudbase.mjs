@@ -198,26 +198,30 @@ export async function deployProduction() {
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'asva-cloudbase-'))
   try {
-    await writeFile(path.join(tempDir, 'cloudbaserc.json'), JSON.stringify({
-      envId,
-      functionRoot: functionDir,
-      functions: [{
-        name: functionName,
-        type: 'HTTP',
-        handler: 'index.main',
-        runtime: 'Nodejs20.19',
-        timeout: 60,
-        memorySize: 512,
-        envVariables,
-      }],
-    }, null, 2))
-
     const tcb = process.env.TCB_BIN || 'tcb'
+
+    // Deploy worker FIRST so Event invoke from the new API tip has a ready target.
+    let workerConfirm = null
+    if (!process.argv.includes('--skip-ai-archive-worker')) {
+      workerConfirm = await deployAiArchiveWorker({
+        tcb,
+        envId,
+        envVariables: buildAiArchiveEnvVariables(values, buildMetadata),
+        tempDir,
+      })
+    } else {
+      console.log('Skipped asva-ai-archive worker deploy (--skip-ai-archive-worker)')
+    }
+
+    // Then API: rewrite cloudbaserc.json for HTTP asva-api (cwd=tempDir consumes this file).
+    const apiRc = buildApiCloudbaserc({ envId, functionDir, functionName, envVariables })
+    await writeFile(path.join(tempDir, 'cloudbaserc.json'), JSON.stringify(apiRc, null, 2))
+
     const functionsOutput = await runCapture(tcb, ['fn', 'list', '--env-id', envId, '--json'], root)
     const functionsJsonStart = functionsOutput.indexOf('{')
     const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
     const hasExistingTarget = (functions.data || []).some((item) => item.name === functionName)
-    const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
+    const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes', '--config', path.join(tempDir, 'cloudbaserc.json')]
     if (hasExistingTarget) functionArgs.push('--force')
     functionArgs.push('--json')
     await run(tcb, functionArgs, tempDir)
@@ -228,11 +232,8 @@ export async function deployProduction() {
     const hasService = (services.data || []).some((item) => item.path === `/${servicePath}` && item.name === functionName)
     if (!hasService) await run(tcb, ['service', 'create', '--env-id', envId, '--service-path', servicePath, '--function', functionName, '--json'], root)
     console.log(`ASVA CloudBase API base: ${serviceUrl}`)
-
-    if (!process.argv.includes('--skip-ai-archive-worker')) {
-      await deployAiArchiveWorker({ tcb, envId, envVariables: buildAiArchiveEnvVariables(values, buildMetadata), tempDir })
-    } else {
-      console.log('Skipped asva-ai-archive worker deploy (--skip-ai-archive-worker)')
+    if (workerConfirm) {
+      console.log(`ASVA AI archive worker confirmed: memory=${workerConfirm.memorySize} timeout=${workerConfirm.timeout} envKeys=${workerConfirm.envKeyCount}`)
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
@@ -249,9 +250,24 @@ export async function deployProduction() {
  * 5) Do NOT enable provisioned concurrency
  * Memory default 512 to match live asva-api strategy. Timeout 120s for AI+Feishu budget.
  */
-export async function deployAiArchiveWorker({ tcb, envId: targetEnvId, envVariables, tempDir }) {
-  const workerDir = aiArchiveFunctionDir
-  const workerRc = {
+export function buildApiCloudbaserc({ envId: targetEnvId, functionDir: apiDir, functionName: apiName, envVariables }) {
+  return {
+    envId: targetEnvId,
+    functionRoot: apiDir,
+    functions: [{
+      name: apiName,
+      type: 'HTTP',
+      handler: 'index.main',
+      runtime: 'Nodejs20.19',
+      timeout: 60,
+      memorySize: 512,
+      envVariables,
+    }],
+  }
+}
+
+export function buildAiArchiveCloudbaserc({ envId: targetEnvId, workerDir, envVariables }) {
+  return {
     envId: targetEnvId,
     functionRoot: path.dirname(workerDir),
     functions: [{
@@ -264,17 +280,65 @@ export async function deployAiArchiveWorker({ tcb, envId: targetEnvId, envVariab
       envVariables,
     }],
   }
+}
+
+/** Deploy order for production: worker then api. */
+export function productionDeployOrder({ skipWorker = false } = {}) {
+  return skipWorker ? ['asva-api'] : ['asva-ai-archive', 'asva-api']
+}
+
+export async function deployAiArchiveWorker({ tcb, envId: targetEnvId, envVariables, tempDir }) {
+  const workerDir = aiArchiveFunctionDir
+  const workerRc = buildAiArchiveCloudbaserc({ envId: targetEnvId, workerDir, envVariables })
+  // CLI cwd=tempDir reads cloudbaserc.json; also keep a named copy for operators.
+  const rcPath = path.join(tempDir, 'cloudbaserc.json')
+  await writeFile(rcPath, JSON.stringify(workerRc, null, 2))
   await writeFile(path.join(tempDir, 'cloudbaserc.ai-archive.json'), JSON.stringify(workerRc, null, 2))
   const functionsOutput = await runCapture(tcb, ['fn', 'list', '--env-id', targetEnvId, '--json'], root)
   const functionsJsonStart = functionsOutput.indexOf('{')
   const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
   const hasExistingTarget = (functions.data || []).some((item) => item.name === aiArchiveFunctionName)
-  // Ordinary Event function: do not pass --httpFn
-  const functionArgs = ['fn', 'deploy', aiArchiveFunctionName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
+  // Ordinary Event function: do not pass --httpFn; pass --config so settings apply.
+  const functionArgs = [
+    'fn', 'deploy', aiArchiveFunctionName,
+    '--dir', workerDir,
+    '--runtime', 'Nodejs20.19',
+    '--install-dependency', 'false',
+    '--yes',
+    '--config', rcPath,
+  ]
   if (hasExistingTarget) functionArgs.push('--force')
   functionArgs.push('--json')
   await run(tcb, functionArgs, tempDir)
-  console.log(`ASVA AI archive worker deployed: ${aiArchiveFunctionName} (Event, memory=512, timeout=120). Tip: deploy by tip SHA; do not merge dirty PR#54.`)
+
+  // Read back to confirm memory/timeout/env actually applied.
+  let confirmed = {
+    memorySize: workerRc.functions[0].memorySize,
+    timeout: workerRc.functions[0].timeout,
+    envKeyCount: Object.keys(envVariables || {}).length,
+    readBack: false,
+  }
+  try {
+    const detailOutput = await runCapture(tcb, ['fn', 'detail', aiArchiveFunctionName, '--env-id', targetEnvId, '--json'], root)
+    const detailStart = detailOutput.indexOf('{')
+    const detail = detailStart >= 0 ? JSON.parse(detailOutput.slice(detailStart)) : null
+    const data = detail?.data || detail || {}
+    confirmed = {
+      memorySize: Number(data.MemorySize || data.memorySize || confirmed.memorySize),
+      timeout: Number(data.Timeout || data.timeout || confirmed.timeout),
+      envKeyCount: Object.keys(data.EnvVariables || data.envVariables || envVariables || {}).length || confirmed.envKeyCount,
+      readBack: true,
+      name: data.Name || data.name || aiArchiveFunctionName,
+    }
+    if (confirmed.memorySize !== 512 || confirmed.timeout !== 120) {
+      throw new Error(`asva-ai-archive 配置读回不符: memory=${confirmed.memorySize} timeout=${confirmed.timeout}（期望 512/120）`)
+    }
+  } catch (error) {
+    if (String(error?.message || '').includes('配置读回不符')) throw error
+    console.warn(`ASVA AI archive worker detail read-back skipped: ${error?.message || error}`)
+  }
+  console.log(`ASVA AI archive worker deployed: ${aiArchiveFunctionName} (Event, memory=${confirmed.memorySize}, timeout=${confirmed.timeout}, envKeys=${confirmed.envKeyCount}, readBack=${confirmed.readBack}). Tip: deploy by tip SHA; do not merge dirty PR#54.`)
+  return confirmed
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

@@ -89,6 +89,43 @@ function httpsJsonRequest({ hostname, path = '/', headers, body, timeoutMs = 500
   })
 }
 
+/**
+ * Build the SCF Invoke ClientContext object.
+ * Official Invoke API: ClientContext is the cloud-function event; Payload is NOT a request field.
+ * @see https://cloud.tencent.com/document/api/583/17243
+ */
+export function buildAiArchiveClientContext(input = {}) {
+  const customerId = String(input.customerId || '').trim()
+  const sourceId = String(input.sourceId || '').trim()
+  return {
+    version: 1,
+    mode: input.mode === 'process' ? 'process' : 'recover',
+    customerId: customerId || undefined,
+    sourceId: sourceId || undefined,
+    actorId: String(input.actorId || '').trim() || undefined,
+    reason: String(input.reason || 'AUTO').trim() || 'AUTO',
+    force: input.force === true,
+    enqueuedAt: String(input.enqueuedAt || new Date().toISOString()),
+    asvaInvokeSecret: env('ASVA_AI_ARCHIVE_INVOKE_SECRET'),
+    asvaInvokeAt: new Date().toISOString(),
+  }
+}
+
+/** Build the exact Tencent Cloud SCF Invoke request body (no Payload field). */
+export function buildScfInvokeRequestBody({ functionName, namespace, clientContext, qualifier = '$LATEST' }) {
+  const contextJson = typeof clientContext === 'string'
+    ? clientContext
+    : JSON.stringify(clientContext || {})
+  return {
+    FunctionName: functionName,
+    Namespace: namespace,
+    Qualifier: qualifier,
+    InvocationType: 'Event',
+    // ClientContext becomes the worker event. Do not send a non-API Payload field.
+    ClientContext: contextJson.slice(0, 3500),
+  }
+}
+
 /** SCF Invoke with InvocationType=Event — returns as soon as the event is accepted. */
 export async function invokeScfEvent({ functionName, namespace, payload, qualifier = '$LATEST' }) {
   const { secretId, secretKey } = credentials()
@@ -99,18 +136,13 @@ export async function invokeScfEvent({ functionName, namespace, payload, qualifi
   const service = 'scf'
   const action = 'Invoke'
   const timestamp = Math.floor(Date.now() / 1000)
-  const clientContext = JSON.stringify({
-    asvaInvokeSecret: env('ASVA_AI_ARCHIVE_INVOKE_SECRET'),
-    asvaInvokeAt: new Date().toISOString(),
-  })
-  const requestPayload = JSON.stringify({
-    FunctionName: functionName,
-    Namespace: namespace,
-    Qualifier: qualifier,
-    InvocationType: 'Event',
-    ClientContext: clientContext.slice(0, 3500),
-    Payload: JSON.stringify(payload),
-  })
+  const clientContext = buildAiArchiveClientContext(payload)
+  const requestPayload = JSON.stringify(buildScfInvokeRequestBody({
+    functionName,
+    namespace,
+    clientContext,
+    qualifier,
+  }))
   const authorization = tc3Sign({ secretId, secretKey, service, host, action, payload: requestPayload, timestamp })
   const response = await httpsJsonRequest({
     hostname: host,
@@ -138,6 +170,8 @@ export async function invokeScfEvent({ functionName, namespace, payload, qualifi
     mode: 'event',
     requestId: response.body?.Response?.RequestId || '',
     result: response.body?.Response?.Result || null,
+    clientContext,
+    requestBody: JSON.parse(requestPayload),
   }
 }
 
@@ -163,16 +197,12 @@ export async function enqueueAiArchiveJob(input = {}) {
   if (!customerId && !sourceId) {
     return { status: 'FAILED', mode: aiArchiveInvokeMode(), errorCode: 'AI_ARCHIVE_JOB_TARGET_REQUIRED' }
   }
-  const payload = {
-    version: 1,
-    mode: input.mode === 'process' ? 'process' : 'recover',
+  const payload = buildAiArchiveClientContext({
+    ...input,
     customerId,
-    sourceId: sourceId || undefined,
-    actorId: String(input.actorId || '').trim() || undefined,
-    reason: String(input.reason || 'AUTO').trim() || 'AUTO',
-    force: input.force === true,
+    sourceId,
     enqueuedAt: new Date().toISOString(),
-  }
+  })
   const mode = aiArchiveInvokeMode()
   if (mode === 'disabled') return { status: 'DISABLED', mode }
 
@@ -224,4 +254,30 @@ export function scheduleAiArchiveJob(input = {}) {
       errorCode: error?.code || 'AI_ARCHIVE_SCHEDULE_FAILED',
     }))
   return { status: 'QUEUED', ack }
+}
+
+/**
+ * Await cloud delivery ACK only (Invoked / LOCAL_QUEUED), never AI completion.
+ * Save path uses a short budget so total save stays ≤8s.
+ */
+export async function awaitAiArchiveJobAck(scheduled, { budgetMs = 3000 } = {}) {
+  if (!scheduled?.ack) return { status: 'MISSING' }
+  let timer
+  try {
+    const outcome = await Promise.race([
+      scheduled.ack.then((result) => ({
+        status: result?.status || 'FAILED',
+        mode: result?.mode,
+        requestId: result?.requestId || '',
+        errorCode: result?.errorCode,
+        message: result?.message,
+      })),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ status: 'BUDGET_EXCEEDED' }), Math.max(0, Number(budgetMs) || 0))
+      }),
+    ])
+    return outcome
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }

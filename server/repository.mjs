@@ -21,7 +21,7 @@ import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
 import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMeta, resolveSafetyStatus } from '../shared/safety-contract.mjs'
 import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
-import { scheduleAiArchiveJob, enqueueAiArchiveJob, aiArchiveInvokeMode } from './ai-archive-invoke.mjs'
+import { scheduleAiArchiveJob, enqueueAiArchiveJob, aiArchiveInvokeMode, awaitAiArchiveJobAck } from './ai-archive-invoke.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
@@ -1064,6 +1064,8 @@ export class FeishuRepository {
       actorId,
       reason,
     })
+    // One authoritative Event(recover) per change. Same-instance queue only creates
+    // Source for kickoff/readback; it must NOT fire a second Event(process).
     void worker.ack.then((result) => {
       if (result?.status === 'FAILED') {
         this.audit('AI_ARCHIVE_WORKER_INVOKE', customerId, actorId, 'FAIL', result.errorCode || 'AI_ARCHIVE_INVOKE_FAILED')
@@ -1075,7 +1077,7 @@ export class FeishuRepository {
     })
 
     // Best-effort same-instance Source ensure for kickoff/readback only.
-    // Processing is owned by the worker invoke above (or profile/admin resume兜底).
+    // Processing is owned by the recover Event worker (await processSource inline).
     setImmediate(() => {
       this.queueAutomaticCustomerProfile(actorId, customerId, normalizedText, reason)
         .then((result) => resolveJob({ ...result, workerInvoke: 'SCHEDULED' }))
@@ -1085,7 +1087,9 @@ export class FeishuRepository {
         })
         .finally(() => this.automaticProfilePendingKeys.delete(pendingKey))
     })
-    return { status: 'QUEUED', workerScheduled: true }
+    const job = this.localAutoProfileJobs.get(customerId)
+    if (job) job.deliveryAck = worker.ack
+    return { status: 'QUEUED', workerScheduled: true, deliveryAck: worker.ack }
   }
 
   async awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs = 2000 } = {}) {
@@ -1101,6 +1105,13 @@ export class FeishuRepository {
     } finally {
       if (timer) clearTimeout(timer)
     }
+  }
+
+  /** Await cloud Event delivery ACK only (not AI). Keeps save ≤8s via short budget. */
+  async awaitAutomaticCustomerProfileDelivery(customerId, { budgetMs = 3000 } = {}) {
+    const job = this.localAutoProfileJobs.get(customerId)
+    if (!job?.deliveryAck) return { status: 'MISSING' }
+    return awaitAiArchiveJobAck({ ack: job.deliveryAck }, { budgetMs })
   }
 
   async maybeResumeAutomaticCustomerProfile(actorId, customerId) {
@@ -1545,16 +1556,13 @@ export class FeishuRepository {
       // clearAutomaticProfilePending now also requires a visible SourceRecords row.
       void this.clearAutomaticProfilePending(customerId, marker)
         .catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
-      // Do not schedule same-instance processSource here — worker Event invoke (or resume) owns AI.
-      if (!['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) {
-        this.scheduleAutomaticProcessing(actorId, source.id, { customerId, reason })
-      }
+      // No second Event(process): the authoritative recover Event worker (or
+      // recoverAutomaticCustomerProfile itself) awaits processSource inline.
       return { status: 'QUEUED', sourceId: source.id }
     } catch (error) {
       if (error?.code === 'SOURCE_DUPLICATE' && error?.sourceId) {
         void this.clearAutomaticProfilePending(customerId, marker)
           .catch((clearError) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', customerId, actorId, 'PENDING', clearError?.code || 'AUTO_PENDING_CLEAR_FAILED'))
-        this.scheduleAutomaticProcessing(actorId, error.sourceId, { customerId, reason })
         return { status: 'QUEUED', sourceId: error.sourceId, reused: true }
       }
       this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'PENDING', error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
@@ -2658,11 +2666,16 @@ export class FeishuRepository {
       const automaticProfile = automaticText
         ? this.scheduleAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_SAVE')
         : { status: 'NOT_REQUIRED' }
-      // Best-effort same-request kickoff: pending is already durable on Customers.
-      // Await briefly so CloudBase can finish createSource before the instance freezes;
-      // never fail the save if the budget is exceeded — single-customer resume continues later.
+      // Await cloud delivery ACK (Invoked) + best-effort createSource kickoff in parallel.
+      // Short budgets keep total save ≤8s; never await AI; failure keeps customer/pending.
       if (automaticProfile.status === 'QUEUED') {
-        const kickoff = await this.awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs: 2000 })
+        const [delivery, kickoff] = await Promise.all([
+          this.awaitAutomaticCustomerProfileDelivery(customerId, { budgetMs: 3000 }),
+          this.awaitAutomaticCustomerProfileKickoff(customerId, { budgetMs: 2000 }),
+        ])
+        automaticProfile.deliveryStatus = delivery.status
+        if (delivery.requestId) automaticProfile.deliveryRequestId = delivery.requestId
+        if (delivery.errorCode) automaticProfile.deliveryErrorCode = delivery.errorCode
         automaticProfile.kickoffStatus = kickoff.status
         if (kickoff.status === 'DONE' && kickoff.value?.sourceId) {
           automaticProfile.sourceId = kickoff.value.sourceId
@@ -2834,6 +2847,12 @@ export class FeishuRepository {
     const automaticProfile = automaticText
       ? this.scheduleAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_UPDATE')
       : { status: 'NOT_REQUIRED' }
+    if (automaticProfile.status === 'QUEUED') {
+      const delivery = await this.awaitAutomaticCustomerProfileDelivery(customerId, { budgetMs: 3000 })
+      automaticProfile.deliveryStatus = delivery.status
+      if (delivery.requestId) automaticProfile.deliveryRequestId = delivery.requestId
+      if (delivery.errorCode) automaticProfile.deliveryErrorCode = delivery.errorCode
+    }
     if (operationId) {
       const mutationWrite = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
       if (mutationWrite) latest = await this.loadCustomerAfterWrite(mutationWrite, customerId, latest)

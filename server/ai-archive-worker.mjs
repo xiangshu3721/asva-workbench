@@ -12,13 +12,23 @@ function text(value) {
   return String(value ?? '').trim()
 }
 
-function parseEvent(event) {
+/**
+ * Parse worker event. Tencent SCF Invoke puts ClientContext JSON as `event`
+ * (not a Payload field). Local/tests may still pass a plain object.
+ */
+export function parseAiArchiveEvent(event) {
   if (event == null) return {}
   if (typeof event === 'string') {
     try { return JSON.parse(event) } catch { return { raw: event } }
   }
   if (typeof event === 'object') {
-    if (event.customerId || event.sourceId || event.mode) return event
+    // Primary: ClientContext content already is the event object.
+    if (event.customerId || event.sourceId || event.mode || event.asvaInvokeSecret) return event
+    if (typeof event.ClientContext === 'string') {
+      try { return JSON.parse(event.ClientContext) } catch { /* fall through */ }
+    }
+    if (event.ClientContext && typeof event.ClientContext === 'object') return event.ClientContext
+    // Legacy/local fallbacks only.
     if (typeof event.Payload === 'string') {
       try { return JSON.parse(event.Payload) } catch { /* fall through */ }
     }
@@ -31,10 +41,17 @@ function parseEvent(event) {
   return {}
 }
 
+function parseEvent(event) {
+  return parseAiArchiveEvent(event)
+}
+
 function assertInvokeSecret(payload, event) {
   const expected = text(process.env.ASVA_AI_ARCHIVE_INVOKE_SECRET)
   if (!expected) return
-  const provided = text(payload.invokeSecret)
+  // Official Invoke: ClientContext IS the event, so secret lives on payload/event directly.
+  const provided = text(payload.asvaInvokeSecret)
+    || text(payload.invokeSecret)
+    || text(event?.asvaInvokeSecret)
     || text(event?.ClientContext && (() => {
       try {
         const ctx = typeof event.ClientContext === 'string' ? JSON.parse(event.ClientContext) : event.ClientContext
@@ -52,8 +69,6 @@ function assertInvokeSecret(payload, event) {
 export async function handleAiArchiveEvent(rawEvent = {}) {
   const startedAt = Date.now()
   const payload = parseEvent(rawEvent)
-  assertInvokeSecret(payload, rawEvent)
-
   const customerId = text(payload.customerId)
   const sourceId = text(payload.sourceId)
   const actorId = text(payload.actorId)
@@ -61,16 +76,18 @@ export async function handleAiArchiveEvent(rawEvent = {}) {
   const force = payload.force === true
   const reason = text(payload.reason) || 'WORKER'
 
-  if (!config.features.automaticProfileArchiving) {
-    return { ok: true, status: 'DISABLED', customerId, sourceId, durationMs: Date.now() - startedAt }
-  }
-  if (!customerId && !sourceId) {
-    return { ok: false, status: 'FAILED', errorCode: 'AI_ARCHIVE_JOB_TARGET_REQUIRED', durationMs: Date.now() - startedAt }
-  }
-
-  repository.audit?.('AI_ARCHIVE_WORKER_START', customerId || sourceId, actorId, 'QUEUED')
-
   try {
+    assertInvokeSecret(payload, rawEvent)
+
+    if (!config.features.automaticProfileArchiving) {
+      return { ok: true, status: 'DISABLED', customerId, sourceId, durationMs: Date.now() - startedAt }
+    }
+    if (!customerId && !sourceId) {
+      return { ok: false, status: 'FAILED', errorCode: 'AI_ARCHIVE_JOB_TARGET_REQUIRED', durationMs: Date.now() - startedAt }
+    }
+
+    repository.audit?.('AI_ARCHIVE_WORKER_START', customerId || sourceId, actorId, 'QUEUED')
+
     let result
     if (mode === 'process' && sourceId) {
       const processed = await repository.processSource(actorId || 'SYSTEM', sourceId, { force })
@@ -123,4 +140,4 @@ export async function main(event, context) {
 }
 
 // CJS interop for bundled SCF handler
-export default { main, handleAiArchiveEvent }
+export default { main, handleAiArchiveEvent, parseAiArchiveEvent }

@@ -26,7 +26,7 @@ describe('automatic customer profile processing', () => {
     expect(repository.startAutomaticProcessingRecovery).not.toHaveBeenCalled()
   })
 
-  it('queues saved customer text with a stable content operation and schedules background processing', async () => {
+  it('queues saved customer text with a stable content operation without a second Event(process)', async () => {
     const repository = new FeishuRepository({ authRepository: {} })
     const created = []
     repository.createSource = vi.fn(async (_actorId, input) => {
@@ -44,7 +44,8 @@ describe('automatic customer profile processing', () => {
     expect(created[0]).toMatchObject({ customerId: 'CUS-AUTO-1', sourceType: 'TEXT_INPUT', sourcePerspective: 'STAFF_REPORTED' })
     expect(created[0].operationId).toBe(created[1].operationId)
     expect(created[0].notes).toContain('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE')
-    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledTimes(2)
+    // Authoritative recover Event owns processSource; queue must not fire Event(process).
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
   })
 
   it('keeps the original save successful when automatic source queuing is unavailable', async () => {
@@ -72,7 +73,7 @@ describe('automatic customer profile processing', () => {
 
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
     expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'DISABLED' })
-    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'QUEUED', workerScheduled: true })
+    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toMatchObject({ status: 'QUEUED', workerScheduled: true })
     expect(repository.createSource).not.toHaveBeenCalled()
   })
 
@@ -108,7 +109,7 @@ describe('automatic customer profile processing', () => {
     let release
     repository.queueAutomaticCustomerProfile = vi.fn(() => new Promise((resolve) => { release = resolve }))
     const result = repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
-    expect(result).toEqual({ status: 'QUEUED', workerScheduled: true })
+    expect(result).toMatchObject({ status: 'QUEUED', workerScheduled: true })
     expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
     await new Promise((resolve) => setImmediate(resolve))
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')

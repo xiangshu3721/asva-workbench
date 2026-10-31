@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, buildAiArchiveEnvVariables, deployProduction, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
+import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, buildAiArchiveEnvVariables, buildAiArchiveCloudbaserc, buildApiCloudbaserc, productionDeployOrder, deployProduction, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
 
 function validProductionValues() {
   const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'false' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'off' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
@@ -85,5 +85,74 @@ describe('AI archive worker deploy helpers', () => {
     expect(env.ASVA_AI_ARCHIVE_INVOKE_MODE).toBe('disabled')
     expect(env.ASVA_AI_ARCHIVE_INVOKE_SECRET).toBe('secret-for-test')
     expect(JSON.stringify(env)).not.toContain('super-secret')
+  })
+})
+
+describe('AI archive deploy order and effective config', () => {
+  it('deploys worker before api', () => {
+    expect(productionDeployOrder()).toEqual(['asva-ai-archive', 'asva-api'])
+    expect(productionDeployOrder({ skipWorker: true })).toEqual(['asva-api'])
+  })
+
+  it('builds worker cloudbaserc with 512MB/120s for CLI cwd consumption', () => {
+    const values = validProductionValues()
+    values.ASVA_AI_ARCHIVE_INVOKE_SECRET = 'secret-for-test'
+    const env = buildAiArchiveEnvVariables(values, { releaseCounter: 49, releasePatch: 0, gitCommit: 'tip', gitBranch: 'fix/ai-archive-closed-loop-20261031', buildTime: 'now' })
+    const rc = buildAiArchiveCloudbaserc({
+      envId: 'root-journey-prod-d4d7pzd0a8f805',
+      workerDir: '/tmp/cloudbase/functions/asva-ai-archive',
+      envVariables: env,
+    })
+    expect(rc.functions[0]).toMatchObject({
+      name: 'asva-ai-archive',
+      timeout: 120,
+      memorySize: 512,
+      handler: 'index.main',
+      runtime: 'Nodejs20.19',
+    })
+    expect(rc.functions[0].type).toBeUndefined()
+    expect(rc.functions[0].envVariables.ASVA_AI_ARCHIVE_INVOKE_MODE).toBe('disabled')
+  })
+
+  it('preserves full API env set when building api cloudbaserc', () => {
+    const values = validProductionValues()
+    values.ASVA_AI_ARCHIVE_INVOKE_SECRET = 'secret-for-test'
+    values.TENCENTCLOUD_SECRETID = 'AKIDtest'
+    values.TENCENTCLOUD_SECRETKEY = 'secret'
+    values.FEISHU_ENROLLMENTS_TABLE_ID = 'tbl-enroll'
+    const env = buildProductionEnvVariables(values, { releaseCounter: 49, releasePatch: 0, gitCommit: 'tip', gitBranch: 'fix/ai-archive-closed-loop-20261031', buildTime: 'now' })
+    const rc = buildApiCloudbaserc({
+      envId: 'root-journey-prod-d4d7pzd0a8f805',
+      functionDir: '/tmp/cloudbase/functions/asva-api',
+      functionName: 'asva-api',
+      envVariables: env,
+    })
+    expect(rc.functions[0].type).toBe('HTTP')
+    expect(rc.functions[0].memorySize).toBe(512)
+    expect(rc.functions[0].timeout).toBe(60)
+    // Original production keys remain present (additive AI-archive vars allowed).
+    for (const key of [
+      'DEEPSEEK_API_KEY', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN',
+      'FEISHU_CUSTOMERS_TABLE_ID', 'FEISHU_SOURCE_RECORDS_TABLE_ID', 'FEISHU_EVIDENCE_ITEMS_TABLE_ID',
+      'ASVA_AUTH_SECRET', 'AUTH_MODE', 'APP_ENV', 'DATA_MODE',
+      'FEATURE_AUTOMATIC_PROFILE_ARCHIVING', 'ASVA_GIT_COMMIT',
+    ]) {
+      expect(env[key]).toBeTruthy()
+    }
+    expect(env.ASVA_AI_ARCHIVE_INVOKE_MODE).toBe('event')
+    expect(Object.keys(env).length).toBeGreaterThanOrEqual(42)
+  })
+
+  it('deploy script source deploys worker before api and writes cloudbaserc.json', async () => {
+    const { readFileSync } = await import('node:fs')
+    const source = readFileSync(new URL('./deploy-cloudbase.mjs', import.meta.url), 'utf8')
+    const workerIdx = source.indexOf('await deployAiArchiveWorker(')
+    const apiWriteIdx = source.indexOf("buildApiCloudbaserc(")
+    const apiDeployIdx = source.indexOf("'fn', 'deploy', functionName")
+    expect(workerIdx).toBeGreaterThan(0)
+    expect(apiWriteIdx).toBeGreaterThan(workerIdx)
+    expect(apiDeployIdx).toBeGreaterThan(apiWriteIdx)
+    expect(source).toMatch(/writeFile\(path\.join\(tempDir, 'cloudbaserc\.json'\)/)
+    expect(source).toMatch(/--config', rcPath|--config', path\.join\(tempDir, 'cloudbaserc\.json'\)/)
   })
 })

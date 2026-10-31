@@ -4,7 +4,7 @@
 - 架构选择：**A — 独立普通云函数 worker `asva-ai-archive`**（个人版可建；异步 SCF Invoke Event；无固定升配；勿开预置并发）
 - 起点 tip：`e3853c2c0f0dc8adbdedf6dfb96256d0e9b7aa89`
 - 分支：`fix/ai-archive-closed-loop-20261031`
-- **后端 tip SHA**：`405016d0a9f2b14892f894373954a918708889d2`
+- **后端 tip SHA**：本分支 tip / PR#55 head（基线 `859ec73`；ChatGPT 四项阻断一次修复）
 - **未部署、未写生产飞书、未批量恢复/改生产客户、未 merge dirty PR#54**
 
 ## 架构
@@ -105,7 +105,19 @@
 
 ## Git
 
-- 后端 tip：`405016d0a9f2b14892f894373954a918708889d2`
+- 后端 tip：本分支 tip / PR#55 head
 - 分支：`fix/ai-archive-closed-loop-20261031`
 - Draft PR：https://github.com/xiangshu3721/asva-workbench/pull/55 （draft，未 merge）
 - 前端：无
+
+
+## 上线阻断修复（ChatGPT 审 859ec73）
+
+一次修好 4 项，未部署、未写生产：
+
+1. SCF Invoke：任务参数+secret 统一进 **ClientContext**（官方 event 入参）；去掉非 API 的 Payload。
+2. 保存路径短预算 **await 云端投递 ACK**（不 await AI）；失败保留客户/原文/pending。
+3. 每次变更仅一个权威 Event(recover)；`queueAutomaticCustomerProfile` / worker recover 内 **不再** 发 Event(process)。
+4. 部署顺序 worker→api；`cloudbaserc.json` + `--config` 生效；部署后读回确认；API env 完整保留。
+
+定向测试：`server/ai-archive-blockers-fix.test.mjs`；证据：`~/Troublehut/_verify/asva-closed-loop-blockers-20261031/`。
