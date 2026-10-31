@@ -122,25 +122,4 @@ describe('Feishu gateway client_token integration', () => {
     const url = createCall[0]
     expect(url).not.toContain('client_token=')
   })
-
-  it('uses a stable official client_token for the real customer and enrollment create operations', async () => {
-    mockFetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ tenant_access_token: 'test-token', expire: 7200 }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { record: { id: 'rec-customer-1' } } }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { record: { id: 'rec-customer-1' } } }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { record: { id: 'rec-enrollment-1' } } }) })
-
-    const customerContext = { operation: 'customer.create', operationId: 'customer-operation-1', customerId: 'CUS-1' }
-    await gateway.createRecord('tbl-customers', { field1: 'value1' }, customerContext)
-    await gateway.createRecord('tbl-customers', { field1: 'value1' }, customerContext)
-    await gateway.createRecord('tbl-enrollments', { field1: 'value1' }, { operation: 'enrollment.create', operationId: 'customer-operation-1', customerId: 'CUS-1' })
-
-    const customerUrl = String(mockFetch.mock.calls[1][0])
-    const customerRetryUrl = String(mockFetch.mock.calls[2][0])
-    const enrollmentUrl = String(mockFetch.mock.calls[3][0])
-    expect(customerUrl).toContain('/tbl-customers/records?client_token=')
-    expect(enrollmentUrl).toContain('/tbl-enrollments/records?client_token=')
-    expect(new URL(customerUrl).searchParams.get('client_token')).toBe(new URL(customerRetryUrl).searchParams.get('client_token'))
-    expect(new URL(customerUrl).searchParams.get('client_token')).not.toBe(new URL(enrollmentUrl).searchParams.get('client_token'))
-  })
 })

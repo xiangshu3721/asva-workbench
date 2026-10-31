@@ -184,7 +184,7 @@ export async function deployProduction() {
         handler: 'index.main',
         runtime: 'Nodejs20.19',
         timeout: 60,
-        memorySize: 512,
+        memorySize: 256,
         envVariables,
       }],
     }, null, 2))
