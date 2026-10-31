@@ -28,7 +28,17 @@ import { applyServiceNecessityOverride, buildConsultationContext, buildSalesCont
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
-const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+const text = (value) => {
+  // Feishu records/search returns Text cells as [{ text, type }], while list/get often return plain strings.
+  // Unwrap segment objects so scoped customer_id mapping matches the requested CUS-* id.
+  if (Array.isArray(value)) return value.map(text).filter(Boolean).join('、')
+  if (value && typeof value === 'object') {
+    if (typeof value.text === 'string' || typeof value.text === 'number') return String(value.text)
+    return ''
+  }
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  return ''
+}
 const boolean = (value) => value === true || value === 'true' || value === '是'
 const date = (value) => parseDateFromFeishu(value)
 const normalizePhone = foundationNormalizePhone
@@ -1174,8 +1184,26 @@ export class FeishuRepository {
     if (!tableId) return []
     const fieldName = mapField(tableKey, fieldKey)
     const startedAt = Date.now()
-    const rows = await searchRecords(tableId, buildSearchExactFilter(fieldName, value))
-    this.noteScopedRead({ scene, table: tableKey, field: fieldKey, value: String(value || ''), rowCount: rows.length, durationMs: Date.now() - startedAt, mode: 'SEARCH' })
+    let rows = await searchRecords(tableId, buildSearchExactFilter(fieldName, value))
+    let mode = 'SEARCH'
+    // Customers-only bounded fallback: search index can lag right after create; list the single
+    // Customers table and match locally. Do not restore multi-table directory scans here.
+    if (tableKey === 'customers' && fieldKey === 'customer_id' && rows.length === 0 && text(value)) {
+      const listed = await listRecords(tableId)
+      const wanted = text(value)
+      rows = listed.filter((row) => text(get('customers', row.fields || {}, 'customer_id')) === wanted)
+      mode = rows.length ? 'LIST_FALLBACK_AFTER_SEARCH_MISS' : 'SEARCH_AND_LIST_MISS'
+      console.warn?.('[ASVA_CUSTOMER_SCOPED_READ_CONSISTENCY]', JSON.stringify({
+        scene,
+        table: tableKey,
+        field: fieldKey,
+        value: wanted,
+        search_count: 0,
+        list_fallback_count: rows.length,
+        mode,
+      }))
+    }
+    this.noteScopedRead({ scene, table: tableKey, field: fieldKey, value: String(value || ''), rowCount: rows.length, durationMs: Date.now() - startedAt, mode })
     return rows
   }
 
@@ -2776,7 +2804,9 @@ export class FeishuRepository {
     }
     const situationProvided = Object.prototype.hasOwnProperty.call(input || {}, 'situation')
     const normalized = { nickname: text(input.nickname || current.name).trim(), phone: normalizePhone(nextPhone), wechat: text(nextWechat).trim(), introducer: introducerProvided ? text(input.introducer).trim() : text(current.introducer || current.referrerName).trim(), situation: situationProvided ? text(input.situation).trim() : text(current.notes).trim() }
-    const automaticText = automaticProfileText(input, situationProvided && normalized.situation !== String(current.notes || '').trim() ? normalized.situation : '')
+    // Formal open archives only newly created customers. Profile updates on existing
+    // customers must not auto-trigger historical backfill / recover.
+    const automaticText = ''
     const identity = resolveCustomerIdentity(database.customers.filter((item) => item.id !== customerId), normalized)
     if (identity.result === 'CONFLICT') throw Object.assign(new Error('手机号和微信号分别匹配到了不同客户，请人工确认。'), { status: 409, code: 'IDENTITY_CONFLICT' })
     if (identity.result === 'EXACT_MATCH') throw Object.assign(new Error('该联系方式已绑定其他客户，不能覆盖。'), { status: 409, code: 'CUSTOMER_DUPLICATE' })
