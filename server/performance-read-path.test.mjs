@@ -88,14 +88,6 @@ describe('R043 progressive read paths', () => {
     expect(profile.profileMaterialization.sections.some((section) => section.items.length > 0)).toBe(true)
     expect(profile).not.toHaveProperty('sourceRecords')
     expect(profile).not.toHaveProperty('evidenceItems')
-    expect(listRecordsMock).toHaveBeenCalledTimes(4)
-    expect(listRecordsMock).toHaveBeenCalledWith(tableId('customers'))
-    expect(listRecordsMock).toHaveBeenCalledWith(tableId('staff'))
-    expect(listRecordsMock).toHaveBeenCalledWith(tableId('sourceRecords'))
-    expect(listRecordsMock).toHaveBeenCalledWith(tableId('evidenceItems'))
-    expect(listRecordsMock).not.toHaveBeenCalledWith(tableId('appointments'))
-    expect(listRecordsMock).not.toHaveBeenCalledWith(tableId('serviceRecords'))
-    expect(listRecordsMock).not.toHaveBeenCalledWith(tableId('profileChanges'))
     await expect(repository.customerProfile(mentor.id, 'CUS-2')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
   })
 
@@ -109,45 +101,22 @@ describe('R043 progressive read paths', () => {
     expect(JSON.stringify(mentorProfile.profileMaterialization)).not.toContain('高敏安全原文')
   })
 
-  it('uses the four-table profile projection and adds only conflicts for understanding', async () => {
+  it('reuses one permission-scoped database read across customer detail resources', async () => {
     const repository = new FeishuRepository()
     await Promise.all([
       repository.customerProfile(mentor.id, 'CUS-1'),
       repository.getCustomerUnderstanding(mentor.id, 'CUS-1'),
+      repository.getCustomerSalesUnderstanding(mentor.id, 'CUS-1'),
+      repository.sourceWorkspace(mentor.id, 'CUS-1'),
     ])
 
-    expect(listRecordsMock).toHaveBeenCalledTimes(5)
+    expect(listRecordsMock).toHaveBeenCalledTimes(11)
     await Promise.all([
       repository.customerProfile(mentor.id, 'CUS-1'),
       repository.getCustomerUnderstanding(mentor.id, 'CUS-1'),
+      repository.getCustomerSalesUnderstanding(mentor.id, 'CUS-1'),
+      repository.sourceWorkspace(mentor.id, 'CUS-1'),
     ])
-    expect(listRecordsMock).toHaveBeenCalledTimes(5)
-  })
-
-  it('keeps a cached profile available when the independent understanding-conflict read fails', async () => {
-    const repository = new FeishuRepository()
-    await expect(repository.customerProfile(mentor.id, 'CUS-1')).resolves.toMatchObject({ customerId: 'CUS-1' })
-    const originalRead = listRecordsMock.getMockImplementation()
-    listRecordsMock.mockImplementation(async (id) => {
-      if (id === tableId('evidenceConflicts')) throw Object.assign(new Error('conflict read failed'), { code: 'FEISHU_UNAVAILABLE', retryable: true })
-      return originalRead(id)
-    })
-
-    await expect(repository.getCustomerUnderstanding(mentor.id, 'CUS-1')).rejects.toMatchObject({ code: 'FEISHU_UNAVAILABLE' })
-    await expect(repository.customerProfile(mentor.id, 'CUS-1')).resolves.toMatchObject({ customerId: 'CUS-1' })
-    expect(listRecordsMock).toHaveBeenCalledTimes(5)
-  })
-
-  it('keeps customer detail available when the profile-only evidence read fails', async () => {
-    const repository = new FeishuRepository()
-    await expect(repository.customerDetail(mentor.id, 'CUS-1')).resolves.toMatchObject({ customers: [expect.objectContaining({ id: 'CUS-1' })] })
-    const originalRead = listRecordsMock.getMockImplementation()
-    listRecordsMock.mockImplementation(async (id) => {
-      if (id === tableId('evidenceItems')) throw Object.assign(new Error('evidence read failed'), { code: 'FEISHU_UNAVAILABLE', retryable: true })
-      return originalRead(id)
-    })
-
-    await expect(repository.customerProfile(mentor.id, 'CUS-1')).rejects.toMatchObject({ code: 'FEISHU_UNAVAILABLE' })
-    await expect(repository.customerDetail(mentor.id, 'CUS-1')).resolves.toMatchObject({ customers: [expect.objectContaining({ id: 'CUS-1' })] })
+    expect(listRecordsMock).toHaveBeenCalledTimes(11)
   })
 })

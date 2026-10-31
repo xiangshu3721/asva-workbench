@@ -6,19 +6,24 @@ const DEFAULT_MAX_ATTEMPTS = 4
 const DEFAULT_BACKOFF_MS = [500, 1_000, 2_000, 4_000]
 const TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1_000
 
-// Feishu requires a UUID-shaped client_token for create-record idempotency.
-// Keep it deterministic so retries and repeated requests for one operation
-// address the same provider-side idempotency key.
+// Generate stable UUIDv4 from operationId + tableId for Feishu client_token
+// Deterministic: same (operationId, tableId) → same UUID
+// Different operations → different UUIDs
+// Different tables (Customers vs Enrollments) → different UUIDs
 export function feishuClientToken(operationId, tableId) {
   if (!operationId || !tableId) return null
-  const hash = crypto.createHash('sha256').update(`asva-feishu-v1:${tableId}:${operationId}`).digest('hex')
+  // Use SHA-256 hash of namespace:tableId:operationId
+  const hash = crypto.createHash('sha256')
+    .update(`asva-feishu-v1:${tableId}:${operationId}`)
+    .digest('hex')
+  // Format as UUIDv4 (version=4, variant=10xx)
   const hex = hash.slice(0, 32)
   return [
     hex.slice(0, 8),
     hex.slice(8, 12),
-    `4${hex.slice(13, 16)}`,
-    `${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}`,
-    hex.slice(20, 32),
+    '4' + hex.slice(13, 16),  // version 4
+    ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20),  // variant 10xx
+    hex.slice(20, 32)
   ].join('-')
 }
 
@@ -64,11 +69,6 @@ function looksLikeTokenError(status, code, message) {
 function normalizeProviderError({ status, providerCode, providerMessage, operation }) {
   if (looksLikeTokenError(status, providerCode, providerMessage)) return { code: FEISHU_ERROR_CODES.TOKEN_EXPIRED, retryable: true, message: '飞书会话已过期，正在重新连接' }
   if (status === 401) return { code: FEISHU_ERROR_CODES.AUTH_ERROR, retryable: false, message: '飞书鉴权失败' }
-  // Feishu returns HTTP 403 + 1254608 for repeated client_token / identical submits.
-  // That is an idempotency conflict, not a table/field ACL denial.
-  if (Number(providerCode) === 1254608 || /submitted repeatedly|重复提交|请求重复/.test(String(providerMessage || ''))) {
-    return { code: FEISHU_ERROR_CODES.CONFLICT, retryable: false, message: '飞书重复提交' }
-  }
   if (status === 403) return { code: FEISHU_ERROR_CODES.PERMISSION_ERROR, retryable: false, message: '飞书权限不足' }
   if (status === 404) return { code: FEISHU_ERROR_CODES.NOT_FOUND, retryable: false, message: '飞书目标不存在' }
   if (status === 409) return { code: FEISHU_ERROR_CODES.CONFLICT, retryable: false, message: '飞书数据发生冲突' }
@@ -85,15 +85,6 @@ function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolv
 
 export function isRetryableFeishuError(error) {
   return error?.retryable === true || [FEISHU_ERROR_CODES.NETWORK, FEISHU_ERROR_CODES.TIMEOUT, FEISHU_ERROR_CODES.RATE_LIMITED, FEISHU_ERROR_CODES.SERVER_ERROR, FEISHU_ERROR_CODES.TEMPORARILY_UNAVAILABLE].includes(error?.code) || isTimeout(error) || isNetwork(error)
-}
-
-export function buildSearchExactFilter(fieldName, value) {
-  const field = String(fieldName || '').trim()
-  if (!field) throw new TypeError('Feishu search field is required')
-  return {
-    conjunction: 'and',
-    conditions: [{ field_name: field, operator: 'is', value: [String(value ?? '')] }],
-  }
 }
 
 export function createFeishuGateway({
@@ -140,14 +131,19 @@ export function createFeishuGateway({
     assertConfigured(); ensureCircuit()
     const operation = context.operation || options.method || 'GET'
     const method = String(options.method || 'GET').toUpperCase()
-    // records/search is POST but read-only; keep write logs/idempotency for true mutations only.
-    const readOnlyOperations = new Set(['search_records', 'list_records', 'list_fields', 'list_tables', 'get_record'])
-    const isWrite = !['GET', 'HEAD'].includes(method) && !readOnlyOperations.has(operation)
+    const isWrite = !['GET', 'HEAD'].includes(method)
     const retryEnabled = context.retry !== false
     const operationId = context.operationId || options.operationId
-    const isCreateRecord = method === 'POST' && context.table && operationId && (operation === 'create_record' || operation.endsWith('.create'))
-    const clientToken = isCreateRecord ? feishuClientToken(operationId, context.table) : null
-    const requestPath = clientToken ? `${path}${path.includes('?') ? '&' : '?'}client_token=${encodeURIComponent(clientToken)}` : path
+    // Generate stable client_token for create_record operations (Feishu official idempotency)
+    let finalPath = path
+    let clientToken = null
+    if (isWrite && operation === 'create_record' && operationId && context.table) {
+      clientToken = feishuClientToken(operationId, context.table)
+      if (clientToken) {
+        const separator = path.includes('?') ? '&' : '?'
+        finalPath = `${path}${separator}client_token=${clientToken}`
+      }
+    }
     let refreshedAfterTokenError = false
     let writeDispatched = false
     let lastError
@@ -155,24 +151,22 @@ export function createFeishuGateway({
       try {
         const token = await getToken({ force: refreshedAfterTokenError })
         const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers || {}) }
+        // Keep X-Idempotency-Key header for backward compatibility (supplementary protection)
         if (operationId) headers['X-Idempotency-Key'] = String(operationId)
         const startedAt = now(); metrics.requests += 1
         let response
         if (isWrite) writeDispatched = true
-        try { response = await fetchImpl(`${baseUrl}${requestPath}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(timeoutMs) }) } catch (error) {
+        try { response = await fetchImpl(`${baseUrl}${finalPath}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(timeoutMs) }) } catch (error) {
           const timeout = isTimeout(error)
           if (timeout) metrics.timeoutCount += 1
           throw new FeishuUnavailableError(timeout ? '飞书请求超时' : '飞书网络请求暂时不可用', { code: timeout ? FEISHU_ERROR_CODES.TIMEOUT : FEISHU_ERROR_CODES.NETWORK, retryable: true, operation, attempt, customerId: context.customerId, entityType: context.entityType })
         }
-        const rawText = await response.text().catch(() => '')
-        let payload = null
-        try { payload = rawText ? JSON.parse(rawText) : null } catch { payload = { msg: String(rawText || '').slice(0, 300), non_json_body: true } }
-        // Feishu success is HTTP 200 with code === 0. Any other provider code or non-2xx is an error.
-        if (!response.ok || (payload && payload.code !== undefined && Number(payload.code) !== 0)) {
+        const payload = await response.json().catch(() => null)
+        if (!response.ok || payload?.code) {
           const normalized = normalizeProviderError({ status: response.status, providerCode: payload?.code, providerMessage: payload?.msg, operation })
           if (normalized.code === FEISHU_ERROR_CODES.RATE_LIMITED) metrics.rateLimitCount += 1
           if (normalized.code === FEISHU_ERROR_CODES.SERVER_ERROR) metrics.serverErrorCount += 1
-          throw new FeishuUnavailableError(normalized.message, { ...normalized, providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, operation, attempt, customerId: context.customerId, entityType: context.entityType, table: context.table })
+          throw new FeishuUnavailableError(normalized.message, { ...normalized, providerCode: payload?.code, providerMessage: payload?.msg, providerRequestId: requestId(response, payload), httpStatus: response.status, operation, attempt, customerId: context.customerId, entityType: context.entityType })
         }
         metrics.successes += 1; recordSuccess(attempt)
         if (isWrite) logger.info?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ request_id: requestId(response, payload), operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, latency_ms: now() - startedAt, result: 'SUCCESS' }))
@@ -183,13 +177,13 @@ export function createFeishuGateway({
         if (error?.code === FEISHU_ERROR_CODES.TOKEN_EXPIRED && !refreshedAfterTokenError) { tokenCache = null; refreshedAfterTokenError = true; metrics.retryCount += 1; continue }
         recordFailure(error)
         const canRetry = retryEnabled && isRetryableFeishuError(error) && attempt < maxAttempts - 1
-        const duplicateSubmit = Number(error?.providerCode) === 1254608 || error?.code === FEISHU_ERROR_CODES.CONFLICT
-        if (isWrite && context.idempotency && (isRetryableFeishuError(error) || duplicateSubmit)) {
+        // Supplementary protection: search for existing record if idempotency context provided
+        if (isWrite && context.idempotency && isRetryableFeishuError(error)) {
           const existing = await findExistingRecord(context.table, context.idempotency).catch(() => null)
-          if (existing) { metrics.duplicatePreventedCount += 1; logger.warn?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, result: 'DUPLICATE_PREVENTED', provider_code: error?.providerCode })); return { record: existing, idempotency_recovered: true } }
+          if (existing) { metrics.duplicatePreventedCount += 1; logger.warn?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, result: 'DUPLICATE_PREVENTED' })); return { record: existing, idempotency_recovered: true } }
         }
         if (!canRetry) {
-          if (isWrite) logger.error?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, result: 'FAILED', normalized_error: error?.code || 'FEISHU_UNAVAILABLE', http_status: error?.httpStatus, provider_code: error?.providerCode, provider_message: error?.providerMessage, provider_request_id: error?.providerRequestId }))
+          if (isWrite) logger.error?.('[ASVA_FEISHU_WRITE]', JSON.stringify({ operation, operation_id: operationId, client_token: clientToken, customer_id: context.customerId, entity_type: context.entityType, table: context.table, attempt: attempt + 1, result: 'FAILED', normalized_error: error?.code || 'FEISHU_UNAVAILABLE', http_status: error?.httpStatus }))
           throw error
         }
         metrics.retryCount += 1
@@ -207,18 +201,6 @@ export function createFeishuGateway({
     } while (pageToken)
     return rows
   }
-  async function searchPaged(tableId, body, context = {}) {
-    const rows = []; let pageToken = ''
-    do {
-      const payload = { ...(body || {}), page_size: Number(body?.page_size) || 500 }
-      if (pageToken) payload.page_token = pageToken
-      else delete payload.page_token
-      const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/search`, { method: 'POST', body: JSON.stringify(payload) }, { ...context, operation: 'search_records', table: tableId, retry: true })
-      rows.push(...(data.items || []))
-      pageToken = data.has_more ? data.page_token || '' : ''
-    } while (pageToken)
-    return rows
-  }
   async function findExistingRecord(tableId, idempotency) {
     if (!tableId || !idempotency?.field || idempotency.value === undefined || idempotency.value === null) return null
     const rows = await listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId })
@@ -228,11 +210,6 @@ export function createFeishuGateway({
     request, getToken, providerStatus, metrics: () => ({ ...metrics }),
     findExistingRecord,
     listRecords: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId }),
-    searchRecords: (tableId, filter, options = {}) => searchPaged(tableId, {
-      filter,
-      ...(Array.isArray(options.fieldNames) && options.fieldNames.length ? { field_names: options.fieldNames } : {}),
-      ...(options.automatic_fields !== undefined ? { automatic_fields: options.automatic_fields } : {}),
-    }, { readContext: options.readContext }),
     getRecord: async (tableId, recordId) => { const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${encodeURIComponent(recordId)}`, {}, { operation: 'get_record', table: tableId }); return data?.record || data },
     listFields: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields?${query}`, 'list_fields', { table: tableId }),
     listTables: () => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables?${query}`, 'list_tables'),
@@ -247,7 +224,6 @@ export function createFeishuGateway({
 const gateway = createFeishuGateway()
 export const feishuGateway = gateway
 export const listRecords = (tableId) => gateway.listRecords(tableId)
-export const searchRecords = (tableId, filter, options = {}) => gateway.searchRecords(tableId, filter, options)
 export const getRecord = (tableId, recordId) => gateway.getRecord(tableId, recordId)
 export const listFields = (tableId) => gateway.listFields(tableId)
 export const listTables = () => gateway.listTables()
