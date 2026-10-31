@@ -411,6 +411,159 @@ describe('two-phase HTTP auto archive', () => {
     expect(processSpy).not.toHaveBeenCalled()
   })
 
+  it('BLOCKER: after physical fields filled, finalize must reuse primary Source and never create orphan', async () => {
+    const repository = new FeishuRepository()
+    await repository.createCustomer('ADMIN-1', {
+      operationId: SYNTH_OPERATION_ID,
+      nickname: '身份漂移验收',
+      phone: '19900002007',
+      situation: NOTES,
+      enrollments: [],
+    }, '', { compactResponse: true })
+
+    const primaryHash = contentHash(NOTES)
+    const primarySourceId = 'SRC-d179313a2dda70c92736e93a'
+    table(state.tableIds.sourceRecords).set('rec-primary-src', {
+      record_id: 'rec-primary-src',
+      fields: fields('sourceRecords', {
+        source_id: primarySourceId,
+        customer_id: SYNTH_CUSTOMER_ID,
+        subject_type: 'PERSON',
+        subject_id: SYNTH_CUSTOMER_ID,
+        source_type: 'TEXT_INPUT',
+        title: '客户补充资料',
+        raw_text: NOTES,
+        content_hash: primaryHash,
+        processing_status: 'COMPLETED',
+        notes: 'AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE',
+        uploaded_by: 'ADMIN-1',
+        created_at: '2026-10-31T10:00:00.000Z',
+        uploaded_at: '2026-10-31T10:00:00.000Z',
+        last_batch_id: 'EXT-PRIMARY-1',
+      }),
+    })
+    table(state.tableIds.evidenceItems).set('rec-ev-1', {
+      record_id: 'rec-ev-1',
+      fields: fields('evidenceItems', {
+        evidence_id: 'EVD-PRIMARY-1',
+        customer_id: SYNTH_CUSTOMER_ID,
+        subject_type: 'PERSON',
+        subject_id: SYNTH_CUSTOMER_ID,
+        source_id: primarySourceId,
+        evidence_type: 'FACT',
+        semantic_kind: 'NEED',
+        field_key: 'current_core_issue',
+        standard_value: JSON.stringify('转行产品经理'),
+        display_text: '转行产品经理',
+        source_excerpt: NOTES.slice(0, 40),
+        confidence: 0.9,
+        review_status: 'PENDING_REVIEW',
+        extraction_batch_id: 'EXT-PRIMARY-1',
+      }),
+    })
+    const driftedText = `${NOTES}\n当前困扰：转行产品经理\n希望获得帮助：系统梳理\n当前目标：明确方向`
+    const driftedHash = contentHash(driftedText)
+    table(state.tableIds.sourceRecords).set('rec-orphan-src', {
+      record_id: 'rec-orphan-src',
+      fields: fields('sourceRecords', {
+        source_id: 'SRC-b6d4994db33bad45f52aa33f',
+        customer_id: SYNTH_CUSTOMER_ID,
+        subject_type: 'PERSON',
+        subject_id: SYNTH_CUSTOMER_ID,
+        source_type: 'TEXT_INPUT',
+        title: '客户补充资料',
+        raw_text: driftedText,
+        content_hash: driftedHash,
+        processing_status: 'UPLOADED',
+        notes: 'AUTO_PROFILE_ORGANIZE:HTTP_AUTO_ARCHIVE',
+        uploaded_by: 'ADMIN-1',
+        created_at: '2026-10-31T12:00:00.000Z',
+        uploaded_at: '2026-10-31T12:00:00.000Z',
+      }),
+    })
+    const [custKey, custRow] = [...table(state.tableIds.customers).entries()][0]
+    table(state.tableIds.customers).set(custKey, {
+      ...custRow,
+      fields: {
+        ...custRow.fields,
+        current_issue: '转行产品经理',
+        help_expectation: '系统梳理',
+        current_goal: '明确方向',
+        profile_field_meta_json: JSON.stringify({
+          _profile_version: 2,
+          _fields: {
+            current_core_issue: { confirmed: false, verificationLabel: 'AI整理·待核实', sourceRecordId: primarySourceId },
+            current_goal: { confirmed: false, verificationLabel: 'AI整理·待核实', sourceRecordId: primarySourceId },
+            current_expectation: { confirmed: false, verificationLabel: 'AI整理·待核实', sourceRecordId: primarySourceId },
+          },
+          _automatic_profile_pending: null,
+          _mutation_states: {},
+        }),
+      },
+    })
+
+    const createSourceSpy = vi.spyOn(repository, 'createSource')
+    repository.processSource = vi.fn(async (_actor, sourceId, opts = {}) => {
+      expect(sourceId).toBe(primarySourceId)
+      expect(opts.stage).toBe('finalize')
+      return {
+        source: { id: primarySourceId, customerId: SYNTH_CUSTOMER_ID, processingStatus: 'COMPLETED' },
+        evidenceItems: [{ id: 'EVD-PRIMARY-1', customerId: SYNTH_CUSTOMER_ID, sourceId: primarySourceId, fieldKey: 'current_core_issue', reviewStatus: 'PENDING_REVIEW' }],
+        proposals: [{ id: 'PROP-1', customerId: SYNTH_CUSTOMER_ID, sourceId: primarySourceId, evidenceId: 'EVD-PRIMARY-1', fieldKey: 'current_core_issue' }],
+        conflicts: [],
+      }
+    })
+
+    const finalized = await repository.runCustomerAutoArchive('ADMIN-1', SYNTH_CUSTOMER_ID, { stage: 'finalize', finalize: true })
+    expect(finalized.sourceId).toBe(primarySourceId)
+    expect(createSourceSpy).not.toHaveBeenCalled()
+
+    const again = await repository.runCustomerAutoArchive('ADMIN-1', SYNTH_CUSTOMER_ID, {
+      stage: 'finalize',
+      finalize: true,
+      sourceId: primarySourceId,
+    })
+    expect(again.sourceId).toBe(primarySourceId)
+    expect(again.phase === 'ALREADY_DONE' || again.status === 'COMPLETED').toBe(true)
+    expect(createSourceSpy).not.toHaveBeenCalled()
+
+    createSourceSpy.mockClear()
+    const extractAgain = await repository.runCustomerAutoArchive('ADMIN-1', SYNTH_CUSTOMER_ID, { stage: 'extract' })
+    expect(extractAgain.sourceId).toBe(primarySourceId)
+    expect(createSourceSpy).not.toHaveBeenCalled()
+    expect([...table(state.tableIds.sourceRecords).values()]).toHaveLength(2)
+  })
+
+  it('BLOCKER: finalize without Source returns ARCHIVE_FINALIZE_NO_SOURCE and never createSource', async () => {
+    const repository = new FeishuRepository()
+    // Use canary-allowlisted id without CREATE pending / Source.
+    const customerId = 'CUS-86e6d67e5e4bbd047806'
+    table(state.tableIds.customers).set('rec-nosrc', {
+      record_id: 'rec-nosrc',
+      fields: fields('customers', {
+        customer_id: customerId,
+        nickname: '无Source收尾',
+        phone: '19900002008',
+        notes: NOTES,
+        created_by_staff_id: 'ADMIN-1',
+        created_at: '2026-10-31T10:00:00.000Z',
+        profile_field_meta_json: JSON.stringify({
+          _profile_version: 1,
+          _fields: {},
+          _automatic_profile_pending: null,
+          _mutation_states: {},
+        }),
+      }),
+    })
+    const createSourceSpy = vi.spyOn(repository, 'createSource')
+    const processSpy = vi.fn()
+    repository.processSource = processSpy
+    const result = await repository.runCustomerAutoArchive('ADMIN-1', customerId, { stage: 'finalize', finalize: true })
+    expect(result).toMatchObject({ status: 'FAILED', errorCode: 'ARCHIVE_FINALIZE_NO_SOURCE' })
+    expect(createSourceSpy).not.toHaveBeenCalled()
+    expect(processSpy).not.toHaveBeenCalled()
+  })
+
   it('P0: queueAutomaticCustomerProfile scheduleProcessing:false never calls scheduleAutomaticProcessing', async () => {
     const repository = new FeishuRepository()
     await repository.createCustomer('ADMIN-1', {

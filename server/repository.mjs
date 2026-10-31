@@ -946,6 +946,64 @@ function findMatchingAutomaticProfileSource(sourceRecords, customerId, contentHa
   return (sourceRecords || []).find((item) => item.customerId === customerId && (item.id === expectedSourceId || (item.contentHash === contentHashValue && isAutomaticProfileSource(item)))) || null
 }
 
+/**
+ * Stable create-time archive text: notes only.
+ * Do NOT fold already-written need/goal/helpExpectation back into the Source identity —
+ * that drifts contentHash after finalize and spawns orphan Sources (ASVA-ARCHIVE-001).
+ */
+function originalAutomaticArchiveTextFromCustomer(customer) {
+  return normalizeSourceRawText(customer?.notes || '')
+}
+
+function activeEvidenceCountBySource(evidenceItems) {
+  const counts = new Map()
+  for (const item of evidenceItems || []) {
+    if (!item?.sourceId) continue
+    if (item.reviewStatus === 'SUPERSEDED' || item.reviewStatus === 'REJECTED') continue
+    counts.set(item.sourceId, (counts.get(item.sourceId) || 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * Prefer the durable primary auto-archive Source for a customer.
+ * Ignores Evidence-less orphans when a Source with Evidence exists (I01–I03).
+ */
+function findPrimaryAutomaticArchiveSource(sourceRecords, evidenceItems, customerId, { pendingContentHash = null } = {}) {
+  const sources = (sourceRecords || []).filter((item) => item.customerId === customerId && isAutomaticProfileSource(item))
+  if (!sources.length) return null
+  const evidenceCounts = activeEvidenceCountBySource(evidenceItems)
+  const withEvidence = sources.filter((item) => (evidenceCounts.get(item.id) || 0) > 0)
+  const pool = withEvidence.length ? withEvidence : sources.filter((item) => {
+    // Orphans without Evidence are ignored for recovery when we can recreate via pending hash.
+    if ((evidenceCounts.get(item.id) || 0) > 0) return true
+    if (pendingContentHash && item.contentHash === pendingContentHash) return true
+    return shouldAutoRecoverSource(item)
+  })
+  if (!pool.length) {
+    // Last resort: pending-hash exact match only (never prefer drifted orphan for finalize).
+    if (pendingContentHash) {
+      return findMatchingAutomaticProfileSource(sources, customerId, pendingContentHash)
+    }
+    return null
+  }
+  const statusRank = (status) => ({
+    COMPLETED: 50,
+    REVIEW_REQUIRED: 40,
+    PROCESSING: 30,
+    FAILED: 20,
+    UPLOADED: 10,
+  }[status] || 0)
+  return [...pool].sort((a, b) => {
+    const evidenceDiff = (evidenceCounts.get(b.id) || 0) - (evidenceCounts.get(a.id) || 0)
+    if (evidenceDiff !== 0) return evidenceDiff
+    const statusDiff = statusRank(b.processingStatus) - statusRank(a.processingStatus)
+    if (statusDiff !== 0) return statusDiff
+    // Prefer original (earliest) identity over later drifted orphans.
+    return String(a.createdAt || a.uploadedAt || a.occurredAt || '').localeCompare(String(b.createdAt || b.uploadedAt || b.occurredAt || ''))
+  })[0] || null
+}
+
 function mapAutomaticProfileStageFromSource(source) {
   if (!source) return 'PENDING'
   if (source.processingStatus === 'UPLOADED') return 'SOURCE_CREATED'
@@ -975,9 +1033,8 @@ function automaticProfileEventAllowed(eventAt) {
 }
 
 function automaticProfileStatus(sources, evidenceItems, customerId, customer = null) {
-  const latest = (sources || [])
-    .filter((source) => source.customerId === customerId && isAutomaticProfileSource(source))
-    .sort((a, b) => String(b.occurredAt || b.uploadedAt || b.createdAt || '').localeCompare(String(a.occurredAt || a.uploadedAt || a.createdAt || '')))[0]
+  const pendingHash = customer?.automaticProfilePending?.contentHash || null
+  const latest = findPrimaryAutomaticArchiveSource(sources, evidenceItems, customerId, { pendingContentHash: pendingHash })
   if (!latest) {
     // Durable pending without Source yet → PENDING (frontend 待处理), not silent NOT_STARTED.
     // UPDATE-origin pending must never drive new-customer archive resume.
@@ -1637,7 +1694,7 @@ export class FeishuRepository {
    * Phase-2 HTTP entry: create/reuse Source via existing createSource, then await processSource.
    * Does not use setImmediate scheduleAutomaticProcessing — avoids dual-trigger with save path.
    */
-  async runCustomerAutoArchive(actorId, customerId, { force = false, stage = 'all', finalize = false } = {}) {
+  async runCustomerAutoArchive(actorId, customerId, { force = false, stage = 'all', finalize = false, sourceId: requestedSourceId = null } = {}) {
     const requestedCustomerId = text(customerId).trim()
     if (!requestedCustomerId) throw Object.assign(new Error('customerId 必填'), { code: 'CUSTOMER_ID_REQUIRED', status: 400 })
     if (!config.features.automaticProfileArchiving) {
@@ -1647,8 +1704,9 @@ export class FeishuRepository {
       return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'CANARY_GATE' }
     }
     const stageMode = finalize || stage === 'finalize' ? 'finalize' : (stage === 'all' ? 'all' : 'extract')
+    const explicitSourceId = text(requestedSourceId).trim() || null
     if (this.load === FeishuRepository.prototype.load && !scopedReadStore.getStore()) {
-      return this.withCustomerScope(requestedCustomerId, 'HTTP_AUTO_ARCHIVE', () => this.runCustomerAutoArchive(actorId, customerId, { force, stage: stageMode, finalize: stageMode === 'finalize' }))
+      return this.withCustomerScope(requestedCustomerId, 'HTTP_AUTO_ARCHIVE', () => this.runCustomerAutoArchive(actorId, customerId, { force, stage: stageMode, finalize: stageMode === 'finalize', sourceId: explicitSourceId }))
     }
 
     const startedAt = Date.now()
@@ -1662,8 +1720,10 @@ export class FeishuRepository {
       const customer = visible.customers.find((item) => item.id === requestedCustomerId)
       if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
 
-      const recoveredText = automaticProfileTextFromCustomer(customer)
-      if (!recoveredText) {
+      // Create-time identity uses notes only; filled physical fields must not drift Source hash.
+      const originalText = originalAutomaticArchiveTextFromCustomer(customer)
+      const recoveredText = originalText || automaticProfileTextFromCustomer(customer)
+      if (!recoveredText && stageMode !== 'finalize') {
         return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'NO_TEXT', timings, durationMs: Date.now() - startedAt }
       }
       const eventAt = customer.automaticProfilePending?.createdAt || customer.createdAt || now()
@@ -1683,11 +1743,40 @@ export class FeishuRepository {
           durationMs: Date.now() - startedAt,
         }
       }
-      const hasCreatePending = Boolean(customer.automaticProfilePending?.contentHash) && (pendingReason === 'CUSTOMER_SAVE' || pendingReason === 'HTTP_AUTO_ARCHIVE' || !pendingReason)
+      const pendingContentHash = customer.automaticProfilePending?.contentHash || null
+      const hasCreatePending = Boolean(pendingContentHash) && (pendingReason === 'CUSTOMER_SAVE' || pendingReason === 'HTTP_AUTO_ARCHIVE' || !pendingReason)
       const hasRecoverableSource = customerHasRecoverableAutomaticProfileSource(visible.sourceRecords, requestedCustomerId)
       const hasAutoProfileSource = (visible.sourceRecords || []).some((item) => item.customerId === requestedCustomerId && isAutomaticProfileSource(item))
+
+      // Resolve durable primary Source BEFORE any createSource (I01–I04).
+      let resolvedSource = null
+      if (explicitSourceId) {
+        resolvedSource = (visible.sourceRecords || []).find((item) => item.id === explicitSourceId) || null
+        if (!resolvedSource || resolvedSource.customerId !== requestedCustomerId) {
+          return {
+            status: 'FAILED',
+            customerId: requestedCustomerId,
+            sourceId: explicitSourceId,
+            phase: 'SOURCE_RESOLVE',
+            errorCode: 'ARCHIVE_SOURCE_CUSTOMER_MISMATCH',
+            timings,
+            durationMs: Date.now() - startedAt,
+          }
+        }
+      } else {
+        resolvedSource = findPrimaryAutomaticArchiveSource(
+          visible.sourceRecords,
+          visible.evidenceItems,
+          requestedCustomerId,
+          { pendingContentHash },
+        )
+        if (!resolvedSource && pendingContentHash) {
+          resolvedSource = findMatchingAutomaticProfileSource(visible.sourceRecords, requestedCustomerId, pendingContentHash)
+        }
+      }
+
       // Idempotent re-entry allowed when CREATE Source already exists (ALREADY_DONE / resume).
-      if (!force && !hasCreatePending && !hasRecoverableSource && !hasAutoProfileSource) {
+      if (!force && !hasCreatePending && !hasRecoverableSource && !hasAutoProfileSource && !resolvedSource && stageMode !== 'finalize') {
         return {
           status: 'NOT_REQUIRED',
           customerId: requestedCustomerId,
@@ -1698,45 +1787,65 @@ export class FeishuRepository {
         }
       }
 
-      phase = 'CREATE_SOURCE'
-      const queueStarted = Date.now()
-      // Explicit scheduleProcessing:false — never monkey-patch shared instance methods.
-      const queueReason = (pendingReason === 'CUSTOMER_SAVE' || pendingReason === 'HTTP_AUTO_ARCHIVE')
-        ? pendingReason
-        : 'HTTP_AUTO_ARCHIVE'
-      const queueResult = await this.queueAutomaticCustomerProfile(
-        actorId,
-        requestedCustomerId,
-        recoveredText,
-        queueReason,
-        { scheduleProcessing: false },
-      )
-      timings.source_ms = Date.now() - queueStarted
+      let sourceId = resolvedSource?.id || null
+      let reusedExisting = Boolean(resolvedSource)
 
-      if (queueResult?.status === 'DISABLED' || queueResult?.status === 'NOT_REQUIRED') {
-        return { ...queueResult, customerId: requestedCustomerId, phase: 'QUEUE', timings, durationMs: Date.now() - startedAt }
-      }
-      if (queueResult?.status === 'PENDING' && !queueResult?.sourceId) {
-        return {
-          status: 'FAILED',
-          customerId: requestedCustomerId,
-          phase: 'CREATE_SOURCE',
-          errorCode: queueResult.errorCode || 'AUTO_SOURCE_QUEUE_FAILED',
-          timings,
-          durationMs: Date.now() - startedAt,
+      // FINALIZE must never createSource and never call DeepSeek (I03/I04).
+      if (stageMode === 'finalize') {
+        if (!sourceId) {
+          return {
+            status: 'FAILED',
+            customerId: requestedCustomerId,
+            phase: 'FINALIZE_ARCHIVE',
+            errorCode: 'ARCHIVE_FINALIZE_NO_SOURCE',
+            timings,
+            durationMs: Date.now() - startedAt,
+          }
         }
-      }
+        phase = 'FINALIZE_ARCHIVE'
+      } else if (!sourceId) {
+        phase = 'CREATE_SOURCE'
+        const queueStarted = Date.now()
+        const queueReason = (pendingReason === 'CUSTOMER_SAVE' || pendingReason === 'HTTP_AUTO_ARCHIVE')
+          ? pendingReason
+          : 'HTTP_AUTO_ARCHIVE'
+        // Queue with notes-only text so contentHash matches CREATE pending identity.
+        const queueResult = await this.queueAutomaticCustomerProfile(
+          actorId,
+          requestedCustomerId,
+          recoveredText,
+          queueReason,
+          { scheduleProcessing: false },
+        )
+        timings.source_ms = Date.now() - queueStarted
 
-      const sourceId = queueResult.sourceId
-      if (!sourceId) {
-        return {
-          status: 'FAILED',
-          customerId: requestedCustomerId,
-          phase: 'CREATE_SOURCE',
-          errorCode: 'SOURCE_ID_MISSING',
-          timings,
-          durationMs: Date.now() - startedAt,
+        if (queueResult?.status === 'DISABLED' || queueResult?.status === 'NOT_REQUIRED') {
+          return { ...queueResult, customerId: requestedCustomerId, phase: 'QUEUE', timings, durationMs: Date.now() - startedAt }
         }
+        if (queueResult?.status === 'PENDING' && !queueResult?.sourceId) {
+          return {
+            status: 'FAILED',
+            customerId: requestedCustomerId,
+            phase: 'CREATE_SOURCE',
+            errorCode: queueResult.errorCode || 'AUTO_SOURCE_QUEUE_FAILED',
+            timings,
+            durationMs: Date.now() - startedAt,
+          }
+        }
+        sourceId = queueResult.sourceId
+        reusedExisting = Boolean(queueResult.reused)
+        if (!sourceId) {
+          return {
+            status: 'FAILED',
+            customerId: requestedCustomerId,
+            phase: 'CREATE_SOURCE',
+            errorCode: 'SOURCE_ID_MISSING',
+            timings,
+            durationMs: Date.now() - startedAt,
+          }
+        }
+      } else {
+        timings.source_ms = 0
       }
 
       // If already terminal, return without reprocessing unless force or finalize is still needed.
@@ -1756,10 +1865,12 @@ export class FeishuRepository {
           status: 'COMPLETED',
           customerId: requestedCustomerId,
           sourceId,
-          reused: Boolean(queueResult.reused),
+          reused: reusedExisting,
           phase: 'ALREADY_DONE',
           timings,
           durationMs: Date.now() - startedAt,
+          evidenceCount: existingEvidence.length,
+          proposalCount: existingProposals.length,
           automaticProfileStatus: automaticProfileStatus(fresh.sourceRecords, fresh.evidenceItems, requestedCustomerId, customer),
         }
       }
@@ -1769,7 +1880,7 @@ export class FeishuRepository {
           status: 'REVIEW_REQUIRED',
           customerId: requestedCustomerId,
           sourceId,
-          reused: Boolean(queueResult.reused),
+          reused: reusedExisting,
           phase: 'ALREADY_DONE',
           proposalCount: existingProposals.length,
           evidenceCount: existingEvidence.length,
@@ -1779,12 +1890,25 @@ export class FeishuRepository {
         }
       }
 
+      if (stageMode === 'finalize' && !existingEvidence.length) {
+        return {
+          status: 'FAILED',
+          customerId: requestedCustomerId,
+          sourceId,
+          reused: reusedExisting,
+          phase: 'FINALIZE_ARCHIVE',
+          errorCode: 'ARCHIVE_FINALIZE_NO_EVIDENCE',
+          timings,
+          durationMs: Date.now() - startedAt,
+        }
+      }
+
       // Finalize-only path: never DeepSeek / never force supersede.
       // If Evidence already exists and archive still incomplete, prefer finalize even when
       // the client defaulted to extract (page reopen / retry).
-      const processStage = (!force && needsFinalize && existingEvidence.length)
+      const processStage = (stageMode === 'finalize')
         ? 'finalize'
-        : stageMode
+        : ((!force && needsFinalize && existingEvidence.length) ? 'finalize' : stageMode)
       phase = processStage === 'finalize' ? 'FINALIZE_ARCHIVE' : (processStage === 'extract' ? 'EXTRACT_EVIDENCE' : 'PROCESS_SOURCE')
       const processStarted = Date.now()
       let processed
@@ -1796,7 +1920,7 @@ export class FeishuRepository {
           status: 'FAILED',
           customerId: requestedCustomerId,
           sourceId,
-          reused: Boolean(queueResult.reused),
+          reused: reusedExisting,
           phase: 'PROCESS_SOURCE',
           errorCode: error?.code || 'PROCESS_SOURCE_FAILED',
           errorMessage: error?.message || String(error),
@@ -1816,7 +1940,7 @@ export class FeishuRepository {
           status: 'PROCESSING',
           customerId: requestedCustomerId,
           sourceId,
-          reused: Boolean(queueResult.reused),
+          reused: reusedExisting,
           phase: 'EXTRACT_READY',
           needsFinalize: true,
           timings,
@@ -1846,7 +1970,7 @@ export class FeishuRepository {
         status: finalStatus,
         customerId: requestedCustomerId,
         sourceId,
-        reused: Boolean(queueResult.reused),
+        reused: reusedExisting,
         phase: processStage === 'finalize' ? 'FINALIZE_DONE' : 'DONE',
         timings,
         durationMs: Date.now() - startedAt,
@@ -1884,14 +2008,21 @@ export class FeishuRepository {
     const customer = database.customers.find((item) => item.id === requestedCustomerId)
     if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
 
-    const recoveredText = automaticProfileTextFromCustomer(customer)
+    const recoveredText = originalAutomaticArchiveTextFromCustomer(customer) || automaticProfileTextFromCustomer(customer)
     if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId }
 
     const eventAt = customer.automaticProfilePending?.createdAt || customer.createdAt || now()
     if (!automaticProfileEventAllowed(eventAt)) return { status: 'DISABLED', customerId: requestedCustomerId, reason: 'BEFORE_ENABLED_AT' }
 
     const textHash = contentHash(recoveredText)
-    const existingSource = findMatchingAutomaticProfileSource(database.sourceRecords, requestedCustomerId, textHash)
+    const pendingHash = customer.automaticProfilePending?.contentHash || textHash
+    const existingSource = findPrimaryAutomaticArchiveSource(
+      database.sourceRecords,
+      database.evidenceItems,
+      requestedCustomerId,
+      { pendingContentHash: pendingHash },
+    ) || findMatchingAutomaticProfileSource(database.sourceRecords, requestedCustomerId, pendingHash)
+      || findMatchingAutomaticProfileSource(database.sourceRecords, requestedCustomerId, textHash)
     const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
     const resolvedActorId = database.staff.some((item) => item.id === actorId && item.status === 'ACTIVE')
       ? actorId

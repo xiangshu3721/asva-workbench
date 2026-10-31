@@ -536,10 +536,11 @@ function WorkbenchApp() {
     const startedAt = performance.now()
     const runFinalize = async (sourceId?: string) => {
       const finalizeStarted = performance.now()
+      const pinnedSourceId = sourceId || undefined
       const finalized = typeof (workbenchApi as { finalizeCustomerArchive?: Function }).finalizeCustomerArchive === 'function'
-        ? await (workbenchApi as { finalizeCustomerArchive: (actorId: string, customerId: string) => Promise<any> }).finalizeCustomerArchive(activeStaff.id, customerId)
-        : await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize', finalize: true })
-      logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(performance.now() - finalizeStarted), status: finalized?.status || '', phase: finalized?.phase || '', reason, source_id: sourceId || finalized?.sourceId || '', error: finalized?.errorCode || '' })
+        ? await (workbenchApi as { finalizeCustomerArchive: (actorId: string, customerId: string, sourceId?: string) => Promise<any> }).finalizeCustomerArchive(activeStaff.id, customerId, pinnedSourceId)
+        : await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize', finalize: true, sourceId: pinnedSourceId })
+      logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(performance.now() - finalizeStarted), status: finalized?.status || '', phase: finalized?.phase || '', reason, source_id: pinnedSourceId || finalized?.sourceId || '', error: finalized?.errorCode || '' })
       return finalized
     }
     void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'extract' })

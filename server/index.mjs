@@ -169,8 +169,13 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && customerAutoArchiveFinalize) {
     const actor = await guard(request)
     const body = await readBody(request)
-    const result = await repository.runCustomerAutoArchive(actor, decodeURIComponent(customerAutoArchiveFinalize[1]), { force: false, stage: 'finalize', finalize: true })
-    const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200
+    const result = await repository.runCustomerAutoArchive(actor, decodeURIComponent(customerAutoArchiveFinalize[1]), {
+      force: false,
+      stage: 'finalize',
+      finalize: true,
+      sourceId: body?.sourceId || null,
+    })
+    const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : (result?.errorCode === 'ARCHIVE_SOURCE_CUSTOMER_MISMATCH' ? 409 : 200)
     return send(request, response, statusCode, result, requestId)
   }
   const customerAutoArchive = url.pathname.match(/^\/api\/customers\/([^/]+)\/auto-archive$/)
@@ -182,8 +187,9 @@ async function handle(request, response, requestId) {
       force: body?.force === true && stage !== 'finalize',
       stage,
       finalize: stage === 'finalize',
+      sourceId: body?.sourceId || null,
     })
-    const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200
+    const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : (result?.errorCode === 'ARCHIVE_SOURCE_CUSTOMER_MISMATCH' ? 409 : 200)
     return send(request, response, statusCode, result, requestId)
   }
   const enrollmentRecovery = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)
