@@ -31,6 +31,7 @@
 python3 -m pip install -r .ai/tools/requirements.txt
 python3 .ai/tools/validate.py task .ai/templates/task.yaml
 python3 .ai/tools/validate.py result .ai/templates/task.yaml .ai/templates/result.json
+python3 .ai/tools/selftest.py
 ```
 
 模板中的示例状态为 `DRAFT` / `PARTIAL`，**验证格式通过不代表任务获批准、业务验收通过或允许部署**。
