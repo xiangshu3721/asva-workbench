@@ -1,0 +1,81 @@
+{
+  "task_id": "ASVA-ARCHIVE-001",
+  "receipt_type": "production-release",
+  "recorded_at": "2026-10-31T14:58:00+08:00",
+  "executor": "Codex",
+  "result_state": "ROLLED_BACK_AFTER_PRODUCTION_SMOKE",
+  "ready_for_release": false,
+  "deployment_authorized": true,
+  "candidate": {
+    "source_commit": "8dd445020d9aa9f2be327458331b83f7411ca5e5",
+    "resolved_release_commit": "d7920be1e2113861c86fc9c773966fcb1ecf6cdb",
+    "pr_number": 56,
+    "merge_commit": "0637e33e20489e7712469165b80904c2ad5bbe58",
+    "backend_deploy_mode": "code-only; live environment configuration preserved",
+    "backend_bundle_sha256": "23faf105e8f08e99d26ddc56f0ae66aed0460d876fa8cfdb5bdaf4d4ca3a6cb5",
+    "frontend_pages_workflow_run": 41211919090,
+    "frontend_pages_commit": "0637e33e20489e7712469165b80904c2ad5bbe58"
+  },
+  "candidate_health": {
+    "http_status": 200,
+    "release": "R048.11",
+    "app_env": "production",
+    "environment": "production",
+    "data_mode": "production",
+    "auth_mode": "PASSWORD",
+    "feishu_provider_state": "healthy",
+    "tables_verified": 13
+  },
+  "production_smoke": {
+    "login": "PASS",
+    "customer_directory_read": "PASS",
+    "synthetic_customer_create": "PASS",
+    "raw_situation_readback": "PASS",
+    "phase2_auto_archive": "FAIL",
+    "phase2_observation": "Production UI showed 'AI整理等待后台恢复，原始资料已保留'; after reload it returned to '还没有整理这个客户的 AI 档案'. Expanded raw-evidence area remained 0 sources / 0 items, with no verifiable Source or Evidence.",
+    "source_count": 0,
+    "evidence_count": 0,
+    "synthetic_customer_id": "CUS-c46a475302429755e4e1",
+    "data_deleted": false
+  },
+  "rollback": {
+    "reason": "Phase-2 automatic archive did not meet the real production Source/Evidence smoke gate; protect existing functions.",
+    "backend_target_commit": "115b163abc8a65b85d1aa2c7f002558c1d82f547",
+    "backend_bundle_sha256": "e1c8f3149dfb0c9113194462a7ca7f94e5de864ef520d5bf9f779645d01e9b51",
+    "frontend_pr_number": 59,
+    "frontend_rollback_commit": "615651caa6dc986c9add1058f1313d7d94df135b",
+    "frontend_pages_workflow_run": 41212406384,
+    "frontend_tree_baseline": "efc96a6cd6daa0ec37f845a5a3729f4c5f872d0a",
+    "rollback_workflow_conclusion": "success",
+    "production_data_preserved": true
+  },
+  "post_rollback_verification": {
+    "backend_health_http_status": 200,
+    "backend_release": "R048.11",
+    "backend_git_commit_reported": "115b163abc8a65b85d1aa2c7f002558c1d82f547",
+    "backend_app_env": "production",
+    "backend_data_mode": "production",
+    "backend_auth_mode": "PASSWORD",
+    "backend_feishu_provider_state": "healthy",
+    "frontend_build_meta_commit": "615651caa6dc986c9add1058f1313d7d94df135b",
+    "frontend_build_meta_environment": "production",
+    "browser_admin_login": "PASS",
+    "browser_customer_directory_count": 61,
+    "browser_synthetic_customer_readback": "PASS",
+    "browser_phase2_auto_archive": "NOT_PASS"
+  },
+  "local_verification": {
+    "typecheck": "PASS",
+    "vitest": "6 files / 24 tests PASS",
+    "production_build": "PASS",
+    "pr56_conflict_resolution": "PASS; only src/App.tsx required manual resolution in temporary release worktree"
+  },
+  "configuration_safety": {
+    "production_env_pulled_or_copied": false,
+    "live_env_and_resource_config_preserved": true,
+    "function_runtime_verified": "Nodejs20.19",
+    "function_timeout_seconds": 60,
+    "function_memory_mb": 512
+  },
+  "follow_up": "Do not mark COMPLETE or republish 8dd4450 until the production phase-2 failure is diagnosed with available logs or a safe reproduction and the Source/Evidence gate passes. Keep the synthetic smoke customer and its raw data for audit unless explicitly authorized for deletion."
+}

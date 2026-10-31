@@ -1,0 +1,117 @@
+{
+  "protocol": "XSH_AI_DEV_V1",
+  "kind": "result",
+  "task_id": "ASVA-ARCHIVE-001",
+  "spec_version": "1.0.0",
+  "spec_sha256": "7ac6dd4a02d3dde23301d2db3f5825c370cdf4c2d76deed603ef725d99f6741a",
+  "executor": "ChatGPT GPT-6 (independent source-code review; external raw logs unavailable)",
+  "result_state": "PARTIAL",
+  "base_sha": "5764f8a2dc1a749e0b7c670ebd48e665697ab97a",
+  "head_sha": "5764f8a2dc1a749e0b7c670ebd48e665697ab97a",
+  "branch": "fix/two-phase-new-customer-archive-20261031",
+  "acceptance_results": [
+    {
+      "acceptance_id": "AT001",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "执行者报告真实隔离Customers notes与输入一致；Mac本地RECEIPT和飞书原始行暂未提供给审核者，无法独立验证。"
+    },
+    {
+      "acceptance_id": "AT002",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "执行者报告SAVE=4450ms<8000ms，但缺少可独立复核的完整性能跟踪与真实浏览器界面；源码带附件时在关闭弹窗前仍await saveCustomerUpload（src/App.tsx:585-604），应测带附件真实保存体验。"
+    },
+    {
+      "acceptance_id": "AT003",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "执行者报告EXTRACT=44.9s，6条Evidence、DeepSeek真实调用；原始请求/飞书读回仅在Mac本地，未由本审核独立核实。"
+    },
+    {
+      "acceptance_id": "AT004",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "执行者报告Customers物理字段已落盘、5项confirmed=false及6 Proposal；源码有批量profile写与来源meta，但需要真实Feishu原始读取证据和字段级冲突覆盖测试，不能用API状态COMPLETED代替物理读回。"
+    },
+    {
+      "acceptance_id": "AT005",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "Grok明确报告UI截图SKIP；尚无真实浏览器从API读取字段、展示待核实状态、刷新后保持一致的证据。"
+    },
+    {
+      "acceptance_id": "AT006",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "执行者报告EXTRACT=44.9s、FINALIZE=52.3s，均低于单次60s但FINALIZE只余7.7s余量；需要真实请求日志、P95/慢请求与中断/超时恢复测试。"
+    },
+    {
+      "acceptance_id": "AT007",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "源码采用sourceId/batchId与finalize非force路径；15项单测由执行者报告。缺少独立实测关页重开、跨实例并发与去重后的物理读回证据。"
+    },
+    {
+      "acceptance_id": "AT008",
+      "status": "BLOCKED",
+      "evidence_refs": [],
+      "note": "执行者明确报告同一隔离运行存在第二条Source自动归档FAIL日志，但未提供sourceId、入口、RequestId及错误码；必须判断是否为上传/服务反馈/旧调度竞争。"
+    },
+    {
+      "acceptance_id": "AT009",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "GitHub PR#56仍为Draft且mergeable=false，用户报告生产仍115b163；缺少云端只读核验及与正式Pages部署的兼容、发布和回滚证据。"
+    },
+    {
+      "acceptance_id": "AT010",
+      "status": "PASS",
+      "evidence_refs": [
+        {
+          "kind": "commit",
+          "location": "https://github.com/xiangshu3721/asva-workbench/commit/5764f8a2dc1a749e0b7c670ebd48e665697ab97a",
+          "summary": "源码存在HTTP /auto-archive extract与/finalize两阶段、物理字段/confirmed=false写入以及独立单测（此PASS只代表结构审阅）",
+          "environment": "repository",
+          "observed_at": "2026-10-31"
+        }
+      ],
+      "note": "已独立核查server/index.mjs、repository.mjs、src/clientApi.ts、App.tsx、测试文件。静态PASS不代表真实E2E成功。"
+    }
+  ],
+  "deployment": {
+    "performed": false,
+    "environment": "none",
+    "reference": "本轮仅GitHub只读业务源码审查及独立协议分支文件存档；未部署",
+    "production_writes_performed": false
+  },
+  "blockers": [
+    "AT005 未完成真实浏览器展示及无缓存刷新验收",
+    "AT008 未解释的第二条Source自动归档FAIL，无法排除重复或遗留自动执行路径",
+    "AT001/AT003/AT004等真实集成日志仅存在执行者Mac本地，尚未以脱敏可访问方式提交",
+    "AT006 FINALIZE单次52.3秒接近60秒上限，缺乏异常网络和跨实例重入的风险验证",
+    "PR#56仍Draft且不可直接合并；生产版本和Pages兼容需要独立只读确认"
+  ],
+  "deviations": [
+    "执行者提供人类可读回执而非V1.0结果schema；本JSON属于ChatGPT独立审核回执，不冒充Grok执行回执。",
+    "当前任务按本轮明确要求创建在PR#57协议独立分支，尚未进入master；需让研发工具通过指定链接显式读取。"
+  ],
+  "improvement_proposals": [
+    {
+      "issue": "本地私有Mac证据路径无法跨AI平台直接审阅",
+      "proposal": "将脱敏RECEIPT、真实readback概要和浏览器证据保存在可访问的受控GitHub附件/CI产物，并附SHA256与环境标签；严禁公开个人资料/密钥。",
+      "evidence": "用户提供 /Users/xiangshu/Troublehut/_verify/asva-pr56-final-closed-loop-20261031/"
+    },
+    {
+      "issue": "CURRENT status COMPLETED可能掩盖其他同客户自动Source失败",
+      "proposal": "要求result.json按每个sourceId/batchId报告入口、阶段、终态、异常，并用AT008拒绝隐藏失败；排查server/repository.mjs:4263 SERVICE_RECORD仍调用scheduleAutomaticCustomerProfile。",
+      "evidence": "源码和执行者回执"
+    },
+    {
+      "issue": "处理接近HTTP硬超时且单次样本不足",
+      "proposal": "新增extract/finalize阶段真实墙钟、网关边界、重入和P95样本；不得仅靠增加timeout放行。"
+    }
+  ],
+  "summary_for_user": "PR#56业务代码的两阶段/未核实字段设计已核对；Grok报告合成客户隔离实测成功，但原始证据尚不可独立核实，浏览器UI未验，另有二次Source FAIL，故本审核PARTIAL，不放行上线。",
+  "ready_for_release": false
+}

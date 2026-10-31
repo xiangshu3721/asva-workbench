@@ -1,0 +1,33 @@
+{
+  "protocol": "XSH_AI_DEV_V1",
+  "kind": "result",
+  "task_id": "EXAMPLE-TASK-001",
+  "spec_version": "1.0.0",
+  "spec_sha256": null,
+  "executor": "示例执行者",
+  "result_state": "PARTIAL",
+  "base_sha": null,
+  "head_sha": null,
+  "branch": null,
+  "acceptance_results": [
+    {
+      "acceptance_id": "AT001",
+      "status": "NOT_TESTED",
+      "evidence_refs": [],
+      "note": "模板未执行，不代表验收通过"
+    }
+  ],
+  "deployment": {
+    "performed": false,
+    "environment": "none",
+    "reference": null,
+    "production_writes_performed": false
+  },
+  "blockers": [
+    "这是示例回执，任务尚未批准或执行"
+  ],
+  "deviations": [],
+  "improvement_proposals": [],
+  "summary_for_user": "模板演示：尚未执行，不能上线。",
+  "ready_for_release": false
+}

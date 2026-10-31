@@ -1,5 +1,7 @@
 # ASVA 工作台
 
+> **AI 研发协作入口**：所有开发 AI 请先阅读 [AGENTS.md](AGENTS.md) 和 [`.ai/README.md`](.ai/README.md)，按照 [AI 研发意图编译与验收协议 V1.0](.ai/protocol/PROTOCOL.md) 执行和回执；当前任务须在 `.ai/tasks/` 内单独批准。
+
 ASVA 内部客户服务与经营管理 H5 的第一版可运行原型。
 
 ## 当前版本：V1.0 管理员工作台与只读 AI 数据查询
