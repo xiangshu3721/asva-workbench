@@ -144,7 +144,8 @@ describe('automatic profile pending consistency', () => {
     expect(row).toBeTruthy()
     const pending = metaOf(row)._automatic_profile_pending
     expect(pending).toMatchObject({ contentHash: contentHash(situation), actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE' })
-    expect(result.automaticProfile?.status).toBe('QUEUED')
+    expect(result.automaticProfile?.status).toBe('PENDING')
+    expect(result.automaticProfile?.mode).toBe('HTTP_PHASE2')
   })
 
   it('reproduces pending loss when meta is rewritten from a stale snapshot without pending', async () => {
@@ -420,11 +421,10 @@ describe('automatic profile pending consistency', () => {
     expect(String(rowFields(rowFor(created.createdCustomerId))['备注'] || '')).toBe(situation)
   })
 
-  it('customer save best-effort kickoff times out instead of hanging when queue stalls', async () => {
+  it('customer save returns quickly without queueing AI on the save path', async () => {
     const repository = new FeishuRepository()
-    let release
-    const gate = new Promise((resolve) => { release = resolve })
-    repository.queueAutomaticCustomerProfile = vi.fn(() => gate)
+    repository.queueAutomaticCustomerProfile = vi.fn(async () => ({ status: 'QUEUED', sourceId: 'SRC-SHOULD-NOT-RUN' }))
+    repository.scheduleAutomaticCustomerProfile = vi.fn(() => ({ status: 'QUEUED' }))
     const started = Date.now()
     const created = await repository.createCustomer('ADMIN-1', {
       operationId: 'pending-fast-return',
@@ -434,13 +434,12 @@ describe('automatic profile pending consistency', () => {
       enrollments: [],
     }, '', { compactResponse: true })
     const elapsed = Date.now() - started
-    // Same-request kickoff awaits up to ~2000ms; a stalled queue must not block forever.
-    expect(elapsed).toBeLessThan(5000)
-    expect(created.automaticProfile?.status).toBe('QUEUED')
-    expect(created.automaticProfile?.kickoffStatus).toBe('BUDGET_EXCEEDED')
-    // During the budget wait, setImmediate must have started the queue.
-    expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalled()
-    release({ status: 'QUEUED', sourceId: 'SRC-FAST' })
+    // Phase-1 save must not await AI / setImmediate queue at all.
+    expect(elapsed).toBeLessThan(3000)
+    expect(created.automaticProfile?.status).toBe('PENDING')
+    expect(created.automaticProfile?.mode).toBe('HTTP_PHASE2')
+    expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
+    expect(repository.scheduleAutomaticCustomerProfile).not.toHaveBeenCalled()
   })
 
 

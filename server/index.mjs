@@ -161,21 +161,17 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/customers/preview') return send(request, response, 200, await repository.previewCustomer(await guard(request), await readBody(request)), requestId)
   if (request.method === 'POST' && url.pathname === '/api/customers') {
     const compactResponse = request.headers['x-asva-response-mode'] === 'customer-mutation-v1'
+    // Phase 1 only: Customers PERSISTED. Do not start setImmediate AI archive here.
+    // Phase 2 is POST /api/customers/:id/auto-archive (frontend-driven independent HTTP).
+    return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
+  }
+  const customerAutoArchive = url.pathname.match(/^\/api\/customers\/([^/]+)\/auto-archive$/)
+  if (request.method === 'POST' && customerAutoArchive) {
     const actor = await guard(request)
     const body = await readBody(request)
-    const created = await repository.createCustomer(actor, body, requestId, { compactResponse })
-    // Save response first (≤8s budget). Kick off process as an independent continuation
-    // reusing POST /api/sources/:sourceId/process semantics (await processSource), so archival
-    // does not sit on the save critical path. Durable Source=UPLOADED + profile/admin resume
-    // cover CloudBase freeze before this continuation runs.
-    send(request, response, 201, created, requestId)
-    const sourceId = created?.automaticProfile?.sourceId
-    if (sourceId && created?.automaticProfile?.kickoffStatus === 'DONE') {
-      void repository.processSource(actor, sourceId).catch((error) => {
-        repository.audit?.('PROCESS_SOURCE_AUTOMATIC', sourceId, actor, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')
-      })
-    }
-    return
+    const result = await repository.runCustomerAutoArchive(actor, decodeURIComponent(customerAutoArchive[1]), { force: body?.force === true })
+    const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200
+    return send(request, response, statusCode, result, requestId)
   }
   const enrollmentRecovery = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)
   if (request.method === 'POST' && enrollmentRecovery) {

@@ -406,31 +406,16 @@ describe('scoped customer AI load (isolation)', () => {
     }
   })
 
-  it('createCustomer entry auto-kickoff creates Source without calling queue directly', async () => {
+  it('createCustomer defers AI to HTTP phase-2; auto-archive creates Source without save-path schedule', async () => {
     // Seed only staff + empty related tables; createCustomer writes the customer itself.
     put(state.tableIds.staff, 'rec-admin', fields('staff', {
       staff_id: 'ADMIN-1', nickname: '管理员', permission_role: 'ADMIN', status: 'ACTIVE', login_enabled: true, phone: '13800000000',
     }))
-    const repository = new FeishuRepository({
-      authRepository: {},
-      evidenceExtractor: async () => [{
-        evidence_type: 'FACT',
-        field_key: 'current_goal',
-        value: '提升表达能力',
-        display_text: '提升表达能力',
-        source_excerpt: '希望提升表达能力',
-        locator: { char_start: 0, char_end: 8 },
-        confidence: 0.9,
-        semantic_kind: 'GOAL',
-        content_source: 'STAFF_REPORTED',
-        information_nature: 'OBSERVED_FACT',
-        verification_status: 'UNVERIFIED',
-        review_status: 'PENDING_REVIEW',
-      }],
-    })
-    // Keep processSource off the save path so this test isolates SOURCE_CREATED durability.
+    for (const key of ['customers', 'products', 'enrollments', 'profileChanges', 'appointments', 'serviceRecords', 'sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']) {
+      state.tables.set(state.tableIds[key], new Map())
+    }
+    const repository = new FeishuRepository()
     repository.scheduleAutomaticProcessing = vi.fn()
-
     const situation = '入口测试客户：希望提升表达能力，近期工作压力较大。'
     const startedAt = Date.now()
     const created = await repository.createCustomer('ADMIN-1', {
@@ -445,41 +430,30 @@ describe('scoped customer AI load (isolation)', () => {
     const createMs = Date.now() - startedAt
     const customerId = created.createdCustomerId || created.id
     expect(customerId).toBeTruthy()
-    expect(created.automaticProfile?.status).toBe('QUEUED')
-    expect(['DONE', 'BUDGET_EXCEEDED', 'FAILED', 'MISSING']).toContain(created.automaticProfile?.kickoffStatus)
+    expect(created.automaticProfile?.status).toBe('PENDING')
+    expect(created.automaticProfile?.mode).toBe('HTTP_PHASE2')
+    expect(createMs).toBeLessThan(8000)
+    // Save path must not have created Source yet.
+    const sourcesBefore = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+    expect(sourcesBefore.length).toBe(0)
 
-    const sources = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
-    if (created.automaticProfile?.kickoffStatus === 'DONE') {
-      expect(sources.length).toBeGreaterThanOrEqual(1)
-      expect(created.automaticProfile.sourceId).toBeTruthy()
-    } else {
-      // Budget exceeded: durable pending must remain and maybeResume must pick it up.
-      const customerRow = [...table(state.tableIds.customers).values()].find((row) => String(rowFields(row)['客户ID'] || '') === customerId)
-      const meta = JSON.parse(String(rowFields(customerRow)['档案字段元数据'] || '{}'))
-      expect(meta._automatic_profile_pending?.contentHash).toBeTruthy()
-      const resumed = await repository.maybeResumeAutomaticCustomerProfile('ADMIN-1', customerId)
-      expect(['SOURCE_CREATED', 'PROCESSING', 'COMPLETED', 'REVIEW_REQUIRED', 'QUEUED', 'FAILED']).toContain(resumed.status)
-      // SOURCE_CREATED alone is not success when resume processed a stuck source.
-      if (resumed.processed) expect(['COMPLETED', 'REVIEW_REQUIRED']).toContain(resumed.status)
-      const sourcesAfterResume = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
-      expect(sourcesAfterResume.length).toBeGreaterThanOrEqual(1)
-    }
+    repository.processSource = vi.fn(async (_actor, sourceId) => ({
+      source: { id: sourceId, customerId, processingStatus: 'COMPLETED' },
+      evidenceItems: [],
+      proposals: [],
+      conflicts: [],
+    }))
+    const archived = await repository.runCustomerAutoArchive('ADMIN-1', customerId)
+    expect(['COMPLETED', 'REVIEW_REQUIRED', 'PROCESSING', 'SOURCE_CREATED']).toContain(archived.status)
+    expect(archived.sourceId).toBeTruthy()
+    const sourcesAfter = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId)
+    expect(sourcesAfter.length).toBeGreaterThanOrEqual(1)
 
-    // Idempotent: resume / second queue must not create a duplicate source for same text.
-    const before = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length
-    await repository.maybeResumeAutomaticCustomerProfile('ADMIN-1', customerId)
+    const before = sourcesAfter.length
+    await repository.runCustomerAutoArchive('ADMIN-1', customerId)
     const after = [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length
     expect(after).toBe(before)
-
-    await mkdir(EVIDENCE_DIR, { recursive: true })
-    await writeFile(path.join(EVIDENCE_DIR, 'create-customer-entry-kickoff.json'), JSON.stringify({
-      customerId,
-      automaticProfile: created.automaticProfile,
-      createMs,
-      sourceCount: [...table(state.tableIds.sourceRecords).values()].filter((row) => String(rowFields(row)['客户ID'] || '') === customerId).length,
-    }, null, 2))
   })
-
 
   it('UPLOADED Source with pending cleared still resumes to Evidence (CloudBase freeze dead corner)', async () => {
     // Simulate: Source persisted, clearAutomaticProfilePending done, process setImmediate lost / instance restarted.

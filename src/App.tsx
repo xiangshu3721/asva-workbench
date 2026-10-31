@@ -17,6 +17,7 @@ import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
 import { canCommitCustomerResponse, createCustomerScopedState, isCustomerScopedStateFor, type CustomerScopedState } from './customer-switch-safety'
+import { UNASSIGNED_OWNER_FILTER, filterCustomerDirectory, ownerFilterStaffOptions, type OwnerFilterValue } from './customer-directory-filter'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
@@ -28,7 +29,6 @@ import { clearSessionSnapshots, readSessionSnapshot, writeSessionSnapshot } from
 import { sortProductsForSelection } from './product-order'
 import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
-import { isExplicitSessionInvalid, sessionRetryMessage } from './session-recovery'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { validateCustomerContacts } from '../shared/customer-foundation.mjs'
 const repository = createLocalRepository()
@@ -223,7 +223,6 @@ function WorkbenchApp() {
   const [authRestoring, setAuthRestoring] = useState(() => isRemoteStaff && Boolean(readAccessToken()) && !currentStaff)
   const [identityLoading, setIdentityLoading] = useState(Boolean(loggedInStaffId && isRemoteStaff))
   const [identityError, setIdentityError] = useState('')
-  const [sessionRetry, setSessionRetry] = useState(0)
   const validatedStaffRef = useRef<string | null>(null)
   const shellPerformanceLoggedRef = useRef(false)
   const [mePanel, setMePanel] = useState<MePanel>('account')
@@ -240,32 +239,6 @@ function WorkbenchApp() {
     try { return api.dashboard(loggedInStaffId) } catch { return null }
   })
   const [loadError, setLoadError] = useState('')
-
-  const expireSession = useCallback((message = '登录状态已失效，请重新登录') => {
-    clearAccessToken()
-    clearSessionSnapshots()
-    clearAssistantHistory()
-    dataCache.invalidatePrefix('')
-    staffStorage.removeItem('asva-demo-staff-v2')
-    staffStorage.removeItem('asva-password-change-required')
-    validatedStaffRef.current = null
-    setCurrentStaff(null)
-    setDatabase(null)
-    setMePanel('account')
-    setLoggedInStaffId(null)
-    setMustChangePassword(false)
-    setAuthRestoring(false)
-    setIdentityLoading(false)
-    setIdentityError(message)
-  }, [dataCache])
-  const retryCurrentSession = useCallback(() => {
-    if (!isRemoteStaff || !readAccessToken()) return
-    validatedStaffRef.current = null
-    setIdentityError('')
-    setIdentityLoading(true)
-    setAuthRestoring(true)
-    setSessionRetry((value) => value + 1)
-  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -333,18 +306,15 @@ function WorkbenchApp() {
       setIdentityLoading(false)
     }).catch((error: Error) => {
       if (cancelled) return
-      if (isExplicitSessionInvalid(error)) {
-        expireSession(error.message || '登录状态已失效，请重新登录')
-        return
-      }
-      // Keep this session from being retried in a render loop. The explicit
-      // retry action clears the marker before issuing the next request.
-      validatedStaffRef.current = loggedInStaffId
-      setIdentityError(sessionRetryMessage(error))
+      clearSessionSnapshots()
+      dataCache.invalidatePrefix('')
+      setCurrentStaff(null)
+      setLoggedInStaffId(null)
+      setIdentityError(error.message || '登录状态已失效，请重新登录')
       setIdentityLoading(false)
     })
     return () => { cancelled = true }
-  }, [authRestoring, currentStaff?.id, dataCache, expireSession, loggedInStaffId, sessionRetry])
+  }, [authRestoring, currentStaff?.id, dataCache, loggedInStaffId])
 
   useEffect(() => {
     if (!authRestoring) return undefined
@@ -362,23 +332,46 @@ function WorkbenchApp() {
       setIdentityLoading(false)
     }).catch((error: Error) => {
       if (cancelled) return
-      if (isExplicitSessionInvalid(error)) {
-        expireSession(error.message || '登录状态已失效，请重新登录')
-        return
-      }
-      // Keep this session from being retried in a render loop. The explicit
-      // retry action clears the marker before issuing the next request.
-      validatedStaffRef.current = loggedInStaffId
+      clearAccessToken()
+      clearSessionSnapshots()
+      clearAssistantHistory()
+      dataCache.invalidatePrefix('')
+      staffStorage.removeItem('asva-demo-staff-v2')
+      staffStorage.removeItem('asva-password-change-required')
+      setCurrentStaff(null)
+      setLoggedInStaffId(null)
+      setMustChangePassword(false)
       setAuthRestoring(false)
-      setIdentityError(sessionRetryMessage(error))
+      setIdentityError(error.message || '登录状态已失效，请重新登录')
       setIdentityLoading(false)
     })
     return () => { cancelled = true }
-  }, [authRestoring, expireSession, loggedInStaffId, sessionRetry])
+  }, [authRestoring, dataCache])
 
   const activeStaff = currentStaff
   const canSeeAll = activeStaff?.permissionRole === 'ADMIN'
-  const [customerSaveRecoveryMessage, setCustomerSaveRecoveryMessage] = useState('')
+  const [customerSaveToast, setCustomerSaveToast] = useState<{ text: string; tone: 'success' | 'warning' } | null>(null)
+  const customerSaveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoArchiveResumeInFlight = useRef(new Set<string>())
+
+  const showCustomerSaveToast = (text: string, tone: 'success' | 'warning') => {
+    setCustomerSaveToast({ text, tone })
+  }
+
+  useEffect(() => {
+    if (!customerSaveToast) return undefined
+    if (customerSaveToastTimerRef.current) clearTimeout(customerSaveToastTimerRef.current)
+    customerSaveToastTimerRef.current = setTimeout(() => {
+      customerSaveToastTimerRef.current = null
+      setCustomerSaveToast(null)
+    }, 3500)
+    return () => {
+      if (customerSaveToastTimerRef.current) {
+        clearTimeout(customerSaveToastTimerRef.current)
+        customerSaveToastTimerRef.current = null
+      }
+    }
+  }, [customerSaveToast])
 
   useEffect(() => {
     if (!activeStaff || authRestoring || identityLoading) return undefined
@@ -391,14 +384,14 @@ function WorkbenchApp() {
       if ((status.status === 'PERSISTED' || status.status === 'COMMITTED') && status.customer) {
         applyCustomerMutation({ customer: status.customer, enrollments: status.enrollments || [], profileChanges: status.profileChanges || [], createdCustomerId: status.createdCustomerId || status.customerId, customerCreated: status.customerCreated === true, persistenceStatus: status.persistenceStatus || 'COMMITTED', enrollmentStatus: status.enrollmentStatus || status.mutation?.enrollmentStatus || 'COMPLETED', enrollmentMessage: status.enrollmentMessage, mutation: status.mutation })
         clearPendingCustomerMutation(pending.operationId)
-        setCustomerSaveRecoveryMessage(status.enrollmentStatus === 'PENDING' ? '客户已创建，课程待同步；请稍后在客户档案中确认课程关联。' : '已恢复并确认上一笔客户保存结果。')
+        showCustomerSaveToast(status.enrollmentStatus === 'PENDING' ? '客户已保存，课程正在后台同步' : '已恢复并确认上一笔客户保存结果。', 'success')
       } else if (status.status === 'UNKNOWN') {
-        setCustomerSaveRecoveryMessage('上一笔客户保存结果暂时无法确认，原操作仍保留，请稍后重试。')
+        showCustomerSaveToast('上一笔客户保存结果暂时无法确认，原操作仍保留，请稍后重试。', 'warning')
       } else if (status.status === 'FAILED') {
         clearPendingCustomerMutation(pending.operationId)
-        setCustomerSaveRecoveryMessage('上一笔客户保存已确认失败，原操作内容需要重新提交。')
+        showCustomerSaveToast('上一笔客户保存已确认失败，原操作内容需要重新提交。', 'warning')
       }
-    }).catch(() => { if (!cancelled) setCustomerSaveRecoveryMessage('上一笔客户保存结果暂时无法确认，请稍后查询。') })
+    }).catch(() => { if (!cancelled) showCustomerSaveToast('上一笔客户保存结果暂时无法确认，请稍后查询。', 'warning') })
     return () => { cancelled = true }
   }, [activeStaff?.id, authRestoring, identityLoading])
 
@@ -444,16 +437,28 @@ function WorkbenchApp() {
   }, [currentStaff?.id, database?.customers.length, dataCache, selectedCustomerId])
 
   useEffect(() => {
-    const expire = () => expireSession()
+    const expire = () => {
+      staffStorage.removeItem('asva-demo-staff-v2')
+      staffStorage.removeItem('asva-password-change-required')
+      clearAccessToken()
+      clearSessionSnapshots()
+      dataCache.invalidatePrefix('')
+      setCurrentStaff(null)
+      setDatabase(null)
+      setMePanel('account')
+      setLoggedInStaffId(null)
+      setMustChangePassword(false)
+      setAuthRestoring(false)
+    }
     window.addEventListener('asva-auth-expired', expire)
     return () => window.removeEventListener('asva-auth-expired', expire)
-  }, [expireSession])
+  }, [dataCache])
 
   const finishLogin = (account: Staff & { mustChangePassword?: boolean }) => { clearSessionSnapshots(); clearAssistantHistory(); dataCache.invalidatePrefix(''); writeSessionSnapshot(staffSnapshotKey(account.id), toStaffSnapshot(account)); validatedStaffRef.current = account.id; staffStorage.setItem('asva-demo-staff-v2', account.id); if (account.mustChangePassword) { staffStorage.setItem('asva-password-change-required', 'true'); setMustChangePassword(true) } else { staffStorage.removeItem('asva-password-change-required'); setMustChangePassword(false) } setCurrentStaff(account); setDatabase(null); setIdentityLoading(false); setMePanel('account'); setLoggedInStaffId(account.id); setAuthRestoring(false) }
   if (authRestoring) return <AppBootLoading />
   if (!loggedInStaffId) return <Login api={workbenchApi} onLogin={finishLogin} />
   if (mustChangePassword) return <ChangePassword api={workbenchApi} onComplete={() => { staffStorage.removeItem('asva-password-change-required'); setMustChangePassword(false) }} />
-  if (!activeStaff) return <AppBootLoading error={identityError || undefined} onRetry={identityError ? retryCurrentSession : undefined} />
+  if (!activeStaff) return <AppBootLoading error={identityError || undefined} onRetry={identityError ? () => { clearSessionSnapshots(); dataCache.invalidatePrefix(''); staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) } : undefined} />
   if (activeStaff.status !== 'ACTIVE') return <Login api={workbenchApi} onLogin={finishLogin} />
   const selectedCustomer = selectedCustomerId ? database?.customers.find((item) => item.id === selectedCustomerId) : database?.customers[0]
   const refresh = () => { setRevision((value) => value + 1) }
@@ -492,7 +497,21 @@ function WorkbenchApp() {
   const refreshCustomerUnderstanding = async (customerId: string, force = false) => { const result = await workbenchApi.refreshCustomerUnderstanding(activeStaff.id, customerId, force); setDatabase((current) => current ? { ...current, customers: current.customers.map((item) => item.id === customerId ? { ...item, understanding: result.understanding || undefined, understandingStatus: result.status, understandingMeta: result.meta } : item) } : current); return result }
   const getCustomerSalesUnderstanding = (customerId: string) => workbenchApi.getCustomerSalesUnderstanding(activeStaff.id, customerId)
   const refreshCustomerSalesUnderstanding = async (customerId: string, force = false) => { const result = await workbenchApi.refreshCustomerSalesUnderstanding(activeStaff.id, customerId, force); setDatabase((current) => current ? { ...current, customers: current.customers.map((item) => item.id === customerId ? { ...item, salesUnderstanding: result.salesUnderstanding || undefined, salesUnderstandingStatus: result.status, salesUnderstandingMeta: result.meta } : item) } : current); return result }
-  const loadCustomerProfile = (customerId: string) => workbenchApi.customerProfile(activeStaff.id, customerId)
+  const loadCustomerProfile = async (customerId: string) => {
+    const profile = await workbenchApi.customerProfile(activeStaff.id, customerId)
+    // Safe resume: same HTTP auto-archive entry, idempotent Source/processSource.
+    if (profile?.autoOrganizeStatus === 'PENDING' || profile?.autoOrganizeStatus === 'FAILED' || profile?.autoOrganizeStatus === 'PROCESSING') {
+      if (!autoArchiveResumeInFlight.current.has(customerId)) {
+        autoArchiveResumeInFlight.current.add(customerId)
+        void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId)
+          .then((result) => {
+            if (result?.status === 'COMPLETED' || result?.status === 'REVIEW_REQUIRED') setRevision((value) => value + 1)
+          })
+          .finally(() => { autoArchiveResumeInFlight.current.delete(customerId) })
+      }
+    }
+    return profile
+  }
   const getCustomerSafetyAssessment = (customerId: string) => workbenchApi.getCustomerSafetyAssessment(activeStaff.id, customerId)
   const refreshCustomerSafetyAssessment = (customerId: string, force = false) => workbenchApi.refreshCustomerSafetyAssessment(activeStaff.id, customerId, force)
   const saveBrief = (customerId: string, brief: string) => workbenchApi.saveBrief(activeStaff.id, customerId, brief)
@@ -509,6 +528,24 @@ function WorkbenchApp() {
     }
     if (source?.id) logAppPerformance('SOURCE_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt), recovered: recoveredAfterTimeout })
   }
+  const kickoffCustomerAutoArchive = (customerId: string, reason = 'SAVE') => {
+    if (!customerId) return
+    const startedAt = performance.now()
+    void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId)
+      .then((result) => {
+        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: result?.status || '', phase: result?.phase || '', reason, source_id: result?.sourceId || '' })
+        if (result?.status === 'COMPLETED' || result?.status === 'REVIEW_REQUIRED') {
+          showCustomerSaveToast(result.status === 'REVIEW_REQUIRED' ? 'AI整理完成，部分信息待核实' : 'AI整理完成', 'success')
+          setRevision((value) => value + 1)
+        } else if (result?.status === 'FAILED') {
+          showCustomerSaveToast('AI整理失败，原始资料已保留，可稍后自动重试', 'warning')
+        }
+      })
+      .catch((error: Error & { code?: string }) => {
+        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: 'FAILED', phase: 'CLIENT', reason, error: error?.code || error?.message || 'AUTO_ARCHIVE_FAILED' })
+        // Do not undo the successful customer save; phase-2 failure is non-blocking.
+      })
+  }
   const saveManualCustomer = async (input: ManualCustomerInput, upload?: CustomerSourceUpload) => {
     const saveStartedAt = performance.now()
     rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', kind: 'CREATE', startedAt: new Date().toISOString() })
@@ -517,14 +554,21 @@ function WorkbenchApp() {
     clearPendingCustomerMutation(input.operationId)
     logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) })
     applyCustomerMutation(saved)
-    if (saved.enrollmentStatus === 'PENDING') setCustomerSaveRecoveryMessage(saved.enrollmentMessage || '客户已保存，课程正在同步')
-    if (!upload) { setManualCustomerOpen(false); openCustomer(saved.createdCustomerId); return }
+    if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success')
+    else showCustomerSaveToast('客户已保存', 'success')
     const customerId = saved.createdCustomerId
+    // Phase 2: independent HTTP; never await on the save UX path.
+    const auto = saved.automaticProfile
+    if (auto?.status === 'PENDING' || Boolean(input.situation?.trim()) || Boolean(upload)) {
+      kickoffCustomerAutoArchive(customerId, 'CREATE_SAVE')
+    }
+    if (!upload) { setManualCustomerOpen(false); openCustomer(customerId); return }
     await saveCustomerUpload(customerId, upload, input.operationId || '')
     setManualCustomerOpen(false)
     openCustomer(customerId)
   }
-  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => { const saveStartedAt = performance.now(); rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() }); let saved: CustomerMutationResult; try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) { if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId); throw error }; clearPendingCustomerMutation(input.operationId); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (upload) await saveCustomerUpload(customerId, upload); setManualCustomerOpen(false); openCustomer(customerId) }
+  const previewManualCustomer = (input: ManualCustomerInput): Promise<CustomerDraftPreview> => workbenchApi.previewCustomer(activeStaff.id, input)
+  const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => { const saveStartedAt = performance.now(); rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() }); let saved: CustomerMutationResult; try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) { if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId); throw error }; clearPendingCustomerMutation(input.operationId); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success'); else showCustomerSaveToast('客户已保存', 'success'); if (upload) await saveCustomerUpload(customerId, upload); setManualCustomerOpen(false); openCustomer(customerId) }
   const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabaseSnapshot(saved); refresh() }
   const sourceWorkspace = (customerId: string) => workbenchApi.sourceWorkspace(activeStaff.id, customerId)
   const sourceStatus = (customerId: string, operationId: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId)
@@ -541,7 +585,7 @@ function WorkbenchApp() {
   const customerPage = <CustomersPage key={`${activeStaff.id}:${staffSessionIdentity(activeStaff.id)}`} staff={activeStaff} database={database || emptyDirectoryDatabase(activeStaff)} directoryLoading={!database} dataReady={!identityLoading} directoryError={loadError} onDirectoryRetry={() => setRevision((value) => value + 1)} canSeeAll={canSeeAll} selectedCustomer={identityLoading ? undefined : selectedCustomer} resourceCache={dataCache} profileRefreshRevision={revision} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSalesUnderstanding={getCustomerSalesUnderstanding} onRefreshSalesUnderstanding={refreshCustomerSalesUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onLoadCustomerProfile={loadCustomerProfile} onSourceWorkspace={sourceWorkspace} onSourceStatus={sourceStatus} onExtractDocument={extractDocument} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onOverrideServiceNecessity={overrideServiceNecessity} onAddCustomer={() => setManualCustomerOpen(true)} />
   const homePage = <HomePage staff={activeStaff} api={workbenchApi} cache={dataCache} cacheRevision={revision} dataReady={!identityLoading} onCustomers={(query = '') => navigate(`/customers${query}`)} />
   const mePage = <MePage staff={activeStaff} panel={mePanel} onPanel={setMePanel} api={workbenchApi} cache={dataCache} dataReady={!identityLoading} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); clearSessionSnapshots(); clearAssistantHistory(); dataCache.invalidatePrefix(''); setCurrentStaff(null); setDatabase(null); setMePanel('account'); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) }} />
-  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{identityError && <div className="customer-save-recovery-banner" role="status">{identityError}<button type="button" className="secondary-button small" onClick={retryCurrentSession}>重新连接</button></div>}{customerSaveRecoveryMessage && <div className="customer-save-recovery-banner" role="status">{customerSaveRecoveryMessage}<button type="button" className="secondary-button small" onClick={() => setCustomerSaveRecoveryMessage('')}>知道了</button></div>}<Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database?.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && database && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onExtractDocument={extractDocument} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant key={staffSessionIdentity(activeStaff.id)} api={workbenchApi} staffId={activeStaff.id} storageScope={staffSessionIdentity(activeStaff.id)} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
+  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{customerSaveToast && <div className={`customer-save-toast customer-save-toast-${customerSaveToast.tone}`} role="status" aria-live="polite">{customerSaveToast.text}</div>}<Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database?.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && database && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onExtractDocument={extractDocument} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant key={staffSessionIdentity(activeStaff.id)} api={workbenchApi} staffId={activeStaff.id} storageScope={staffSessionIdentity(activeStaff.id)} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
 }
 
 function HomePage({ staff, api, cache, cacheRevision, dataReady, onCustomers }: { staff: Staff; api: WorkbenchApi; cache: ResourceCache; cacheRevision: number; dataReady: boolean; onCustomers: (query?: string) => void }) {
@@ -626,10 +670,169 @@ function ResourceBanners() {
 
 function CustomersPage({ staff, database, directoryLoading, dataReady, directoryError, onDirectoryRetry, canSeeAll, selectedCustomer, resourceCache, onSelect, onGenerateBrief, onGenerateIntelligence, onRefreshCustomerSummary, onGetUnderstanding, onRefreshUnderstanding, onGetSalesUnderstanding, onRefreshSalesUnderstanding, onGetSafetyAssessment, onRefreshSafetyAssessment, onSaveBrief, onSaveReferrer, onGenerateProfile, onConfirmProfile, onUpdateEnrollments, onLoadCustomerProfile, onSourceWorkspace, onSourceStatus, onExtractDocument, onCreateSource, onProcessSource, onReviewProposal, onResolveConflict, onOverrideServiceNecessity, onAddCustomer, profileRefreshRevision }: { staff: Staff; database: Database; directoryLoading: boolean; dataReady: boolean; directoryError: string; onDirectoryRetry: () => void; canSeeAll: boolean; selectedCustomer?: Customer; resourceCache: ResourceCache; onSelect: (id: string) => void; onGenerateBrief: (input: { name: string; need: string; expectation: string }) => Promise<string>; onGenerateIntelligence: (customer: Customer, database: Database) => Promise<{ summary: AiCoreSummary; brief: AiBrief }>; onRefreshCustomerSummary: (customerId: string) => Promise<Customer | undefined>; onGetUnderstanding: (customerId: string) => Promise<CustomerUnderstandingResponse>; onRefreshUnderstanding: (customerId: string, force?: boolean) => Promise<CustomerUnderstandingResponse>; onGetSalesUnderstanding: (customerId: string) => Promise<CustomerSalesUnderstandingResponse>; onRefreshSalesUnderstanding: (customerId: string, force?: boolean) => Promise<CustomerSalesUnderstandingResponse>; onGetSafetyAssessment: (customerId: string) => Promise<SafetyAssessmentResponse>; onRefreshSafetyAssessment: (customerId: string, force?: boolean) => Promise<SafetyAssessmentResponse>; onSaveBrief: (customerId: string, brief: string) => Promise<Customer | undefined>; onSaveReferrer: (customerId: string, referrerName: string) => Promise<Customer | undefined>; onGenerateProfile: (customerId: string, text: string) => Promise<ProfileDraft>; onConfirmProfile: (customerId: string, updates: ProfileUpdate[]) => Promise<Customer>; onUpdateEnrollments: (customerId: string, enrollments: EnrollmentDraft[]) => Promise<void>; onLoadCustomerProfile: (customerId: string) => Promise<CustomerProfileResponse>; onSourceWorkspace: (customerId: string) => Promise<SourceWorkspace>; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreateSource: (input: SourceCreateInput) => Promise<SourceRecord>; onProcessSource: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onReviewProposal: (proposalId: string, decision: 'CONFIRM' | 'REJECT') => Promise<void>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace>; onAddCustomer: () => void; profileRefreshRevision: number }) {
   const [query, setQuery] = useState('')
+  // ADMIN-only owner filter; values are staff.id or UNASSIGNED_OWNER_FILTER. Current owner = mentorId (not createdBy*).
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilterValue>('')
+  const detailScrollRef = useRef<HTMLDivElement>(null)
   const showDirectoryLoading = directoryLoading || !dataReady
-  const normalizedQuery = query.trim().toLowerCase()
-  const list = database.customers.filter((customer) => !normalizedQuery || `${customer.name} ${customer.phone} ${customer.wechat || ''} ${customer.need} ${customer.notes}`.toLowerCase().includes(normalizedQuery))
-  return <div className="customer-page"><div className="customer-list-column"><div className="page-heading"><div><div className="eyebrow">CUSTOMERS</div><h1>客户</h1><p>{canSeeAll ? '查看所有客户与客户档案。' : `${staff.name} 创建的客户档案。`}</p></div><button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button></div><label className="search-field"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索昵称、手机号或主要问题" disabled={showDirectoryLoading} /></label>{showDirectoryLoading ? <div className="customer-list customer-list-loading" aria-busy="true"><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /><div className="customer-list-skeleton" /></div> : <div className="customer-list">{list.map((customer) => { const course = database.enrollments.find((item) => item.customerId === customer.id && item.status !== 'CANCELLED'); const product = course ? database.products.find((item) => item.id === course.productId) : undefined; const tags = [product?.name || ''].filter(Boolean).slice(0, 2); const coverage = customer.profileMaterialization?.coverage.percentage ?? 0; const helper = product?.name || (coverage < 50 ? '档案较少' : customer.profileUpdatedAt ? `最近更新 ${detailDate(customer.profileUpdatedAt).split(' ')[0]}` : '档案已建立'); return <button key={customer.id} className={`customer-list-item ${selectedCustomer?.id === customer.id ? 'selected' : ''}`} onClick={() => onSelect(customer.id)}><span className="customer-avatar">{customer.initials}</span><span className="customer-list-main"><strong>{customer.name}{tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}</strong><span>{customer.need || '尚未记录当前困扰'}</span><small>{helper}</small></span><span className="list-chevron">›</span></button> })}</div>}{!showDirectoryLoading && list.length === 0 && <div className="list-empty">{directoryError ? <><p>{directoryError}</p><button className="secondary-button small" type="button" onClick={onDirectoryRetry}>重新加载</button></> : '暂时没有匹配的客户。'}</div>}</div>{selectedCustomer ? <CustomerDetail customer={selectedCustomer} database={database} canSeeAll={canSeeAll} resourceCache={resourceCache} staffId={staff.id} permissionRole={staff.permissionRole} profileRefreshRevision={profileRefreshRevision} onGenerateBrief={onGenerateBrief} onGenerateIntelligence={onGenerateIntelligence} onRefreshCustomerSummary={onRefreshCustomerSummary} onGetUnderstanding={onGetUnderstanding} onRefreshUnderstanding={onRefreshUnderstanding} onGetSalesUnderstanding={onGetSalesUnderstanding} onRefreshSalesUnderstanding={onRefreshSalesUnderstanding} onGetSafetyAssessment={onGetSafetyAssessment} onRefreshSafetyAssessment={onRefreshSafetyAssessment} onSaveBrief={onSaveBrief} onSaveReferrer={onSaveReferrer} onGenerateProfile={onGenerateProfile} onConfirmProfile={onConfirmProfile} onUpdateEnrollments={onUpdateEnrollments} onLoadCustomerProfile={onLoadCustomerProfile} onSourceWorkspace={onSourceWorkspace} onSourceStatus={onSourceStatus} onExtractDocument={onExtractDocument} onCreateSource={onCreateSource} onProcessSource={onProcessSource} onReviewProposal={onReviewProposal} onResolveConflict={onResolveConflict} onOverrideServiceNecessity={onOverrideServiceNecessity} /> : <div className="empty-detail"><span>客</span><h2>{showDirectoryLoading ? '正在准备客户列表' : '选择一位客户'}</h2><p>{showDirectoryLoading ? '客户列表会先显示，详细资料按需加载。' : '从左侧列表打开客户档案。'}</p></div>}</div>
+  const effectiveOwnerFilter: OwnerFilterValue = canSeeAll ? ownerFilter : ''
+  const ownerOptions = canSeeAll ? ownerFilterStaffOptions(database.staff) : []
+  const list = filterCustomerDirectory(database.customers, {
+    query,
+    ownerFilter: effectiveOwnerFilter,
+    staff: database.staff,
+  })
+  const selectedInResults = Boolean(selectedCustomer && list.some((item) => item.id === selectedCustomer.id))
+  useEffect(() => {
+    if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0
+  }, [selectedCustomer?.id])
+  const emptyDetailTitle = showDirectoryLoading
+    ? '正在准备客户列表'
+    : selectedCustomer && !selectedInResults
+      ? '当前客户不在筛选结果中'
+      : '选择一位客户'
+  const emptyDetailCopy = showDirectoryLoading
+    ? '客户列表会先显示，详细资料按需加载。'
+    : selectedCustomer && !selectedInResults
+      ? '请从左侧结果中选择一位客户，或调整搜索／负责人筛选。'
+      : '从左侧列表打开客户档案。'
+  return (
+    <div className="customer-page">
+      <div className="customer-list-column">
+        <div className="customer-list-toolbar">
+          <div className="page-heading">
+            <div>
+              <div className="eyebrow">CUSTOMERS</div>
+              <h1>客户</h1>
+              <p>{canSeeAll ? '查看所有客户与客户档案。' : `${staff.name} 可见的客户档案。`}</p>
+            </div>
+            <button className="primary-button small" type="button" onClick={onAddCustomer} disabled={showDirectoryLoading}>新增客户</button>
+          </div>
+          <div className="customer-filter-row">
+            <label className="search-field">
+              <span>⌕</span>
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={canSeeAll ? '搜索昵称、手机号、问题或负责人／创建人' : '搜索昵称、手机号或主要问题'}
+                disabled={showDirectoryLoading}
+              />
+            </label>
+            {canSeeAll && (
+              <select
+                className="customer-owner-select"
+                value={ownerFilter}
+                onChange={(event) => setOwnerFilter(event.target.value as OwnerFilterValue)}
+                disabled={showDirectoryLoading}
+                aria-label="按当前负责人筛选"
+              >
+                <option value="">全部</option>
+                {ownerOptions.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}{item.status === 'INACTIVE' ? '（已停用）' : ''}{item.permissionRole === 'ADMIN' ? ' · 管理员' : ''}
+                  </option>
+                ))}
+                <option value={UNASSIGNED_OWNER_FILTER}>未分配导师</option>
+              </select>
+            )}
+          </div>
+          {!showDirectoryLoading && (
+            <div className="customer-result-count" aria-live="polite">共 {list.length} 位客户</div>
+          )}
+        </div>
+        <div className="customer-list-scroll">
+          {showDirectoryLoading ? (
+            <div className="customer-list customer-list-loading" aria-busy="true">
+              <div className="customer-list-skeleton" />
+              <div className="customer-list-skeleton" />
+              <div className="customer-list-skeleton" />
+            </div>
+          ) : (
+            <div className="customer-list">
+              {list.map((customer) => {
+                const course = database.enrollments.find((item) => item.customerId === customer.id && item.status !== 'CANCELLED')
+                const product = course ? database.products.find((item) => item.id === course.productId) : undefined
+                const tags = [product?.name || ''].filter(Boolean).slice(0, 2)
+                const coverage = customer.profileMaterialization?.coverage.percentage ?? 0
+                const helper = product?.name || (coverage < 50 ? '档案较少' : customer.profileUpdatedAt ? `最近更新 ${detailDate(customer.profileUpdatedAt).split(' ')[0]}` : '档案已建立')
+                return (
+                  <button
+                    key={customer.id}
+                    className={`customer-list-item ${selectedCustomer?.id === customer.id ? 'selected' : ''}`}
+                    onClick={() => onSelect(customer.id)}
+                  >
+                    <span className="customer-avatar">{customer.initials}</span>
+                    <span className="customer-list-main">
+                      <strong>
+                        {customer.name}
+                        {tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}
+                      </strong>
+                      <span>{customer.need || '尚未记录当前困扰'}</span>
+                      <small>{helper}</small>
+                    </span>
+                    <span className="list-chevron">›</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {!showDirectoryLoading && list.length === 0 && (
+            <div className="list-empty">
+              {directoryError ? (
+                <>
+                  <p>{directoryError}</p>
+                  <button className="secondary-button small" type="button" onClick={onDirectoryRetry}>重新加载</button>
+                </>
+              ) : (
+                '暂时没有匹配的客户。'
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      {selectedInResults && selectedCustomer ? (
+        <div className="customer-detail-scroll" ref={detailScrollRef}>
+          <CustomerDetail
+            customer={selectedCustomer}
+            database={database}
+            canSeeAll={canSeeAll}
+            resourceCache={resourceCache}
+            staffId={staff.id}
+            permissionRole={staff.permissionRole}
+            profileRefreshRevision={profileRefreshRevision}
+            onGenerateBrief={onGenerateBrief}
+            onGenerateIntelligence={onGenerateIntelligence}
+            onRefreshCustomerSummary={onRefreshCustomerSummary}
+            onGetUnderstanding={onGetUnderstanding}
+            onRefreshUnderstanding={onRefreshUnderstanding}
+            onGetSalesUnderstanding={onGetSalesUnderstanding}
+            onRefreshSalesUnderstanding={onRefreshSalesUnderstanding}
+            onGetSafetyAssessment={onGetSafetyAssessment}
+            onRefreshSafetyAssessment={onRefreshSafetyAssessment}
+            onSaveBrief={onSaveBrief}
+            onSaveReferrer={onSaveReferrer}
+            onGenerateProfile={onGenerateProfile}
+            onConfirmProfile={onConfirmProfile}
+            onUpdateEnrollments={onUpdateEnrollments}
+            onLoadCustomerProfile={onLoadCustomerProfile}
+            onSourceWorkspace={onSourceWorkspace}
+            onSourceStatus={onSourceStatus}
+            onExtractDocument={onExtractDocument}
+            onCreateSource={onCreateSource}
+            onProcessSource={onProcessSource}
+            onReviewProposal={onReviewProposal}
+            onResolveConflict={onResolveConflict}
+            onOverrideServiceNecessity={onOverrideServiceNecessity}
+          />
+        </div>
+      ) : (
+        <div className="customer-detail-scroll empty-detail">
+          <span>客</span>
+          <h2>{emptyDetailTitle}</h2>
+          <p>{emptyDetailCopy}</p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function LegacyCustomerDetail({ customer, database, canSeeAll, onAssign, onComplete, onFeedback, onGenerateBrief, onSaveBrief, onSaveReferrer }: { customer: Customer; database: Database; canSeeAll: boolean; onAssign: (id: string) => void; onComplete: (id: string) => Promise<void>; onFeedback: (id: string) => void; onGenerateBrief: (input: { name: string; need: string; expectation: string }) => Promise<string>; onSaveBrief: (customerId: string, brief: string) => Promise<Customer | undefined>; onSaveReferrer: (customerId: string, referrerName: string) => Promise<Customer | undefined> }) {
@@ -756,7 +959,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
           : profile?.autoOrganizeStatus === 'COMPLETED'
             ? 'AI整理完成，档案已更新。'
             : profile?.autoOrganizeStatus === 'PENDING'
-              ? 'AI整理等待后台恢复，原始资料已保留。'
+              ? 'AI整理处理中或待恢复，原始资料已保留。'
               : ''
   const profileContent = showInitialLoading ? <p className="detail-empty-line">正在读取该客户的确认档案…</p>
     : error && !profile ? <div className="detail-empty-line"><p>档案暂时读取失败，客户基础资料不受影响。</p><button className="secondary-button small" type="button" onClick={() => void onLoad()}>重新读取档案</button></div>
@@ -1460,7 +1663,7 @@ function LegacyFeedbackForm({ appointment, customer, database, onClose, onSubmit
 
 function activeProductForManualEntry(product: Product) { return product.active !== false && product.status === '在售' }
 
-function ManualCustomerDialog({ database, onClose, onExtractDocument, onCreate, onUpdate, onOpenCustomer }: { database: Database; onClose: () => void; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreate: (input: ManualCustomerInput, upload?: CustomerSourceUpload) => Promise<void>; onUpdate: (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => Promise<void>; onOpenCustomer: (customerId: string) => void }) {
+function ManualCustomerDialog({ database, onClose, onPreview, onExtractDocument, onCreate, onUpdate, onOpenCustomer }: { database: Database; onClose: () => void; onPreview: (input: ManualCustomerInput) => Promise<CustomerDraftPreview>; onExtractDocument: (input: DocumentUploadInput) => Promise<DocumentExtractionResult>; onCreate: (input: ManualCustomerInput, upload?: CustomerSourceUpload) => Promise<void>; onUpdate: (customerId: string, input: ManualCustomerInput, upload?: CustomerSourceUpload) => Promise<void>; onOpenCustomer: (customerId: string) => void }) {
   const products = sortProductsForSelection(database.products.filter(activeProductForManualEntry))
   const [step, setStep] = useState<'form' | 'duplicate' | 'dialogue'>('form')
   const [nickname, setNickname] = useState('')
