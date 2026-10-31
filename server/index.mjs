@@ -165,11 +165,24 @@ async function handle(request, response, requestId) {
     // Phase 2 is POST /api/customers/:id/auto-archive (frontend-driven independent HTTP).
     return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
   }
+  const customerAutoArchiveFinalize = url.pathname.match(/^\/api\/customers\/([^/]+)\/auto-archive\/finalize$/)
+  if (request.method === 'POST' && customerAutoArchiveFinalize) {
+    const actor = await guard(request)
+    const body = await readBody(request)
+    const result = await repository.runCustomerAutoArchive(actor, decodeURIComponent(customerAutoArchiveFinalize[1]), { force: false, stage: 'finalize', finalize: true })
+    const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200
+    return send(request, response, statusCode, result, requestId)
+  }
   const customerAutoArchive = url.pathname.match(/^\/api\/customers\/([^/]+)\/auto-archive$/)
   if (request.method === 'POST' && customerAutoArchive) {
     const actor = await guard(request)
     const body = await readBody(request)
-    const result = await repository.runCustomerAutoArchive(actor, decodeURIComponent(customerAutoArchive[1]), { force: body?.force === true })
+    const stage = body?.finalize === true || body?.stage === 'finalize' ? 'finalize' : (body?.stage === 'all' ? 'all' : 'extract')
+    const result = await repository.runCustomerAutoArchive(actor, decodeURIComponent(customerAutoArchive[1]), {
+      force: body?.force === true && stage !== 'finalize',
+      stage,
+      finalize: stage === 'finalize',
+    })
     const statusCode = result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200
     return send(request, response, statusCode, result, requestId)
   }

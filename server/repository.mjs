@@ -748,18 +748,26 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   for (const update of updates) {
     const field = update.field === 'mentor_id' ? 'current_mentor_id' : update.field
     const oldValue = customerRecord.profileFields[field] ?? null
+    const existingMeta = customerRecord.profileFieldMeta[field]
+    // Never overwrite mentor/admin confirmed facts with AI unconfirmed drafts.
+    if (existingMeta?.confirmed === true && update.confirmed !== true) continue
     customerRecord.profileFields[field] = update.value
+    const fieldSourceRecordId = update.sourceRecordId || provenanceContext.sourceRecordId || ''
+    const fieldEvidenceId = update.evidenceId || provenanceContext.evidenceId || ''
+    const fieldBatchId = update.updateBatchId || provenanceContext.updateBatchId || ''
     customerRecord.profileFieldMeta[field] = {
       source: update.source,
       confidence: update.confidence,
       confirmed: update.confirmed,
       updatedAt,
-      ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}),
-      ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}),
-      ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}),
-      ...(provenanceContext.sourceEventAt ? { sourceEventAt: provenanceContext.sourceEventAt } : {}),
-      ...(provenanceContext.sourceEntryAt ? { sourceEntryAt: provenanceContext.sourceEntryAt } : {}),
-      ...(provenanceContext.sourceVersion ? { sourceVersion: provenanceContext.sourceVersion } : {}),
+      ...(fieldSourceRecordId ? { sourceRecordId: fieldSourceRecordId } : {}),
+      ...(fieldEvidenceId ? { evidenceId: fieldEvidenceId } : {}),
+      ...(fieldBatchId ? { extractionBatchId: fieldBatchId } : {}),
+      ...(provenanceContext.sourceEventAt || update.sourceEventAt ? { sourceEventAt: update.sourceEventAt || provenanceContext.sourceEventAt } : {}),
+      ...(provenanceContext.sourceEntryAt || update.sourceEntryAt ? { sourceEntryAt: update.sourceEntryAt || provenanceContext.sourceEntryAt } : {}),
+      ...(provenanceContext.sourceVersion || update.sourceVersion ? { sourceVersion: update.sourceVersion || provenanceContext.sourceVersion } : {}),
+      ...(update.contentSource || provenanceContext.contentSource ? { contentSource: update.contentSource || provenanceContext.contentSource } : {}),
+      ...(update.confirmed === false ? { verificationLabel: 'AI整理·待核实' } : {}),
     }
     if (field === 'current_core_issue' && typeof update.value === 'string') customerRecord.need = update.value
     if (field === 'current_expectation' && typeof update.value === 'string') customerRecord.helpExpectation = update.value
@@ -869,6 +877,57 @@ function automaticProfilePendingMarker(rawText, actorId, reason) {
 
 function isAutomaticProfileSource(source) {
   return String(source?.notes || '').startsWith(AUTO_PROFILE_SOURCE_PREFIX)
+}
+
+const UNCONFIRMED_DRAFT_CONTENT_SOURCES = new Set(['STAFF_TRANSCRIBED_CUSTOMER', 'MENTOR_REPORTED', 'MENTOR_OBSERVATION', 'CUSTOMER_DIRECT'])
+const IMPORTANT_UNCONFIRMED_DRAFT_FIELDS = new Set(['current_core_issue', 'current_goal', 'current_expectation', 'current_stressors', 'career_goal', 'secondary_issues'])
+
+/** Staff-entered single-customer Source may attribute Evidence as staff-reported, never CUSTOMER_DIRECT without trusted submission. */
+function staffReportedAttributionForSource(source) {
+  if (!source) return null
+  if (isAutomaticProfileSource(source)) return 'STAFF_TRANSCRIBED_CUSTOMER'
+  if (source.sourcePerspective === 'STAFF_REPORTED') return 'STAFF_TRANSCRIBED_CUSTOMER'
+  if (source.sourcePerspective === 'CUSTOMER_FIRST_PARTY') return 'STAFF_TRANSCRIBED_CUSTOMER'
+  if (source.sourceType === 'FILE_UPLOAD' || source.sourceType === 'TEXT_INPUT') return 'MENTOR_REPORTED'
+  return null
+}
+
+function provenanceAllowsUnconfirmedDraftApply(evidence, { automaticMode = false } = {}) {
+  if (!automaticMode || !evidence) return false
+  if (['UNKNOWN', 'MIXED', 'THIRD_PARTY_REPORTED'].includes(evidence.contentSource)) return false
+  if (!UNCONFIRMED_DRAFT_CONTENT_SOURCES.has(evidence.contentSource)) return false
+  if (evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS') return false
+  if (evidence.verificationStatus === 'CONFLICTED') return false
+  if (evidence.evidenceType !== 'FACT' && evidence.evidenceType !== 'SELF_MEANING') return false
+  return true
+}
+
+function fieldAllowsUnconfirmedOverwrite(customer, fieldKey) {
+  if (!fieldKey || !customer) return false
+  const currentValue = customer.profileFields?.[fieldKey] ?? null
+  const meta = customer.profileFieldMeta?.[fieldKey]
+  if (meta?.confirmed === true) return false
+  if (currentValue === null || currentValue === undefined || currentValue === '') return true
+  return meta?.confirmed === false
+}
+
+function archiveNeedsFinalize({ source, evidenceItems = [], proposals = [], customer = null } = {}) {
+  if (!source) return false
+  const active = (evidenceItems || []).filter((item) => item.sourceId === source.id && item.reviewStatus !== 'SUPERSEDED' && item.reviewStatus !== 'REJECTED')
+  if (!active.length) return false
+  const mapped = active.filter((item) => item.fieldKey)
+  if (!mapped.length) return false
+  const proposalEvidenceIds = new Set((proposals || []).filter((item) => item.sourceId === source.id).map((item) => item.evidenceId))
+  const missingProposal = mapped.some((item) => !proposalEvidenceIds.has(item.id))
+  const missingPhysical = mapped.some((item) => {
+    if (!IMPORTANT_UNCONFIRMED_DRAFT_FIELDS.has(item.fieldKey) && !PROFILE_FIELD_KEYS.has(item.fieldKey)) return false
+    const current = customer?.profileFields?.[item.fieldKey]
+    return current === null || current === undefined || current === ''
+  })
+  if (source.processingStatus === 'PROCESSING' && source.lastBatchId) return true
+  if (source.processingStatus === 'REVIEW_REQUIRED' && (missingProposal || missingPhysical)) return true
+  if (source.processingStatus === 'FAILED' && active.length) return true
+  return Boolean(missingProposal || missingPhysical)
 }
 
 function automaticProfileSourceIdForText(customerId, rawText) {
@@ -1578,7 +1637,7 @@ export class FeishuRepository {
    * Phase-2 HTTP entry: create/reuse Source via existing createSource, then await processSource.
    * Does not use setImmediate scheduleAutomaticProcessing — avoids dual-trigger with save path.
    */
-  async runCustomerAutoArchive(actorId, customerId, { force = false } = {}) {
+  async runCustomerAutoArchive(actorId, customerId, { force = false, stage = 'all', finalize = false } = {}) {
     const requestedCustomerId = text(customerId).trim()
     if (!requestedCustomerId) throw Object.assign(new Error('customerId 必填'), { code: 'CUSTOMER_ID_REQUIRED', status: 400 })
     if (!config.features.automaticProfileArchiving) {
@@ -1587,8 +1646,9 @@ export class FeishuRepository {
     if (!automaticProfileArchivingAllowedForCustomer(requestedCustomerId)) {
       return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'CANARY_GATE' }
     }
+    const stageMode = finalize || stage === 'finalize' ? 'finalize' : (stage === 'all' ? 'all' : 'extract')
     if (this.load === FeishuRepository.prototype.load && !scopedReadStore.getStore()) {
-      return this.withCustomerScope(requestedCustomerId, 'HTTP_AUTO_ARCHIVE', () => this.runCustomerAutoArchive(actorId, customerId, { force }))
+      return this.withCustomerScope(requestedCustomerId, 'HTTP_AUTO_ARCHIVE', () => this.runCustomerAutoArchive(actorId, customerId, { force, stage: stageMode, finalize: stageMode === 'finalize' }))
     }
 
     const startedAt = Date.now()
@@ -1679,13 +1739,21 @@ export class FeishuRepository {
         }
       }
 
-      // If already terminal, return without reprocessing unless force.
+      // If already terminal, return without reprocessing unless force or finalize is still needed.
       const fresh = await this.load({ force: true })
       const existing = fresh.sourceRecords.find((item) => item.id === sourceId)
-      if (existing && ['COMPLETED', 'REVIEW_REQUIRED'].includes(existing.processingStatus) && !force) {
+      const existingEvidence = (fresh.evidenceItems || []).filter((item) => item.sourceId === sourceId)
+      const existingProposals = (fresh.profileUpdateProposals || []).filter((item) => item.sourceId === sourceId)
+      const needsFinalize = archiveNeedsFinalize({
+        source: existing,
+        evidenceItems: existingEvidence,
+        proposals: existingProposals,
+        customer: fresh.customers.find((item) => item.id === requestedCustomerId) || customer,
+      })
+      if (existing && existing.processingStatus === 'COMPLETED' && !force && !needsFinalize) {
         this.instancePendingAutoProfiles.delete(requestedCustomerId)
         return {
-          status: existing.processingStatus === 'REVIEW_REQUIRED' ? 'REVIEW_REQUIRED' : 'COMPLETED',
+          status: 'COMPLETED',
           customerId: requestedCustomerId,
           sourceId,
           reused: Boolean(queueResult.reused),
@@ -1695,12 +1763,33 @@ export class FeishuRepository {
           automaticProfileStatus: automaticProfileStatus(fresh.sourceRecords, fresh.evidenceItems, requestedCustomerId, customer),
         }
       }
+      if (existing && existing.processingStatus === 'REVIEW_REQUIRED' && !force && !needsFinalize && stageMode !== 'finalize') {
+        this.instancePendingAutoProfiles.delete(requestedCustomerId)
+        return {
+          status: 'REVIEW_REQUIRED',
+          customerId: requestedCustomerId,
+          sourceId,
+          reused: Boolean(queueResult.reused),
+          phase: 'ALREADY_DONE',
+          proposalCount: existingProposals.length,
+          evidenceCount: existingEvidence.length,
+          timings,
+          durationMs: Date.now() - startedAt,
+          automaticProfileStatus: automaticProfileStatus(fresh.sourceRecords, fresh.evidenceItems, requestedCustomerId, customer),
+        }
+      }
 
-      phase = 'PROCESS_SOURCE'
+      // Finalize-only path: never DeepSeek / never force supersede.
+      // If Evidence already exists and archive still incomplete, prefer finalize even when
+      // the client defaulted to extract (page reopen / retry).
+      const processStage = (!force && needsFinalize && existingEvidence.length)
+        ? 'finalize'
+        : stageMode
+      phase = processStage === 'finalize' ? 'FINALIZE_ARCHIVE' : (processStage === 'extract' ? 'EXTRACT_EVIDENCE' : 'PROCESS_SOURCE')
       const processStarted = Date.now()
       let processed
       try {
-        processed = await this.processSource(actorId, sourceId, { force })
+        processed = await this.processSource(actorId, sourceId, { force: processStage === 'finalize' ? false : force, stage: processStage })
       } catch (error) {
         this.audit('HTTP_AUTO_ARCHIVE_PROCESS', sourceId, actorId, 'FAIL', error?.code || 'PROCESS_SOURCE_FAILED')
         return {
@@ -1716,10 +1805,29 @@ export class FeishuRepository {
         }
       }
       timings.process_ms = Date.now() - processStarted
-      this.instancePendingAutoProfiles.delete(requestedCustomerId)
-
+      if (processed?.stageTimings) timings.stage = processed.stageTimings
       const after = await this.load({ force: true })
       const finalSource = processed?.source || after.sourceRecords.find((item) => item.id === sourceId)
+      const afterEvidence = (after.evidenceItems || []).filter((item) => item.sourceId === sourceId)
+      const afterProposals = (after.profileUpdateProposals || []).filter((item) => item.sourceId === sourceId)
+      const afterCustomer = after.customers.find((item) => item.id === requestedCustomerId)
+      if (processed?.needsFinalize || processed?.phase === 'EXTRACT_READY' || (finalSource?.processingError === 'ARCHIVE_FINALIZE_PENDING')) {
+        return {
+          status: 'PROCESSING',
+          customerId: requestedCustomerId,
+          sourceId,
+          reused: Boolean(queueResult.reused),
+          phase: 'EXTRACT_READY',
+          needsFinalize: true,
+          timings,
+          durationMs: Date.now() - startedAt,
+          source: finalSource ? publicSource(finalSource, { includeRaw: false }) : undefined,
+          evidenceCount: afterEvidence.length,
+          proposalCount: afterProposals.length,
+          automaticProfileStatus: automaticProfileStatus(after.sourceRecords, after.evidenceItems, requestedCustomerId, afterCustomer),
+        }
+      }
+      this.instancePendingAutoProfiles.delete(requestedCustomerId)
       const finalStatus = finalSource?.processingStatus === 'REVIEW_REQUIRED'
         ? 'REVIEW_REQUIRED'
         : finalSource?.processingStatus === 'FAILED'
@@ -1727,19 +1835,27 @@ export class FeishuRepository {
           : finalSource?.processingStatus === 'COMPLETED'
             ? 'COMPLETED'
             : mapAutomaticProfileStageFromSource(finalSource) || 'PROCESSING'
+      const physicalFields = {
+        current_core_issue: afterCustomer?.profileFields?.current_core_issue || afterCustomer?.need || null,
+        current_goal: afterCustomer?.profileFields?.current_goal || afterCustomer?.goal || null,
+        current_expectation: afterCustomer?.profileFields?.current_expectation || afterCustomer?.helpExpectation || null,
+      }
+      const pendingFieldCount = Object.values(afterCustomer?.profileFieldMeta || {}).filter((meta) => meta && meta.confirmed === false).length
 
       return {
         status: finalStatus,
         customerId: requestedCustomerId,
         sourceId,
         reused: Boolean(queueResult.reused),
-        phase: 'DONE',
+        phase: processStage === 'finalize' ? 'FINALIZE_DONE' : 'DONE',
         timings,
         durationMs: Date.now() - startedAt,
         source: finalSource ? publicSource(finalSource, { includeRaw: false }) : undefined,
-        evidenceCount: (processed?.evidenceItems || []).length,
-        proposalCount: (processed?.proposals || []).length,
-        automaticProfileStatus: automaticProfileStatus(after.sourceRecords, after.evidenceItems, requestedCustomerId, after.customers.find((item) => item.id === requestedCustomerId)),
+        evidenceCount: (processed?.evidenceItems || afterEvidence).length,
+        proposalCount: (processed?.proposals || afterProposals).length,
+        physicalFields,
+        pendingUnconfirmedFieldCount: pendingFieldCount,
+        automaticProfileStatus: automaticProfileStatus(after.sourceRecords, after.evidenceItems, requestedCustomerId, afterCustomer),
       }
     } catch (error) {
       this.audit('HTTP_AUTO_ARCHIVE', requestedCustomerId, actorId, 'FAIL', error?.code || phase || 'HTTP_AUTO_ARCHIVE_FAILED')
@@ -2143,17 +2259,9 @@ export class FeishuRepository {
     const visibleDatabase = scope(database, actorId)
     const customer = visibleDatabase.customers.find((item) => item.id === customerId)
     if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    // Single-customer auto resume — independent of pending:
-    // Source=UPLOADED / recoverable FAILED stays durable on SourceRecords even after
-    // clearAutomaticProfilePending + instancePending delete (CloudBase freeze gap).
-    // Do not restore 11-table / 30s scanners.
-    if (
-      customer.automaticProfilePending?.contentHash
-      || this.instancePendingAutoProfiles.has(customerId)
-      || customerHasRecoverableAutomaticProfileSource(visibleDatabase.sourceRecords, customerId)
-    ) {
-      void this.maybeResumeAutomaticCustomerProfile(actorId, customerId)
-    }
+    // GET is read-only. Automatic archive kickoff/resume is owned exclusively by
+    // POST /api/customers/:id/auto-archive (and finalize). Opening an old customer
+    // detail must never schedule DeepSeek / processSource.
     const actor = database.staff.find((item) => item.id === actorId)
     const evidenceItems = profileMaterializationEvidence({ evidenceItems: visibleDatabase.evidenceItems, sourceRecords: visibleDatabase.sourceRecords, customer, actor })
     const profileMaterialization = materializeCustomerProfile({ customer, evidenceItems, summaryMeta: customer.aiSummaryMeta })
@@ -3232,22 +3340,27 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
-  async processSource(actorId, sourceId, { force = false } = {}) {
+  async processSource(actorId, sourceId, { force = false, stage = 'all' } = {}) {
     const inFlight = this.sourceProcessingLocks.get(sourceId)
     if (inFlight) return inFlight
-    const task = this.processSourceUnsafe(actorId, sourceId, { force })
+    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage })
     this.sourceProcessingLocks.set(sourceId, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(sourceId) === task) this.sourceProcessingLocks.delete(sourceId) }
   }
-  async processSourceUnsafe(actorId, sourceId, { force = false } = {}) {
+  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'all' } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
+    const stageMode = stage === 'extract' || stage === 'finalize' ? stage : 'all'
+    const finalizeMode = stageMode === 'finalize'
+    const extractOnly = stageMode === 'extract'
+    const stageTimings = { MODEL: 0, EVIDENCE_WRITE: 0, EVIDENCE_READBACK: 0, SUPERSEDE_OLD_BATCH: 0, PROPOSAL_WRITE: 0, CUSTOMERS_WRITE: 0, FINAL_READBACK: 0, calls: {} }
+    const markTiming = (key, ms) => { stageTimings[key] = (stageTimings[key] || 0) + ms; stageTimings.calls[key] = (stageTimings.calls[key] || 0) + 1 }
     if (this.load === FeishuRepository.prototype.load && !scopedReadStore.getStore()) {
       const sourceRows = await this.searchTableByField('sourceRecords', 'source_id', sourceId, { scene: 'PROCESS_SOURCE' })
       const bootSource = sourceRows[0] ? sourceRecord(sourceRows[0]) : null
       if (!bootSource?.customerId) throw new Error('资料不存在')
-      return this.withCustomerScope(bootSource.customerId, 'PROCESS_SOURCE', () => this.processSourceUnsafe(actorId, sourceId, { force }))
+      return this.withCustomerScope(bootSource.customerId, 'PROCESS_SOURCE', () => this.processSourceUnsafe(actorId, sourceId, { force, stage }))
     }
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
@@ -3269,10 +3382,35 @@ export class FeishuRepository {
     // prior readback failed before the batch pointer was committed. Do not
     // confuse it with a genuine review-required outcome.
     const hasUnactivatedEvidenceBatch = source.processingStatus === 'REVIEW_REQUIRED' && existingEvidence.length > 0 && !source.lastBatchId
-    if (!force && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
-    if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
-    const processingVersion = Number(source.processingVersion || 1) + 1
-    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
+    const customerForFinalize = database.customers.find((item) => item.id === source.customerId)
+    const needsFinalize = archiveNeedsFinalize({
+      source,
+      evidenceItems: existingEvidence,
+      proposals: database.profileUpdateProposals.filter((item) => item.sourceId === sourceId),
+      customer: customerForFinalize,
+    })
+    // Terminal COMPLETED never re-enters unless force. REVIEW_REQUIRED / PROCESSING with
+    // persisted Evidence may finalize (proposals + unconfirmed Customers write) without DeepSeek.
+    if (!force && !finalizeMode && source.processingStatus === 'COMPLETED' && existingEvidence.length && !hasUnactivatedEvidenceBatch) {
+      return this.sourceDetail(actorId, sourceId)
+    }
+    if (!force && !finalizeMode && source.processingStatus === 'REVIEW_REQUIRED' && existingEvidence.length && !hasUnactivatedEvidenceBatch && !needsFinalize) {
+      return this.sourceDetail(actorId, sourceId)
+    }
+    if (!force && !finalizeMode && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source) && !needsFinalize) {
+      return this.sourceDetail(actorId, sourceId)
+    }
+    if (finalizeMode && !existingEvidence.length) {
+      throw Object.assign(new Error('没有可收尾的 Evidence'), { code: 'ARCHIVE_FINALIZE_NO_EVIDENCE', status: 409 })
+    }
+    if (finalizeMode && force) {
+      throw Object.assign(new Error('收尾阶段禁止 force'), { code: 'ARCHIVE_FINALIZE_FORCE_FORBIDDEN', status: 400 })
+    }
+    const processingVersion = finalizeMode
+      ? Number(source.processingVersion || 1)
+      : Number(source.processingVersion || 1) + 1
+    const resumeExistingEvidence = finalizeMode
+      || (!force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus))
     // A failed automatic run may have committed its Evidence before the
     // post-write readback returned. Continue that exact batch instead of
     // calling the model again or creating a second set of Evidence.
@@ -3291,7 +3429,9 @@ export class FeishuRepository {
       if (!resumeExistingEvidence) {
         const chunks = chunkText(source.rawText)
         for (const chunk of chunks) {
+          const modelStarted = Date.now()
           const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, dialogueContext, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
+          markTiming('MODEL', Date.now() - modelStarted)
           processingDiagnostics.extracted_candidate_count += rawItems.length
           for (const rawItem of rawItems) {
             if (rawItem?.customer_id && String(rawItem.customer_id) !== String(source.customerId)) {
@@ -3310,7 +3450,16 @@ export class FeishuRepository {
             // The current mentor/admin write path has no authenticated
             // customer-submission proof. Keep CUSTOMER_DIRECT unavailable
             // here even when the model sees first-person or quoted wording.
-            const normalized = normalizeEvidenceCandidate(rawItem, { sourceId, chunk, extractionBatchId: batchId, model: config.deepseek.model, modelVersion: 'v1', promptVersion: 'evidence-v1', trustedCustomerSubmission: false })
+            const normalized = normalizeEvidenceCandidate(rawItem, {
+              sourceId,
+              chunk,
+              extractionBatchId: batchId,
+              model: config.deepseek.model,
+              modelVersion: 'v1',
+              promptVersion: 'evidence-v1',
+              trustedCustomerSubmission: false,
+              staffReportedAttribution: staffReportedAttributionForSource(source),
+            })
             if (normalized) {
               const canonical = normalizeCanonicalFact({ fieldKey: rawItem?.field_key || normalized.fieldKey || '', value: rawItem?.value ?? normalized.standardValue, sourceExcerpt: normalized.sourceExcerpt, displayText: normalized.displayText, semanticKind: rawItem?.semantic_kind || normalized.semanticKind, occurredAt: normalized.occurredAt })
               normalized._canonicalGrounded = canonical.grounded !== false
@@ -3368,8 +3517,11 @@ export class FeishuRepository {
           continue
         }
         try {
+          const evidenceWriteStarted = Date.now()
           const write = await createMappedRecord('evidenceItems', 'evidence.create', { evidence_id: evidence.id, subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: evidence.evidenceType, semantic_kind: evidence.semanticKind, field_key: evidence.fieldKey || '', standard_value: stage2Json(evidence.standardValue), display_text: evidence.displayText, source_excerpt: evidence.sourceExcerpt, locator_json: stage2Json(evidence.locator), occurred_at: evidence.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: evidence.contentSource, information_nature: evidence.informationNature, verification_status: evidence.verificationStatus, confidence: evidence.confidence, review_status: evidence.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: evidence.extractionBatchId, provider: 'DEEPSEEK', model: evidence.model, model_version: evidence.modelVersion, prompt_version: evidence.promptVersion, privacy_level: evidence.privacyLevel || 'NORMAL', privacy_meta_json: stage2Json(evidence.privacyMeta || {}), mentor_safe_text: evidence.mentorSafeText || evidence.displayText, created_at: now(), updated_at: now() })
           evidence._recordId = write?.record?.record_id || write?.record_id || ''
+          markTiming('EVIDENCE_WRITE', Date.now() - evidenceWriteStarted)
+          createdEvidence.push(evidence)
         } catch (error) {
           // Preserve Feishu provider diagnostics before rewriting the domain code.
           // Isolation/prod logs previously only kept EVIDENCE_WRITE_FAILED and lost
@@ -3401,7 +3553,6 @@ export class FeishuRepository {
             httpStatus,
           })
         }
-        createdEvidence.push(evidence)
       }
       this.markScopedDirty(source.customerId, ['evidenceItems'])
       this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1
@@ -3470,7 +3621,9 @@ export class FeishuRepository {
       this.markScopedDirty(source.customerId, ['sourceRecords', 'evidenceItems'])
       const activated = await this.load({ force: true })
       const oldReplaceable = (activated._allEvidenceItems || activated.evidenceItems).filter((item) => item.sourceId === sourceId && item.reviewStatus !== 'CONFIRMED' && item.reviewStatus !== 'SUPERSEDED' && item.extractionBatchId !== batchId)
+      const supersedeStarted = Date.now()
       for (const oldEvidence of oldReplaceable) await updateMappedRecord('evidenceItems', 'evidence.supersede', oldEvidence._recordId, { review_status: 'SUPERSEDED', updated_at: now() })
+      markTiming('SUPERSEDE_OLD_BATCH', Date.now() - supersedeStarted)
       this.markScopedDirty(source.customerId, ['evidenceItems'])
       const refreshed = await this.load({ force: true })
       // A legacy/failed batch can contain repeated physical rows with the
@@ -3478,6 +3631,39 @@ export class FeishuRepository {
       // the profile from one canonical item only.
       const allEvidence = dedupeEvidence(refreshed.evidenceItems.filter((item) => item.sourceId === sourceId))
       if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+      // Stage split: persist Evidence first; Proposal + Customers happen in finalize HTTP.
+      if (extractOnly) {
+        const pausedAt = now()
+        await updateMappedRecord('sourceRecords', 'source.processing.extract_ready', sourceRow.record_id, {
+          processing_status: 'PROCESSING',
+          processing_version: processingVersion,
+          last_batch_id: batchId,
+          last_processing_at: pausedAt,
+          processing_error: 'ARCHIVE_FINALIZE_PENDING',
+          updated_at: pausedAt,
+        })
+        this.markScopedDirty(source.customerId, ['sourceRecords', 'evidenceItems'])
+        const extractDetail = await this.sourceDetail(actorId, sourceId)
+        this.evidenceTraces.unshift({
+          source_id: sourceId,
+          processing_status: 'PROCESSING',
+          archive_outcome: 'EXTRACT_READY',
+          processing_error: 'ARCHIVE_FINALIZE_PENDING',
+          extraction_batch: batchId,
+          evidence_count: allEvidence.length,
+          proposal_count: 0,
+          conflict_count: 0,
+          model: config.deepseek.model,
+          prompt_version: 'evidence-v1',
+          ...processingDiagnostics,
+          stage_timings: stageTimings,
+          source_save_ms: this.sourceSaveTimes.get(sourceId),
+          duration_ms: Date.now() - startedAt,
+        })
+        this.evidenceTraces = this.evidenceTraces.slice(0, 50)
+        this.audit('PROCESS_SOURCE_EXTRACT', sourceId, actorId, 'EXTRACT_READY', 'ARCHIVE_FINALIZE_PENDING')
+        return { ...extractDetail, phase: 'EXTRACT_READY', needsFinalize: true, stageTimings, durationMs: Date.now() - startedAt }
+      }
       const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
       const derivedErrors = []
       const archivingCounts = {
@@ -3487,13 +3673,19 @@ export class FeishuRepository {
         supplementaryWriteCount: 0,
         unresolvedMappedEvidenceCount: 0,
       }
+      const pendingProfileUpdates = []
+      const pendingProfileProvenance = []
       for (const evidence of allEvidence) {
         try {
           if (evidence.fieldKey) archivingCounts.mappedEvidenceCount += 1
-          const currentValue = database.customers.find((item) => item.id === source.customerId)?.profileFields?.[evidence.fieldKey] ?? null
+          const currentCustomer = database.customers.find((item) => item.id === source.customerId)
+          const currentValue = currentCustomer?.profileFields?.[evidence.fieldKey] ?? null
           const change = classifyEvidenceChange(evidence, currentValue)
           const existingProposal = refreshed.profileUpdateProposals.find((item) => item.evidenceId === evidence.id)
-          if (existingProposal || (evidence.evidenceType !== 'FACT' && evidence.fieldKey)) {
+          // Hypotheses / pure AI inference stay Proposal/supplementary only — never physical confirmed facts.
+          const isInferenceOnly = evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS'
+          if (existingProposal && !finalizeMode) {
+            // Fresh path: proposal already exists → skip recreate; finalize HTTP may still draft-apply.
             if (evidence.fieldKey) archivingCounts.unresolvedMappedEvidenceCount += 1
             continue
           }
@@ -3510,14 +3702,19 @@ export class FeishuRepository {
             : !evidence.contentSource && !evidence.informationNature && !evidence.verificationStatus
               ? true
               : evidence.verificationStatus === 'HUMAN_VERIFIED'
+          const draftApplyAllowed = provenanceAllowsUnconfirmedDraftApply(evidence, { automaticMode })
           if (!evidence.fieldKey) {
-            if (automaticMode && privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply) {
+            if (automaticMode && privacyPolicy.canPromoteToProfile && (provenanceAllowsAutoApply || draftApplyAllowed) && !isInferenceOnly) {
               const appended = await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
               if (appended) archivingCounts.supplementaryWriteCount += 1
             }
             continue
           }
-          const currentCustomer = database.customers.find((item) => item.id === source.customerId)
+          if (isInferenceOnly) {
+            archivingCounts.unresolvedMappedEvidenceCount += 1
+            if (automaticMode) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
+            // Still create Proposal below when eligible.
+          }
           const profileMeta = currentCustomer?.profileFieldMeta?.[evidence.fieldKey]
           const incomingEventAt = evidence.occurredAt || source.occurredAt || ''
           const incomingEntryAt = source.uploadedAt || source.createdAt || ''
@@ -3537,30 +3734,52 @@ export class FeishuRepository {
           const staleIncoming = olderSourceOrder || olderSameSourceVersion
           const currentFactAllowed = automaticMode && isSnapshotEvidence(evidence) && !staleIncoming
           const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence) && !currentFactAllowed)
-          const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !staleIncoming && isSnapshotEvidence(evidence) && (['ADD', 'UPDATE', 'APPEND'].includes(change.action) || currentFactAllowed) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
-          if (autoApply) {
-            const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), automaticMode ? false : true)[0]
+          const confirmedBlocked = profileMeta?.confirmed === true
+          const emptyOrUnconfirmedTarget = fieldAllowsUnconfirmedOverwrite(currentCustomer, evidence.fieldKey)
+          const autoApply = !isInferenceOnly && !confirmedBlocked && privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !staleIncoming && isSnapshotEvidence(evidence) && (['ADD', 'UPDATE', 'APPEND'].includes(change.action) || currentFactAllowed) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+          // AI整理·待核实: grounded staff-attributed Evidence may fill empty/unconfirmed physical fields only.
+          const unconfirmedDraftApply = !autoApply && !isInferenceOnly && !confirmedBlocked && emptyOrUnconfirmedTarget && privacyPolicy.canPromoteToProfile && draftApplyAllowed && !requiresReview && !staleIncoming && isSnapshotEvidence(evidence) && ['ADD', 'UPDATE', 'APPEND'].includes(change.action) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+          if ((autoApply || unconfirmedDraftApply) && !pendingProfileUpdates.some((item) => item.field === evidence.fieldKey)) {
+            const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], currentCustomer, automaticMode ? false : true)[0]
             if (update) {
-              const profileWrite = await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
+              // Keep confirmed:false for automaticMode; never claim human confirmation.
+              if (automaticMode) update.confirmed = false
+              update.contentSource = evidence.contentSource
+              update.sourceRecordId = sourceId
+              update.evidenceId = evidence.id
+              update.updateBatchId = evidence.extractionBatchId
+              update.sourceEventAt = incomingEventAt
+              update.sourceEntryAt = incomingEntryAt
+              update.sourceVersion = incomingVersion
+              pendingProfileUpdates.push(update)
+              pendingProfileProvenance.push({
+                field: update.field,
                 sourceRecordId: sourceId,
                 evidenceId: evidence.id,
                 updateBatchId: evidence.extractionBatchId,
                 sourceEventAt: incomingEventAt,
                 sourceEntryAt: incomingEntryAt,
                 sourceVersion: incomingVersion,
+                contentSource: evidence.contentSource,
+                confidence: evidence.confidence,
               })
-              archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
-              if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += 1
               if (!automaticMode) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
             }
+          } else if (autoApply || unconfirmedDraftApply) {
+            // Same field already queued from another Evidence in this batch — keep first non-conflicting value.
+            archivingCounts.mappedNoChangeCount += 1
           }
-          if (!autoApply) archivingCounts.unresolvedMappedEvidenceCount += 1
-          if (automaticMode && !autoApply && (evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS')) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
+          if (!autoApply && !unconfirmedDraftApply && evidence.fieldKey && change.changeType !== 'NO_CHANGE') archivingCounts.unresolvedMappedEvidenceCount += 1
+          if (automaticMode && !autoApply && !unconfirmedDraftApply && isInferenceOnly) await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId)
           const reviewStatus = automaticMode ? 'PENDING_REVIEW' : autoApply || shouldAutoConfirmEvidence(evidence) ? 'CONFIRMED' : 'PENDING_REVIEW'
-          if (privacyPolicy.canPromoteToProfile && evidence.fieldKey && isSnapshotEvidence(evidence)) {
-            const proposalAction = autoApply && change.action === 'REVIEW_REQUIRED' ? 'UPDATE' : change.action
+          if (privacyPolicy.canPromoteToProfile && evidence.fieldKey && isSnapshotEvidence(evidence) && !existingProposal) {
+            const proposalStarted = Date.now()
+            const proposalAction = (autoApply || unconfirmedDraftApply) && change.action === 'REVIEW_REQUIRED' ? 'UPDATE' : change.action
             const proposal = { id: proposalId(evidence.id, evidence.fieldKey), customerId: source.customerId, subjectId: source.subjectId, evidenceId: evidence.id, sourceId, fieldKey: evidence.fieldKey, fieldName: mapField('customers', evidence.fieldKey), currentValue, proposedValue: evidence.standardValue, action: PROPOSAL_ACTIONS.has(proposalAction) ? proposalAction : 'REVIEW_REQUIRED', changeType: change.changeType, reviewStatus, reason: evidence.displayText, confidence: evidence.confidence, extractionBatchId: evidence.extractionBatchId, reviewerId: '', reviewedAt: null, createdAt: timestamp, updatedAt: timestamp }
-            if (!refreshed.profileUpdateProposals.some((item) => item.id === proposal.id)) await createMappedRecord('profileUpdateProposals', 'proposal.create', { proposal_id: proposal.id, customer_id: proposal.customerId, subject_id: proposal.subjectId, evidence_id: proposal.evidenceId, source_id: proposal.sourceId, field_key: proposal.fieldKey, field_name: proposal.fieldName, current_value: stage2Json(proposal.currentValue), proposed_value: stage2Json(proposal.proposedValue), action: proposal.action, change_type: proposal.changeType, review_status: proposal.reviewStatus, reason: proposal.reason, confidence: proposal.confidence, extraction_batch_id: proposal.extractionBatchId, reviewer_id: proposal.reviewerId, reviewed_at: proposal.reviewedAt || '', created_at: proposal.createdAt, updated_at: proposal.updatedAt })
+            if (!refreshed.profileUpdateProposals.some((item) => item.id === proposal.id)) {
+              await createMappedRecord('profileUpdateProposals', 'proposal.create', { proposal_id: proposal.id, customer_id: proposal.customerId, subject_id: proposal.subjectId, evidence_id: proposal.evidenceId, source_id: proposal.sourceId, field_key: proposal.fieldKey, field_name: proposal.fieldName, current_value: stage2Json(proposal.currentValue), proposed_value: stage2Json(proposal.proposedValue), action: proposal.action, change_type: proposal.changeType, review_status: proposal.reviewStatus, reason: proposal.reason, confidence: proposal.confidence, extraction_batch_id: proposal.extractionBatchId, reviewer_id: proposal.reviewerId, reviewed_at: proposal.reviewedAt || '', created_at: proposal.createdAt, updated_at: proposal.updatedAt })
+              markTiming('PROPOSAL_WRITE', Date.now() - proposalStarted)
+            }
           }
           if (requiresReview) {
             this.markScopedDirty(source.customerId, ['evidenceItems', 'evidenceConflicts'])
@@ -3573,7 +3792,48 @@ export class FeishuRepository {
           derivedErrors.push(processingErrorCode(error))
         }
       }
+      if (pendingProfileUpdates.length) {
+        const customersWriteStarted = Date.now()
+        // Merge non-conflicting field updates into one Customers physical write.
+        const liveCustomer = database.customers.find((item) => item.id === source.customerId)
+        const writable = pendingProfileUpdates.filter((update) => fieldAllowsUnconfirmedOverwrite(liveCustomer, update.field) || !(liveCustomer?.profileFieldMeta?.[update.field]?.confirmed === true))
+        if (writable.length) {
+          const primaryProv = pendingProfileProvenance.find((item) => item.field === writable[0].field) || pendingProfileProvenance[0] || {}
+          // Enrich meta per field before write via normalize already; persist once.
+          for (const update of writable) {
+            const prov = pendingProfileProvenance.find((item) => item.field === update.field) || {}
+            const meta = liveCustomer.profileFieldMeta || (liveCustomer.profileFieldMeta = {})
+            meta[update.field] = {
+              ...(meta[update.field] || {}),
+              source: 'AI_EXTRACTED',
+              confidence: update.confidence,
+              confirmed: false,
+              updatedAt: now(),
+              sourceRecordId: prov.sourceRecordId || sourceId,
+              evidenceId: prov.evidenceId || '',
+              extractionBatchId: prov.updateBatchId || batchId,
+              contentSource: prov.contentSource || '',
+              verificationLabel: 'AI整理·待核实',
+            }
+          }
+          const profileWrite = await persistCustomerProfile(database, source.customerId, writable, undefined, actorId, {
+            sourceRecordId: primaryProv.sourceRecordId || sourceId,
+            evidenceId: primaryProv.evidenceId || '',
+            updateBatchId: primaryProv.updateBatchId || batchId,
+            sourceEventAt: primaryProv.sourceEventAt || '',
+            sourceEntryAt: primaryProv.sourceEntryAt || '',
+            sourceVersion: primaryProv.sourceVersion || Number(source.sourceVersion || 0),
+          })
+          archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
+          if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += writable.length
+          // Physical write resolves those mapped items for outcome classification.
+          archivingCounts.unresolvedMappedEvidenceCount = Math.max(0, archivingCounts.unresolvedMappedEvidenceCount - profileWrite.changes.length)
+        }
+        markTiming('CUSTOMERS_WRITE', Date.now() - customersWriteStarted)
+      }
+      const finalReadbackStarted = Date.now()
       const debugBeforeStatus = await this.load()
+      markTiming('FINAL_READBACK', Date.now() - finalReadbackStarted)
       const hasOpenConflict = debugBeforeStatus.evidenceConflicts.some((item) => item.newEvidenceId && debugBeforeStatus.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
       const archiveOutcome = classifyStructuredArchivingOutcome({
         validEvidenceCount: replaceableEvidence.length,
@@ -3586,7 +3846,7 @@ export class FeishuRepository {
       const finalErrors = [...new Set([...derivedErrors, ...(archiveOutcome.errorCode ? [archiveOutcome.errorCode] : []), ...(candidates.length > 0 && replaceableEvidence.length === 0 ? ['NO_VALID_EVIDENCE'] : [])])]
       await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: finalErrors.length ? finalErrors.join(',').slice(0, 200) : '', updated_at: finishedAt })
       const debugDatabase = await this.load()
-      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, archive_outcome: archiveOutcome.outcome, processing_error: finalErrors.length ? finalErrors.join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, ...archivingCounts, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
+      this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, archive_outcome: archiveOutcome.outcome, processing_error: finalErrors.length ? finalErrors.join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, ...archivingCounts, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, stage_timings: stageTimings, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)
       await this.markSafetyStale(source.customerId).catch((error) => this.audit('MARK_SAFETY_STALE', source.customerId, actorId, 'FAIL', error instanceof Error ? error.code || error.message : 'SAFETY_STALE_FAILED'))

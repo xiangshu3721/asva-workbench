@@ -130,6 +130,25 @@ function customerMutationFromDatabase(database: Database & Partial<CustomerMutat
   return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
 }
 export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export interface CustomerAutoArchiveResult {
+  status?: string
+  customerId?: string
+  sourceId?: string
+  phase?: string
+  reason?: string
+  errorCode?: string
+  errorMessage?: string
+  reused?: boolean
+  needsFinalize?: boolean
+  evidenceCount?: number
+  proposalCount?: number
+  pendingUnconfirmedFieldCount?: number
+  physicalFields?: Record<string, unknown> | null
+  timings?: Record<string, unknown>
+  durationMs?: number
+  automaticProfileStatus?: AutomaticProfileStatus | string
+  source?: SourceRecord
+}
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
 export interface WorkbenchApi {
@@ -183,7 +202,8 @@ export interface WorkbenchApi {
   sourceStatus(actorId: string, customerId: string, operationId: string): Promise<SourceSaveStatus>
   createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
-  autoArchiveCustomer(actorId: string, customerId: string, options?: { force?: boolean }): Promise<CustomerAutoArchiveResult>
+  autoArchiveCustomer(actorId: string, customerId: string, options?: { force?: boolean; stage?: 'extract' | 'finalize' | 'all'; finalize?: boolean }): Promise<CustomerAutoArchiveResult>
+  finalizeCustomerArchive(actorId: string, customerId: string): Promise<CustomerAutoArchiveResult>
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
   reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
   resolveConflict(actorId: string, conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN'): Promise<SourceWorkspace>
@@ -319,6 +339,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     createSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
     processSource: async () => { throw new Error('本地 Demo 不支持资料分析') },
     autoArchiveCustomer: async () => { throw new Error('本地 Demo 不支持自动归档') },
+    finalizeCustomerArchive: async () => { throw new Error('本地 Demo 不支持自动归档') },
     overrideServiceNecessity: async () => { throw new Error('本地 Demo 不支持隐私策略调整') },
     reviewProposal: async () => { throw new Error('本地 Demo 不支持资料分析') },
     resolveConflict: async () => { throw new Error('本地 Demo 不支持资料分析') },
@@ -510,7 +531,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     sourceStatus: (actorId, customerId, operationId) => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}`, actorId),
     createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),
     processSource: (actorId, sourceId, force = false) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/process`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
-    autoArchiveCustomer: (actorId, customerId, options = {}) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive`, actorId, { method: 'POST', body: JSON.stringify({ force: options.force === true }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
+    autoArchiveCustomer: (actorId, customerId, options: { force?: boolean; stage?: 'extract' | 'finalize' | 'all'; finalize?: boolean } = {}) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive`, actorId, { method: 'POST', body: JSON.stringify({ force: options.force === true && options.finalize !== true && options.stage !== 'finalize', stage: options.finalize ? 'finalize' : (options.stage || 'extract'), finalize: options.finalize === true || options.stage === 'finalize' }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
+    finalizeCustomerArchive: (actorId, customerId) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive/finalize`, actorId, { method: 'POST', body: JSON.stringify({ finalize: true }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
     overrideServiceNecessity: (actorId, input) => request<SourceWorkspace>('/api/privacy/service-necessity', actorId, { method: 'POST', body: JSON.stringify(input) }),
     reviewProposal: (actorId, proposalId, decision) => request<SourceWorkspace>(`/api/profile-proposals/${encodeURIComponent(proposalId)}/review`, actorId, { method: 'POST', body: JSON.stringify({ decision }) }),
     resolveConflict: (actorId, conflictId, resolution) => request<SourceWorkspace>(`/api/evidence-conflicts/${encodeURIComponent(conflictId)}/resolve`, actorId, { method: 'POST', body: JSON.stringify({ resolution }) }),

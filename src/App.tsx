@@ -13,7 +13,7 @@ import { DebugPanel, ReleaseIndicator } from './DebugPanel'
 import { canStartCustomerSave } from './save-contract'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { isStaleProcessing, shouldResumeSource } from './processing-contract'
-import { attachmentFailureToast, shouldKickoffAfterCreateSave, shouldResumeAutoArchive } from './customer-auto-archive-flow'
+import { attachmentFailureToast, autoArchiveStatusToast, shouldKickoffAfterCreateSave, shouldResumeAutoArchive } from './customer-auto-archive-flow'
 import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
@@ -534,15 +534,31 @@ function WorkbenchApp() {
     autoArchiveResumeInFlight.current.add(customerId)
     autoArchiveKickoffAt.current.set(customerId, Date.now())
     const startedAt = performance.now()
-    void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId)
-      .then((result) => {
-        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: result?.status || '', phase: result?.phase || '', reason, source_id: result?.sourceId || '', error: result?.errorCode || '' })
-        if (result?.status === 'COMPLETED' || result?.status === 'REVIEW_REQUIRED') {
-          showCustomerSaveToast(result.status === 'REVIEW_REQUIRED' ? 'AI整理完成，部分信息待核实' : 'AI整理完成', 'success')
+    const runFinalize = async (sourceId?: string) => {
+      const finalizeStarted = performance.now()
+      const finalized = typeof (workbenchApi as { finalizeCustomerArchive?: Function }).finalizeCustomerArchive === 'function'
+        ? await (workbenchApi as { finalizeCustomerArchive: (actorId: string, customerId: string) => Promise<any> }).finalizeCustomerArchive(activeStaff.id, customerId)
+        : await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize', finalize: true })
+      logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(performance.now() - finalizeStarted), status: finalized?.status || '', phase: finalized?.phase || '', reason, source_id: sourceId || finalized?.sourceId || '', error: finalized?.errorCode || '' })
+      return finalized
+    }
+    void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'extract' })
+      .then(async (result) => {
+        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_MS', { duration_ms: Math.round(performance.now() - startedAt), status: result?.status || '', phase: result?.phase || '', reason, source_id: result?.sourceId || '', error: result?.errorCode || '', needs_finalize: Boolean(result?.needsFinalize) })
+        let finalResult = result
+        if (result?.needsFinalize || result?.phase === 'EXTRACT_READY') {
+          showCustomerSaveToast('原始资料已保存，AI整理中…', 'success')
+          finalResult = await runFinalize(result?.sourceId)
+        }
+        const toast = autoArchiveStatusToast(finalResult || {})
+        if (finalResult?.status === 'COMPLETED' || finalResult?.status === 'REVIEW_REQUIRED' || finalResult?.phase === 'FINALIZE_DONE') {
+          showCustomerSaveToast(toast.message, toast.tone)
           setRevision((value) => value + 1)
-        } else if (result?.status === 'FAILED') {
-          const phase = result?.phase || 'PROCESS_SOURCE'
-          showCustomerSaveToast(`AI整理失败（${phase}），原始资料已保留，可稍后自动重试`, 'warning')
+        } else if (finalResult?.status === 'FAILED') {
+          showCustomerSaveToast(`AI处理失败待恢复（${finalResult?.phase || 'PROCESS'}），原始资料已保留`, 'warning')
+        } else if (finalResult?.status === 'PROCESSING') {
+          showCustomerSaveToast('AI整理中，原始资料已保存', 'success')
+          setRevision((value) => value + 1)
         }
       })
       .catch((error: Error & { code?: string; serverCode?: string }) => {
@@ -989,16 +1005,22 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const hasEntered = fieldItems.some((item) => item.statusLabel === '已录入') || Boolean(rawNotes)
   const hasProvisional = provisionalItems.length > 0
   const coverageLabel = showInitialLoading ? '正在读取档案' : error && !profile ? '档案读取失败' : !profile ? '展开后读取' : !hasDisplayContent ? '暂无可展示资料' : hasProvisional && (hasConfirmed || hasEntered) ? '已确认资料与待核实资料' : hasProvisional ? '待核实资料' : hasConfirmed ? '已确认资料' : hasEntered ? '已录入资料' : '已录入资料'
+  const pendingUnconfirmedCount = Object.values(hydratedCustomer.profileFieldMeta || {}).filter((meta: any) => meta && meta.confirmed === false).length
+  const provisionalCount = provisionalItems.length
   const autoStatusMessage = profile?.autoOrganizeStatus === 'PROCESSING'
-    ? 'AI正在整理资料，原始资料已保存。'
+    ? 'AI整理中，原始资料已保存。'
     : profile?.autoOrganizeStatus === 'FAILED'
-      ? 'AI整理失败，将自动重试，原始资料已保留。'
+      ? 'AI处理失败待恢复，原始资料已保留。'
       : profile?.autoOrganizeStatus === 'REVIEW_REQUIRED'
-        ? 'AI整理完成，部分信息待核实。'
+        ? (pendingUnconfirmedCount > 0
+          ? `字段已落盘待核实（${pendingUnconfirmedCount}项）。`
+          : provisionalCount > 0
+            ? `AI已整理，${provisionalCount}项待确认。`
+            : 'AI整理完成，部分信息待核实。')
         : profile?.autoOrganizeStatus === 'NO_USABLE_OUTPUT'
           ? '本次整理未生成可展示资料，原始资料已保留。'
           : profile?.autoOrganizeStatus === 'COMPLETED'
-            ? 'AI整理完成，档案已更新。'
+            ? (pendingUnconfirmedCount > 0 ? `AI整理完成·${pendingUnconfirmedCount}项待核实。` : 'AI整理完成，档案已更新。')
             : profile?.autoOrganizeStatus === 'PENDING'
               ? 'AI整理处理中或待恢复，原始资料已保留。'
               : ''
