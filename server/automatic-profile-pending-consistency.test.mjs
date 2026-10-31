@@ -330,11 +330,18 @@ describe('automatic profile pending consistency', () => {
       return { id: sourceId, customerId: input.customerId, contentHash: contentHash(input.rawText), processingStatus: 'UPLOADED', notes: input.notes }
     })
     repository.scheduleAutomaticProcessing = vi.fn()
+    repository.processSource = vi.fn(async (_actor, sourceId) => ({
+      source: { id: sourceId, processingStatus: 'REVIEW_REQUIRED', customerId },
+      evidenceItems: [{ id: 'EVD-1', sourceId }],
+      proposals: [],
+      conflicts: [],
+    }))
 
     const recovered = await repository.recoverAutomaticCustomerProfile('ADMIN-1', customerId)
-    expect(recovered).toMatchObject({ status: 'SOURCE_CREATED', customerId, reused: false, scheduledProcessing: true })
+    expect(recovered).toMatchObject({ status: 'REVIEW_REQUIRED', customerId, reused: false, processed: true, scheduledProcessing: false })
     expect(recovered.sourceId).toBeTruthy()
     expect(repository.createSource).toHaveBeenCalledTimes(1)
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', recovered.sourceId)
   })
 
   it('repeated recover for the same customer and text reuses the Source without duplicates', async () => {
@@ -379,12 +386,20 @@ describe('automatic profile pending consistency', () => {
       return source
     })
     repository.scheduleAutomaticProcessing = vi.fn()
+    repository.processSource = vi.fn(async (_actor, sourceId) => ({
+      source: { id: sourceId, processingStatus: 'REVIEW_REQUIRED', customerId: 'CUS-REUSE-1' },
+      evidenceItems: [{ id: 'EVD-REUSE', sourceId }],
+      proposals: [],
+      conflicts: [],
+    }))
 
     const first = await repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-REUSE-1')
     const second = await repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-REUSE-1')
-    expect(first.status).toBe('SOURCE_CREATED')
-    expect(second).toMatchObject({ status: 'SOURCE_CREATED', reused: true, sourceId: first.sourceId })
+    expect(first.status).toBe('REVIEW_REQUIRED')
+    expect(first.processed).toBe(true)
+    expect(second).toMatchObject({ status: 'REVIEW_REQUIRED', reused: true, sourceId: first.sourceId, processed: true })
     expect(sourceRows()).toHaveLength(1)
+    expect(repository.processSource).toHaveBeenCalled()
   })
 
   it('AI/source failure does not change customer notes or save success semantics', async () => {
@@ -419,7 +434,7 @@ describe('automatic profile pending consistency', () => {
       enrollments: [],
     }, '', { compactResponse: true })
     const elapsed = Date.now() - started
-    // Same-request kickoff awaits up to ~3500ms; a stalled queue must not block forever.
+    // Same-request kickoff awaits up to ~2000ms; a stalled queue must not block forever.
     expect(elapsed).toBeLessThan(5000)
     expect(created.automaticProfile?.status).toBe('QUEUED')
     expect(created.automaticProfile?.kickoffStatus).toBe('BUDGET_EXCEEDED')

@@ -240,7 +240,7 @@ describe('automatic customer profile processing', () => {
     await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-EMPTY')).resolves.toEqual({ status: 'NOT_REQUIRED', customerId: 'CUS-EMPTY' })
   })
 
-  it('recoverAutomaticCustomerProfile reuses an existing Source and reports SOURCE_CREATED', async () => {
+  it('recoverAutomaticCustomerProfile reuses an existing Source and awaits processSource', async () => {
     const repository = new FeishuRepository({ authRepository: {} })
     const notes = '已有 Source 可复用'
     const hash = contentHash(notes)
@@ -252,19 +252,27 @@ describe('automatic customer profile processing', () => {
     repository.clearAutomaticProfilePending = vi.fn(async () => true)
     repository.scheduleAutomaticProcessing = vi.fn()
     repository.queueAutomaticCustomerProfile = vi.fn()
+    repository.processSource = vi.fn(async () => ({
+      source: { id: 'SRC-EXIST', processingStatus: 'REVIEW_REQUIRED', customerId: 'CUS-EXIST' },
+      evidenceItems: [{ id: 'EVD-1', sourceId: 'SRC-EXIST' }],
+      proposals: [],
+      conflicts: [],
+    }))
 
     await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-EXIST')).resolves.toMatchObject({
-      status: 'SOURCE_CREATED',
+      status: 'REVIEW_REQUIRED',
       customerId: 'CUS-EXIST',
       sourceId: 'SRC-EXIST',
       reused: true,
-      scheduledProcessing: true,
+      processed: true,
+      scheduledProcessing: false,
     })
     expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
-    expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledWith('ADMIN-1', 'SRC-EXIST')
+    expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalled()
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-EXIST')
   })
 
-  it('recoverAutomaticCustomerProfile rebuilds pending and queues when Source is missing', async () => {
+  it('recoverAutomaticCustomerProfile rebuilds pending and awaits process when Source is missing', async () => {
     const repository = new FeishuRepository({ authRepository: {} })
     const notes = '无 Source 时按原文重建'
     repository.load = vi.fn(async () => ({
@@ -275,16 +283,24 @@ describe('automatic customer profile processing', () => {
     }))
     repository.ensureAutomaticProfilePending = vi.fn(async () => true)
     repository.queueAutomaticCustomerProfile = vi.fn(async () => ({ status: 'QUEUED', sourceId: 'SRC-NEW' }))
+    repository.processSource = vi.fn(async () => ({
+      source: { id: 'SRC-NEW', processingStatus: 'COMPLETED', customerId: 'CUS-MISS' },
+      evidenceItems: [{ id: 'EVD-NEW' }],
+      proposals: [],
+      conflicts: [],
+    }))
 
     await expect(repository.recoverAutomaticCustomerProfile('ADMIN-1', 'CUS-MISS')).resolves.toMatchObject({
-      status: 'SOURCE_CREATED',
+      status: 'COMPLETED',
       customerId: 'CUS-MISS',
       sourceId: 'SRC-NEW',
       reused: false,
-      scheduledProcessing: true,
+      processed: true,
+      scheduledProcessing: false,
     })
     expect(repository.ensureAutomaticProfilePending).toHaveBeenCalled()
     expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-MISS', notes, 'RECOVERY')
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-NEW')
   })
 
 
