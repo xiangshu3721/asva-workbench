@@ -267,12 +267,19 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
   const fingerprint = summaryInputFingerprint({ customer, evidenceItems })
   const fields = materializationFields(customer)
   const fieldMeta = customer?.profileFieldMeta && typeof customer.profileFieldMeta === 'object' && !Array.isArray(customer.profileFieldMeta) ? customer.profileFieldMeta : {}
-  const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).filter((item) => fieldMeta[item.fieldKey]?.evidenceId !== item.id).map(provisionalItemFromEvidence))
   const supplementaryItems = Array.isArray(customer?.supplementaryItems) ? customer.supplementaryItems.filter((item) => present(item?.text)).map((item) => ({
     id: String(item.id || hashText(`${item.sourceRecordId || ''}:${item.text}`)),
     label: '客户补充信息',
     text: String(item.text),
-    statusLabel: item.confirmed === true ? '已确认' : item.source === 'AI_INFERENCE' ? 'AI推断 · 待验证' : '待核实',
+    statusLabel: item.confirmed === true
+      ? '已确认'
+      : item.source === 'AI_INFERENCE'
+        ? 'AI推断 · 待验证'
+        : item.source === 'THIRD_PARTY_REPORTED'
+          ? '第三方说法 · 待核实'
+          : item.source === 'MENTOR_OBSERVATION'
+            ? '导师观察 · 待核实'
+            : '待核实',
     evidenceIds: item.evidenceId ? [item.evidenceId] : [],
     basis: item.evidenceId ? [{ evidenceId: item.evidenceId, sourceId: item.sourceRecordId || '', displayText: String(item.text), excerpt: String(item.text) }] : [],
     source: item.source || 'AI_EXTRACTED',
@@ -280,6 +287,8 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
     sourceRecordId: item.sourceRecordId || '',
     evidenceId: item.evidenceId || '',
   })) : []
+  const supplementaryEvidenceIds = new Set(supplementaryItems.flatMap((item) => item.evidenceIds || []))
+  const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).filter((item) => fieldMeta[item.fieldKey]?.evidenceId !== item.id).filter((item) => !supplementaryEvidenceIds.has(item.id)).map(provisionalItemFromEvidence))
   const currentSnapshot = Object.fromEntries(Object.entries(fields).filter(([, value]) => present(value)).map(([field, value]) => {
     const evidence = fieldEvidence(evidenceItems, field).slice(0, 4)
     return [field, { value, evidenceIds: evidence.map((item) => item.id), basis: evidence.map(basis) }]

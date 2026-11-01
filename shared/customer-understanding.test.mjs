@@ -14,6 +14,17 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(context.evidence_refs.map((item) => item.evidence_id)).toEqual(expect.arrayContaining(['EVD-1', 'EVD-2', 'EVD-3']))
   })
 
+  it('does not promote pending Evidence into current facts or goals', () => {
+    const context = buildCustomerUnderstandingContext({
+      customer: { id: 'CUS-1', profileVersion: 1, profileFields: {} },
+      evidenceItems: [fact({ id: 'EVD-PENDING', reviewStatus: 'PENDING_REVIEW', standardValue: '可能想创业', displayText: '可能想创业', fieldKey: 'current_goal' })],
+    })
+    expect(context.current_snapshot.current_goal).not.toBe('可能想创业')
+    expect(context.current_goals).toEqual([])
+    expect(context.current_needs).toEqual([])
+    expect(context.evidence_refs.find((item) => item.evidence_id === 'EVD-PENDING').verification_status).toBeNull()
+  })
+
   it('changes fingerprint when confirmed evidence changes', () => {
     expect(understandingInputFingerprint({ customer, evidenceItems: [fact()] })).not.toBe(understandingInputFingerprint({ customer, evidenceItems: [fact({ id: 'EVD-2' })] }))
   })
