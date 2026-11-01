@@ -130,7 +130,7 @@ function customerMutationFromDatabase(database: Database & Partial<CustomerMutat
   return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation, automaticProfile: database.automaticProfile }
 }
 export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
-export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'PROCESSING' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number }
+export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'PROCESSING' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; physicalFieldWriteCount?: number; supplementaryWriteCount?: number; readbackOk?: boolean; archiveOutcome?: string; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number; timings?: Record<string, number> }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
 export interface WorkbenchApi {
@@ -151,7 +151,7 @@ export interface WorkbenchApi {
   createAppointment(input: NewAppointmentInput): Promise<Database>
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
-  autoArchiveCustomer(actorId: string, customerId: string, options?: { stage?: 'extract' }): Promise<CustomerAutoArchiveResult>
+  autoArchiveCustomer(actorId: string, customerId: string, options?: { stage?: 'extract' | 'finalize' }): Promise<CustomerAutoArchiveResult>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<CustomerMutationResult>
   customerSaveStatus(actorId: string, operationId: string, customerId?: string): Promise<CustomerSaveStatusResponse>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
