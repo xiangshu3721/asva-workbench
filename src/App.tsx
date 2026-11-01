@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { createGuardedLocalApi, createLocalApi } from './api'
 import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, CustomerDraftPreview, CustomerSalesUnderstandingV1, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountResult, ProfileDraft, ProfileMaterialization, ProfileUpdate, ProfileValue, Product, Staff, UnderstandingInsight } from './domain'
 import { createLocalRepository } from './repositories'
-import { clearPendingCustomerMutation, createHttpApi, createLocalAsyncApi, readPendingCustomerMutation, rememberPendingCustomerMutation, type BasicDashboard, type CustomerMutationResult, type CustomerProfileResponse, type CustomerSalesUnderstandingResponse, type CustomerUnderstandingResponse, type SafetyAssessmentResponse, type FeedbackDraftInput, type SourceRecord, type SourceSaveStatus, type SourceWorkspace, type WorkbenchApi } from './clientApi'
+import { clearPendingCustomerMutation, createHttpApi, createLocalAsyncApi, readPendingCustomerMutation, recoverCustomerFinalizeStatus, rememberPendingCustomerMutation, type BasicDashboard, type CustomerMutationResult, type CustomerProfileResponse, type CustomerSalesUnderstandingResponse, type CustomerUnderstandingResponse, type SafetyAssessmentResponse, type FeedbackDraftInput, type SourceRecord, type SourceSaveStatus, type SourceWorkspace, type WorkbenchApi } from './clientApi'
 import { assembleCustomerContext, type AiBrief, type AiCoreSummary } from './customer-ai'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { humanizeEvidenceType, humanizeLevel, humanizeProcessingStatus, humanizeStrategy, humanizeTiming, sanitizeUserVisibleText } from './presentationCopy'
@@ -498,13 +498,25 @@ function WorkbenchApp() {
       if (result.status === 'EXTRACT_READY') {
         showCustomerSaveToast('客户已保存，AI资料提取完成，正在归档', 'success')
         const finalizeStartedAt = performance.now()
-        const finalized = await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize' })
-        invalidateCustomerResources(customerId)
-        refresh()
-        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(finalized.durationMs ?? performance.now() - finalizeStartedAt), phase: finalized.phase, status: finalized.status, archive_outcome: finalized.archiveOutcome || '' })
-        if (finalized.status === 'COMPLETED' && finalized.readbackOk === true) showCustomerSaveToast('客户已保存，AI归档完成', 'success')
-        else if (finalized.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
-        else showCustomerSaveToast('客户已保存，AI归档失败，可稍后重试', 'warning')
+        try {
+          const finalized = await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize' })
+          invalidateCustomerResources(customerId)
+          refresh()
+          logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(finalized.durationMs ?? performance.now() - finalizeStartedAt), phase: finalized.phase, status: finalized.status, archive_outcome: finalized.archiveOutcome || '' })
+          if (finalized.status === 'COMPLETED' && finalized.readbackOk === true) showCustomerSaveToast('客户已保存，AI归档完成', 'success')
+          else if (finalized.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
+          else showCustomerSaveToast('客户已保存，AI归档未完成，可稍后查看', 'warning')
+        } catch {
+          const recovered = await recoverCustomerFinalizeStatus(() => workbenchApi.customerProfile(activeStaff.id, customerId))
+          invalidateCustomerResources(customerId)
+          refresh()
+          logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_RECOVERY_MS', { duration_ms: Math.round(performance.now() - finalizeStartedAt), status: recovered.status })
+          if (recovered.status === 'COMPLETED') showCustomerSaveToast('客户已保存，AI归档完成', 'success')
+          else if (recovered.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
+          else if (recovered.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI归档仍在处理中，请稍后刷新查看', 'success')
+          else if (recovered.status === 'FAILED') showCustomerSaveToast('客户已保存，AI归档未完成，可稍后查看', 'warning')
+          else showCustomerSaveToast('客户已保存，暂未确认AI归档结果，请稍后刷新查看', 'warning')
+        }
       } else if (result.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI资料提取仍在进行中', 'success')
       else if (result.status === 'DISABLED' || result.status === 'NOT_REQUIRED') showCustomerSaveToast('客户已保存，AI整理未启动', 'success')
       else showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')

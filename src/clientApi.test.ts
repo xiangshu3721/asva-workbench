@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS, CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi } from './clientApi'
+import { CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS, CLIENT_CUSTOMER_SAVE_TIMEOUT_MS, CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_SOURCE_SAVE_TIMEOUT_MS, classifyFetchFailure, createHttpApi, recoverCustomerFinalizeStatus } from './clientApi'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -58,6 +58,18 @@ describe('HTTP environment diagnostics', () => {
     expect(url).toContain('/api/customers/CUS-1/auto-archive')
     expect(JSON.parse(String(init.body))).toEqual({ stage: 'finalize' })
     expect(result).toMatchObject({ status: 'COMPLETED', phase: 'FINALIZE', archiveOutcome: 'CUSTOMERS_FIELDS_WRITTEN' })
+  })
+
+  it('recovers a lost Finalize response through bounded read-only profile checks', async () => {
+    const materialization = { schemaVersion: 'profile-materialization-v2', currentSnapshot: { age: { value: '35岁', evidenceIds: [], basis: [] } }, sections: [], provisionalItems: [], lifeEvents: [], coverage: { percentage: 9, domains: [] }, aiSummaryStatus: 'STALE' as const }
+    const loadProfile = vi.fn()
+      .mockResolvedValueOnce({ customerId: 'CUS-1', autoOrganizeStatus: 'PROCESSING', profileMaterialization: materialization })
+      .mockResolvedValueOnce({ customerId: 'CUS-1', autoOrganizeStatus: 'COMPLETED', profileMaterialization: materialization })
+
+    const recovered = await recoverCustomerFinalizeStatus(loadProfile, { delayMs: 0, wait: async () => undefined })
+
+    expect(recovered).toMatchObject({ status: 'COMPLETED', profile: { customerId: 'CUS-1', profileMaterialization: materialization } })
+    expect(loadProfile).toHaveBeenCalledTimes(2)
   })
 
   it('MULTIPLE_AI_RETRY_NO_DUPLICATE_SOURCE', async () => {

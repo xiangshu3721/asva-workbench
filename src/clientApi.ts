@@ -133,6 +133,32 @@ export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'EXTRACT_REA
 export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'PROCESSING' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; physicalFieldWriteCount?: number; supplementaryWriteCount?: number; readbackOk?: boolean; archiveOutcome?: string; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number; timings?: Record<string, number> }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
+export type CustomerFinalizeRecoveryStatus = 'COMPLETED' | 'REVIEW_REQUIRED' | 'PROCESSING' | 'FAILED' | 'UNKNOWN'
+export async function recoverCustomerFinalizeStatus(
+  loadProfile: () => Promise<CustomerProfileResponse>,
+  options: { attempts?: number; delayMs?: number; wait?: (delayMs: number) => Promise<void> } = {},
+): Promise<{ status: CustomerFinalizeRecoveryStatus; profile?: CustomerProfileResponse }> {
+  const attempts = Math.max(1, Math.min(3, options.attempts ?? 2))
+  const delayMs = Math.max(0, options.delayMs ?? 1_000)
+  const wait = options.wait || ((value: number) => new Promise<void>((resolve) => window.setTimeout(resolve, value)))
+  let lastStatus: CustomerFinalizeRecoveryStatus = 'UNKNOWN'
+  let lastProfile: CustomerProfileResponse | undefined
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const profile = await loadProfile()
+      lastProfile = profile
+      if (profile.autoOrganizeStatus === 'COMPLETED') return { status: 'COMPLETED', profile }
+      if (profile.autoOrganizeStatus === 'REVIEW_REQUIRED') return { status: 'REVIEW_REQUIRED', profile }
+      if (profile.autoOrganizeStatus === 'FAILED' || profile.autoOrganizeStatus === 'NO_USABLE_OUTPUT') return { status: 'FAILED', profile }
+      if (['PROCESSING', 'EXTRACT_READY', 'PENDING'].includes(profile.autoOrganizeStatus || '')) lastStatus = 'PROCESSING'
+    } catch {
+      // A read failure does not prove Finalize failed; retry the bounded read only.
+    }
+    if (attempt + 1 < attempts) await wait(delayMs)
+  }
+  return { status: lastStatus, profile: lastProfile }
+}
+
 export interface WorkbenchApi {
   login(phone: string, password: string): Promise<Staff & { mustChangePassword?: boolean }>
   changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean; mustChangePassword: boolean; token?: string }>
