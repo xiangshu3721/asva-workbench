@@ -56,6 +56,27 @@ describe('stage 2 customer extract orchestration', () => {
     expect(repository.processSource).toHaveBeenCalledTimes(1)
   })
 
+  it('runs Finalize only from EXTRACT_READY and reuses persisted Evidence without Extract', async () => {
+    const source = { id: 'SRC-STAGE2-FINALIZE', customerId: 'CUS-STAGE2-1', contentHash: contentHash('客户正在准备职业转型。'), notes: 'AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE', processingStatus: 'EXTRACT_READY', processingError: 'ARCHIVE_FINALIZE_PENDING', _recordId: 'rec-source-finalize' }
+    const evidence = { id: 'EVD-STAGE2-FINALIZE', sourceId: source.id, reviewStatus: 'UNREVIEWED', displayText: '客户正在准备职业转型。' }
+    let finalized = false
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn(async () => database({ ...source, processingStatus: finalized ? 'COMPLETED' : 'EXTRACT_READY', processingError: finalized ? '' : 'ARCHIVE_FINALIZE_PENDING' }, [evidence]))
+    repository.createAutomaticProfileSource = vi.fn(async () => ({ status: 'SOURCE_REUSED', source, reused: true }))
+    repository.processSource = vi.fn(async (_actorId, _sourceId, options) => {
+      expect(options).toEqual({ stage: 'full' })
+      finalized = true
+      return { source: { ...source, processingStatus: 'COMPLETED' } }
+    })
+
+    const result = await repository.runCustomerAutoArchive('ADMIN-1', 'CUS-STAGE2-1', { stage: 'finalize' })
+
+    expect(result).toMatchObject({ status: 'COMPLETED', phase: 'FINALIZE', sourceId: source.id, evidenceCount: 1, readbackOk: true })
+    expect(result.timings.finalize_ms).toBeGreaterThanOrEqual(0)
+    expect(repository.processSource).toHaveBeenCalledTimes(1)
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', source.id, { stage: 'full' })
+  })
+
   it('uses the customer-and-content hash as a stable Source identity', async () => {
     let source = null
     const repository = new FeishuRepository({ authRepository: {} })

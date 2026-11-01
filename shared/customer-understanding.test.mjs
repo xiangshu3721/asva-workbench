@@ -25,6 +25,23 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(context.evidence_refs.find((item) => item.evidence_id === 'EVD-PENDING').verification_status).toBeNull()
   })
 
+  it('does not promote AI-written unconfirmed profile fields into current facts', () => {
+    const context = buildCustomerUnderstandingContext({
+      customer: {
+        id: 'CUS-1',
+        profileFields: { city: '深圳', occupation: '自由职业', education: '本科' },
+        profileFieldMeta: {
+          city: { confirmed: false, source: 'AI_EXTRACTED' },
+          occupation: { confirmed: true, source: 'HUMAN_CONFIRMED' },
+        },
+      },
+      evidenceItems: [],
+    })
+    expect(context.current_snapshot.city).toBeUndefined()
+    expect(context.current_snapshot.occupation).toBe('自由职业')
+    expect(context.current_snapshot.education).toBe('本科')
+  })
+
   it('changes fingerprint when confirmed evidence changes', () => {
     expect(understandingInputFingerprint({ customer, evidenceItems: [fact()] })).not.toBe(understandingInputFingerprint({ customer, evidenceItems: [fact({ id: 'EVD-2' })] }))
   })

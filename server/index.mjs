@@ -176,8 +176,9 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && customerAutoArchive) {
     const actorId = await guard(request)
     const body = await readBody(request)
-    if (body?.stage !== 'extract') return send(request, response, 400, { success: false, code: 'EXTRACT_STAGE_REQUIRED', message: '本阶段只支持 Extract。' }, requestId)
-    const result = await repository.runCustomerAutoArchive(actorId, decodeURIComponent(customerAutoArchive[1]), { stage: 'extract' })
+    const stage = body?.stage || 'extract'
+    if (!['extract', 'finalize'].includes(stage)) return send(request, response, 400, { success: false, code: 'AUTO_ARCHIVE_STAGE_INVALID', message: '不支持的自动归档阶段。' }, requestId)
+    const result = await repository.runCustomerAutoArchive(actorId, decodeURIComponent(customerAutoArchive[1]), { stage })
     return send(request, response, result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200, { ...result, requestId }, requestId)
   }
   // Admin manual recovery endpoint for failed enrollments (after 5 retries)

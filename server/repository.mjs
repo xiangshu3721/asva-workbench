@@ -236,6 +236,8 @@ export function classifyStructuredArchivingOutcome({
 
 function classifyStage4ArchivingOutcome({
   validEvidenceCount = 0,
+  physicalFieldWriteCount = 0,
+  supplementaryWriteCount = 0,
   unresolvedMappedEvidenceCount = 0,
   derivedErrorCount = 0,
   hasOpenConflict = false,
@@ -243,8 +245,29 @@ function classifyStage4ArchivingOutcome({
   if (hasOpenConflict) return { status: 'REVIEW_REQUIRED', outcome: 'REVIEW_REQUIRED', errorCode: 'OPEN_EVIDENCE_CONFLICT' }
   if (derivedErrorCount > 0) return { status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'DERIVED_WRITE_FAILED' }
   if (unresolvedMappedEvidenceCount > 0) return { status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'STRUCTURED_ARCHIVE_PARTIAL' }
-  if (validEvidenceCount > 0) return { status: 'COMPLETED', outcome: 'EVIDENCE_RETAINED', errorCode: '' }
+  if (validEvidenceCount > 0 && (physicalFieldWriteCount > 0 || supplementaryWriteCount > 0)) {
+    return { status: 'COMPLETED', outcome: physicalFieldWriteCount > 0 ? 'CUSTOMERS_FIELDS_WRITTEN' : 'SUPPLEMENTARY_ONLY', errorCode: '' }
+  }
+  if (validEvidenceCount > 0) return { status: 'REVIEW_REQUIRED', outcome: 'EVIDENCE_RETAINED', errorCode: 'ARCHIVE_EVIDENCE_RETAINED' }
   return { status: 'REVIEW_REQUIRED', outcome: 'NO_ARCHIVABLE_FACTS', errorCode: 'NO_ARCHIVABLE_FACTS' }
+}
+
+function stage4CustomerReadback(database, customerId, sourceId, expectedProfileWrites = [], expectedSupplementaryEvidence = []) {
+  const customer = database.customers.find((item) => item.id === customerId)
+  if (!customer) return { ok: false, physicalFieldWriteCount: 0, supplementaryWriteCount: 0, errorCode: 'CUSTOMER_READBACK_MISSING' }
+  const evidenceIds = new Set(database.evidenceItems.filter((item) => item.sourceId === sourceId && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).map((item) => item.id))
+  const profileEntries = Object.entries(customer.profileFieldMeta || {}).filter(([, meta]) => meta?.sourceRecordId === sourceId)
+  const invalidProfileEntries = profileEntries.filter(([field, meta]) => !evidenceIds.has(meta.evidenceId) || !Object.prototype.hasOwnProperty.call(customer.profileFields || {}, field) || customer.profileFields?.[field] === null || customer.profileFields?.[field] === undefined || customer.profileFields?.[field] === '')
+  const supplementaryItems = (customer.supplementaryItems || []).filter((item) => item.sourceRecordId === sourceId)
+  const invalidSupplementaryItems = supplementaryItems.filter((item) => !evidenceIds.has(item.evidenceId) || !text(item.text))
+  const expectedProfileMismatch = expectedProfileWrites.some((update) => {
+    const meta = customer.profileFieldMeta?.[update.field]
+    return meta?.sourceRecordId !== sourceId || meta?.evidenceId !== update.provenanceContext?.evidenceId || !Object.prototype.hasOwnProperty.call(customer.profileFields || {}, update.field) || !sameProfileValue(customer.profileFields?.[update.field], update.value)
+  })
+  const supplementaryEvidenceIds = new Set(supplementaryItems.map((item) => item.evidenceId))
+  const expectedSupplementaryMismatch = expectedSupplementaryEvidence.some((item) => !supplementaryEvidenceIds.has(item.id))
+  const mismatch = invalidProfileEntries.length > 0 || invalidSupplementaryItems.length > 0 || expectedProfileMismatch || expectedSupplementaryMismatch
+  return { ok: !mismatch, physicalFieldWriteCount: profileEntries.length, supplementaryWriteCount: supplementaryItems.length, errorCode: mismatch ? 'CUSTOMER_READBACK_MISMATCH' : '' }
 }
 
 function appointment(row) {
@@ -699,6 +722,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   const changedAt = feishuDate()
   for (const update of updates) {
     const field = update.field === 'mentor_id' ? 'current_mentor_id' : update.field
+    const updateProvenance = update.provenanceContext || provenanceContext
     const oldValue = customerRecord.profileFields[field] ?? null
     customerRecord.profileFields[field] = update.value
     customerRecord.profileFieldMeta[field] = {
@@ -706,12 +730,12 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
       confidence: update.confidence,
       confirmed: update.confirmed,
       updatedAt,
-      ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}),
-      ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}),
-      ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}),
-      ...(provenanceContext.sourceEventAt ? { sourceEventAt: provenanceContext.sourceEventAt } : {}),
-      ...(provenanceContext.sourceEntryAt ? { sourceEntryAt: provenanceContext.sourceEntryAt } : {}),
-      ...(provenanceContext.sourceVersion ? { sourceVersion: provenanceContext.sourceVersion } : {}),
+      ...(updateProvenance.sourceRecordId ? { sourceRecordId: updateProvenance.sourceRecordId } : {}),
+      ...(updateProvenance.evidenceId ? { evidenceId: updateProvenance.evidenceId } : {}),
+      ...(updateProvenance.updateBatchId ? { extractionBatchId: updateProvenance.updateBatchId } : {}),
+      ...(updateProvenance.sourceEventAt ? { sourceEventAt: updateProvenance.sourceEventAt } : {}),
+      ...(updateProvenance.sourceEntryAt ? { sourceEntryAt: updateProvenance.sourceEntryAt } : {}),
+      ...(updateProvenance.sourceVersion ? { sourceVersion: updateProvenance.sourceVersion } : {}),
     }
     if (field === 'current_core_issue' && typeof update.value === 'string') customerRecord.need = update.value
     if (field === 'current_expectation' && typeof update.value === 'string') customerRecord.helpExpectation = update.value
@@ -727,7 +751,7 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
       if (age !== null) customerRecord.profileFields.age = age
     }
     if ((field === 'age' || field === 'birth_year') && customerRecord.profileFields.birth_date) continue
-    if (!sameProfileValue(oldValue, update.value)) changed.push({ ...update, field, oldValue, updatedAt })
+    if (!sameProfileValue(oldValue, update.value)) changed.push({ ...update, field, oldValue, updatedAt, provenanceContext: updateProvenance })
   }
   if (changed.length) customerRecord.profileVersion += 1
   if (changed.length) customerRecord.aiSummaryMeta = { ...(customerRecord.aiSummaryMeta || {}), status: 'STALE', inputFingerprint: '', updatedAt }
@@ -740,44 +764,55 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   const writeResult = await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, changed, { suppressLegacyAppointmentMirrors: provenanceContext.suppressLegacyAppointmentMirrors === true }))
   const persistedChanges = []
   for (const change of changed.filter((item) => customerHistoryPolicy(item.field) === 'TRACK' || (item.field === 'age' && !customerRecord.profileFields.birth_date))) {
-    const changeId = provenanceContext.updateBatchId ? stableOperationId(`${provenanceContext.updateBatchId}:${change.field}`, 'PCH') : `PCH-${crypto.randomUUID()}`
-    await createMappedRecord('profileChanges', 'profile-change.provenance', { change_id: changeId, customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '', source_record_id: provenanceContext.sourceRecordId || '', evidence_id: provenanceContext.evidenceId || '', update_batch_id: provenanceContext.updateBatchId || '' })
+    const changeContext = change.provenanceContext || provenanceContext
+    const changeId = changeContext.updateBatchId ? stableOperationId(`${changeContext.updateBatchId}:${change.field}`, 'PCH') : `PCH-${crypto.randomUUID()}`
+    await createMappedRecord('profileChanges', 'profile-change.provenance', { change_id: changeId, customer_id: customerId, field: change.field, field_key: change.field, field_name: mapField('customers', change.field), old_value: JSON.stringify(change.oldValue ?? null), new_value: JSON.stringify(change.value ?? null), source: change.source, confidence: change.confidence, confirmed: change.confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: serviceRecordId || '', source_record_id: changeContext.sourceRecordId || '', evidence_id: changeContext.evidenceId || '', update_batch_id: changeContext.updateBatchId || '' })
     persistedChanges.push({ id: changeId, customerId, field: change.field, fieldName: mapField('customers', change.field), oldValue: change.oldValue ?? null, newValue: change.value ?? null, source: change.source, confidence: change.confidence, confirmed: change.confirmed, updatedAt: new Date().toISOString(), operatorId, serviceRecordId })
   }
   return { customerRecord, writeResult, changes: persistedChanges }
 }
 
-async function appendCustomerSupplementaryItem(database, customerId, evidence, operatorId, { suppressLegacyAppointmentMirrors = false } = {}) {
+async function appendCustomerSupplementaryItems(database, customerId, evidenceItems, operatorId, { suppressLegacyAppointmentMirrors = false } = {}) {
   const customerRecord = database.customers.find((item) => item.id === customerId)
   const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
-  if (!customerRecord || !row || !evidence?.displayText) return false
+  if (!customerRecord || !row || !Array.isArray(evidenceItems)) return 0
   const items = Array.isArray(customerRecord.supplementaryItems) ? customerRecord.supplementaryItems : []
-  const itemId = stableId('SUP', `${customerId}:${evidence.sourceId || ''}:${evidence.id || evidence.displayText}`)
-  if (items.some((item) => item.id === itemId || (item.text === evidence.displayText && item.sourceId === evidence.sourceId))) return false
+  const additions = []
+  for (const evidence of evidenceItems) {
+    if (!evidence?.displayText) continue
+    const itemId = stableId('SUP', `${customerId}:${evidence.sourceId || ''}:${evidence.id || evidence.displayText}`)
+    if (items.some((item) => item.id === itemId || (item.text === evidence.displayText && item.sourceId === evidence.sourceId)) || additions.some((item) => item.id === itemId)) continue
+    additions.push({
+      id: itemId,
+      text: evidence.displayText,
+      source: evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS'
+        ? 'AI_INFERENCE'
+        : evidence.contentSource === 'THIRD_PARTY_REPORTED'
+          ? 'THIRD_PARTY_REPORTED'
+          : evidence.contentSource === 'MENTOR_OBSERVATION'
+            ? 'MENTOR_OBSERVATION'
+            : 'AI_EXTRACTED',
+      confidence: evidence.confidence,
+      confirmed: false,
+      status: 'PENDING_REVIEW',
+      sourceRecordId: evidence.sourceId || '',
+      evidenceId: evidence.id || '',
+      updatedAt: now(),
+      operatorId: operatorId || '',
+    })
+  }
+  if (!additions.length) return 0
   const updatedAt = now()
-  customerRecord.supplementaryItems = [...items, {
-    id: itemId,
-    text: evidence.displayText,
-    source: evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS'
-      ? 'AI_INFERENCE'
-      : evidence.contentSource === 'THIRD_PARTY_REPORTED'
-        ? 'THIRD_PARTY_REPORTED'
-        : evidence.contentSource === 'MENTOR_OBSERVATION'
-          ? 'MENTOR_OBSERVATION'
-          : 'AI_EXTRACTED',
-    confidence: evidence.confidence,
-    confirmed: false,
-    status: 'PENDING_REVIEW',
-    sourceRecordId: evidence.sourceId || '',
-    evidenceId: evidence.id || '',
-    updatedAt,
-    operatorId: operatorId || '',
-  }]
+  customerRecord.supplementaryItems = [...items, ...additions.map((item) => ({ ...item, updatedAt }))]
   customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
   customerRecord.profileUpdatedAt = updatedAt
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
   await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors }))
-  return true
+  return additions.length
+}
+
+async function appendCustomerSupplementaryItem(database, customerId, evidence, operatorId, options = {}) {
+  return (await appendCustomerSupplementaryItems(database, customerId, [evidence], operatorId, options)) > 0
 }
 
 const stage2Table = (name) => config.feishu.tables[name]
@@ -1183,9 +1218,9 @@ export class FeishuRepository {
   async runCustomerAutoArchive(actorId, customerId, { stage = 'extract' } = {}) {
     const requestedCustomerId = text(customerId).trim()
     if (!requestedCustomerId) throw Object.assign(new Error('customerId 必填'), { code: 'CUSTOMER_ID_REQUIRED', status: 400 })
-    if (stage !== 'extract') throw Object.assign(new Error('本阶段只支持 Extract'), { code: 'EXTRACT_STAGE_REQUIRED', status: 400 })
+    if (!['extract', 'finalize'].includes(stage)) throw Object.assign(new Error('不支持的自动归档阶段'), { code: 'AUTO_ARCHIVE_STAGE_INVALID', status: 400 })
     const startedAt = Date.now()
-    const timings = { load_ms: 0, source_ms: 0, extract_ms: 0 }
+    const timings = { load_ms: 0, source_ms: 0, extract_ms: 0, finalize_ms: 0 }
     if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'FEATURE_GATE', errorCode: 'FEATURE_GATE', durationMs: Date.now() - startedAt }
     if (!automaticProfileArchivingAllowedForCustomer(requestedCustomerId)) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'CANARY_GATE', errorCode: 'CANARY_GATE', durationMs: Date.now() - startedAt }
     try {
@@ -1217,6 +1252,27 @@ export class FeishuRepository {
         return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'EXTRACT_RETRY_BLOCKED', errorCode: currentSource.processingError || AUTO_RETRY_CAP_REACHED, timings, durationMs: Date.now() - startedAt }
       }
       const existingEvidence = current.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus))
+      if (stage === 'finalize') {
+        if (currentSource.processingStatus === 'COMPLETED' || currentSource.processingStatus === 'REVIEW_REQUIRED') {
+          return { status: currentSource.processingStatus, customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'FINALIZE_ALREADY_PROCESSED', archiveOutcome: currentSource.processingError?.includes('ARCHIVE_EVIDENCE_RETAINED') ? 'EVIDENCE_RETAINED' : currentSource.processingStatus === 'COMPLETED' ? 'CUSTOMERS_FIELDS_WRITTEN' : 'REVIEW_REQUIRED', evidenceCount: existingEvidence.length, timings, durationMs: Date.now() - startedAt }
+        }
+        if (currentSource.processingStatus !== 'EXTRACT_READY' || !existingEvidence.length) {
+          return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'FINALIZE_NOT_READY', errorCode: 'EXTRACT_READY_REQUIRED', evidenceCount: existingEvidence.length, timings, durationMs: Date.now() - startedAt }
+        }
+        const finalizeStartedAt = Date.now()
+        const processed = await this.processSource(actorId, source.id, { stage: 'full' })
+        timings.finalize_ms = Date.now() - finalizeStartedAt
+        const after = await this.load({ force: true })
+        const afterSource = after.sourceRecords.find((item) => item.id === source.id) || processed?.source || source
+        const readback = stage4CustomerReadback(after, requestedCustomerId, source.id)
+        const archiveOutcome = afterSource.processingError?.includes('ARCHIVE_EVIDENCE_RETAINED')
+          ? 'EVIDENCE_RETAINED'
+          : afterSource.processingStatus === 'COMPLETED'
+            ? (readback.supplementaryWriteCount > 0 && readback.physicalFieldWriteCount === 0 ? 'SUPPLEMENTARY_ONLY' : 'CUSTOMERS_FIELDS_WRITTEN')
+            : 'REVIEW_REQUIRED'
+        const readbackOk = readback.ok && !/CUSTOMER_READBACK_MISMATCH|DERIVED_WRITE_FAILED/.test(afterSource.processingError || '')
+        return { status: afterSource.processingStatus, customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'FINALIZE', archiveOutcome, evidenceCount: after.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).length, physicalFieldWriteCount: readback.physicalFieldWriteCount, supplementaryWriteCount: readback.supplementaryWriteCount, readbackOk, timings, durationMs: Date.now() - startedAt, source: processed?.source ? publicSource(processed.source, { includeRaw: false }) : undefined }
+      }
       if (existingEvidence.length && ['EXTRACT_READY', 'COMPLETED', 'REVIEW_REQUIRED'].includes(currentSource.processingStatus)) {
         return { status: 'EXTRACT_READY', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'ALREADY_EXTRACTED', evidenceCount: existingEvidence.length, timings, durationMs: Date.now() - startedAt }
       }
@@ -2689,6 +2745,8 @@ export class FeishuRepository {
       const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
       const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && wasExtractReady
       const derivedErrors = []
+      const stage4ProfileWrites = []
+      const stage4SupplementaryEvidence = []
       const archivingCounts = {
         mappedEvidenceCount: 0,
         mappedNoChangeCount: 0,
@@ -2717,10 +2775,7 @@ export class FeishuRepository {
             // the legacy Customers appointment columns.
             if (!evidence.fieldKey || blockedField || isAiHypothesis || isThirdParty || !isStage4PhysicalCandidate) {
               if (evidence.fieldKey) archivingCounts.mappedNoChangeCount += 1
-              if (privacyPolicy.canPromoteToProfile) {
-                const appended = await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId, { suppressLegacyAppointmentMirrors: true })
-                if (appended) archivingCounts.supplementaryWriteCount += 1
-              }
+              if (privacyPolicy.canPromoteToProfile) stage4SupplementaryEvidence.push(evidence)
               continue
             }
 
@@ -2759,10 +2814,7 @@ export class FeishuRepository {
               continue
             }
             if (staleIncoming || !validCustomerFact || !privacyPolicy.canPromoteToProfile) {
-              if (privacyPolicy.canPromoteToProfile) {
-                const appended = await appendCustomerSupplementaryItem(database, source.customerId, evidence, actorId, { suppressLegacyAppointmentMirrors: true })
-                if (appended) archivingCounts.supplementaryWriteCount += 1
-              }
+              if (privacyPolicy.canPromoteToProfile) stage4SupplementaryEvidence.push(evidence)
               archivingCounts.mappedNoChangeCount += 1
               continue
             }
@@ -2772,17 +2824,19 @@ export class FeishuRepository {
               archivingCounts.unresolvedMappedEvidenceCount += 1
               continue
             }
-            const profileWrite = await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
-              sourceRecordId: sourceId,
-              evidenceId: evidence.id,
-              updateBatchId: evidence.extractionBatchId,
-              sourceEventAt: incomingEventAt,
-              sourceEntryAt: incomingEntryAt,
-              sourceVersion: incomingVersion,
-              suppressLegacyAppointmentMirrors: true,
+            stage4ProfileWrites.push({
+              update: {
+                ...update,
+                provenanceContext: {
+                  sourceRecordId: sourceId,
+                  evidenceId: evidence.id,
+                  updateBatchId: evidence.extractionBatchId,
+                  sourceEventAt: incomingEventAt,
+                  sourceEntryAt: incomingEntryAt,
+                  sourceVersion: incomingVersion,
+                },
+              },
             })
-            archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
-            if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += 1
             continue
           }
           if (evidence.fieldKey) archivingCounts.mappedEvidenceCount += 1
@@ -2868,7 +2922,32 @@ export class FeishuRepository {
           derivedErrors.push(processingErrorCode(error))
         }
       }
+      if (stage4Finalize) {
+        if (stage4ProfileWrites.length) {
+          try {
+            const latestProfileWriteByField = new Map(stage4ProfileWrites.map((item) => [item.update.field, item.update]))
+            const profileWrite = await persistCustomerProfile(database, source.customerId, [...latestProfileWriteByField.values()], undefined, actorId, { suppressLegacyAppointmentMirrors: true })
+            archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
+            if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += stage4ProfileWrites.length
+          } catch (error) {
+            derivedErrors.push(processingErrorCode(error))
+          }
+        }
+        if (stage4SupplementaryEvidence.length) {
+          try {
+            archivingCounts.supplementaryWriteCount += await appendCustomerSupplementaryItems(database, source.customerId, stage4SupplementaryEvidence, actorId, { suppressLegacyAppointmentMirrors: true })
+          } catch (error) {
+            derivedErrors.push(processingErrorCode(error))
+          }
+        }
+      }
       const debugBeforeStatus = await this.load()
+      if (stage4Finalize) {
+        const readback = stage4CustomerReadback(debugBeforeStatus, source.customerId, sourceId, stage4ProfileWrites.map((item) => item.update), stage4SupplementaryEvidence)
+        if (!readback.ok) derivedErrors.push(readback.errorCode || 'CUSTOMER_READBACK_MISMATCH')
+        archivingCounts.physicalFieldWriteCount = readback.physicalFieldWriteCount
+        archivingCounts.supplementaryWriteCount = readback.supplementaryWriteCount
+      }
       const hasOpenConflict = debugBeforeStatus.evidenceConflicts.some((item) => item.newEvidenceId && debugBeforeStatus.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
       const archiveOutcome = stage4Finalize
         ? classifyStage4ArchivingOutcome({ validEvidenceCount: replaceableEvidence.length, ...archivingCounts, derivedErrorCount: derivedErrors.length, hasOpenConflict })

@@ -21,6 +21,7 @@ const { config } = await import('./config.mjs')
 const { FeishuRepository, classifyStructuredArchivingOutcome } = await import('./repository.mjs')
 const { serializeDialogueContext } = await import('../shared/dialogue-gate.mjs')
 const { materializeCustomerProfile } = await import('../shared/profile-materialization.mjs')
+const { buildCustomerUnderstandingContext } = await import('../shared/customer-understanding.mjs')
 
 let activeDatabase
 let recordSequence = 0
@@ -212,11 +213,13 @@ describe('stage 4 corrected Evidence materialization rules', () => {
       expect(activeDatabase.customers[0].goal).toBe('旧目标')
       expect(activeDatabase.customers[0].profileFieldMeta.age).toMatchObject({ source: 'AI_EXTRACTED', confirmed: false, evidenceId: 'EVD-STAGE4-AGE' })
       expect(activeDatabase.customers[0].profileFields.sleep).toBe('最近睡眠很差')
+      expect(buildCustomerUnderstandingContext({ customer: activeDatabase.customers[0], evidenceItems }).current_snapshot.age).toBeUndefined()
       expect(activeDatabase.profileChanges.filter((item) => item.customerId === 'CUS-SYNTH-1').length).toBe(3)
       expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
       expect(activeDatabase.evidenceConflicts).toHaveLength(0)
       expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(expect.arrayContaining(['客户说最近工作压力很大', '客户在杭州工作', 'AI推断客户可能想创业']))
       expect(activeDatabase.customers[0].supplementaryItems.find((item) => item.evidenceId === 'EVD-STAGE4-HYPOTHESIS').source).toBe('AI_INFERENCE')
+      expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers)).toHaveLength(2)
       expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers).every(([, , fields]) => !['当前困扰', '希望获得帮助', '当前目标'].some((key) => Object.prototype.hasOwnProperty.call(fields, key)))).toBe(true)
 
       const materialized = materializeCustomerProfile({ customer: activeDatabase.customers[0], evidenceItems })

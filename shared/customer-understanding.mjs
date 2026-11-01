@@ -58,8 +58,9 @@ function sortedEvidence(items, options = {}) {
 
 function profileDomains(customer) {
   const fields = customer?.profileFields || {}
+  const fieldMeta = customer?.profileFieldMeta || {}
   return Object.fromEntries(Object.entries(fields)
-    .filter(([key, value]) => !SENSITIVE_FIELDS.has(key) && present(value))
+    .filter(([key, value]) => !SENSITIVE_FIELDS.has(key) && present(value) && fieldMeta[key]?.confirmed !== false)
     .map(([key, value]) => [key, valueText(value).slice(0, 300)]))
 }
 
