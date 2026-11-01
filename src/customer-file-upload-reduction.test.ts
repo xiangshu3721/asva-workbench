@@ -15,4 +15,17 @@ describe('V2 customer material entry points', () => {
     expect(appSource).not.toContain('identifyDialogue')
     expect(appSource).not.toContain('confirmDialogue')
   })
+
+  it('marks a normal text save pending before dispatching the Source request', () => {
+    const pendingMarker = "pendingSaveRef.current = { operationId: input.operationId || '', input, startedAt: saveStartedAt }"
+    expect(appSource).toContain(pendingMarker)
+    expect(appSource.indexOf(pendingMarker)).toBeLessThan(appSource.indexOf('const source = await onCreate(input)'))
+  })
+
+  it('keeps timeout confirmation and retry on the same operation', () => {
+    expect(appSource).toContain('const pending = pendingSaveRef.current')
+    expect(appSource).toContain('onSourceStatus(customer.id, pending.operationId)')
+    expect(appSource).toContain('pendingSaveRef.current?.input')
+    expect(appSource).toContain('pendingSaveRef.current = null')
+  })
 })

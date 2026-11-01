@@ -1408,6 +1408,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     const saveStartedAt = pendingSaveRef.current?.startedAt || performance.now()
     try {
       const input = pendingSaveRef.current?.input || { operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: 'TEXT_INPUT', rawText: rawText.trim(), sourcePerspective, dialogueConfirmation: '' }
+      pendingSaveRef.current = { operationId: input.operationId || '', input, startedAt: saveStartedAt }
       const source = await onCreate(input)
       confirmSourceSave(source, pendingSaveRef.current?.startedAt || saveStartedAt)
     } catch (saveError) {
