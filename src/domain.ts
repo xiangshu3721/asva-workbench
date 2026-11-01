@@ -267,6 +267,9 @@ export interface Customer {
   profileMaterialization?: ProfileMaterialization
   /** Directory/detail DTOs may expose only coverage until the profile module loads. */
   profileMaterializationLoaded?: boolean
+  automaticProfilePending?: { contentHash?: string; reason?: string; createdAt?: string }
+  automaticProfileStatus?: 'NOT_STARTED' | 'PROCESSING' | 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+  automaticProfileAutoResume?: boolean
 }
 
 export interface ProfileFieldMeta {

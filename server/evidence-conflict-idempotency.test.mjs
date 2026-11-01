@@ -19,14 +19,17 @@ vi.mock('./feishu.mjs', async () => {
 
 const { config } = await import('./config.mjs')
 const { FeishuRepository, classifyStructuredArchivingOutcome } = await import('./repository.mjs')
+const { field: customerField } = await import('./field-mapping.mjs')
 const { serializeDialogueContext } = await import('../shared/dialogue-gate.mjs')
+const { materializeCustomerProfile } = await import('../shared/profile-materialization.mjs')
+const { buildCustomerUnderstandingContext } = await import('../shared/customer-understanding.mjs')
 
 let activeDatabase
 let recordSequence = 0
 const json = (value) => { try { return JSON.parse(value) } catch { return value } }
 
 function makeDatabase() {
-  const customer = { id: 'CUS-SYNTH-1', name: 'Synthetic 客户', mentorId: 'MENTOR-A', profileFields: { city: '杭州', job_status: '在职' }, profileFieldMeta: {}, profileVersion: 1, profileSchemaVersion: 'v1.0', need: '', helpExpectation: '', goal: '', grade: 'C', paid: false, intendedCourse: '' }
+  const customer = { id: 'CUS-SYNTH-1', name: 'Synthetic 客户', mentorId: 'MENTOR-A', _recordId: 'rec-customer-1', profileFields: { city: '杭州', job_status: '在职' }, profileFieldMeta: {}, profileVersion: 1, profileSchemaVersion: 'v1.0', need: '', helpExpectation: '', goal: '', grade: 'C', paid: false, intendedCourse: '' }
   const source = { id: 'SRC-SYNTH-1', customerId: customer.id, subjectId: customer.id, sourceType: 'TEXT_INPUT', sourceRole: 'MENTOR', sourcePerspective: 'STAFF_REPORTED', rawText: '她目前已经长期住在深圳。', contentHash: 'hash-1', extractorVersion: 'evidence-v1', processingStatus: 'UPLOADED', processingVersion: 1, lastBatchId: '', _recordId: 'rec-source-1' }
   return { staff: [{ id: 'MENTOR-A', name: 'Synthetic Mentor A', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }, { id: 'MENTOR-B', name: 'Synthetic Mentor B', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }], customers: [customer], appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords: [source], evidenceItems: [], _allEvidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: { customers: [{ record_id: 'rec-customer-1', fields: { '客户ID': customer.id } }], sourceRecords: [{ record_id: source._recordId, fields: {} }], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], profileChanges: [] } }
 }
@@ -47,6 +50,21 @@ function appendCreated(tableId, fields) {
 }
 
 function updateExisting(tableId, recordId, fields) {
+  if (tableId === config.feishu.tables.customers) {
+    const row = activeDatabase._rows.customers.find((item) => item.record_id === recordId)
+    const customer = activeDatabase.customers.find((item) => item.id === row?.fields?.['客户ID'])
+    if (row && customer) {
+      row.fields = { ...row.fields, ...fields }
+      for (const [key, value] of Object.entries(activeDatabase._rows.customers.find((item) => item.record_id === recordId)?.fields || {})) {
+        if (key === customerField('customers', '档案字段元数据')) continue
+        const match = Object.entries({ age: '年龄', city: '所在城市', living_status: '居住状态', job_status: '工作状态' }).find(([, label]) => label === key)
+        if (match) customer.profileFields[match[0]] = ['age', 'birth_year'].includes(match[0]) ? Number(value) : value
+      }
+      const metadata = json(row.fields[customerField('customers', 'profile_field_meta_json')])
+      if (metadata?._fields) customer.profileFieldMeta = metadata._fields
+      customer.profileVersion = Number(metadata?._profile_version || customer.profileVersion || 0)
+    }
+  }
   if (tableId === config.feishu.tables.sourceRecords) { const source = activeDatabase.sourceRecords.find((item) => item._recordId === recordId); if (source) { if (fields['处理状态']) source.processingStatus = fields['处理状态']; if (fields['处理版本'] !== undefined) source.processingVersion = Number(fields['处理版本']) || source.processingVersion; if (fields['最近提取批次ID'] !== undefined) source.lastBatchId = fields['最近提取批次ID'] || '' } }
   if (tableId === config.feishu.tables.evidenceItems) { const evidence = activeDatabase._allEvidenceItems.find((item) => item._recordId === recordId); if (evidence && fields['审核状态']) evidence.reviewStatus = fields['审核状态']; if (evidence && fields['核实状态']) evidence.verificationStatus = fields['核实状态'] }
   if (tableId === config.feishu.tables.profileUpdateProposals) { const proposal = activeDatabase.profileUpdateProposals.find((item) => item._recordId === recordId); if (proposal && fields['审核状态']) proposal.reviewStatus = fields['审核状态'] }
@@ -72,7 +90,8 @@ beforeEach(() => {
       档案字段元数据: JSON.stringify({ _profile_version: customer.profileVersion || 0, _fields: customer.profileFieldMeta || {} }),
       档案版本: customer.profileSchemaVersion || 'v1.0',
       档案更新时间: customer.profileUpdatedAt || null,
-      所在城市: customer.profileFields?.city || '',
+      客户补充信息: JSON.stringify(customer.supplementaryItems || []),
+      ...Object.fromEntries(Object.entries(customer.profileFields || {}).map(([key, value]) => [customerField('customers', key), value])),
     } }
   })
 })
@@ -134,6 +153,154 @@ describe('structured archive completion criteria', () => {
     activeDatabase.sourceRecords[0].rawText = '她提到一个无法归类的普通线索。'
     const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+  })
+
+  it('persists DeepSeek Evidence in Extract stage without running Finalize writes', async () => {
+    const extractor = vi.fn(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }])
+    const repository = setupRepository(extractor)
+    const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true, stage: 'extract' })
+    const retry = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { stage: 'extract' })
+    expect(result.source.processingStatus).toBe('EXTRACT_READY')
+    expect(retry.source.processingStatus).toBe('EXTRACT_READY')
+    expect(extractor).toHaveBeenCalledTimes(1)
+    expect(activeDatabase._allEvidenceItems).toHaveLength(1)
+    expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
+    expect(activeDatabase.evidenceConflicts).toHaveLength(0)
+    expect(activeDatabase.customers[0].profileFields).toEqual({ city: '杭州', job_status: '在职' })
+
+    const finalize = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+    expect(finalize.source.processingStatus).not.toBe('EXTRACT_READY')
+    expect(extractor).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('stage 4 corrected Evidence materialization rules', () => {
+  const stage4Evidence = (overrides = {}) => ({
+    id: overrides.id || `EVD-STAGE4-${Math.random().toString(16).slice(2)}`,
+    sourceId: 'SRC-SYNTH-1', customerId: 'CUS-SYNTH-1', subjectId: 'CUS-SYNTH-1',
+    evidenceType: 'FACT', semanticKind: 'PROFILE_FIELD', fieldKey: 'age', standardValue: 35,
+    displayText: '客户今年35岁', sourceExcerpt: '我今年35岁', occurredAt: '2026-11-01T00:00:00.000Z',
+    sourceRole: 'MENTOR', contentSource: 'STAFF_TRANSCRIBED_CUSTOMER', informationNature: 'PERSONAL_STATEMENT',
+    verificationStatus: 'UNKNOWN', confidence: 0.96, reviewStatus: 'PENDING_REVIEW', extractionBatchId: 'BATCH-STAGE4-1',
+    privacyLevel: 'NORMAL', privacyMeta: {}, _recordId: `rec-${overrides.id || Math.random().toString(16).slice(2)}`,
+    ...overrides,
+  })
+
+  function seedStage4Source(evidenceItems) {
+    activeDatabase.sourceRecords[0] = {
+      ...activeDatabase.sourceRecords[0],
+      notes: 'AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE',
+      processingStatus: 'EXTRACT_READY',
+      lastBatchId: 'BATCH-STAGE4-1',
+      rawText: '合成客户阶段4资料',
+    }
+    activeDatabase._allEvidenceItems = evidenceItems
+    activeDatabase._rows.evidenceItems = evidenceItems.map((item) => ({ record_id: item._recordId, fields: {} }))
+    activeDatabase.customers[0].need = '旧需求'
+    activeDatabase.customers[0].helpExpectation = '旧期待'
+    activeDatabase.customers[0].goal = '旧目标'
+    activeDatabase.customers[0].profileFields = { city: '杭州', job_status: '在职' }
+    activeDatabase.customers[0].profileFieldMeta = {
+      city: { source: 'AI_EXTRACTED', confirmed: false, sourceRecordId: 'SRC-OLD', sourceEventAt: '2026-10-01T00:00:00.000Z', sourceEntryAt: '2026-10-01T00:00:00.000Z', sourceVersion: 1 },
+    }
+  }
+
+  it('writes precise non-human fields, preserves the three old fields, and retains uncategorized material', async () => {
+    const originalAuto = config.features.automaticProfileArchiving
+    const originalMode = config.features.automaticProfileArchivingMode
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    try {
+      const evidenceItems = [
+        stage4Evidence({ id: 'EVD-STAGE4-AGE', fieldKey: 'age', standardValue: 35, displayText: '客户今年35岁', sourceExcerpt: '我今年35岁' }),
+        stage4Evidence({ id: 'EVD-STAGE4-CITY', fieldKey: 'city', standardValue: '深圳', displayText: '客户现居深圳', sourceExcerpt: '我现在住在深圳' }),
+        stage4Evidence({ id: 'EVD-STAGE4-SLEEP', evidenceType: 'SELF_MEANING', semanticKind: 'CURRENT_STATE', fieldKey: 'sleep', standardValue: '最近睡眠很差', displayText: '客户说最近睡眠很差', sourceExcerpt: '我最近睡眠很差' }),
+        stage4Evidence({ id: 'EVD-STAGE4-OLD-NEED', fieldKey: 'current_core_issue', standardValue: '最近工作压力很大', displayText: '客户说最近工作压力很大', sourceExcerpt: '我最近工作压力很大' }),
+        stage4Evidence({ id: 'EVD-STAGE4-UNMAPPED', fieldKey: null, semanticKind: 'OTHER', standardValue: '在杭州工作', displayText: '客户在杭州工作', sourceExcerpt: '我在杭州工作' }),
+        stage4Evidence({ id: 'EVD-STAGE4-HYPOTHESIS', fieldKey: 'career_goal', evidenceType: 'HYPOTHESIS', informationNature: 'AI_INFERENCE', standardValue: '可能想创业', displayText: 'AI推断客户可能想创业', sourceExcerpt: '工作相关资料', verificationStatus: 'UNKNOWN' }),
+      ]
+      seedStage4Source(evidenceItems)
+      const repository = setupRepository(async () => { throw new Error('EXTRACT_READY must not call DeepSeek') })
+      const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+
+      expect(result.source.processingStatus).toBe('COMPLETED')
+      expect(activeDatabase.customers[0].profileFields).toMatchObject({ age: 35, city: '深圳', job_status: '在职' })
+      expect(activeDatabase.customers[0].need).toBe('旧需求')
+      expect(activeDatabase.customers[0].helpExpectation).toBe('旧期待')
+      expect(activeDatabase.customers[0].goal).toBe('旧目标')
+      expect(activeDatabase.customers[0].profileFieldMeta.age).toMatchObject({ source: 'AI_EXTRACTED', confirmed: false, evidenceId: 'EVD-STAGE4-AGE' })
+      expect(activeDatabase.customers[0].profileFields.sleep).toBe('最近睡眠很差')
+      expect(buildCustomerUnderstandingContext({ customer: activeDatabase.customers[0], evidenceItems }).current_snapshot.age).toBeUndefined()
+      expect(activeDatabase.profileChanges.filter((item) => item.customerId === 'CUS-SYNTH-1').length).toBe(3)
+      expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
+      expect(activeDatabase.evidenceConflicts).toHaveLength(0)
+      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(expect.arrayContaining(['客户说最近工作压力很大', '客户在杭州工作', 'AI推断客户可能想创业']))
+      expect(activeDatabase.customers[0].supplementaryItems.find((item) => item.evidenceId === 'EVD-STAGE4-HYPOTHESIS').source).toBe('AI_INFERENCE')
+      expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers)).toHaveLength(2)
+      expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers).every(([, , fields]) => !['当前困扰', '希望获得帮助', '当前目标'].some((key) => Object.prototype.hasOwnProperty.call(fields, key)))).toBe(true)
+
+      const materialized = materializeCustomerProfile({ customer: activeDatabase.customers[0], evidenceItems })
+      expect(materialized.supplementaryItems.map((item) => item.statusLabel)).toEqual(expect.arrayContaining(['待核实', 'AI推断 · 待验证']))
+      expect(materialized.provisionalItems.some((item) => item.evidenceId === 'EVD-STAGE4-UNMAPPED')).toBe(false)
+
+      const writesAfterFirst = createRecordMock.mock.calls.length
+      const retry = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+      expect(retry.source.processingStatus).toBe('COMPLETED')
+      expect(createRecordMock.mock.calls.length).toBe(writesAfterFirst)
+      expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(3)
+    } finally {
+      config.features.automaticProfileArchiving = originalAuto
+      config.features.automaticProfileArchivingMode = originalMode
+    }
+  })
+
+  it('uses a direct Customers GET when the repository cache lags after Finalize', async () => {
+    const originalAuto = config.features.automaticProfileArchiving
+    const originalMode = config.features.automaticProfileArchivingMode
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    try {
+      const evidence = stage4Evidence({ id: 'EVD-STAGE4-CACHE-LAG', fieldKey: 'age', standardValue: 35, displayText: '客户今年35岁', sourceExcerpt: '我今年35岁' })
+      seedStage4Source([evidence])
+      const repository = setupRepository(async () => { throw new Error('EXTRACT_READY must not call DeepSeek') })
+      const cachedCustomer = structuredClone(activeDatabase.customers[0])
+      const liveLoad = repository.load
+      repository.load = async () => {
+        const live = await liveLoad()
+        return { ...live, customers: [cachedCustomer], _rows: live._rows }
+      }
+
+      const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+
+      expect(result.source.processingStatus).toBe('COMPLETED')
+      expect(activeDatabase.customers[0].profileFields.age).toBe(35)
+      expect(getRecordMock.mock.calls.filter(([tableId, recordId]) => tableId === config.feishu.tables.customers && recordId === 'rec-customer-1').length).toBeGreaterThan(0)
+    } finally {
+      config.features.automaticProfileArchiving = originalAuto
+      config.features.automaticProfileArchivingMode = originalMode
+    }
+  })
+
+  it('keeps a human-confirmed value and opens a conflict instead of silently overwriting it', async () => {
+    const originalAuto = config.features.automaticProfileArchiving
+    const originalMode = config.features.automaticProfileArchivingMode
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    try {
+      const evidence = stage4Evidence({ id: 'EVD-STAGE4-CONFLICT', fieldKey: 'city', standardValue: '深圳', displayText: '客户现居深圳', sourceExcerpt: '我现在住在深圳' })
+      seedStage4Source([evidence])
+      activeDatabase.customers[0].profileFieldMeta.city = { source: 'MENTOR_CONFIRMED', confirmed: true, sourceRecordId: 'SRC-HUMAN', sourceEventAt: '2026-10-01T00:00:00.000Z', sourceEntryAt: '2026-10-01T00:00:00.000Z', sourceVersion: 1 }
+      const repository = setupRepository(async () => { throw new Error('EXTRACT_READY must not call DeepSeek') })
+      const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+      expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+      expect(activeDatabase.customers[0].profileFields.city).toBe('杭州')
+      expect(activeDatabase.evidenceConflicts).toHaveLength(1)
+      expect(activeDatabase.evidenceConflicts[0].newEvidenceId).toBe('EVD-STAGE4-CONFLICT')
+      expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
+    } finally {
+      config.features.automaticProfileArchiving = originalAuto
+      config.features.automaticProfileArchivingMode = originalMode
+    }
   })
 })
 

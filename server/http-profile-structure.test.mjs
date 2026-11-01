@@ -75,6 +75,11 @@ class SyntheticRepository {
     return { source: { ...source, rawText: undefined }, evidenceItems: this.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: this.proposals.filter((item) => item.sourceId === sourceId), conflicts: this.conflicts.filter((item) => item.sourceId === sourceId), profileMaterialization: this.materialization() }
   }
 
+  runCustomerAutoArchive(actorId, customerId, { stage } = {}) {
+    this.assertAccess(actorId, customerId)
+    return { status: stage === 'finalize' ? 'COMPLETED' : 'EXTRACT_READY', phase: stage === 'finalize' ? 'FINALIZE' : 'EXTRACT', customerId }
+  }
+
   processSource(actorId, sourceId) {
     const source = this.sources.find((item) => item.id === sourceId)
     if (!source) throw new Error('资料不存在')
@@ -134,6 +139,12 @@ async function request(path, init = {}) {
 afterAll(async () => { await new Promise((resolve) => server.close(resolve)) })
 
 describe('isolated real HTTP structured profile pipeline', () => {
+  it('routes the approved Finalize stage through the authenticated auto-archive endpoint', async () => {
+    const result = await request('/api/customers/CUS-STRUCTURE-HTTP/auto-archive', { method: 'POST', body: JSON.stringify({ stage: 'finalize' }) })
+    expect(result.response.status).toBe(200)
+    expect(result.payload).toMatchObject({ status: 'COMPLETED', phase: 'FINALIZE', customerId: 'CUS-STRUCTURE-HTTP' })
+  })
+
   it('persists deterministic AI evidence, exposes provisional items, confirms one item, and survives refresh', async () => {
     const customerId = 'CUS-STRUCTURE-HTTP'
     const rawText = state.repository.customer.notes

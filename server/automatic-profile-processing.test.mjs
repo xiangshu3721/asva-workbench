@@ -134,7 +134,7 @@ describe('automatic customer profile processing', () => {
 
     await repository.recoverAutomaticProcessing()
 
-    expect(repository.scheduleAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-LONG', longText, 'CUSTOMER_SAVE')
+    expect(repository.scheduleAutomaticCustomerProfile).not.toHaveBeenCalled()
     expect(JSON.stringify(pending)).not.toContain(longText)
   })
 
