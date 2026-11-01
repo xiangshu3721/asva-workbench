@@ -33,6 +33,9 @@ describe('DeepSeek processing diagnostics', () => {
       expect.objectContaining({ key: 'career_goal', meaning: '职业目标' }),
     ]))
     expect(promptInput.writable_customer_fields.find((item) => item.key === 'city').boundary).toContain('工作地点不得填入')
+    expect(promptInput.writable_customer_fields.find((item) => item.key === 'current_core_issue').boundary).toContain('不是客户想达到的结果')
+    expect(promptInput.writable_customer_fields.find((item) => item.key === 'current_goal').boundary).toContain('不是当前困扰')
+    expect(promptInput.writable_customer_fields.find((item) => item.key === 'current_expectation').boundary).toContain('从导师或服务中获得')
   })
 
   it('fails closed on truncated evidence output without burning extra DeepSeek attempts', async () => {
