@@ -135,6 +135,26 @@ function profileValue(value) {
   return null
 }
 
+function clearWorkLocationAsCity(item) {
+  if (!item || typeof item !== 'object') return item
+  const fieldKey = String(item.field_key || '').trim().toLowerCase()
+  if (!['city', 'current_city', 'current_location', 'current_residence'].includes(fieldKey)) return item
+  const excerpt = String(item.source_excerpt || '')
+  const workWords = /工作|上班|办公|通勤/
+  const residenceWords = /住在|居住|现居|生活在|定居|搬到|所在城市/
+  if (!workWords.test(excerpt) || residenceWords.test(excerpt)) return item
+  return { ...item, field_key: '', semantic_kind: 'EVENT' }
+}
+
+function removeExactFamilySupportDuplicate(items) {
+  const familyItems = items.filter((item) => String(item?.field_key || '').trim() === 'family_support_level')
+  if (!familyItems.length) return items
+  return items.filter((item) => {
+    if (String(item?.field_key || '').trim() !== 'support_system') return true
+    return !familyItems.some((family) => String(family.value || '').trim() === String(item.value || '').trim() && String(family.source_excerpt || '').trim() === String(item.source_excerpt || '').trim())
+  })
+}
+
 export async function createProfileDraft(input) {
   const raw = await callDeepSeek([
     { role: 'system', content: '你是 ASVA 客户画像整理助手。只根据导师提供的原话提取事实，不补全、不诊断、不虚构人格。严格返回 JSON：{"updates":[{"field":"字段英文名","value":"值","source":"MENTOR_OBSERVATION|AI_INFERENCE","confidence":0.0}]}。只允许使用给定字段名。无法确定的信息不要输出。只有明确标注为推测的内容才能使用 AI_INFERENCE，且不能把推测写成事实。' },
@@ -178,6 +198,8 @@ export async function createEvidenceCandidates(input) {
     ...(storageFieldKey === 'current_goal' ? { boundary: '客户当前明确希望实现的结果或行动目标；不是当前困扰，也不是对导师/服务的期待' } : {}),
     ...(storageFieldKey === 'current_expectation' ? { boundary: '客户明确期待从导师或服务中获得的帮助、支持或结果；不是问题本身，也不是客户要自行实现的目标' } : {}),
     ...(storageFieldKey === 'relationship_conflicts' ? { boundary: '关系中的具体冲突或困难；关系状态本身填relationship_status' } : {}),
+    ...(storageFieldKey === 'support_system' ? { boundary: '客户可获得的整体支持网络或资源；仅有家庭支持时优先填family_support_level，不要重复同一条原文' } : {}),
+    ...(storageFieldKey === 'family_support_level' ? { boundary: '家庭成员提供支持的程度或性质；不要与support_system重复同一条原文' } : {}),
     ...(storageFieldKey === 'emotion_expression' ? { boundary: '客户明确表达的情绪或情绪表达方式；不做诊断、不推断稳定人格特征' } : {}),
     ...(storageFieldKey === 'sleep' ? { boundary: '客户明确描述的睡眠情况；不推断睡眠障碍或未提及的频率' } : {}),
   }))
@@ -185,12 +207,13 @@ export async function createEvidenceCandidates(input) {
   input.onDiagnostics?.({ source_char_count: sourceText.length, prompt_char_count: promptInput.length, token_estimate: Math.ceil(promptInput.length / 2) })
   const raw = await callDeepSeek([
     { role: 'system', content: '你是 ASVA 资料整理助手。仅根据 source_text 提取可回溯的原子信息，不总结、不诊断、不补全、不把推测写成事实。必须返回 JSON 对象：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"writable_customer_fields中的英文key或空","value":"尽量保留原文可直接核对的原子值","display_text":"简短中文展示","source_excerpt":"原文短摘录","occurred_at":"原文明确时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0},"speaker_id":"A|B|C|空","subject_scope":"CURRENT_CUSTOMER|MENTOR_SELF|OTHER_PARTICIPANT|UNKNOWN","content_source":"CUSTOMER_DIRECT|STAFF_TRANSCRIBED_CUSTOMER|MENTOR_REPORTED|MENTOR_OBSERVATION|THIRD_PARTY_REPORTED|UNKNOWN|MIXED","information_nature":"OBJECTIVE_RECORD|PERSONAL_STATEMENT|REPORTED_SPEECH|BEHAVIOR_OBSERVATION|SUBJECTIVE_JUDGMENT|AI_INFERENCE|UNKNOWN","verification_status":"UNKNOWN|SOURCE_SUPPORTED|HUMAN_VERIFIED|CONFLICTED"}]}。字段规则：只能使用用户消息中writable_customer_fields列出的key并严格遵守meaning/boundary；明确事实能匹配现有字段时必须优先输出准确field_key，只有确实无法归类时才留空；不得创造近义英文key。逐条拆分年龄、性别、工作地点、关系状态、关系困扰、情绪、睡眠、当前问题和目标。三个重点字段必须严格区分：current_core_issue是当前困扰/需要解决的问题，current_goal是客户想实现的目标或行动，current_expectation是客户希望从导师/服务中获得的帮助；同一原句同时包含多种语义时拆成多个有各自原文依据的Evidence。关系状态与关系冲突分别写relationship_status和relationship_conflicts，明确情绪写emotion_expression，睡眠情况写sleep。来源、人物归属和性质必须由原文决定，不能依赖uploaded_by/source_role，不能仅凭第一人称或引号推断客户身份。对话资料必须区分实际说话人和被提及的人；无法判断时使用UNKNOWN，只有subject_scope=CURRENT_CUSTOMER才可进入档案。STAFF_REPORTED不得写成客户原话；导师观察与主观判断分开；第三方陈述保留不确定性。工作地点没有独立物理字段时field_key留空，绝不能写入现居地city；当前职业只提取原文明确职业；过去职业使用EVENT且不能覆盖当前职业；“想做某事业”归入career_goal而不是occupation。当前状态、历史事件和未来目标必须分开。保留原文依据和待核实状态；AI不得输出HUMAN_VERIFIED。禁止心理诊断、无依据频率、数量、经济状态或背景。' },
+    { role: 'system', content: '补充边界：明确的“想/希望/考虑/打算”是客户自己的意向陈述，不是 AI 推测；除非模型补写了原文没有的内容，否则不要使用 HYPOTHESIS。工作地点原文含“工作/上班/办公/通勤”但没有居住语义时，city 必须留空。同一原文同一含义只输出一次；仅有家庭支持时使用family_support_level，不要再复制到support_system。' },
     { role: 'user', content: promptInput },
   ], 0, { model: config.deepseek.evidenceModel, operation: 'evidence.extract', timeoutMs: 45_000, maxAttempts: 2, maxTokens: 4096, thinking: { type: 'disabled' }, responseFormat: { type: 'json_object' }, requireJson: true })
   const parsed = parseJson(raw)
   if (!parsed) throw Object.assign(new Error('资料整理模型返回内容无法解析为 JSON'), { code: 'JSON_PARSE_FAILED', status: 502 })
   if (!Array.isArray(parsed.items)) throw Object.assign(new Error('资料整理模型返回 JSON 缺少 items 数组'), { code: 'SCHEMA_VALIDATION_FAILED', status: 502 })
-  const items = parsed.items
+  const items = removeExactFamilySupportDuplicate(parsed.items.map(clearWorkLocationAsCity))
   const explicitDate = sourceText.match(/(\d{4})年(\d{1,2})月(\d{1,2})日出生/)
   if (explicitDate && !items.some((item) => item?.field_key === 'birth_date')) {
     const value = `${explicitDate[1]}-${String(explicitDate[2]).padStart(2, '0')}-${String(explicitDate[3]).padStart(2, '0')}`
