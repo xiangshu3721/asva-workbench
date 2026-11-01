@@ -98,6 +98,21 @@ describe('source save idempotency', () => {
     expect(createRecordMock).toHaveBeenCalledTimes(1)
   })
 
+  it('recovers a client-timeout save by status and retries without creating a second Source', async () => {
+    const repository = new FeishuRepository()
+    repository.load = async () => activeDatabase
+    const input = withDialogueConfirmation({ customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: 'timeout recovery source', operationId: 'timeout-recovery-operation' })
+
+    const first = await repository.createSource('ADMIN-1', input)
+    activeDatabase.sourceRecords.push(first)
+    const status = await repository.sourceStatus('ADMIN-1', 'CUS-SAVE-1', input.operationId)
+    const retry = await repository.createSource('ADMIN-1', input)
+
+    expect(status.status).toBe('PERSISTED')
+    expect(retry.id).toBe(first.id)
+    expect(createRecordMock).toHaveBeenCalledTimes(1)
+  })
+
   it('rejects oversized raw text before creating a truncated source', async () => {
     const repository = new FeishuRepository()
     repository.load = async () => activeDatabase
