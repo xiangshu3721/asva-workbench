@@ -58,7 +58,6 @@ describe('stage 2 customer extract orchestration', () => {
 
   it('uses the customer-and-content hash as a stable Source identity', async () => {
     let source = null
-    const sourceRows = []
     const repository = new FeishuRepository({ authRepository: {} })
     repository.load = vi.fn(async () => database(source))
     repository.createSource = vi.fn(async (_actorId, input) => {
@@ -92,6 +91,7 @@ describe('stage 2 customer extract orchestration', () => {
     let evidenceItems = []
     let sourceCreateAttempts = 0
     let deepSeekCalls = 0
+    const sourceRows = []
     const repositories = [new FeishuRepository({ authRepository: {} }), new FeishuRepository({ authRepository: {} })]
     const sharedLoad = vi.fn(async () => database(source, evidenceItems))
     for (const repository of repositories) {
