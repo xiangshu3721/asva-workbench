@@ -502,7 +502,7 @@ function WorkbenchApp() {
         invalidateCustomerResources(customerId)
         refresh()
         logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(finalized.durationMs ?? performance.now() - finalizeStartedAt), phase: finalized.phase, status: finalized.status, archive_outcome: finalized.archiveOutcome || '' })
-        if (finalized.status === 'COMPLETED') showCustomerSaveToast('客户已保存，AI归档完成', 'success')
+        if (finalized.status === 'COMPLETED' && finalized.readbackOk === true) showCustomerSaveToast('客户已保存，AI归档完成', 'success')
         else if (finalized.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
         else showCustomerSaveToast('客户已保存，AI归档失败，可稍后重试', 'warning')
       } else if (result.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI资料提取仍在进行中', 'success')

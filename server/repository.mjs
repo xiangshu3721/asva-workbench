@@ -252,9 +252,8 @@ function classifyStage4ArchivingOutcome({
   return { status: 'REVIEW_REQUIRED', outcome: 'NO_ARCHIVABLE_FACTS', errorCode: 'NO_ARCHIVABLE_FACTS' }
 }
 
-function stage4CustomerReadback(database, customerId, sourceId, expectedProfileWrites = [], expectedSupplementaryEvidence = []) {
-  const customer = database.customers.find((item) => item.id === customerId)
-  if (!customer) return { ok: false, physicalFieldWriteCount: 0, supplementaryWriteCount: 0, errorCode: 'CUSTOMER_READBACK_MISSING' }
+function stage4CustomerReadback(customer, database, customerId, sourceId, expectedProfileWrites = [], expectedSupplementaryEvidence = []) {
+  if (!customer || customer.id !== customerId) return { ok: false, physicalFieldWriteCount: 0, supplementaryWriteCount: 0, errorCode: 'CUSTOMER_READBACK_MISSING' }
   const evidenceIds = new Set(database.evidenceItems.filter((item) => item.sourceId === sourceId && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).map((item) => item.id))
   const profileEntries = Object.entries(customer.profileFieldMeta || {}).filter(([, meta]) => meta?.sourceRecordId === sourceId)
   const invalidProfileEntries = profileEntries.filter(([field, meta]) => !evidenceIds.has(meta.evidenceId) || !Object.prototype.hasOwnProperty.call(customer.profileFields || {}, field) || customer.profileFields?.[field] === null || customer.profileFields?.[field] === undefined || customer.profileFields?.[field] === '')
@@ -355,7 +354,7 @@ function customer(row) {
     if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
   }
   const referrerName = text(get('customers', f, 'referrer_name'))
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
   return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
 }
 
@@ -1264,7 +1263,7 @@ export class FeishuRepository {
         timings.finalize_ms = Date.now() - finalizeStartedAt
         const after = await this.load({ force: true })
         const afterSource = after.sourceRecords.find((item) => item.id === source.id) || processed?.source || source
-        const readback = stage4CustomerReadback(after, requestedCustomerId, source.id)
+        const readback = stage4CustomerReadback(after.customers.find((item) => item.id === requestedCustomerId), after, requestedCustomerId, source.id)
         const archiveOutcome = afterSource.processingError?.includes('ARCHIVE_EVIDENCE_RETAINED')
           ? 'EVIDENCE_RETAINED'
           : afterSource.processingStatus === 'COMPLETED'
@@ -2648,7 +2647,7 @@ export class FeishuRepository {
         return valid
       })
       processingDiagnostics.rejected_evidence_count = rejectedEvidence.length
-      const customer = database.customers.find((item) => item.id === source.customerId)
+      const customerRecord = database.customers.find((item) => item.id === source.customerId)
       const createdEvidence = []
       for (const item of replaceableEvidence) {
         const evidence = { ...item, id: resumeExistingEvidence ? item.id : stableId('EVD', `${sourceId}:${batchId}:${evidenceLogicalKey(item)}`), extractionBatchId: batchId }
@@ -2743,7 +2742,7 @@ export class FeishuRepository {
       // same logical Evidence identity. Keep them for audit, but materialize
       // the profile from one canonical item only.
       const allEvidence = dedupeEvidence(refreshed.evidenceItems.filter((item) => item.sourceId === sourceId))
-      if (!customer) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+      if (!customerRecord) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
       const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
       const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && wasExtractReady
       const derivedErrors = []
@@ -2943,12 +2942,23 @@ export class FeishuRepository {
           }
         }
       }
-      const debugBeforeStatus = await this.load()
+      let debugBeforeStatus = await this.load()
       if (stage4Finalize) {
-        const readback = stage4CustomerReadback(debugBeforeStatus, source.customerId, sourceId, stage4ProfileWrites.map((item) => item.update), stage4SupplementaryEvidence)
-        if (!readback.ok) derivedErrors.push(readback.errorCode || 'CUSTOMER_READBACK_MISMATCH')
-        archivingCounts.physicalFieldWriteCount = readback.physicalFieldWriteCount
-        archivingCounts.supplementaryWriteCount = readback.supplementaryWriteCount
+        const targetCustomer = debugBeforeStatus.customers.find((item) => item.id === source.customerId)
+        try {
+          const targetRecordId = targetCustomer?._recordId || database.customers.find((item) => item.id === source.customerId)?._recordId
+          if (!targetRecordId) throw Object.assign(new Error('客户物理记录 ID 缺失'), { code: 'CUSTOMER_READBACK_MISSING', status: 502 })
+          const physicalRow = await getRecord(config.feishu.tables.customers, targetRecordId)
+          const physicalCustomer = customer(physicalRow)
+          const readback = stage4CustomerReadback(physicalCustomer, debugBeforeStatus, source.customerId, sourceId, stage4ProfileWrites.map((item) => item.update), stage4SupplementaryEvidence)
+          if (!readback.ok) derivedErrors.push(readback.errorCode || 'CUSTOMER_READBACK_MISMATCH')
+          archivingCounts.physicalFieldWriteCount = readback.physicalFieldWriteCount
+          archivingCounts.supplementaryWriteCount = readback.supplementaryWriteCount
+          debugBeforeStatus = { ...debugBeforeStatus, customers: debugBeforeStatus.customers.map((item) => item.id === source.customerId ? physicalCustomer : item) }
+          this.invalidateDatabaseCache()
+        } catch (error) {
+          derivedErrors.push(processingErrorCode(error) || 'CUSTOMER_READBACK_FAILED')
+        }
       }
       const hasOpenConflict = debugBeforeStatus.evidenceConflicts.some((item) => item.newEvidenceId && debugBeforeStatus.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId && item.status === 'OPEN')
       const archiveOutcome = stage4Finalize

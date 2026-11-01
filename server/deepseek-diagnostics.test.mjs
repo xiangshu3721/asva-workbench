@@ -2,9 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./config.mjs', () => ({ config: { appEnv: 'test', deepseek: { apiKey: 'synthetic-test-key', model: 'legacy-model', evidenceModel: 'deepseek-flash', baseUrl: 'https://api.deepseek.com' } } }))
 
-const { classifyDeepSeekResponse, createEvidenceCandidates } = await import('./deepseek.mjs')
+const { classifyDeepSeekResponse, createEvidenceCandidates, EVIDENCE_EXTRACT_TIMEOUT_MS, EVIDENCE_EXTRACT_MAX_ATTEMPTS } = await import('./deepseek.mjs')
 
 describe('DeepSeek processing diagnostics', () => {
+  it('keeps Evidence extraction within the CloudBase request budget', () => {
+    expect(EVIDENCE_EXTRACT_TIMEOUT_MS).toBe(25_000)
+    expect(EVIDENCE_EXTRACT_MAX_ATTEMPTS).toBe(1)
+    expect(EVIDENCE_EXTRACT_TIMEOUT_MS * EVIDENCE_EXTRACT_MAX_ATTEMPTS).toBeLessThan(60_000)
+  })
+
   it('classifies timeout and provider throttling separately', () => {
     expect(classifyDeepSeekResponse({ aborted: true })).toBe('DEEPSEEK_TIMEOUT')
     expect(classifyDeepSeekResponse({ status: 429 })).toBe('DEEPSEEK_RATE_LIMIT')

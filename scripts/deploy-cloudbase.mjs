@@ -97,7 +97,7 @@ export function buildProductionEnvVariables(values, buildMetadata) {
   const table = (key) => values[key] || ''
   return {
     DEEPSEEK_API_KEY: values.DEEPSEEK_API_KEY,
-    DEEPSEEK_MODEL: values.DEEPSEEK_MODEL || 'deepseek-chat',
+    DEEPSEEK_MODEL: values.DEEPSEEK_MODEL || 'deepseek-flash',
     DEEPSEEK_EVIDENCE_MODEL: values.DEEPSEEK_EVIDENCE_MODEL || 'deepseek-flash',
     DEEPSEEK_BASE_URL: values.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
     FEISHU_APP_ID: values.FEISHU_APP_ID,
