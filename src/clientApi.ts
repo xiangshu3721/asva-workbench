@@ -129,8 +129,8 @@ function customerMutationFromDatabase(database: Database & Partial<CustomerMutat
   if (!customer) throw new Error('保存后未找到客户')
   return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation, automaticProfile: database.automaticProfile }
 }
-export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
-export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number }
+export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'PROCESSING' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
 export interface WorkbenchApi {

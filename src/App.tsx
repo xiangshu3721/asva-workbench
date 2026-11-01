@@ -494,6 +494,7 @@ function WorkbenchApp() {
     autoArchiveInFlightRef.current.add(customerId)
     void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'extract' }).then((result) => {
       if (result.status === 'EXTRACT_READY') showCustomerSaveToast('客户已保存，AI已完成资料提取，后续归档待处理', 'success')
+      else if (result.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI资料提取仍在进行中', 'success')
       else if (result.status === 'DISABLED' || result.status === 'NOT_REQUIRED') showCustomerSaveToast('客户已保存，AI整理未启动', 'success')
       else showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')
     }).catch(() => showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')).finally(() => autoArchiveInFlightRef.current.delete(customerId))
@@ -898,6 +899,8 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
         ? 'AI整理完成，部分信息待核实。'
         : profile?.autoOrganizeStatus === 'NO_USABLE_OUTPUT'
           ? '本次整理未生成可展示资料，原始资料已保留。'
+          : profile?.autoOrganizeStatus === 'EXTRACT_READY'
+            ? 'AI资料提取完成，后续归档待处理。'
           : profile?.autoOrganizeStatus === 'COMPLETED'
             ? 'AI整理完成，档案已更新。'
             : profile?.autoOrganizeStatus === 'PENDING'
@@ -948,10 +951,10 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   useEffect(() => {
     const pending = customer.automaticProfilePending
     const key = `${customer.id}:${pending?.contentHash || ''}`
-    if (pending?.reason !== 'CUSTOMER_SAVE' || !customer.notes?.trim() || autoResumeKeyRef.current === key) return
+    if (pending?.reason !== 'CUSTOMER_SAVE' || !customer.notes?.trim() || customer.automaticProfileAutoResume === false || autoResumeKeyRef.current === key) return
     autoResumeKeyRef.current = key
     props.onAutoArchiveCustomer(customer.id)
-  }, [customer.id, customer.notes, customer.automaticProfilePending?.contentHash, customer.automaticProfilePending?.reason, props.onAutoArchiveCustomer])
+  }, [customer.id, customer.notes, customer.automaticProfilePending?.contentHash, customer.automaticProfilePending?.reason, customer.automaticProfileAutoResume, props.onAutoArchiveCustomer])
   const appointments = database.appointments.filter((item) => item.customerId === customer.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const sessions = database.sessions.filter((item) => item.customerId === customer.id).sort((a, b) => b.date.localeCompare(a.date))
   const enrollments = database.enrollments.filter((item) => item.customerId === customer.id && item.status !== 'CANCELLED')

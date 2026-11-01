@@ -137,14 +137,21 @@ describe('structured archive completion criteria', () => {
   })
 
   it('persists DeepSeek Evidence in Extract stage without running Finalize writes', async () => {
-    const repository = setupRepository()
+    const extractor = vi.fn(async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }])
+    const repository = setupRepository(extractor)
     const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true, stage: 'extract' })
-
-    expect(result.source.processingStatus).toBe('COMPLETED')
+    const retry = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { stage: 'extract' })
+    expect(result.source.processingStatus).toBe('EXTRACT_READY')
+    expect(retry.source.processingStatus).toBe('EXTRACT_READY')
+    expect(extractor).toHaveBeenCalledTimes(1)
     expect(activeDatabase._allEvidenceItems).toHaveLength(1)
     expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
     expect(activeDatabase.evidenceConflicts).toHaveLength(0)
     expect(activeDatabase.customers[0].profileFields).toEqual({ city: '杭州', job_status: '在职' })
+
+    const finalize = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+    expect(finalize.source.processingStatus).not.toBe('EXTRACT_READY')
+    expect(extractor).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -142,8 +142,8 @@ const publicSource = (source, { includeRaw = false } = {}) => {
 const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const pickDefined = (item, keys) => Object.fromEntries(keys.filter((key) => item?.[key] !== undefined).map((key) => [key, item[key]]))
 const publicStaff = (item) => pickDefined(item, ['id', 'name', 'role', 'permissionRole', 'status', 'loginEnabled', 'displayRole', 'title', 'specialty', 'avatar'])
-const publicCustomerDirectory = (item) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), ...(item?.automaticProfilePending?.reason === 'CUSTOMER_SAVE' ? { automaticProfilePending: { reason: 'CUSTOMER_SAVE', contentHash: item.automaticProfilePending.contentHash, createdAt: item.automaticProfilePending.createdAt } } : {}), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
-const publicCustomerDetail = (item) => ({ ...publicCustomerDirectory(item), profileFields: item?.profileFields || {}, profileFieldMeta: item?.profileFieldMeta || {}, profileSchemaVersion: item?.profileSchemaVersion, profileVersion: item?.profileVersion, brief: item?.brief || '' })
+const publicCustomerDirectory = (item, sources = [], evidenceItems = []) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), ...(item?.automaticProfilePending?.reason === 'CUSTOMER_SAVE' ? { automaticProfilePending: { reason: 'CUSTOMER_SAVE', contentHash: item.automaticProfilePending.contentHash, createdAt: item.automaticProfilePending.createdAt } } : {}), ...(sources.length ? { automaticProfileStatus: automaticProfileStatus(sources, evidenceItems, item.id), automaticProfileAutoResume: automaticProfileAutoResume(sources, item.id) } : {}), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
+const publicCustomerDetail = (item, sources = [], evidenceItems = []) => ({ ...publicCustomerDirectory(item, sources, evidenceItems), profileFields: item?.profileFields || {}, profileFieldMeta: item?.profileFieldMeta || {}, profileSchemaVersion: item?.profileSchemaVersion, profileVersion: item?.profileVersion, brief: item?.brief || '' })
 const publicCustomerProfile = (item, profileMaterialization, autoOrganizeStatus) => ({
   customerId: item.id,
   profileFields: item?.profileFields || {},
@@ -162,7 +162,7 @@ const publicProfileChange = (item) => pickDefined(item, ['id', 'customerId', 'fi
 function publicDirectoryDto(database) {
   return {
     staff: database.staff.map(publicStaff),
-    customers: database.customers.map(publicCustomerDirectory),
+    customers: database.customers.map((item) => publicCustomerDirectory(item, database.sourceRecords, database.evidenceItems)),
     appointments: [], sessions: [], followups: [],
     products: database.products.map(publicProduct),
     enrollments: database.enrollments.map(publicEnrollment),
@@ -172,7 +172,7 @@ function publicDirectoryDto(database) {
 function publicCustomerDetailDto(database) {
   return {
     staff: database.staff.map(publicStaff),
-    customers: database.customers.map(publicCustomerDetail),
+    customers: database.customers.map((item) => publicCustomerDetail(item, database.sourceRecords, database.evidenceItems)),
     appointments: database.appointments.map(publicAppointment),
     sessions: database.sessions.map(publicSession), followups: [],
     products: database.products.map(publicProduct),
@@ -188,7 +188,7 @@ export function publicCustomerMutationDto(database, actorId, customerId, custome
   const mutation = operationId ? publicMutationState(customerRecord.mutationStates?.[operationId]) : null
   const persistenceStatus = mutation?.status === 'PERSISTED' ? 'PERSISTED' : database._persistenceStatus || 'COMMITTED'
   return {
-    customer: publicCustomerDetail(customerRecord),
+    customer: publicCustomerDetail(customerRecord, visible.sourceRecords, visible.evidenceItems),
     enrollments: visible.enrollments.filter((item) => item.customerId === customerId).map(publicEnrollment),
     profileChanges: visible.profileChanges.filter((item) => item.customerId === customerId).map(publicProfileChange),
     createdCustomerId: customerId,
@@ -821,6 +821,7 @@ function automaticProfileAvailability(customerId, hasText) {
   if (!hasText) return { status: 'NOT_REQUIRED' }
   if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', reason: 'FEATURE_GATE' }
   if (!automaticProfileArchivingAllowedForCustomer(customerId)) return { status: 'DISABLED', reason: config.features.automaticProfileArchivingMode === 'canary' ? 'CANARY_GATE' : 'FEATURE_GATE' }
+  if (!automaticProfileEventAllowed(now())) return { status: 'DISABLED', reason: 'BEFORE_ENABLED_AT' }
   return { status: 'PENDING' }
 }
 
@@ -837,14 +838,29 @@ function automaticProfileEventAllowed(eventAt) {
   return Number.isFinite(enabledAt) && Number.isFinite(occurredAt) && occurredAt >= enabledAt
 }
 
-function automaticProfileStatus(sources, evidenceItems, customerId) {
-  const latest = (sources || [])
+function latestAutomaticProfileSource(sources, customerId) {
+  return (sources || [])
     .filter((source) => source.customerId === customerId && isAutomaticProfileSource(source))
     .sort((a, b) => String(b.occurredAt || b.uploadedAt || b.createdAt || '').localeCompare(String(a.occurredAt || a.uploadedAt || a.createdAt || '')))[0]
+}
+
+function automaticProfileAutoResume(sources, customerId) {
+  const latest = latestAutomaticProfileSource(sources, customerId)
+  if (!latest) return true
+  if (!automaticProfileEventAllowed(latest.createdAt || latest.uploadedAt || latest.occurredAt || latest.processingStartedAt)) return false
+  if (latest.processingStatus === 'UPLOADED') return true
+  if (latest.processingStatus === 'PROCESSING') return isStaleProcessing(latest)
+  if (latest.processingStatus === 'FAILED') return shouldAutoRecoverSource(latest)
+  return false
+}
+
+function automaticProfileStatus(sources, evidenceItems, customerId) {
+  const latest = latestAutomaticProfileSource(sources, customerId)
   if (!latest) return 'NOT_STARTED'
   if (latest.processingStatus === 'UPLOADED' || latest.processingStatus === 'PROCESSING') return 'PROCESSING'
   if (latest.processingStatus === 'FAILED') return 'FAILED'
   if (latest.processingStatus === 'REVIEW_REQUIRED') return 'REVIEW_REQUIRED'
+  if (latest.processingStatus === 'EXTRACT_READY') return 'EXTRACT_READY'
   if (latest.processingStatus !== 'COMPLETED') return 'PENDING'
   const hasUsableEvidence = (evidenceItems || []).some((item) => item.sourceId === latest.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus))
   return hasUsableEvidence ? 'COMPLETED' : 'NO_USABLE_OUTPUT'
@@ -1158,6 +1174,7 @@ export class FeishuRepository {
       const customer = visible.customers.find((item) => item.id === requestedCustomerId)
       if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
       if (customer.automaticProfilePending?.reason !== 'CUSTOMER_SAVE') return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'CREATE_ONLY', errorCode: 'CREATE_ONLY', durationMs: Date.now() - startedAt }
+      if (!automaticProfileEventAllowed(customer.automaticProfilePending?.createdAt || customer.createdAt)) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'DATE_GATE', errorCode: 'BEFORE_ENABLED_AT', durationMs: Date.now() - startedAt }
       const recoveredText = normalizeSourceRawText(customer.notes)
       if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'NO_TEXT', durationMs: Date.now() - startedAt }
       if (customer.automaticProfilePending?.contentHash && customer.automaticProfilePending.contentHash !== contentHash(recoveredText)) {
@@ -1170,19 +1187,28 @@ export class FeishuRepository {
       const source = ensured.source
       if (!source) return { status: 'FAILED', customerId: requestedCustomerId, phase: 'CREATE_SOURCE', errorCode: 'SOURCE_ID_MISSING', durationMs: Date.now() - startedAt }
       const current = await this.load({ force: true })
+      const currentSource = current.sourceRecords.find((item) => item.id === source.id) || source
+      if (currentSource.processingStatus === 'PROCESSING' && !isStaleProcessing(currentSource)) {
+        return { status: 'PROCESSING', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'EXTRACT_PROCESSING', timings, durationMs: Date.now() - startedAt }
+      }
+      if (currentSource.processingStatus === 'FAILED' && !shouldAutoRecoverSource(currentSource)) {
+        return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'EXTRACT_RETRY_BLOCKED', errorCode: currentSource.processingError || AUTO_RETRY_CAP_REACHED, timings, durationMs: Date.now() - startedAt }
+      }
       const existingEvidence = current.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus))
-      if (existingEvidence.length && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) {
+      if (existingEvidence.length && ['EXTRACT_READY', 'COMPLETED', 'REVIEW_REQUIRED'].includes(currentSource.processingStatus)) {
         return { status: 'EXTRACT_READY', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'ALREADY_EXTRACTED', evidenceCount: existingEvidence.length, timings, durationMs: Date.now() - startedAt }
       }
       const extractStartedAt = Date.now()
       const processed = await this.processSource(actorId, source.id, { stage: 'extract' })
       timings.extract_ms = Date.now() - extractStartedAt
       const after = await this.load({ force: true })
+      const afterSource = after.sourceRecords.find((item) => item.id === source.id) || processed?.source || source
+      if (afterSource.processingStatus === 'PROCESSING' && !isStaleProcessing(afterSource)) return { status: 'PROCESSING', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'EXTRACT_PROCESSING', timings, durationMs: Date.now() - startedAt }
       const evidenceCount = after.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).length
       const proposalCount = after.profileUpdateProposals.filter((item) => item.sourceId === source.id).length
       const conflictCount = after.evidenceConflicts.filter((item) => item.sourceId === source.id).length
       if (proposalCount || conflictCount) return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, phase: 'EXTRACT', errorCode: 'EXTRACT_WROTE_FINALIZE_DATA', evidenceCount, proposalCount, conflictCount, timings, durationMs: Date.now() - startedAt }
-      if (!evidenceCount) return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, phase: 'EXTRACT', errorCode: 'NO_EVIDENCE_PERSISTED', timings, durationMs: Date.now() - startedAt }
+      if (!evidenceCount) return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, phase: 'EXTRACT', errorCode: afterSource.processingError || 'NO_EVIDENCE_PERSISTED', timings, durationMs: Date.now() - startedAt }
       return { status: 'EXTRACT_READY', customerId: requestedCustomerId, sourceId: source.id, reused: Boolean(ensured.reused), phase: 'EXTRACT', evidenceCount, proposalCount, conflictCount, timings, durationMs: Date.now() - startedAt, source: processed?.source ? publicSource(processed.source, { includeRaw: false }) : undefined }
     } catch (error) {
       this.audit('CUSTOMER_AUTO_ARCHIVE_EXTRACT', requestedCustomerId, actorId, 'FAIL', error?.code || 'AUTO_ARCHIVE_EXTRACT_FAILED')
@@ -2450,10 +2476,11 @@ export class FeishuRepository {
     // prior readback failed before the batch pointer was committed. Do not
     // confuse it with a genuine review-required outcome.
     const hasUnactivatedEvidenceBatch = source.processingStatus === 'REVIEW_REQUIRED' && existingEvidence.length > 0 && !source.lastBatchId
-    if (!force && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
+    if (!force && stage === 'extract' && ['EXTRACT_READY', 'COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
+    if (!force && stage === 'full' && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
     const processingVersion = Number(source.processingVersion || 1) + 1
-    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
+    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['EXTRACT_READY', 'PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
     // A failed automatic run may have committed its Evidence before the
     // post-write readback returned. Continue that exact batch instead of
     // calling the model again or creating a second set of Evidence.
@@ -2623,10 +2650,10 @@ export class FeishuRepository {
       const refreshed = await this.load({ force: true })
       if (extractOnly) {
         const finishedAt = now()
-        await updateMappedRecord('sourceRecords', 'source.processing.extract-ready', sourceRow.record_id, { processing_status: 'COMPLETED', processing_version: processingVersion, last_processing_at: finishedAt, processing_error: '', updated_at: finishedAt })
+        await updateMappedRecord('sourceRecords', 'source.processing.extract-ready', sourceRow.record_id, { processing_status: 'EXTRACT_READY', processing_version: processingVersion, last_processing_at: finishedAt, processing_error: 'ARCHIVE_FINALIZE_PENDING', updated_at: finishedAt })
         const persisted = await this.load({ force: true })
         const persistedEvidence = persisted.evidenceItems.filter((item) => item.sourceId === sourceId && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus))
-        this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'COMPLETED', archive_outcome: 'EXTRACT_ONLY', processing_error: '', extraction_batch: batchId, evidence_count: persistedEvidence.length, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
+        this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'EXTRACT_READY', archive_outcome: 'EXTRACT_ONLY', processing_error: 'ARCHIVE_FINALIZE_PENDING', extraction_batch: batchId, evidence_count: persistedEvidence.length, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
         this.evidenceTraces = this.evidenceTraces.slice(0, 50)
         this.audit('PROCESS_SOURCE_EXTRACT', sourceId, actorId, 'SUCCESS')
         return this.sourceDetail(actorId, sourceId)
