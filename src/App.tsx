@@ -492,9 +492,20 @@ function WorkbenchApp() {
   const kickoffCustomerExtract = (customerId: string) => {
     if (!customerId || autoArchiveInFlightRef.current.has(customerId)) return
     autoArchiveInFlightRef.current.add(customerId)
-    void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'extract' }).then((result) => {
-      if (result.status === 'EXTRACT_READY') showCustomerSaveToast('客户已保存，AI已完成资料提取，后续归档待处理', 'success')
-      else if (result.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI资料提取仍在进行中', 'success')
+    const extractStartedAt = performance.now()
+    void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'extract' }).then(async (result) => {
+      logAppPerformance('CUSTOMER_AUTO_ARCHIVE_EXTRACT_MS', { duration_ms: Math.round(result.durationMs ?? performance.now() - extractStartedAt), phase: result.phase, status: result.status })
+      if (result.status === 'EXTRACT_READY') {
+        showCustomerSaveToast('客户已保存，AI资料提取完成，正在归档', 'success')
+        const finalizeStartedAt = performance.now()
+        const finalized = await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize' })
+        invalidateCustomerResources(customerId)
+        refresh()
+        logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(finalized.durationMs ?? performance.now() - finalizeStartedAt), phase: finalized.phase, status: finalized.status, archive_outcome: finalized.archiveOutcome || '' })
+        if (finalized.status === 'COMPLETED') showCustomerSaveToast('客户已保存，AI归档完成', 'success')
+        else if (finalized.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
+        else showCustomerSaveToast('客户已保存，AI归档失败，可稍后重试', 'warning')
+      } else if (result.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI资料提取仍在进行中', 'success')
       else if (result.status === 'DISABLED' || result.status === 'NOT_REQUIRED') showCustomerSaveToast('客户已保存，AI整理未启动', 'success')
       else showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')
     }).catch(() => showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')).finally(() => autoArchiveInFlightRef.current.delete(customerId))

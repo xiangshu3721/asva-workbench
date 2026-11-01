@@ -50,6 +50,16 @@ describe('HTTP environment diagnostics', () => {
     expect(fetchMock.mock.calls.every((call) => (call as unknown as [string, RequestInit])[0].includes('/api/sources/SRC-1/process'))).toBe(true)
   })
 
+  it('AUTO_ARCHIVE_FINALIZE sends an independent Finalize request after Extract readiness', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'COMPLETED', customerId: 'CUS-1', sourceId: 'SRC-1', phase: 'FINALIZE', archiveOutcome: 'CUSTOMERS_FIELDS_WRITTEN', timings: { finalize_ms: 12 } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await createHttpApi('http://127.0.0.1:8788').autoArchiveCustomer('STAFF-1', 'CUS-1', { stage: 'finalize' })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('/api/customers/CUS-1/auto-archive')
+    expect(JSON.parse(String(init.body))).toEqual({ stage: 'finalize' })
+    expect(result).toMatchObject({ status: 'COMPLETED', phase: 'FINALIZE', archiveOutcome: 'CUSTOMERS_FIELDS_WRITTEN' })
+  })
+
   it('MULTIPLE_AI_RETRY_NO_DUPLICATE_SOURCE', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ source: { id: 'SRC-1', processingStatus: 'COMPLETED' }, evidenceItems: [], proposals: [], conflicts: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
