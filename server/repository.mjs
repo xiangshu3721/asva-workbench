@@ -142,7 +142,7 @@ const publicSource = (source, { includeRaw = false } = {}) => {
 const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const pickDefined = (item, keys) => Object.fromEntries(keys.filter((key) => item?.[key] !== undefined).map((key) => [key, item[key]]))
 const publicStaff = (item) => pickDefined(item, ['id', 'name', 'role', 'permissionRole', 'status', 'loginEnabled', 'displayRole', 'title', 'specialty', 'avatar'])
-const publicCustomerDirectory = (item) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
+const publicCustomerDirectory = (item) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), ...(item?.automaticProfilePending?.reason === 'CUSTOMER_SAVE' ? { automaticProfilePending: { reason: 'CUSTOMER_SAVE', contentHash: item.automaticProfilePending.contentHash, createdAt: item.automaticProfilePending.createdAt } } : {}), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
 const publicCustomerDetail = (item) => ({ ...publicCustomerDirectory(item), profileFields: item?.profileFields || {}, profileFieldMeta: item?.profileFieldMeta || {}, profileSchemaVersion: item?.profileSchemaVersion, profileVersion: item?.profileVersion, brief: item?.brief || '' })
 const publicCustomerProfile = (item, profileMaterialization, autoOrganizeStatus) => ({
   customerId: item.id,
@@ -195,6 +195,9 @@ export function publicCustomerMutationDto(database, actorId, customerId, custome
     customerCreated,
     persistenceStatus,
     enrollmentStatus: mutation?.enrollmentStatus || 'COMPLETED',
+    automaticProfile: customerRecord.automaticProfilePending?.reason === 'CUSTOMER_SAVE'
+      ? { status: 'PENDING', contentHash: customerRecord.automaticProfilePending.contentHash }
+      : { status: 'NOT_REQUIRED' },
     ...(mutation ? { mutation } : {}),
   }
 }
@@ -804,6 +807,23 @@ function isAutomaticProfileSource(source) {
   return String(source?.notes || '').startsWith(AUTO_PROFILE_SOURCE_PREFIX)
 }
 
+function automaticProfileSourceIdForContentHash(customerId, hash) {
+  const operationId = stableOperationId(`${customerId}:${hash}`, 'AUTO-SOURCE')
+  return stableId('SRC', `${customerId}:${operationId}`)
+}
+
+function findMatchingAutomaticProfileSource(sourceRecords, customerId, hash) {
+  const expectedId = automaticProfileSourceIdForContentHash(customerId, hash)
+  return (sourceRecords || []).find((item) => item.customerId === customerId && (item.id === expectedId || (item.contentHash === hash && isAutomaticProfileSource(item)))) || null
+}
+
+function automaticProfileAvailability(customerId, hasText) {
+  if (!hasText) return { status: 'NOT_REQUIRED' }
+  if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', reason: 'FEATURE_GATE' }
+  if (!automaticProfileArchivingAllowedForCustomer(customerId)) return { status: 'DISABLED', reason: config.features.automaticProfileArchivingMode === 'canary' ? 'CANARY_GATE' : 'FEATURE_GATE' }
+  return { status: 'PENDING' }
+}
+
 function automaticProfileArchivingAllowedForCustomer(customerId) {
   if (!config.features.automaticProfileArchiving) return false
   if (config.features.automaticProfileArchivingMode === 'canary' || config.features.automaticProfileArchivingCanary) return config.features.automaticProfileCanaryCustomerIds.has(text(customerId))
@@ -1053,7 +1073,7 @@ export class FeishuRepository {
     try {
       const database = await this.load({ force: true })
       const fallbackActor = database.staff.find((item) => item.permissionRole === 'ADMIN' && item.status === 'ACTIVE' && item.loginEnabled === true)?.id
-      for (const customer of database.customers.filter((item) => automaticProfileArchivingAllowedForCustomer(item.id) && automaticProfileEventAllowed(item.automaticProfilePending?.createdAt) && item.automaticProfilePending?.contentHash).slice(0, 10)) {
+      for (const customer of database.customers.filter((item) => automaticProfileArchivingAllowedForCustomer(item.id) && automaticProfileEventAllowed(item.automaticProfilePending?.createdAt) && item.automaticProfilePending?.contentHash && item.automaticProfilePending?.reason !== 'CUSTOMER_SAVE').slice(0, 10)) {
         const pending = customer.automaticProfilePending
         const actorId = database.staff.some((item) => item.id === pending.actorId && item.status === 'ACTIVE') ? pending.actorId : fallbackActor
         const recoveredText = automaticProfileTextFromCustomer(customer)
@@ -1065,6 +1085,7 @@ export class FeishuRepository {
       }
       let scheduledSources = 0
       for (const source of database.sourceRecords.filter((item) => automaticProfileArchivingAllowedForCustomer(item.customerId) && automaticProfileEventAllowed(item.createdAt || item.uploadedAt || item.occurredAt || item.processingStartedAt))) {
+        if (isAutomaticProfileSource(source) && String(source.notes || '').endsWith('CUSTOMER_SAVE')) continue
         if (!shouldAutoRecoverSource(source)) {
           if (hasReachedAutoRetryCap(source) && ['FAILED', 'PROCESSING'].includes(source.processingStatus)) await this.stampAutoRetryCapReached(source)
           continue
@@ -1097,6 +1118,76 @@ export class FeishuRepository {
     } catch (error) {
       this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'PENDING', error?.code || 'AUTO_SOURCE_QUEUE_FAILED')
       return { status: 'PENDING', errorCode: error?.code || 'AUTO_SOURCE_QUEUE_FAILED' }
+    }
+  }
+
+  async createAutomaticProfileSource(actorId, customerId, rawText, reason) {
+    const normalizedText = normalizeSourceRawText(rawText)
+    if (!normalizedText) return { status: 'NOT_REQUIRED' }
+    const hash = contentHash(normalizedText)
+    const database = await this.load({ force: true })
+    const existing = findMatchingAutomaticProfileSource(database.sourceRecords, customerId, hash)
+    if (existing) return { status: 'SOURCE_REUSED', source: existing, reused: true }
+    const operationId = stableOperationId(`${customerId}:${hash}`, 'AUTO-SOURCE')
+    try {
+      const source = await this.createSource(actorId, { customerId, sourceType: 'TEXT_INPUT', rawText: normalizedText, operationId, sourcePerspective: 'STAFF_REPORTED', notes: `${AUTO_PROFILE_SOURCE_PREFIX}${reason}` })
+      return { status: 'SOURCE_CREATED', source, reused: false }
+    } catch (error) {
+      if (error?.code === 'SOURCE_DUPLICATE') {
+        const recovered = await this.load({ force: true })
+        const duplicate = findMatchingAutomaticProfileSource(recovered.sourceRecords, customerId, hash)
+        if (duplicate) return { status: 'SOURCE_REUSED', source: duplicate, reused: true }
+      }
+      throw error
+    }
+  }
+
+  async runCustomerAutoArchive(actorId, customerId, { stage = 'extract' } = {}) {
+    const requestedCustomerId = text(customerId).trim()
+    if (!requestedCustomerId) throw Object.assign(new Error('customerId 必填'), { code: 'CUSTOMER_ID_REQUIRED', status: 400 })
+    if (stage !== 'extract') throw Object.assign(new Error('本阶段只支持 Extract'), { code: 'EXTRACT_STAGE_REQUIRED', status: 400 })
+    const startedAt = Date.now()
+    const timings = { load_ms: 0, source_ms: 0, extract_ms: 0 }
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'FEATURE_GATE', errorCode: 'FEATURE_GATE', durationMs: Date.now() - startedAt }
+    if (!automaticProfileArchivingAllowedForCustomer(requestedCustomerId)) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'CANARY_GATE', errorCode: 'CANARY_GATE', durationMs: Date.now() - startedAt }
+    try {
+      const loadStartedAt = Date.now()
+      const database = await this.load({ force: true })
+      timings.load_ms = Date.now() - loadStartedAt
+      const visible = scope(database, actorId)
+      const customer = visible.customers.find((item) => item.id === requestedCustomerId)
+      if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+      if (customer.automaticProfilePending?.reason !== 'CUSTOMER_SAVE') return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'CREATE_ONLY', errorCode: 'CREATE_ONLY', durationMs: Date.now() - startedAt }
+      const recoveredText = normalizeSourceRawText(customer.notes)
+      if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'NO_TEXT', durationMs: Date.now() - startedAt }
+      if (customer.automaticProfilePending?.contentHash && customer.automaticProfilePending.contentHash !== contentHash(recoveredText)) {
+        return { status: 'FAILED', customerId: requestedCustomerId, phase: 'CREATE_PENDING', errorCode: 'AUTOMATIC_PROFILE_CONTENT_CHANGED', durationMs: Date.now() - startedAt }
+      }
+      const sourceStartedAt = Date.now()
+      const ensured = await this.createAutomaticProfileSource(actorId, requestedCustomerId, recoveredText, customer.automaticProfilePending?.reason || 'CUSTOMER_SAVE')
+      timings.source_ms = Date.now() - sourceStartedAt
+      if (ensured.status === 'NOT_REQUIRED') return { ...ensured, customerId: requestedCustomerId, phase: 'NO_TEXT', durationMs: Date.now() - startedAt }
+      const source = ensured.source
+      if (!source) return { status: 'FAILED', customerId: requestedCustomerId, phase: 'CREATE_SOURCE', errorCode: 'SOURCE_ID_MISSING', durationMs: Date.now() - startedAt }
+      const current = await this.load({ force: true })
+      const existingEvidence = current.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus))
+      if (existingEvidence.length && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus)) {
+        return { status: 'EXTRACT_READY', customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'ALREADY_EXTRACTED', evidenceCount: existingEvidence.length, timings, durationMs: Date.now() - startedAt }
+      }
+      const extractStartedAt = Date.now()
+      const processed = await this.processSource(actorId, source.id, { stage: 'extract' })
+      timings.extract_ms = Date.now() - extractStartedAt
+      const after = await this.load({ force: true })
+      const evidenceCount = after.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).length
+      const proposalCount = after.profileUpdateProposals.filter((item) => item.sourceId === source.id).length
+      const conflictCount = after.evidenceConflicts.filter((item) => item.sourceId === source.id).length
+      if (proposalCount || conflictCount) return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, phase: 'EXTRACT', errorCode: 'EXTRACT_WROTE_FINALIZE_DATA', evidenceCount, proposalCount, conflictCount, timings, durationMs: Date.now() - startedAt }
+      if (!evidenceCount) return { status: 'FAILED', customerId: requestedCustomerId, sourceId: source.id, phase: 'EXTRACT', errorCode: 'NO_EVIDENCE_PERSISTED', timings, durationMs: Date.now() - startedAt }
+      return { status: 'EXTRACT_READY', customerId: requestedCustomerId, sourceId: source.id, reused: Boolean(ensured.reused), phase: 'EXTRACT', evidenceCount, proposalCount, conflictCount, timings, durationMs: Date.now() - startedAt, source: processed?.source ? publicSource(processed.source, { includeRaw: false }) : undefined }
+    } catch (error) {
+      this.audit('CUSTOMER_AUTO_ARCHIVE_EXTRACT', requestedCustomerId, actorId, 'FAIL', error?.code || 'AUTO_ARCHIVE_EXTRACT_FAILED')
+      if (error?.status) throw error
+      return { status: 'FAILED', customerId: requestedCustomerId, phase: 'EXTRACT', errorCode: error?.code || 'AUTO_ARCHIVE_EXTRACT_FAILED', durationMs: Date.now() - startedAt }
     }
   }
 
@@ -1711,7 +1802,7 @@ export class FeishuRepository {
     console.info('[ASVA_CUSTOMER_SAVE]', JSON.stringify({ operation: 'customer.preview', operation_id: text(input?.operationId).trim() || undefined, preview_ms: Date.now() - startedAt, result: 'SUCCESS' }))
     return response
   }
-  async persistCustomerMutationState(database, customerId, operationId, state) {
+  async persistCustomerMutationState(database, customerId, operationId, state, { automaticProfilePending } = {}) {
     if (!operationId) return null
     const customerRecord = database.customers.find((item) => item.id === customerId)
     const row = database._rows?.customers?.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
@@ -1720,7 +1811,7 @@ export class FeishuRepository {
     const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => {
       const mutationState = nextState.status === 'COMMITTED' ? { ...nextState, resultFingerprint: customerResultFingerprint(latestCustomer) } : nextState
       const mutationStates = { ...sanitizeMutationStates(latestCustomer.mutationStates), [operationId]: mutationState }
-      return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { mutationStates }) })
+      return mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { mutationStates, ...(automaticProfilePending !== undefined ? { automaticProfilePending } : {}) }) })
     }, (latestCustomer) => {
       const persisted = latestCustomer.mutationStates?.[operationId]
       return persisted?.status === nextState.status && persisted?.payloadHash === nextState.payloadHash && persisted?.customerId === customerId && (nextState.status !== 'COMMITTED' || persisted?.resultFingerprint === customerResultFingerprint(latestCustomer))
@@ -1902,6 +1993,8 @@ export class FeishuRepository {
       timings.identity_resolution_ms = Date.now() - identityStartedAt
       const customerId = existing?.id || existingId || `CUS-${Date.now()}`
       const automaticText = automaticProfileText(input, normalized.situation)
+      const automaticProfile = automaticProfileAvailability(customerId, Boolean(automaticText))
+      let automaticProfilePending = null
       const hasEnrollments = Array.isArray(input.enrollments) && input.enrollments.length > 0
       let current = database
       if (!existing) {
@@ -1912,7 +2005,8 @@ export class FeishuRepository {
         const assignedMentorId = actor?.permissionRole === 'MENTOR' ? actor.id : text(input?.mentorId).trim()
         if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
         const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, enrollmentStatus: hasEnrollments ? 'PENDING' : 'COMPLETED', enrollmentDrafts: normalizeMutationEnrollments(input.enrollments).items, updatedAt: createdAt } } : {}
-        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfileArchivingAllowedForCustomer(customerId) && automaticText ? automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_SAVE') : null, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+        automaticProfilePending = automaticProfile.status === 'PENDING' ? automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_SAVE') : null
+        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfilePending, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
@@ -1949,9 +2043,6 @@ export class FeishuRepository {
       // R048.11: 课程报名改为后台异步处理,不阻塞主流程
       // 将课程信息保存到 mutation state,由后台恢复机制处理
       const enrollmentDrafts = hasEnrollments ? normalizeMutationEnrollments(input.enrollments).items : []
-      const automaticProfile = automaticText
-        ? this.scheduleAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_SAVE')
-        : { status: 'NOT_REQUIRED' }
       result = 'SUCCESS'
       // Stage 1 keeps Customer creation separate from Appointment/ServiceCase. The old follow-up fields remain compatibility-only.
       if (operationId && !existing) {
@@ -1967,7 +2058,7 @@ export class FeishuRepository {
         commitMode = hasEnrollments ? 'DEFERRED' : 'ASYNC'
         // 立即写入 PERSISTED 状态,包含课程待处理信息
         phase = 'COMMIT'
-        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, mutationState)
+        const mutationWrite = await this.persistCustomerMutationState(current, customerId, operationId, mutationState, { automaticProfilePending })
         if (mutationWrite) current = this.applyCustomerMutationRow(current, mutationWrite.record, customerId)
         // 后台异步处理后续任务,不阻塞响应
         if (hasEnrollments) {
@@ -1978,7 +2069,7 @@ export class FeishuRepository {
           })
         } else {
           // 无课程:异步写入 COMMITTED 标记
-          this.scheduleCustomerMutationCommit(current, customerId, operationId, mutationState, actorId)
+          this.scheduleCustomerMutationCommit(current, customerId, operationId, mutationState, actorId, automaticProfilePending)
         }
       }
       phase = 'DONE'
@@ -2005,9 +2096,9 @@ export class FeishuRepository {
       console.info('[ASVA_CUSTOMER_SAVE]', JSON.stringify({ operation: 'customer.create', ...trace }))
     }
   }
-  scheduleCustomerMutationCommit(database, customerId, operationId, state, actorId) {
+  scheduleCustomerMutationCommit(database, customerId, operationId, state, actorId, automaticProfilePending) {
     setImmediate(() => {
-      void this.persistCustomerMutationState(database, customerId, operationId, { ...state, status: 'COMMITTED', enrollmentStatus: 'COMPLETED', enrollmentDrafts: [], enrollmentErrorCode: '', updatedAt: now() })
+      void this.persistCustomerMutationState(database, customerId, operationId, { ...state, status: 'COMMITTED', enrollmentStatus: 'COMPLETED', enrollmentDrafts: [], enrollmentErrorCode: '', updatedAt: now() }, { automaticProfilePending })
         .catch((error) => this.audit('COMMIT_CUSTOMER_MUTATION', customerId, actorId, 'PENDING', error?.code || 'CUSTOMER_MUTATION_COMMIT_FAILED'))
     })
   }
@@ -2326,17 +2417,19 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
-  async processSource(actorId, sourceId, { force = false } = {}) {
-    const inFlight = this.sourceProcessingLocks.get(sourceId)
+  async processSource(actorId, sourceId, { force = false, stage = 'full' } = {}) {
+    const lockKey = `${sourceId}:${stage}`
+    const inFlight = this.sourceProcessingLocks.get(lockKey)
     if (inFlight) return inFlight
-    const task = this.processSourceUnsafe(actorId, sourceId, { force })
-    this.sourceProcessingLocks.set(sourceId, task)
-    try { return await task } finally { if (this.sourceProcessingLocks.get(sourceId) === task) this.sourceProcessingLocks.delete(sourceId) }
+    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage })
+    this.sourceProcessingLocks.set(lockKey, task)
+    try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
-  async processSourceUnsafe(actorId, sourceId, { force = false } = {}) {
+  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full' } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
+    const extractOnly = stage === 'extract'
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     let source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
@@ -2528,6 +2621,16 @@ export class FeishuRepository {
       for (const oldEvidence of oldReplaceable) await updateMappedRecord('evidenceItems', 'evidence.supersede', oldEvidence._recordId, { review_status: 'SUPERSEDED', updated_at: now() })
       this.invalidateDatabaseCache()
       const refreshed = await this.load({ force: true })
+      if (extractOnly) {
+        const finishedAt = now()
+        await updateMappedRecord('sourceRecords', 'source.processing.extract-ready', sourceRow.record_id, { processing_status: 'COMPLETED', processing_version: processingVersion, last_processing_at: finishedAt, processing_error: '', updated_at: finishedAt })
+        const persisted = await this.load({ force: true })
+        const persistedEvidence = persisted.evidenceItems.filter((item) => item.sourceId === sourceId && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus))
+        this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'COMPLETED', archive_outcome: 'EXTRACT_ONLY', processing_error: '', extraction_batch: batchId, evidence_count: persistedEvidence.length, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
+        this.evidenceTraces = this.evidenceTraces.slice(0, 50)
+        this.audit('PROCESS_SOURCE_EXTRACT', sourceId, actorId, 'SUCCESS')
+        return this.sourceDetail(actorId, sourceId)
+      }
       // A legacy/failed batch can contain repeated physical rows with the
       // same logical Evidence identity. Keep them for audit, but materialize
       // the profile from one canonical item only.

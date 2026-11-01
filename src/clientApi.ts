@@ -117,6 +117,7 @@ export interface CustomerMutationResult {
   enrollmentStatus?: 'COMPLETED' | 'PENDING'
   enrollmentMessage?: string
   mutation?: CustomerMutationState
+  automaticProfile?: { status: 'PENDING' | 'NOT_REQUIRED' | 'DISABLED'; reason?: string; contentHash?: string }
 }
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
@@ -126,9 +127,10 @@ export interface CustomerSaveStatusResponse { operationId: string; customerId: s
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
   if (!customer) throw new Error('保存后未找到客户')
-  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation, automaticProfile: database.automaticProfile }
 }
 export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
 
 export interface WorkbenchApi {
@@ -149,6 +151,7 @@ export interface WorkbenchApi {
   createAppointment(input: NewAppointmentInput): Promise<Database>
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
+  autoArchiveCustomer(actorId: string, customerId: string, options?: { stage?: 'extract' }): Promise<CustomerAutoArchiveResult>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<CustomerMutationResult>
   customerSaveStatus(actorId: string, operationId: string, customerId?: string): Promise<CustomerSaveStatusResponse>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
@@ -283,6 +286,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     createAppointment: async (input) => api.createAppointment(input),
     previewCustomer: async (actorId, input) => api.previewCustomer(actorId, input),
     createCustomer: async (actorId, input) => customerMutationFromDatabase(await api.createCustomer(actorId, input) as Database & Partial<CustomerMutationResult>),
+    autoArchiveCustomer: async (_actorId, customerId) => ({ status: 'DISABLED', customerId, phase: 'LOCAL_DEMO' }),
     updateCustomer: async (actorId, customerId, input) => customerMutationFromDatabase(await api.updateCustomer(actorId, customerId, input) as Database, customerId, false),
     customerSaveStatus: async (_actorId, operationId, customerId) => ({ operationId, customerId: customerId || '', status: 'UNKNOWN', customer: null }),
     updateCustomerEnrollments: async (actorId, customerId, enrollments) => api.updateCustomerEnrollments(actorId, customerId, enrollments),
@@ -457,6 +461,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
         throw error
       }
     },
+    autoArchiveCustomer: (actorId, customerId, options = {}) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive`, actorId, { method: 'POST', body: JSON.stringify({ stage: options.stage || 'extract' }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
     updateCustomer: async (actorId, customerId, input) => {
       const headers = new Headers(input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined)
       headers.set('X-ASVA-Response-Mode', 'customer-mutation-v1')

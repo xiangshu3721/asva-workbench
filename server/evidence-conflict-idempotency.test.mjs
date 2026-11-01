@@ -135,6 +135,17 @@ describe('structured archive completion criteria', () => {
     const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
     expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
   })
+
+  it('persists DeepSeek Evidence in Extract stage without running Finalize writes', async () => {
+    const repository = setupRepository()
+    const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true, stage: 'extract' })
+
+    expect(result.source.processingStatus).toBe('COMPLETED')
+    expect(activeDatabase._allEvidenceItems).toHaveLength(1)
+    expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
+    expect(activeDatabase.evidenceConflicts).toHaveLength(0)
+    expect(activeDatabase.customers[0].profileFields).toEqual({ city: '杭州', job_status: '在职' })
+  })
 })
 
 describe('R036 source-scoped evidence replacement and conflict confirmation', () => {

@@ -172,6 +172,14 @@ async function handle(request, response, requestId) {
     const compactResponse = request.headers['x-asva-response-mode'] === 'customer-mutation-v1'
     return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
   }
+  const customerAutoArchive = url.pathname.match(/^\/api\/customers\/([^/]+)\/auto-archive$/)
+  if (request.method === 'POST' && customerAutoArchive) {
+    const actorId = await guard(request)
+    const body = await readBody(request)
+    if (body?.stage !== 'extract') return send(request, response, 400, { success: false, code: 'EXTRACT_STAGE_REQUIRED', message: '本阶段只支持 Extract。' }, requestId)
+    const result = await repository.runCustomerAutoArchive(actorId, decodeURIComponent(customerAutoArchive[1]), { stage: 'extract' })
+    return send(request, response, result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200, { ...result, requestId }, requestId)
+  }
   // Admin manual recovery endpoint for failed enrollments (after 5 retries)
   const manualRecoveryMatch = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)
   if (request.method === 'POST' && manualRecoveryMatch) {
