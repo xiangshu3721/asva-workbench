@@ -998,16 +998,16 @@ export class FeishuRepository {
   invalidateDatabaseCache() { this.databaseCache.data = null; this.databaseCache.savedAt = 0; this.databaseCache.promise = null; this.databaseCache.generation += 1; this.directoryCache.data = null; this.directoryCache.savedAt = 0; this.directoryCache.promise = null; this.directoryCache.generation += 1; this.staffCache.data = null; this.staffCache.savedAt = 0; this.staffCache.promise = null; this.staffCache.generation += 1 }
 
   startAutomaticProcessingRecovery() {
-    if (!config.features.automaticProfileArchiving) return
-    if (this.autoProcessingRecoveryTimer) return
-    this.autoProcessingRecoveryTimer = setInterval(() => { void this.recoverAutomaticProcessing().catch((error) => this.audit('RECOVER_AUTOMATIC_PROCESSING', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_RECOVERY_FAILED')) }, AUTO_PROCESSING_INTERVAL_MS)
-    this.autoProcessingRecoveryTimer.unref?.()
+    // Recovery is intentionally not timer-driven. The HTTP module must not
+    // start an 11-table scan, and write paths still schedule the specific
+    // source/customer work they just created.
+    return
   }
 
   startEnrollmentRecovery() {
-    if (this.enrollmentRecoveryTimer) return
-    this.enrollmentRecoveryTimer = setInterval(() => { void this.recoverPendingEnrollments().catch((error) => this.audit('RECOVER_ENROLLMENTS', '', '', 'FAIL', error?.code || 'ENROLLMENT_RECOVERY_FAILED')) }, ENROLLMENT_RECOVERY_INTERVAL_MS)
-    this.enrollmentRecoveryTimer.unref?.()
+    // Enrollment recovery remains available through its existing targeted
+    // recovery path, but is not started as a process-wide full-table timer.
+    return
   }
 
   async recoverPendingEnrollments() {
@@ -1387,7 +1387,6 @@ export class FeishuRepository {
     try {
       const database = await request
       this.lastKnownGood = cloneDatabase(database)
-      for (const customer of database.customers) this.lastKnownGoodByCustomer.set(customer.id, cloneDatabase(database))
       return cloneDatabase(database)
     } catch (error) {
       throw error
@@ -1504,7 +1503,10 @@ export class FeishuRepository {
     }
     const error = result.lastError
     console.error('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_FAILED', retry_count: result.attempts - 1, final_result: 'FAIL', provider_code: error?.providerCode, provider_request_id: error?.providerRequestId }))
-    const fallback = targetCustomerId ? this.lastKnownGoodByCustomer.get(targetCustomerId) : this.lastKnownGood
+    // A target-specific snapshot is populated after a customer write. Before
+    // that point, fall back to the single global snapshot instead of retaining
+    // a full database clone for every customer.
+    const fallback = targetCustomerId ? (this.lastKnownGoodByCustomer.get(targetCustomerId) || this.lastKnownGood) : this.lastKnownGood
     if (fallback) {
       console.warn('[ASVA_FEISHU_READBACK]', JSON.stringify({ write_record_id: writeRecordId, target_customer_id: targetCustomerId, readback_status: 'READBACK_DELAYED', write_status: 'WRITE_COMMITTED', final_result: 'SUCCESS' }))
       return { ...cloneDatabase(fallback), _dataFreshness: 'DELAYED', _persistenceStatus: 'COMMITTED' }
