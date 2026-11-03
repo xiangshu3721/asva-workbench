@@ -204,12 +204,10 @@ export function createFeishuGateway({
   async function searchPaged(tableId, filter, { pageSize = 20 } = {}) {
     const rows = []; let pageToken = ''
     do {
-      const body = {
-        page_size: Math.max(1, Math.min(100, Number(pageSize) || 20)),
-        ...(filter ? { filter } : {}),
-        ...(pageToken ? { page_token: pageToken } : {}),
-      }
-      const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/search`, {
+      const query = new URLSearchParams({ page_size: String(Math.max(1, Math.min(100, Number(pageSize) || 20))) })
+      if (pageToken) query.set('page_token', pageToken)
+      const body = filter ? { filter } : {}
+      const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/search?${query}`, {
         method: 'POST', body: JSON.stringify(body),
       }, { operation: 'search_records', table: tableId, retry: true })
       rows.push(...(data.items || [])); pageToken = data.has_more ? data.page_token || '' : ''

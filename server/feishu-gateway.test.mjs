@@ -115,6 +115,25 @@ describe('FeishuGateway', () => {
     const filter = { conjunction: 'and', conditions: [{ field_name: '客户ID', operator: 'is', value: ['CUS-1'] }] }
     await expect(gateway.searchRecords('tbl-customers', filter, { pageSize: 1 })).resolves.toEqual([{ record_id: 'rec-target' }])
     expect(calls[1].url).toContain('/tables/tbl-customers/records/search')
-    expect(JSON.parse(calls[1].request.body)).toEqual({ page_size: 1, filter })
+    expect(calls[1].url).toContain('page_size=1')
+    expect(JSON.parse(calls[1].request.body)).toEqual({ filter })
+  })
+
+  it('follows search page tokens in the URL without duplicating or dropping records', async () => {
+    const firstPage = Array.from({ length: 21 }, (_, index) => ({ record_id: `rec-${index + 1}` }))
+    const secondPage = Array.from({ length: 20 }, (_, index) => ({ record_id: `rec-${index + 22}` }))
+    const { gateway, calls } = gatewayWith([
+      response({ tenant_access_token: 'token-1', expire: 7200 }),
+      response({ data: { items: firstPage, has_more: true, page_token: 'next-page' } }),
+      response({ data: { items: secondPage, has_more: false } }),
+    ])
+    const records = await gateway.searchRecords('tbl-customers', { conjunction: 'and', conditions: [] }, { pageSize: 21 })
+    expect(records).toHaveLength(41)
+    expect(new Set(records.map((row) => row.record_id)).size).toBe(41)
+    expect(calls[1].url).toContain('page_size=21')
+    expect(calls[1].url).not.toContain('page_token=')
+    expect(calls[2].url).toContain('page_size=21')
+    expect(calls[2].url).toContain('page_token=next-page')
+    expect(JSON.parse(calls[2].request.body)).toEqual({ filter: { conjunction: 'and', conditions: [] } })
   })
 })

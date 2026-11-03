@@ -68,4 +68,54 @@ describe('automatic archive timer worker', () => {
     expect(repository.runCustomerAutoArchive).toHaveBeenCalledWith('ADMIN-1', customerId, { stage: 'finalize' })
     expect(search).not.toHaveBeenCalledWith(config.feishu.tables.appointments, expect.anything(), expect.anything())
   })
+
+  it('skips fresh PROCESSING and capped FAILED sources instead of blocking newer work', async () => {
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    const freshSource = { record_id: 'rec-processing', fields: {
+      资料ID: rich('SRC-PROCESSING'), 客户ID: rich('CUS-PROCESSING'), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'), 处理状态: rich('PROCESSING'), 处理开始时间: new Date().toISOString(),
+    } }
+    const cappedSource = { record_id: 'rec-failed', fields: {
+      资料ID: rich('SRC-FAILED'), 客户ID: rich('CUS-FAILED'), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'), 处理状态: rich('FAILED'), 处理版本: '5', 处理错误: rich('DEEPSEEK_TIMEOUT'),
+    } }
+    const search = vi.fn(async (tableId, filter) => {
+      if (tableId !== config.feishu.tables.sourceRecords) return []
+      const status = filter?.conditions?.find((item) => item.field_name === '处理状态')?.value?.[0]
+      return status === 'PROCESSING' ? [freshSource] : status === 'FAILED' ? [cappedSource] : []
+    })
+    const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
+    await expect(repository.nextAutomaticArchiveCandidate()).resolves.toBeNull()
+  })
+
+  it('prioritizes the newest pending customer after terminal work is excluded', async () => {
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    const older = customerRow('CUS-OLDER', 'ADMIN-1')
+    older.fields['档案字段元数据'] = splitRich(JSON.stringify({ _automatic_profile_pending: { contentHash: 'older', actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE', createdAt: '2026-11-01T00:00:00.000Z' } }))
+    const newer = customerRow('CUS-NEWER', 'ADMIN-1')
+    newer.fields['档案字段元数据'] = splitRich(JSON.stringify({ _automatic_profile_pending: { contentHash: 'newer', actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE', createdAt: '2026-11-03T00:00:00.000Z' } }))
+    const search = vi.fn(async (tableId, filter) => tableId === config.feishu.tables.customers ? [older, newer] : [])
+    const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
+    await expect(repository.nextAutomaticArchiveCandidate()).resolves.toMatchObject({ customerId: 'CUS-NEWER', stage: 'create' })
+  })
+
+  it('clears a stale pending marker when its terminal Source is already archived', async () => {
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    const customerId = 'CUS-ALREADY-ARCHIVED'
+    const sourceRow = { record_id: 'rec-terminal-source', fields: {
+      资料ID: rich('SRC-TERMINAL'), 客户ID: rich(customerId), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'), 处理状态: rich('COMPLETED'), 原始文本: rich('已归档'), 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
+    } }
+    const search = vi.fn(async (tableId, filter) => {
+      if (tableId === config.feishu.tables.customers) return [customerRow(customerId, 'ADMIN-1')]
+      if (tableId === config.feishu.tables.staff) return [staffRow]
+      if (tableId === config.feishu.tables.sourceRecords && filter?.conditions?.some((item) => item.field_name === '客户ID')) return [sourceRow]
+      return []
+    })
+    const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
+    repository.clearAutomaticProfilePending = vi.fn(async () => true)
+
+    await expect(repository.runAutomaticArchiveWorkerTick()).resolves.toMatchObject({ status: 'SKIPPED_ALREADY_ARCHIVED', customerId, sourceId: 'SRC-TERMINAL' })
+    expect(repository.clearAutomaticProfilePending).toHaveBeenCalledWith(customerId, expect.objectContaining({ reason: 'CUSTOMER_SAVE' }))
+  })
 })
