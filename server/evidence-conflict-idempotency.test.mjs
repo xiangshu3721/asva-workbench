@@ -182,16 +182,17 @@ describe('structured archive completion criteria', () => {
     const previousAutomatic = config.features.automaticProfileArchiving
     config.features.automaticProfileArchiving = true
     try {
-      activeDatabase.sourceRecords[0].rawText = '客户现居广州，过去从事教练技术咨询。'
+      activeDatabase.sourceRecords[0].rawText = '客户现居广州，客户之前从事金融分析，目前从事AI产品顾问。'
       const repository = setupRepository(async () => [
         { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: '', value: '广州', display_text: '客户现居广州', source_excerpt: '客户现居广州', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
-        { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'occupation', value: '教练技术咨询', display_text: '客户过去从事教练技术咨询', source_excerpt: '过去从事教练技术咨询', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'occupation', value: '金融分析', display_text: '客户之前从事金融分析', source_excerpt: '客户之前从事金融分析，目前从事AI产品顾问。', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'occupation', value: 'AI产品顾问', display_text: '客户目前从事AI产品顾问', source_excerpt: '客户之前从事金融分析，目前从事AI产品顾问。', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
       ])
       await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
 
       expect(activeDatabase.customers[0].profileFields.city).toBe('广州')
-      expect(activeDatabase.customers[0].profileFields.occupation).toBeUndefined()
-      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['客户过去从事教练技术咨询'])
+      expect(activeDatabase.customers[0].profileFields.occupation).toBe('AI产品顾问')
+      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['客户之前从事金融分析'])
       expect(activeDatabase.customers[0].supplementaryItems[0]).toMatchObject({ verificationStatus: 'SOURCE_SUPPORTED', sourceRecordId: 'SRC-SYNTH-1' })
 
       const writesBeforeRetry = createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length

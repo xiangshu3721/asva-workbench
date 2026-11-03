@@ -7,7 +7,7 @@ const CITY_WORDS = /北京|上海|天津|重庆|深圳|广州|杭州|南京|苏�
 const CURRENT_WORDS = /目前|现在|当前|现居|居住|住在|长期住|搬到|所在城市|生活在|定居/
 const RESIDENCE_CURRENT_WORDS = /现居|居住|住在|生活在|定居|搬到|所在城市|(?:在|于)[^，。；]{0,8}(?:生活|居住|定居)/
 const FUTURE_WORDS = /计划|打算|准备|考虑|未来|以后|将来|明年|下个月|之后|后面|想去|想搬|想做|想从事|希望.*(?:去|搬|生活|居住|辞职|成为|从事)/
-const HISTORY_WORDS = /曾经|以前|原来|三年前|几年前|过去|历史上|曾在|曾住|曾(?=失业|工作|从事|居住|住在|在)|离开.*(?:之前|以后)?/
+const HISTORY_WORDS = /曾经|以前|原来|三年前|几年前|过去|历史上|曾在|曾住|曾(?=失业|工作|从事|居住|住在|在)|之前|此前|早年|过往|从前|曾任|离开.*(?:之前|以后)?/
 const RESIDENCE_STATE_WORDS = /一个人|独居|同住|合租|和父母住|和家人住|居住状态|生活状态|居住比较稳定/
 const EMPLOYMENT_CURRENT_WORDS = /目前|现在|当前|已经|已从|离职|在职|自由职业|失业|工作中/
 const GOAL_FIELDS = new Set(['career_goal', 'relationship_goal', 'current_goal', 'current_expectation'])
@@ -65,13 +65,21 @@ function compact(value) { return String(value || '').replace(/\s+/g, '') }
 function text(value) { return String(value || '').trim() }
 function valueText(value) { return Array.isArray(value) ? value.map(valueText).join('、') : text(value) }
 
-function nearby(textValue, pattern, value) {
+function semanticSegment(textValue, value) {
   const quote = text(textValue)
   const candidate = text(value)
-  if (!candidate) return pattern.test(quote)
+  if (!candidate) return quote
   const index = quote.indexOf(candidate)
-  if (index < 0) return pattern.test(quote)
-  return pattern.test(quote.slice(Math.max(0, index - 18), Math.min(quote.length, index + candidate.length + 18)))
+  if (index < 0) return quote
+  const start = Math.max(0, quote.slice(0, index).search(/[，,。！？；;\n][^，,。！？；;\n]*$/) + 1)
+  const endMatch = quote.slice(index + candidate.length).search(/[，,。！？；;\n]/)
+  const end = endMatch < 0 ? quote.length : index + candidate.length + endMatch
+  return quote.slice(start, end)
+}
+
+function nearby(textValue, pattern, value) {
+  const candidate = text(value)
+  return pattern.test(semanticSegment(textValue, candidate))
 }
 
 function isCityLike(value, quote) {
@@ -87,10 +95,19 @@ function inferUnkeyedCanonicalField({ value = '', sourceExcerpt = '' } = {}) {
   const candidate = valueText(value)
   const quote = text(sourceExcerpt)
   if (!candidate || !quote || !quote.includes(candidate)) return ''
-  if (/性别|男生|女生|男性|女性/.test(quote) && /男|女/.test(candidate)) return 'gender'
-  if (CITY_WORDS.test(candidate) && RESIDENCE_CURRENT_WORDS.test(quote) && !HISTORY_WORDS.test(quote) && !FUTURE_WORDS.test(quote)) return 'current_city'
-  if (/(?:当前|目前|现在|现任).{0,8}(?:职业|工作|从事|职位|岗位)|(?:当前|目前|现在).{0,8}(?:做|负责)/.test(quote) && !HISTORY_WORDS.test(quote) && !FUTURE_WORDS.test(quote)) return 'occupation'
+  const segment = semanticSegment(quote, candidate)
+  if (isExplicitCustomerGender(candidate, segment)) return 'gender'
+  if (CITY_WORDS.test(candidate) && RESIDENCE_CURRENT_WORDS.test(segment) && !HISTORY_WORDS.test(segment) && !FUTURE_WORDS.test(segment)) return 'current_city'
+  if (/(?:当前|目前|现在|现任).{0,8}(?:职业|工作|从事|职位|岗位)|(?:当前|目前|现在).{0,8}(?:做|负责)/.test(segment) && !HISTORY_WORDS.test(segment) && !FUTURE_WORDS.test(segment)) return 'occupation'
   return ''
+}
+
+function isExplicitCustomerGender(candidate, segment) {
+  if (!/男|女/.test(candidate)) return false
+  if (!segment.includes(candidate)) return false
+  return /(?:客户|本人|当事人|她|他)(?:的)?性别\s*(?:是|为|：|:)\s*(?:男性|女性|男生|女生|男|女)/.test(segment)
+    || /(?:客户|本人|当事人|她|他)\s*(?:是|为)\s*(?:男性|女性|男生|女生|男|女)/.test(segment)
+    || /^\s*性别\s*(?:是|为|：|:)\s*(?:男性|女性|男生|女生|男|女)/.test(segment)
 }
 
 export function resolveCanonicalField({ fieldKey = '', value = '', sourceExcerpt = '', displayText = '' } = {}) {
@@ -124,10 +141,12 @@ export function classifyTemporalFact({ fieldKey = '', value = '', sourceExcerpt 
   const futureNearValue = nearby(quote, FUTURE_WORDS, candidate)
   const historyNearValue = nearby(quote, HISTORY_WORDS, candidate)
   const currentNearValue = nearby(quote, CURRENT_WORDS, candidate)
+  if (historyNearValue && currentNearValue) return 'AMBIGUOUS'
   if (historyNearValue && !currentNearValue) return 'HISTORICAL'
   if (GOAL_FIELDS.has(canonicalField) && futureNearValue) return 'CURRENT'
   if (futureNearValue && !currentNearValue) return 'FUTURE_PLAN'
-  if (canonicalField === 'employment_status' && EMPLOYMENT_CURRENT_WORDS.test(quote) && !/考虑|准备|计划|以后|未来/.test(quote)) return 'CURRENT'
+  const segment = semanticSegment(quote, candidate)
+  if (canonicalField === 'employment_status' && EMPLOYMENT_CURRENT_WORDS.test(segment) && !/考虑|准备|计划|以后|未来/.test(segment)) return 'CURRENT'
   if (currentNearValue || (canonicalField === 'employment_status' && /离职|在职|自由职业/.test(quote))) return 'CURRENT'
   if (semanticKind === 'EVENT') return 'HISTORICAL'
   return 'CURRENT'
