@@ -1,0 +1,210 @@
+# 此任务是用户授权的「审核及验收收口」，不是生产部署许可。
+protocol: XSH_AI_DEV_V1
+kind: task
+task_id: ASVA-ARCHIVE-001
+spec_version: 1.0.0
+state: APPROVED
+approval:
+  user_confirmed: true
+  reference: "2026-10-31 用户当前聊天明确要求：从这一轮开始按《翔叔·AI 研发意图编译与验收协议 V1.0》实施，并提交 PR#56 最新研发回执；仅授权审核/编译，不授权生产操作"
+project:
+  id: ASVA_WORKBENCH
+  repo: xiangshu3721/asva-workbench
+  base_ref: fix/two-phase-new-customer-archive-20261031
+  base_sha: 5764f8a2dc1a749e0b7c670ebd48e665697ab97a
+  verified_facts:
+    - fact: "PR#56 当前 GitHub HEAD 是 5764f8a；仍为 Draft 且未合并"
+      source: "https://github.com/xiangshu3721/asva-workbench/pull/56"
+      verified_at: "2026-10-31"
+    - fact: "源码实现两个独立 HTTP 阶段 extract 与 finalize，并保留 Customers 未核实字段来源元数据"
+      source: "https://github.com/xiangshu3721/asva-workbench/commit/5764f8a2dc1a749e0b7c670ebd48e665697ab97a"
+      verified_at: "2026-10-31"
+  assumptions:
+    - "生产仍运行115b163（仅依据Grok回执，未核对CloudBase实际运行版本）"
+    - "隔离真实Feishu写入、DeepSeek成功、完整4450ms/44900ms/52300ms耗时仅由Grok回执报告；Mac本地原始日志当前未共享"
+    - "二次Source自动归档FAIL的对象/触发器/范围尚不清楚"
+intent:
+  user_goal: "新增客户后原始资料完整且快速保存；AI自动整理并将有依据的未核实值写入Feishu Customers对应列；导师打开档案直接看到，不被长时间保存界面卡住"
+  observable_success: "真实独立隔离环境从新建客户开始完整E2E；Customers物理字段/元数据和浏览器UI一致；失败可安全恢复、无多余失败Source；通过受控发布前置闸门"
+  non_goals:
+    - "本次审核不部署生产、不创建生产客户、不修改星野或任何历史真实客户"
+    - "不重建Event Worker、数据库、消息队列或更换DeepSeek模型"
+    - "不将AI待核实资料默认为人工已确认"
+scope:
+  allowed_paths:
+    - ".ai/tasks/ASVA-ARCHIVE-001/"
+    - "PR#56 的只读源码与测试证据"
+  forbidden_paths:
+    - "生产CloudBase配置/函数/飞书真实客户"
+    - "master代码与GitHub Pages生产发布"
+authorization:
+  production_deploy_allowed: false
+  production_write_allowed: false
+  merge_allowed: false
+requirements:
+  - id: R001
+    priority: must
+    scenario: "管理员新增客户，填写原始备注与基础资料"
+    given: "真实隔离Feishu环境、合法合成数据"
+    when: "POST /api/customers 返回PERSISTED"
+    then: "Customers原文与输入一致；客户ID稳定；任何AI失败不丢失原文"
+    constraints:
+      - "不得把Mock数据库等价为真实Feishu"
+  - id: R002
+    priority: must
+    scenario: "用户点击新增客户保存"
+    given: "网络、飞书服务处于被测实际条件"
+    when: "客户主记录持久化"
+    then: "用户立即看到保存成功，不等待DeepSeek；保存目标3s、验收门槛8s"
+    constraints:
+      - "附加文件保存需明确单独进度；不能把附件未存说成完整成功"
+  - id: R003
+    priority: must
+    scenario: "保存后自动提取"
+    given: "新增客户有明确原始资料"
+    when: "客户端自动执行extract阶段"
+    then: "DeepSeek基于该客户原文生成真实Source/Evidence，并且内容来源和人物归属可追溯"
+    constraints:
+      - "不得靠force重复调用模型作为普通恢复机制"
+  - id: R004
+    priority: must
+    scenario: "Evidence准备就绪"
+    given: "已存在同一sourceId/batchId的有效Evidence"
+    when: "finalize阶段执行"
+    then: "Proposal和合法的Customers物理字段真实落盘，confirmed=false且带Source/Evidence出处；不覆盖人工已确认字段"
+    constraints:
+      - "只读物理字段和元数据验收；中间表非空不算正式字段成功"
+  - id: R005
+    priority: must
+    scenario: "导师打开新增客户档案"
+    given: "AI完成finalize并已写入飞书"
+    when: "浏览器从后端重新读取客户Profile"
+    then: "前端主体展示困扰/目标/帮助期待与AI整理·待核实状态，且不显示过期缓存"
+    constraints:
+      - "必须真实浏览器验收，API返回成功不能代替UI"
+  - id: R006
+    priority: must
+    scenario: "AI处理总耗时长于单次HTTP限额"
+    given: "extract和finalize分离"
+    when: "正常首轮无需force的新增客户处理"
+    then: "每个HTTP阶段在实际网关与客户端时限内完成；超时可按已持久化Source/Evidence安全续跑"
+    constraints:
+      - "分别记录SAVE/EXTRACT/FINALIZE的端到端墙钟，不把77秒force旧数据耗时当正常新增"
+  - id: R007
+    priority: must
+    scenario: "网络中断、浏览器关闭后重开、重复请求"
+    given: "客户已有sourceId与batchId"
+    when: "对同一operationId重发请求"
+    then: "复用已有数据，不重复客户、Source、有效Evidence、Proposal和DeepSeek账单；可完成finalize"
+    constraints:
+      - "不允许对旧真实客户自动补偿"
+  - id: R008
+    priority: must
+    scenario: "隔离实测报告出现二次Source自动归档FAIL"
+    given: "已有合成客户的原始执行日志"
+    when: "按customerId/sourceId/requestId追踪"
+    then: "确认FAIL是否由旧调度或上传Source引起，证明不会导致额外AI调用、重复任务或真实用户资料丢失"
+    constraints:
+      - "未知的FAIL必须明确记录为阻断，不得忽略"
+  - id: R009
+    priority: must
+    scenario: "研发候选待发布"
+    given: "PR#56包含前后端变更，生产与Pages运行独立版本"
+    when: "审核发布准备"
+    then: "明确独立前后端发布补丁/版本、生产配置对照、回滚以及仅合成客户的Canary申请"
+    constraints:
+      - "本任务无生产部署/数据写入授权"
+      - "禁止直接merge当前Draft PR"
+  - id: R010
+    priority: should
+    scenario: "代码审阅与交接"
+    given: "已提交tip 5764f8a"
+    when: "新研发平台读取协议"
+    then: "可以定位两个HTTP阶段、字段归档和测试入口，给出代码SHA与不确定项"
+    constraints:
+      - "绝不把源码审查等价为真实外部接口验证"
+acceptance:
+  - id: AT001
+    requirement_ids: [R001]
+    method: integration
+    environment: staging
+    expected: "合成客户原文与Customers物理读回一致，原文持久化后AI失败不影响保存"
+    evidence_required: [external_readback]
+    release_blocking: true
+  - id: AT002
+    requirement_ids: [R002]
+    method: performance
+    environment: staging
+    expected: "正常新增主记录SAVE实测≤8000ms；用户看到保存成功不用等待AI"
+    evidence_required: [api_trace, browser_e2e]
+    release_blocking: true
+  - id: AT003
+    requirement_ids: [R003]
+    method: integration
+    environment: staging
+    expected: "真实DeepSeek完成extract；Source和Evidence有同一合成客户的可复核记录"
+    evidence_required: [api_trace, external_readback]
+    release_blocking: true
+  - id: AT004
+    requirement_ids: [R004]
+    method: integration
+    environment: staging
+    expected: "Proposal、Customers物理字段和待核实元数据读回正确，保留确认字段"
+    evidence_required: [external_readback]
+    release_blocking: true
+  - id: AT005
+    requirement_ids: [R005]
+    method: browser_e2e
+    environment: staging
+    expected: "真实浏览器打开客户档案，字段展示正确且刷新后与飞书一致"
+    evidence_required: [browser_e2e, screenshot]
+    release_blocking: true
+  - id: AT006
+    requirement_ids: [R006]
+    method: performance
+    environment: staging
+    expected: "EXTRACT和FINALIZE各在真实请求限制内；测量各阶段耗时，并验证超时恢复"
+    evidence_required: [api_trace, test_log]
+    release_blocking: true
+  - id: AT007
+    requirement_ids: [R007]
+    method: integration
+    environment: staging
+    expected: "重复请求、失败后恢复和关页重开无重复归档及误触发"
+    evidence_required: [test_log, external_readback]
+    release_blocking: true
+  - id: AT008
+    requirement_ids: [R008]
+    method: integration
+    environment: staging
+    expected: "第二Source失败日志被准确定位并证明不影响新增业务"
+    evidence_required: [api_trace]
+    release_blocking: true
+  - id: AT009
+    requirement_ids: [R009]
+    method: manual
+    environment: development
+    expected: "完成部署基线、Pages兼容、Canary范围和回滚方案；未进行无授权生产变更"
+    evidence_required: [manual_check]
+    release_blocking: true
+  - id: AT010
+    requirement_ids: [R010]
+    method: static
+    environment: repository
+    expected: "GitHub源码中可核查两段接口、Profile字段归档以及相应测试"
+    evidence_required: [commit]
+    release_blocking: false
+guardrails:
+  - "真实验收证据不得只引用Grok Bot的PASS总结；应提交脱敏日志、真实读回及截图的可访问位置"
+  - "不得在公开仓库保存密钥、真实客户私密原文或未脱敏日志"
+  - "任何release_blocking为true的AT未PASS则ready_for_release必须为false"
+stop_conditions:
+  - "生产写入/部署/合并需要另行明确授权"
+  - "隔离测试无法证明没有触碰真实客户"
+  - "需要重新设计安全语义、修改confirmed权限或扩大研发范围"
+change_requests: []
+extensions:
+  candidate_pr: "https://github.com/xiangshu3721/asva-workbench/pull/56"
+  candidate_sha: "5764f8a2dc1a749e0b7c670ebd48e665697ab97a"
+  reported_isolation_customer: "CUS-db3032dea6f71877dc42"
+  evidence_local_only: "/Users/xiangshu/Troublehut/_verify/asva-pr56-final-closed-loop-20261031/"

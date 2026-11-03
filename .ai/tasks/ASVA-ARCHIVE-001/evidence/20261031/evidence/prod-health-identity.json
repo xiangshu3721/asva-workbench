@@ -1,0 +1,53 @@
+{
+  "raw_keys": [
+    "ok",
+    "service",
+    "appVersion",
+    "releaseCounter",
+    "releasePatch",
+    "release",
+    "gitCommit",
+    "gitBranch",
+    "buildTime",
+    "appEnv",
+    "environment",
+    "deepseekConfigured",
+    "feishuConfigured",
+    "authConfigured",
+    "adminAuthConfigured",
+    "authCredentialStoreConfigured",
+    "authMode",
+    "dataMode",
+    "productionWriteProtection",
+    "featureFlags",
+    "feishuProviderStatus",
+    "tables"
+  ],
+  "identity_fields": {
+    "ok": true,
+    "appVersion": "0.1.0",
+    "releaseCounter": 48,
+    "releasePatch": 11,
+    "release": "R048.11",
+    "gitCommit": "115b163abc8a65b85d1aa2c7f002558c1d82f547",
+    "gitBranch": "UNKNOWN",
+    "buildTime": "2026-10-31T03:24:17.280Z",
+    "appEnv": "production",
+    "environment": "production",
+    "feishuProviderStatus": {
+      "state": "healthy",
+      "circuit": "CLOSED",
+      "failures": 0,
+      "metrics": {
+        "requests": 0,
+        "successes": 0,
+        "timeoutCount": 0,
+        "rateLimitCount": 0,
+        "serverErrorCount": 0,
+        "retryCount": 0,
+        "retryRecoveredCount": 0,
+        "duplicatePreventedCount": 0
+      }
+    }
+  }
+}
