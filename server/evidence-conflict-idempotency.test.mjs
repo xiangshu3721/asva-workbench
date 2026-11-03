@@ -731,18 +731,22 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
     const previousAutomaticMode = config.features.automaticProfileArchiving
     config.features.automaticProfileArchiving = true
     try {
-      activeDatabase.sourceRecords[0].rawText = '客户希望把生活节奏放慢。客户曾遭受严重暴力。'
+      activeDatabase.sourceRecords[0].rawText = '客户希望把生活节奏放慢。客户曾遭受家庭暴力。客户正在接受心理咨询。'
       const repository = setupRepository(async () => [
         { evidence_type: 'SELF_MEANING', semantic_kind: 'OTHER', field_key: '', value: '希望把生活节奏放慢', display_text: '客户希望把生活节奏放慢', source_excerpt: '客户希望把生活节奏放慢', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.88, locator: { paragraph_index: 0 } },
-        { evidence_type: 'FACT', semantic_kind: 'OTHER', field_key: '', value: '曾遭受严重暴力', display_text: '客户曾遭受严重暴力', source_excerpt: '客户曾遭受严重暴力', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', privacy_level: 'HIGH', locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'OTHER', field_key: '', value: '曾遭受家庭暴力', display_text: '客户曾遭受家庭暴力', source_excerpt: '客户曾遭受家庭暴力', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.93, locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'OTHER', field_key: '', value: '正在接受心理咨询', display_text: '客户正在接受心理咨询', source_excerpt: '客户正在接受心理咨询', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.91, locator: { paragraph_index: 0 } },
       ])
       await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
 
       expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(1)
       expect(activeDatabase.customers[0].supplementaryItems[0]).toMatchObject({ text: '客户希望把生活节奏放慢', confirmed: false, status: 'PENDING_REVIEW' })
-      expect(activeDatabase.customers[0].supplementaryItems.some((item) => item.text.includes('暴力'))).toBe(false)
+      expect(activeDatabase.customers[0].supplementaryItems.some((item) => /暴力|心理咨询/.test(item.text))).toBe(false)
+      expect(activeDatabase._allEvidenceItems.some((item) => item.privacyLevel === 'HIGH_SENSITIVE' && item.displayText.includes('家庭暴力'))).toBe(true)
+      expect(activeDatabase._allEvidenceItems.some((item) => item.privacyLevel === 'SENSITIVE' && item.displayText.includes('心理咨询'))).toBe(true)
       const customerRow = await getRecordMock(config.feishu.tables.customers, 'rec-customer-1')
       expect(JSON.parse(customerRow.fields[customerField('customers', 'supplementary_info')])).toHaveLength(1)
+      expect(customerRow.fields[customerField('customers', 'supplementary_info')]).not.toMatch(/家庭暴力|心理咨询/)
       const writesBeforeRetry = createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length
       await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
       expect(createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length).toBe(writesBeforeRetry)
