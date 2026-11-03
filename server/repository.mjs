@@ -13,7 +13,7 @@ import { documentFileRef, extractDocument, parseDocumentFileRef } from './docume
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
 import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
-import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, finalizeAutoProcessingFailureCode, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
+import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, formatAutomaticProcessingFailure, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
@@ -3160,7 +3160,7 @@ export class FeishuRepository {
       return this.sourceDetail(actorId, sourceId)
     } catch (error) {
       const failedAt = now()
-      const failedCode = finalizeAutoProcessingFailureCode(error, processingVersion)
+      const failedCode = formatAutomaticProcessingFailure(error, processingVersion)
       await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_processing_at: failedAt, processing_error: failedCode, updated_at: failedAt }).catch(() => {})
       this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', processing_error: failedCode, extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)

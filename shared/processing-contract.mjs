@@ -3,6 +3,11 @@ export const PROCESSING_STALE_AFTER_MS = 10 * 60 * 1000
 /** Halt automatic recovery once processing_version reaches this value (starts at 1; each attempt increments). */
 export const AUTO_PROCESSING_RETRY_CAP = 5
 
+// Keep the retry schedule within the one-minute worker cadence while giving
+// an overloaded upstream time to recover. The delay is persisted in the
+// existing processing_error field, so a new CloudBase instance observes it.
+export const AUTOMATIC_RETRY_DELAYS_MS = [60_000, 180_000, 600_000]
+
 /** Pause recoverAutomaticProcessing after this many auto process schedules in one UTC day (or until process restart). */
 export const AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY = 80
 
@@ -35,8 +40,28 @@ export function shouldResumeSource(source, now = Date.now()) {
 }
 
 export function processingErrorCode(error) {
-  const code = error?.code
+  const code = typeof error === 'string' ? error.split('|', 1)[0].trim() : error?.code
   return typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code.slice(0, 80) : 'PROCESSING_FAILED'
+}
+
+export function parseProcessingError(errorOrCode) {
+  const raw = typeof errorOrCode === 'string' ? errorOrCode : errorOrCode?.processingError || errorOrCode?.code || ''
+  const [codePart, ...parts] = String(raw).split('|')
+  const metadata = Object.fromEntries(parts.map((part) => {
+    const index = part.indexOf('=')
+    return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, '']
+  }))
+  const retryAt = Date.parse(metadata.retry_at || '')
+  return { code: processingErrorCode(codePart), retryAt: Number.isFinite(retryAt) ? retryAt : null, retryCount: Number(metadata.retry_count || 0) || 0 }
+}
+
+export function formatAutomaticProcessingFailure(error, processingVersion, now = Date.now()) {
+  const code = finalizeAutoProcessingFailureCode(error, processingVersion)
+  if (code === AUTO_RETRY_CAP_REACHED || isNonRetryableAutoProcessingError(code)) return code
+  if (!String(code).startsWith('DEEPSEEK_')) return code
+  const delayIndex = Math.max(0, Math.min(AUTOMATIC_RETRY_DELAYS_MS.length - 1, Number(processingVersion || 1) - 2))
+  const retryAt = new Date(now + AUTOMATIC_RETRY_DELAYS_MS[delayIndex]).toISOString()
+  return `${code}|retry_at=${retryAt}|retry_count=${Number(processingVersion || 1)}`
 }
 
 export function normalizeProcessingErrorCode(errorOrCode) {
@@ -65,6 +90,8 @@ export function shouldAutoRecoverSource(source, now = Date.now()) {
   if (!eligibleStatus) return false
   if (isNonRetryableAutoProcessingError(source.processingError)) return false
   if (hasReachedAutoRetryCap(source)) return false
+  const retryAt = parseProcessingError(source.processingError).retryAt
+  if (retryAt && retryAt > now) return false
   return true
 }
 
