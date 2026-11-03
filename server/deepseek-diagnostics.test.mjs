@@ -15,6 +15,22 @@ describe('DeepSeek processing diagnostics', () => {
     expect(classifyDeepSeekResponse({ aborted: true })).toBe('DEEPSEEK_TIMEOUT')
     expect(classifyDeepSeekResponse({ status: 429 })).toBe('DEEPSEEK_RATE_LIMIT')
     expect(classifyDeepSeekResponse({ status: 503 })).toBe('DEEPSEEK_UNAVAILABLE')
+    expect(classifyDeepSeekResponse({ status: 430, providerError: { type: 'SERVER', message: 'Service is too busy' } })).toBe('DEEPSEEK_UPSTREAM_OVERLOADED')
+    expect(classifyDeepSeekResponse({ status: 400, providerError: { code: 'service_unavailable_error' } })).toBe('DEEPSEEK_UPSTREAM_OVERLOADED')
+  })
+
+  it('preserves only non-sensitive provider diagnostics for an overloaded upstream', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ request_id: 'req-synthetic-430', error: { type: 'SERVER', code: 'service_unavailable_error', message: 'Service is too busy' } }), { status: 430, headers: { 'content-type': 'application/json', 'retry-after': '7' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(createEvidenceCandidates({ text: '合成资料。', sourceRole: 'STAFF_REPORTED', sourcePerspective: 'STAFF_REPORTED' })).rejects.toMatchObject({
+      code: 'DEEPSEEK_UPSTREAM_OVERLOADED',
+      httpStatus: 430,
+      providerType: 'SERVER',
+      providerCode: 'service_unavailable_error',
+      providerRequestId: 'req-synthetic-430',
+      retryAfter: '7',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('classifies successful HTTP responses with invalid content', () => {

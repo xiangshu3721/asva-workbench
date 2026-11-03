@@ -13,7 +13,7 @@ import { documentFileRef, extractDocument, parseDocumentFileRef } from './docume
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
 import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
-import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, finalizeAutoProcessingFailureCode, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
+import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, formatAutomaticProcessingFailure, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
 import { buildCustomerSafetyContext, buildSafetyAssessment } from './safety.mjs'
@@ -276,7 +276,7 @@ async function removeCustomerSupplementaryItemsByEvidence(database, customerId, 
   customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
   customerRecord.profileUpdatedAt = now()
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
-  await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors }))
+  await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors, clearSupplementaryInfo: true }))
   return removedCount
 }
 
@@ -587,7 +587,7 @@ function normalizeProfileUpdates(updates, profileRecord, confirmed = false) {
   }).filter((item) => item.value !== null)
 }
 
-function profileFieldsForWrite(customerRecord, updates, { suppressLegacyAppointmentMirrors = false } = {}) {
+function profileFieldsForWrite(customerRecord, updates, { suppressLegacyAppointmentMirrors = false, clearSupplementaryInfo = false } = {}) {
   const values = { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord), profile_schema_version: customerRecord.profileSchemaVersion || CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: customerRecord.profileUpdatedAt || now() }
   for (const update of updates) {
     if (['paid', 'grade', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(update.field)) continue
@@ -608,7 +608,7 @@ function profileFieldsForWrite(customerRecord, updates, { suppressLegacyAppointm
   values.is_paid = customerRecord.paid
   values.intended_course = customerRecord.intendedCourse || ''
   values.current_mentor_id = customerRecord.mentorId || ''
-  if (Array.isArray(customerRecord.supplementaryItems) && customerRecord.supplementaryItems.length > 0) {
+  if (Array.isArray(customerRecord.supplementaryItems) && (customerRecord.supplementaryItems.length > 0 || clearSupplementaryInfo)) {
     values.supplementary_info = serializeSupplementaryField(customerRecord.supplementaryItems)
   }
   return mapFields('customers', values)
@@ -799,6 +799,15 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   return { customerRecord, writeResult, changes: persistedChanges }
 }
 
+// Supplementary information is an ordinary, broadly visible Customers field.
+// Never put SENSITIVE / HIGH_SENSITIVE Evidence in it, even when the
+// generic privacy policy allows promotion of some SENSITIVE profile facts.
+function isOrdinarySupplementaryEvidence(evidence) {
+  const evidenceLevel = String(evidence?.privacyLevel || '').toUpperCase()
+  const itemLevel = String(evidence?.privacyMeta?.privacyLevel || evidenceLevel).toUpperCase()
+  return evidenceLevel === 'NORMAL' && itemLevel === 'NORMAL'
+}
+
 async function appendCustomerSupplementaryItems(database, customerId, evidenceItems, operatorId, { suppressLegacyAppointmentMirrors = false } = {}) {
   const customerRecord = database.customers.find((item) => item.id === customerId)
   const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
@@ -806,7 +815,7 @@ async function appendCustomerSupplementaryItems(database, customerId, evidenceIt
   const items = Array.isArray(customerRecord.supplementaryItems) ? customerRecord.supplementaryItems : []
   const additions = []
   for (const evidence of evidenceItems) {
-    if (!evidence?.displayText) continue
+    if (!evidence?.displayText || !isOrdinarySupplementaryEvidence(evidence)) continue
     const itemId = stableId('SUP', `${customerId}:${evidence.sourceId || ''}:${evidence.id || evidence.displayText}`)
     if (items.some((item) => item.id === itemId || item.evidenceId === evidence.id || (item.text === evidence.displayText && item.sourceId === evidence.sourceId)) || additions.some((item) => item.id === itemId || item.evidenceId === evidence.id)) continue
     additions.push({
@@ -2748,6 +2757,7 @@ export class FeishuRepository {
               const explicitRange = rangeIsGrounded(rawStart, rawEnd) || rangeIsGrounded(Number(chunk.charStart || 0) + rawStart, Number(chunk.charStart || 0) + rawEnd)
               normalized._sourceGrounded = exactExcerpt || explicitRange
               const privacy = classifyPrivacyText(`${normalized.displayText}\n${normalized.sourceExcerpt}`)
+              privacy.subjectScope = String(rawItem?.subject_scope || rawItem?.subjectScope || '').trim().toUpperCase() || 'UNKNOWN'
               normalized.privacyLevel = privacy.privacyLevel
               normalized.privacyMeta = privacy
               normalized.mentorSafeText = privacySafeText(privacy, normalized.displayText)
@@ -2889,22 +2899,57 @@ export class FeishuRepository {
             const currentValue = currentCustomer?.profileFields?.[evidence.fieldKey] ?? null
             const change = classifyEvidenceChange(evidence, currentValue)
             const timestamp = now()
-            const privacyPolicy = resolvePrivacyPolicy({ ...combinePrivacyContext(evidence, source), currentRole: 'ADMIN' })
+            const combinedPrivacy = combinePrivacyContext(evidence, source)
+            const evidenceMeta = evidence.privacyMeta && typeof evidence.privacyMeta === 'object' ? evidence.privacyMeta : {}
+            // A previous version could have copied sensitive unassigned Evidence
+            // into the broadly visible supplementary field. Targeted evidence
+            // reconciliation removes only that source-linked duplicate; Source
+            // and Evidence remain intact for permission-controlled review.
+            if (!isOrdinarySupplementaryEvidence(evidence) &&
+                ['SENSITIVE', 'HIGH_SENSITIVE'].includes(String(evidence.privacyLevel || evidenceMeta.privacyLevel || '').toUpperCase())) {
+              stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
+            }
+            // A mixed source may contain one ordinary excerpt and one high
+            // sensitivity excerpt. Use the explicit item classification for
+            // profile promotion when available; the source-level floor still
+            // protects legacy evidence without item-level privacy metadata.
+            const privacyPolicy = Object.prototype.hasOwnProperty.call(evidenceMeta, 'privacyLevel')
+              ? resolvePrivacyPolicy({
+                privacyLevel: evidenceMeta.privacyLevel,
+                categories: evidenceMeta.categories,
+                safetyFlags: evidenceMeta.safetyFlags,
+                currentRole: 'ADMIN',
+                assertionType: evidenceMeta.assertionType,
+                verification: evidenceMeta.verification,
+                serviceNecessity: evidenceMeta.serviceNecessity,
+                serviceNecessityOverride: evidenceMeta.serviceNecessityOverride,
+                temporalType: evidenceMeta.temporalType,
+              })
+              : resolvePrivacyPolicy({ ...combinedPrivacy, currentRole: 'ADMIN' })
             const isAiHypothesis = evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS'
             const isThirdParty = evidence.contentSource === 'THIRD_PARTY_REPORTED'
+            const subjectScope = String(evidence.subjectScope || evidenceMeta.subjectScope || '').trim().toUpperCase()
+            const customerSubjectConfirmed = evidence.subjectId === source.customerId && (!isThirdParty || subjectScope === 'CURRENT_CUSTOMER')
             const blockedField = Boolean(evidence.fieldKey && STAGE4_BLOCKED_PROFILE_FIELDS.has(evidence.fieldKey))
+            // Ordinary, source-grounded profile facts are the current
+            // Customers snapshot even when the extractor confidence is below
+            // the old review threshold. Confidence remains provenance for
+            // later decisions; it is not a blanket write gate for ordinary
+            // fields. Temporal EVENT evidence is still excluded here because
+            // canonical-profile-facts has already classified historical and
+            // future material separately.
             const isStage4PhysicalCandidate = ['FACT', 'SELF_MEANING', 'OBSERVATION'].includes(evidence.evidenceType)
-              && Number(evidence.confidence || 0) >= 0.8
+              && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
               && evidence.semanticKind !== 'EVENT'
 
             // Stage 4 deliberately keeps the three appointment concepts in
             // Evidence/supplementary_info, but never materializes them into
             // the legacy Customers appointment columns.
-            if (!evidence.fieldKey || blockedField || isAiHypothesis || isThirdParty || !isStage4PhysicalCandidate) {
+            if (!evidence.fieldKey || blockedField || isAiHypothesis || !customerSubjectConfirmed || !isStage4PhysicalCandidate) {
               if (evidence.fieldKey) {
                 archivingCounts.unresolvedMappedEvidenceCount += 1
-                if (privacyPolicy.canPromoteToProfile && PROFILE_FIELD_KEYS.has(evidence.fieldKey)) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
-              } else if (privacyPolicy.canPromoteToProfile) {
+                if (!blockedField && customerSubjectConfirmed && privacyPolicy.canPromoteToProfile && PROFILE_FIELD_KEYS.has(evidence.fieldKey)) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
+              } else if (privacyPolicy.canPromoteToProfile && isOrdinarySupplementaryEvidence(evidence)) {
                 stage4SupplementaryEvidence.push(evidence)
               }
               continue
@@ -2935,7 +2980,7 @@ export class FeishuRepository {
             const validCustomerFact = !['UNKNOWN', 'MIXED'].includes(evidence.contentSource)
               && evidence.informationNature !== 'AI_INFERENCE'
               && evidence.verificationStatus !== 'CONFLICTED'
-              && !isThirdParty
+              && customerSubjectConfirmed
             if (humanConfirmedConflict) {
               const latest = await this.load({ force: true })
               const currentEvidence = latest.evidenceItems.find((item) => item.customerId === source.customerId && item.fieldKey === evidence.fieldKey && item.reviewStatus === 'CONFIRMED' && sameProfileValue(item.standardValue, currentValue))
@@ -3115,7 +3160,7 @@ export class FeishuRepository {
       return this.sourceDetail(actorId, sourceId)
     } catch (error) {
       const failedAt = now()
-      const failedCode = finalizeAutoProcessingFailureCode(error, processingVersion)
+      const failedCode = formatAutomaticProcessingFailure(error, processingVersion)
       await updateMappedRecord('sourceRecords', 'source.processing.failed', sourceRow.record_id, { processing_status: 'FAILED', processing_version: processingVersion, last_processing_at: failedAt, processing_error: failedCode, updated_at: failedAt }).catch(() => {})
       this.evidenceTraces.unshift({ source_id: sourceId, processing_status: 'FAILED', processing_error: failedCode, extraction_batch: batchId, evidence_count: 0, proposal_count: 0, conflict_count: 0, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)

@@ -10,17 +10,24 @@ export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
 }
 
-export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJson = false, emptyContent = false } = {}) {
+const DEEPSEEK_TRANSIENT_PROVIDER_CODES = new Set(['SERVER', 'SERVICE_UNAVAILABLE_ERROR', 'SERVICE_UNAVAILABLE', 'TEMPORARILY_UNAVAILABLE', 'OVERLOADED', 'BUSY'])
+const DEEPSEEK_TRANSIENT_PROVIDER_MESSAGES = /service\s+is\s+too\s+busy|temporarily\s+unavailable|server\s+error|overload|try\s+again/i
+
+export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJson = false, emptyContent = false, providerError = null } = {}) {
   if (aborted) return 'DEEPSEEK_TIMEOUT'
   if (invalidJson || emptyContent) return 'DEEPSEEK_INVALID_RESPONSE'
   if (status === 429) return 'DEEPSEEK_RATE_LIMIT'
+  const providerCode = String(providerError?.code || '').trim().toUpperCase()
+  const providerType = String(providerError?.type || '').trim().toUpperCase()
+  const providerMessage = String(providerError?.message || '')
+  if (status === 430 || DEEPSEEK_TRANSIENT_PROVIDER_CODES.has(providerCode) || DEEPSEEK_TRANSIENT_PROVIDER_CODES.has(providerType) || DEEPSEEK_TRANSIENT_PROVIDER_MESSAGES.test(providerMessage)) return 'DEEPSEEK_UPSTREAM_OVERLOADED'
   if (status === 408 || status >= 500) return 'DEEPSEEK_UNAVAILABLE'
   return 'DEEPSEEK_INVALID_RESPONSE'
 }
 
 export const HUMAN_LANGUAGE_RULE = '最终面向导师和管理员展示的解释必须使用自然、直接的中文；不要输出内部英文枚举、字段名、代码、Schema 名称、版本号、系统状态标识或调试信息。遇到信息不足时直接说“待确认”“资料还不够”，不要把内部值原样写进解释。'
 
-const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_RATE_LIMIT'])
+const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_UPSTREAM_OVERLOADED', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_RATE_LIMIT'])
 // DEEPSEEK_OUTPUT_TRUNCATED is non-transient (same max_tokens → same truncation); do not burn extra attempts.
 export const EVIDENCE_EXTRACT_TIMEOUT_MS = 25_000
 export const EVIDENCE_EXTRACT_MAX_ATTEMPTS = 1
@@ -60,8 +67,18 @@ async function callDeepSeek(messages, temperature = 0.2, options = {}) {
       if (response.ok) throw Object.assign(new Error('DeepSeek 返回内容不是有效 JSON'), { code: classifyDeepSeekResponse({ invalidJson: true }), status: 502 })
     }
     if (!response.ok) {
-      const code = classifyDeepSeekResponse({ status: response.status })
-      throw Object.assign(new Error(payload?.error?.message || `DeepSeek HTTP ${response.status}`), { code, status: response.status })
+      const providerError = payload?.error && typeof payload.error === 'object' ? payload.error : {}
+      const code = classifyDeepSeekResponse({ status: response.status, providerError })
+      throw Object.assign(new Error(providerError.message || `DeepSeek HTTP ${response.status}`), {
+        code,
+        status: response.status,
+        httpStatus: response.status,
+        providerType: typeof providerError.type === 'string' ? providerError.type.slice(0, 80) : undefined,
+        providerCode: typeof providerError.code === 'string' ? providerError.code.slice(0, 80) : undefined,
+        providerMessage: typeof providerError.message === 'string' ? providerError.message.slice(0, 160) : undefined,
+        providerRequestId: typeof payload?.request_id === 'string' ? payload.request_id.slice(0, 120) : typeof providerError.request_id === 'string' ? providerError.request_id.slice(0, 120) : undefined,
+        retryAfter: response.headers.get('retry-after')?.slice(0, 80) || undefined,
+      })
     }
     const choice = payload?.choices?.[0]
     const finishReason = choice?.finish_reason || ''
@@ -77,6 +94,20 @@ async function callDeepSeek(messages, temperature = 0.2, options = {}) {
       : error instanceof DeepSeekUnavailableError || error?.code
         ? error
         : new DeepSeekUnavailableError(error instanceof Error ? error.message : 'DeepSeek 请求失败')
+    console.warn('[ASVA_DEEPSEEK_FAILURE]', JSON.stringify({
+      operation: options.operation || 'unknown',
+      model,
+      attempt,
+      retry_count: attempt - 1,
+      http_status: lastError?.httpStatus || lastError?.status || undefined,
+      error_code: lastError?.code || 'DEEPSEEK_UNAVAILABLE',
+      error_type: lastError?.providerType,
+      provider_code: lastError?.providerCode,
+      provider_message: lastError?.providerMessage,
+      request_id: lastError?.providerRequestId,
+      retry_after: lastError?.retryAfter,
+      duration_ms: Date.now() - startedAt,
+    }))
     if (attempt >= maxAttempts || !RETRYABLE_DEEPSEEK_CODES.has(lastError?.code)) throw lastError
   } finally {
     clearTimeout(timeout)
