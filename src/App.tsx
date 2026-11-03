@@ -899,7 +899,6 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
       : !profile ? <p className="detail-empty-line">展开后按需读取该客户的确认档案。</p>
           : !hasDisplayContent ? <p className="detail-empty-line">暂无可展示资料。已保存的原始资料仍可在“原始资料与查看依据”中查看。</p>
           : <>
-            {rawNotes && <details className="profile-original-notes"><summary>查看原始资料</summary><p>{sanitizeUserVisibleText(rawNotes)}</p></details>}
             <div className="portrait-grid">
               {displaySections.filter((section) => section.items.length > 0 || provisionalForSection(section.title).length > 0).map((section) => <article className="portrait-card" key={section.title}>
                 <h3>{section.title}</h3>
@@ -920,6 +919,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
               <p>{event.detail}</p>
               {event.basis.length > 0 && <details><summary>查看依据</summary><div className="profile-basis">{dedupeEvidenceDisplay(event.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))).map((reference) => <p key={reference.evidenceIds.join('|')} data-evidence-ids={reference.evidenceIds.join(',')}>{reference.displayText}{reference.excerpt && <small>{reference.excerpt}</small>}</p>)}</div></details>}
             </article>)}</div> : null}
+            {rawNotes && <details className="profile-original-notes"><summary>查看原始资料</summary><p>{sanitizeUserVisibleText(rawNotes)}</p></details>}
           </>
   return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{autoStatusMessage && <p className="profile-refresh-note">{autoStatusMessage}</p>}{profileContent}{profile && loading && <p className="profile-refresh-note">正在后台更新档案，当前内容仍可查看。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
 }
