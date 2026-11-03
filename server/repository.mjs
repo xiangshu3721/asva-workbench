@@ -276,7 +276,7 @@ async function removeCustomerSupplementaryItemsByEvidence(database, customerId, 
   customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
   customerRecord.profileUpdatedAt = now()
   customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
-  await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors }))
+  await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors, clearSupplementaryInfo: true }))
   return removedCount
 }
 
@@ -587,7 +587,7 @@ function normalizeProfileUpdates(updates, profileRecord, confirmed = false) {
   }).filter((item) => item.value !== null)
 }
 
-function profileFieldsForWrite(customerRecord, updates, { suppressLegacyAppointmentMirrors = false } = {}) {
+function profileFieldsForWrite(customerRecord, updates, { suppressLegacyAppointmentMirrors = false, clearSupplementaryInfo = false } = {}) {
   const values = { profile_field_meta_json: serializeCustomerDerivedMeta(customerRecord), profile_schema_version: customerRecord.profileSchemaVersion || CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: customerRecord.profileUpdatedAt || now() }
   for (const update of updates) {
     if (['paid', 'grade', 'mentor_id', 'current_mentor_id', 'intended_course'].includes(update.field)) continue
@@ -608,7 +608,7 @@ function profileFieldsForWrite(customerRecord, updates, { suppressLegacyAppointm
   values.is_paid = customerRecord.paid
   values.intended_course = customerRecord.intendedCourse || ''
   values.current_mentor_id = customerRecord.mentorId || ''
-  if (Array.isArray(customerRecord.supplementaryItems) && customerRecord.supplementaryItems.length > 0) {
+  if (Array.isArray(customerRecord.supplementaryItems) && (customerRecord.supplementaryItems.length > 0 || clearSupplementaryInfo)) {
     values.supplementary_info = serializeSupplementaryField(customerRecord.supplementaryItems)
   }
   return mapFields('customers', values)
