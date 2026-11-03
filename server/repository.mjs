@@ -2893,8 +2893,15 @@ export class FeishuRepository {
             const isAiHypothesis = evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS'
             const isThirdParty = evidence.contentSource === 'THIRD_PARTY_REPORTED'
             const blockedField = Boolean(evidence.fieldKey && STAGE4_BLOCKED_PROFILE_FIELDS.has(evidence.fieldKey))
+            // Ordinary, source-grounded profile facts are the current
+            // Customers snapshot even when the extractor confidence is below
+            // the old review threshold. Confidence remains provenance for
+            // later decisions; it is not a blanket write gate for ordinary
+            // fields. Temporal EVENT evidence is still excluded here because
+            // canonical-profile-facts has already classified historical and
+            // future material separately.
             const isStage4PhysicalCandidate = ['FACT', 'SELF_MEANING', 'OBSERVATION'].includes(evidence.evidenceType)
-              && Number(evidence.confidence || 0) >= 0.8
+              && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
               && evidence.semanticKind !== 'EVENT'
 
             // Stage 4 deliberately keeps the three appointment concepts in

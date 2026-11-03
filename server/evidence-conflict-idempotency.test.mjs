@@ -215,6 +215,8 @@ describe('stage 4 corrected Evidence materialization rules', () => {
         stage4Evidence({ id: 'EVD-STAGE4-AGE', fieldKey: 'age', standardValue: 35, displayText: '客户今年35岁', sourceExcerpt: '我今年35岁' }),
         stage4Evidence({ id: 'EVD-STAGE4-CITY', fieldKey: 'city', standardValue: '深圳', displayText: '客户现居深圳', sourceExcerpt: '我现在住在深圳' }),
         stage4Evidence({ id: 'EVD-STAGE4-SLEEP', evidenceType: 'SELF_MEANING', semanticKind: 'CURRENT_STATE', fieldKey: 'sleep', standardValue: '最近睡眠很差', displayText: '客户说最近睡眠很差', sourceExcerpt: '我最近睡眠很差' }),
+        stage4Evidence({ id: 'EVD-STAGE4-LOW-CONFIDENCE-EDUCATION', fieldKey: 'education', standardValue: '金融专业', displayText: '客户教育背景为金融专业', sourceExcerpt: '我大学学的是金融专业', confidence: 0.42 }),
+        stage4Evidence({ id: 'EVD-STAGE4-MENTOR-OBSERVATION', evidenceType: 'OBSERVATION', semanticKind: 'CURRENT_STATE', fieldKey: 'emotion_expression', standardValue: '表达比较克制', displayText: '导师观察到客户表达比较克制', sourceExcerpt: '她谈话时表达比较克制', contentSource: 'MENTOR_OBSERVATION', informationNature: 'BEHAVIOR_OBSERVATION', confidence: 0.35 }),
         stage4Evidence({ id: 'EVD-STAGE4-OLD-NEED', fieldKey: 'current_core_issue', standardValue: '最近工作压力很大', displayText: '客户说最近工作压力很大', sourceExcerpt: '我最近工作压力很大' }),
         stage4Evidence({ id: 'EVD-STAGE4-UNMAPPED', fieldKey: null, semanticKind: 'OTHER', standardValue: '在杭州工作', displayText: '客户在杭州工作', sourceExcerpt: '我在杭州工作' }),
         stage4Evidence({ id: 'EVD-STAGE4-HYPOTHESIS', fieldKey: 'career_goal', evidenceType: 'HYPOTHESIS', informationNature: 'AI_INFERENCE', standardValue: '可能想创业', displayText: 'AI推断客户可能想创业', sourceExcerpt: '工作相关资料', verificationStatus: 'UNKNOWN' }),
@@ -231,7 +233,7 @@ describe('stage 4 corrected Evidence materialization rules', () => {
       expect(activeDatabase.customers[0].profileFieldMeta.age).toMatchObject({ source: 'AI_EXTRACTED', confirmed: false, evidenceId: 'EVD-STAGE4-AGE' })
       expect(activeDatabase.customers[0].profileFields.sleep).toBe('最近睡眠很差')
       expect(buildCustomerUnderstandingContext({ customer: activeDatabase.customers[0], evidenceItems }).current_snapshot.age).toBeUndefined()
-      expect(activeDatabase.profileChanges.filter((item) => item.customerId === 'CUS-SYNTH-1').length).toBe(3)
+      expect(activeDatabase.profileChanges.filter((item) => item.customerId === 'CUS-SYNTH-1').length).toBe(5)
       expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
       expect(activeDatabase.evidenceConflicts).toHaveLength(0)
       expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['客户在杭州工作'])
@@ -242,6 +244,8 @@ describe('stage 4 corrected Evidence materialization rules', () => {
 
       const materialized = materializeCustomerProfile({ customer: activeDatabase.customers[0], evidenceItems })
       expect(materialized.supplementaryItems.map((item) => item.statusLabel)).toEqual(['待核实'])
+      expect(materialized.sections.flatMap((section) => section.items).find((item) => item.label === '教育经历')).toMatchObject({ text: '金融专业', statusLabel: 'AI整理 · 未人工确认' })
+      expect(materialized.sections.flatMap((section) => section.items).find((item) => item.label === '情绪表达')).toMatchObject({ text: '表达比较克制', statusLabel: '导师观察 · 未人工确认' })
       expect(materialized.provisionalItems.some((item) => item.evidenceId === 'EVD-STAGE4-UNMAPPED')).toBe(false)
       expect(materialized.provisionalItems.map((item) => item.evidenceId)).toEqual(expect.arrayContaining(['EVD-STAGE4-OLD-NEED', 'EVD-STAGE4-HYPOTHESIS']))
       expect(materialized.provisionalItems.find((item) => item.evidenceId === 'EVD-STAGE4-HYPOTHESIS').statusLabel).toBe('AI推断 · 待验证')
