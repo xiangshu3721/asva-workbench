@@ -294,6 +294,39 @@ describe('stage 4 corrected Evidence materialization rules', () => {
     }
   })
 
+  it('clears the physical supplementary column when sensitive historical fallback was its last item', async () => {
+    const originalAuto = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      const sensitive = stage4Evidence({
+        id: 'EVD-STAGE4-RECONCILE-SENSITIVE',
+        fieldKey: null,
+        semanticKind: 'OTHER',
+        standardValue: '正在接受心理咨询',
+        displayText: '客户正在接受心理咨询',
+        sourceExcerpt: '客户正在接受心理咨询',
+        privacyLevel: 'SENSITIVE',
+        privacyMeta: { privacyLevel: 'SENSITIVE', categories: ['PSYCHOLOGICAL_HEALTH'], safetyFlags: [] },
+      })
+      seedStage4Source([sensitive])
+      activeDatabase.sourceRecords[0].processingStatus = 'COMPLETED'
+      activeDatabase.customers[0].supplementaryItems = [
+        { id: 'SUP-LEAKED', text: '客户正在接受心理咨询', source: 'AI_EXTRACTED', confirmed: false, status: 'PENDING_REVIEW', sourceRecordId: 'SRC-SYNTH-1', evidenceId: sensitive.id },
+      ]
+      const extractor = vi.fn(async () => { throw new Error('reconciliation must not re-extract sensitive data') })
+      const repository = setupRepository(extractor)
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { reconcileExistingEvidence: true })
+
+      expect(extractor).not.toHaveBeenCalled()
+      expect(activeDatabase.customers[0].supplementaryItems).toEqual([])
+      const customerRow = await getRecordMock(config.feishu.tables.customers, 'rec-customer-1')
+      expect(JSON.parse(customerRow.fields[customerField('customers', 'supplementary_info')])).toEqual([])
+      expect(activeDatabase._allEvidenceItems).toHaveLength(1)
+    } finally {
+      config.features.automaticProfileArchiving = originalAuto
+    }
+  })
+
   it('materializes an ordinary third-party fact only when the current customer subject is explicit', async () => {
     const previousAutomatic = config.features.automaticProfileArchiving
     const previousMode = config.features.automaticProfileArchivingMode
