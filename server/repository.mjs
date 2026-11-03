@@ -2901,6 +2901,14 @@ export class FeishuRepository {
             const timestamp = now()
             const combinedPrivacy = combinePrivacyContext(evidence, source)
             const evidenceMeta = evidence.privacyMeta && typeof evidence.privacyMeta === 'object' ? evidence.privacyMeta : {}
+            // A previous version could have copied sensitive unassigned Evidence
+            // into the broadly visible supplementary field. Targeted evidence
+            // reconciliation removes only that source-linked duplicate; Source
+            // and Evidence remain intact for permission-controlled review.
+            if (!isOrdinarySupplementaryEvidence(evidence) &&
+                ['SENSITIVE', 'HIGH_SENSITIVE'].includes(String(evidence.privacyLevel || evidenceMeta.privacyLevel || '').toUpperCase())) {
+              stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
+            }
             // A mixed source may contain one ordinary excerpt and one high
             // sensitivity excerpt. Use the explicit item classification for
             // profile promotion when available; the source-level floor still
