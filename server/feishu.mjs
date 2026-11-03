@@ -201,6 +201,21 @@ export function createFeishuGateway({
     } while (pageToken)
     return rows
   }
+  async function searchPaged(tableId, filter, { pageSize = 20 } = {}) {
+    const rows = []; let pageToken = ''
+    do {
+      const body = {
+        page_size: Math.max(1, Math.min(100, Number(pageSize) || 20)),
+        ...(filter ? { filter } : {}),
+        ...(pageToken ? { page_token: pageToken } : {}),
+      }
+      const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/search`, {
+        method: 'POST', body: JSON.stringify(body),
+      }, { operation: 'search_records', table: tableId, retry: true })
+      rows.push(...(data.items || [])); pageToken = data.has_more ? data.page_token || '' : ''
+    } while (pageToken)
+    return rows
+  }
   async function findExistingRecord(tableId, idempotency) {
     if (!tableId || !idempotency?.field || idempotency.value === undefined || idempotency.value === null) return null
     const rows = await listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId })
@@ -210,6 +225,7 @@ export function createFeishuGateway({
     request, getToken, providerStatus, metrics: () => ({ ...metrics }),
     findExistingRecord,
     listRecords: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${query}`, 'list_records', { table: tableId }),
+    searchRecords: (tableId, filter, options = {}) => searchPaged(tableId, filter, options),
     getRecord: async (tableId, recordId) => { const data = await request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${encodeURIComponent(recordId)}`, {}, { operation: 'get_record', table: tableId }); return data?.record || data },
     listFields: (tableId) => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields?${query}`, 'list_fields', { table: tableId }),
     listTables: () => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables?${query}`, 'list_tables'),
@@ -224,6 +240,7 @@ export function createFeishuGateway({
 const gateway = createFeishuGateway()
 export const feishuGateway = gateway
 export const listRecords = (tableId) => gateway.listRecords(tableId)
+export const searchRecords = (tableId, filter, options = {}) => gateway.searchRecords(tableId, filter, options)
 export const getRecord = (tableId, recordId) => gateway.getRecord(tableId, recordId)
 export const listFields = (tableId) => gateway.listFields(tableId)
 export const listTables = () => gateway.listTables()

@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { createGuardedLocalApi, createLocalApi } from './api'
 import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, CustomerDraftPreview, CustomerSalesUnderstandingV1, CustomerUnderstandingV1, Database, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountResult, ProfileDraft, ProfileMaterialization, ProfileUpdate, ProfileValue, Product, Staff, UnderstandingInsight } from './domain'
 import { createLocalRepository } from './repositories'
-import { clearPendingCustomerMutation, createHttpApi, createLocalAsyncApi, readPendingCustomerMutation, recoverCustomerFinalizeStatus, rememberPendingCustomerMutation, type BasicDashboard, type CustomerMutationResult, type CustomerProfileResponse, type CustomerSalesUnderstandingResponse, type CustomerUnderstandingResponse, type SafetyAssessmentResponse, type FeedbackDraftInput, type SourceRecord, type SourceSaveStatus, type SourceWorkspace, type WorkbenchApi } from './clientApi'
+import { clearPendingCustomerMutation, createHttpApi, createLocalAsyncApi, readPendingCustomerMutation, rememberPendingCustomerMutation, type BasicDashboard, type CustomerMutationResult, type CustomerProfileResponse, type CustomerSalesUnderstandingResponse, type CustomerUnderstandingResponse, type SafetyAssessmentResponse, type FeedbackDraftInput, type SourceRecord, type SourceSaveStatus, type SourceWorkspace, type WorkbenchApi } from './clientApi'
 import { assembleCustomerContext, type AiBrief, type AiCoreSummary } from './customer-ai'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { humanizeEvidenceType, humanizeLevel, humanizeProcessingStatus, humanizeStrategy, humanizeTiming, sanitizeUserVisibleText } from './presentationCopy'
@@ -219,7 +219,6 @@ function WorkbenchApp() {
   const selectedCustomerId = routeCustomerMatch ? decodeURIComponent(routeCustomerMatch[1]) : null
   const view = location.pathname.startsWith('/customers') ? 'customers' : location.pathname === '/me' ? 'me' : 'home'
   const [manualCustomerOpen, setManualCustomerOpen] = useState(false)
-  const autoArchiveInFlightRef = useRef(new Set<string>())
   const [revision, setRevision] = useState(0)
   const [database, setDatabase] = useState<Database | null>(() => {
     if (remoteBaseUrl || dataMode === 'production') return null
@@ -489,39 +488,6 @@ function WorkbenchApp() {
   const refreshCustomerSafetyAssessment = (customerId: string, force = false) => workbenchApi.refreshCustomerSafetyAssessment(activeStaff.id, customerId, force)
   const saveBrief = (customerId: string, brief: string) => workbenchApi.saveBrief(activeStaff.id, customerId, brief)
   const saveReferrer = (customerId: string, referrerName: string) => workbenchApi.updateCustomerReferrer(activeStaff.id, customerId, referrerName).then((saved) => { refresh(); return saved })
-  const kickoffCustomerExtract = (customerId: string) => {
-    if (!customerId || autoArchiveInFlightRef.current.has(customerId)) return
-    autoArchiveInFlightRef.current.add(customerId)
-    const extractStartedAt = performance.now()
-    void workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'extract' }).then(async (result) => {
-      logAppPerformance('CUSTOMER_AUTO_ARCHIVE_EXTRACT_MS', { duration_ms: Math.round(result.durationMs ?? performance.now() - extractStartedAt), phase: result.phase, status: result.status })
-      if (result.status === 'EXTRACT_READY') {
-        showCustomerSaveToast('客户已保存，AI资料提取完成，正在归档', 'success')
-        const finalizeStartedAt = performance.now()
-        try {
-          const finalized = await workbenchApi.autoArchiveCustomer(activeStaff.id, customerId, { stage: 'finalize' })
-          invalidateCustomerResources(customerId)
-          refresh()
-          logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_MS', { duration_ms: Math.round(finalized.durationMs ?? performance.now() - finalizeStartedAt), phase: finalized.phase, status: finalized.status, archive_outcome: finalized.archiveOutcome || '' })
-          if (finalized.status === 'COMPLETED' && finalized.readbackOk === true) showCustomerSaveToast('客户已保存，AI归档完成', 'success')
-          else if (finalized.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
-          else showCustomerSaveToast('客户已保存，AI归档未完成，可稍后查看', 'warning')
-        } catch {
-          const recovered = await recoverCustomerFinalizeStatus(() => workbenchApi.customerProfile(activeStaff.id, customerId))
-          invalidateCustomerResources(customerId)
-          refresh()
-          logAppPerformance('CUSTOMER_AUTO_ARCHIVE_FINALIZE_RECOVERY_MS', { duration_ms: Math.round(performance.now() - finalizeStartedAt), status: recovered.status })
-          if (recovered.status === 'COMPLETED') showCustomerSaveToast('客户已保存，AI归档完成', 'success')
-          else if (recovered.status === 'REVIEW_REQUIRED') showCustomerSaveToast('客户已保存，部分资料待核实', 'warning')
-          else if (recovered.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI归档仍在处理中，请稍后刷新查看', 'success')
-          else if (recovered.status === 'FAILED') showCustomerSaveToast('客户已保存，AI归档未完成，可稍后查看', 'warning')
-          else showCustomerSaveToast('客户已保存，暂未确认AI归档结果，请稍后刷新查看', 'warning')
-        }
-      } else if (result.status === 'PROCESSING') showCustomerSaveToast('客户已保存，AI资料提取仍在进行中', 'success')
-      else if (result.status === 'DISABLED' || result.status === 'NOT_REQUIRED') showCustomerSaveToast('客户已保存，AI整理未启动', 'success')
-      else showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')
-    }).catch(() => showCustomerSaveToast('客户已保存，AI整理失败，可稍后重试', 'warning')).finally(() => autoArchiveInFlightRef.current.delete(customerId))
-  }
   const saveManualCustomer = async (input: ManualCustomerInput) => {
     const saveStartedAt = performance.now()
     rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', kind: 'CREATE', startedAt: new Date().toISOString() })
@@ -535,7 +501,6 @@ function WorkbenchApp() {
     else showCustomerSaveToast('客户已保存', 'success')
     setManualCustomerOpen(false)
     openCustomer(saved.createdCustomerId)
-    if (saved.automaticProfile?.status === 'PENDING') kickoffCustomerExtract(saved.createdCustomerId)
   }
   const previewManualCustomer = (input: ManualCustomerInput): Promise<CustomerDraftPreview> => workbenchApi.previewCustomer(activeStaff.id, input)
   const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput) => { const saveStartedAt = performance.now(); rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() }); let saved: CustomerMutationResult; try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) { if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId); throw error }; clearPendingCustomerMutation(input.operationId); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success'); else showCustomerSaveToast('客户已保存', 'success'); setManualCustomerOpen(false); openCustomer(customerId) }
@@ -548,7 +513,7 @@ function WorkbenchApp() {
   const resolveConflict = (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => workbenchApi.resolveConflict(activeStaff.id, conflictId, resolution).then(() => { refresh() })
   const overrideServiceNecessity = (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => workbenchApi.overrideServiceNecessity(activeStaff.id, input)
 
-  const customerPage = <CustomersPage key={`${activeStaff.id}:${staffSessionIdentity(activeStaff.id)}`} staff={activeStaff} database={database || emptyDirectoryDatabase(activeStaff)} directoryLoading={!database} dataReady={!identityLoading} directoryError={loadError} onDirectoryRetry={() => setRevision((value) => value + 1)} canSeeAll={canSeeAll} selectedCustomer={identityLoading ? undefined : selectedCustomer} resourceCache={dataCache} profileRefreshRevision={revision} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSalesUnderstanding={getCustomerSalesUnderstanding} onRefreshSalesUnderstanding={refreshCustomerSalesUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onLoadCustomerProfile={loadCustomerProfile} onSourceWorkspace={sourceWorkspace} onSourceStatus={sourceStatus} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onOverrideServiceNecessity={overrideServiceNecessity} onAddCustomer={() => setManualCustomerOpen(true)} onAutoArchiveCustomer={kickoffCustomerExtract} />
+  const customerPage = <CustomersPage key={`${activeStaff.id}:${staffSessionIdentity(activeStaff.id)}`} staff={activeStaff} database={database || emptyDirectoryDatabase(activeStaff)} directoryLoading={!database} dataReady={!identityLoading} directoryError={loadError} onDirectoryRetry={() => setRevision((value) => value + 1)} canSeeAll={canSeeAll} selectedCustomer={identityLoading ? undefined : selectedCustomer} resourceCache={dataCache} profileRefreshRevision={revision} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSalesUnderstanding={getCustomerSalesUnderstanding} onRefreshSalesUnderstanding={refreshCustomerSalesUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onLoadCustomerProfile={loadCustomerProfile} onSourceWorkspace={sourceWorkspace} onSourceStatus={sourceStatus} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onOverrideServiceNecessity={overrideServiceNecessity} onAddCustomer={() => setManualCustomerOpen(true)} onAutoArchiveCustomer={() => {}} />
   const homePage = <HomePage staff={activeStaff} api={workbenchApi} cache={dataCache} cacheRevision={revision} dataReady={!identityLoading} onCustomers={(query = '') => navigate(`/customers${query}`)} />
   const mePage = <MePage staff={activeStaff} panel={mePanel} onPanel={setMePanel} api={workbenchApi} cache={dataCache} dataReady={!identityLoading} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); clearSessionSnapshots(); clearAssistantHistory(); dataCache.invalidatePrefix(''); setCurrentStaff(null); setDatabase(null); setMePanel('account'); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) }} />
   return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{customerSaveToast && <div className={`customer-save-toast customer-save-toast-${customerSaveToast.tone}`} role="status" aria-live="polite">{customerSaveToast.text}</div>}<Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database?.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && database && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant key={staffSessionIdentity(activeStaff.id)} api={workbenchApi} staffId={activeStaff.id} storageScope={staffSessionIdentity(activeStaff.id)} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
@@ -976,7 +941,8 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const key = `${customer.id}:${pending?.contentHash || ''}`
     if (pending?.reason !== 'CUSTOMER_SAVE' || !customer.notes?.trim() || customer.automaticProfileAutoResume === false || autoResumeKeyRef.current === key) return
     autoResumeKeyRef.current = key
-    props.onAutoArchiveCustomer(customer.id)
+    // Archive work is deliberately owned by the CloudBase timer. Reopening a
+    // customer detail can only render persisted state; it must never write.
   }, [customer.id, customer.notes, customer.automaticProfilePending?.contentHash, customer.automaticProfilePending?.reason, customer.automaticProfileAutoResume, props.onAutoArchiveCustomer])
   const appointments = database.appointments.filter((item) => item.customerId === customer.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const sessions = database.sessions.filter((item) => item.customerId === customer.id).sort((a, b) => b.date.localeCompare(a.date))

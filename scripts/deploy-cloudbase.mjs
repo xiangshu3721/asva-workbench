@@ -10,6 +10,10 @@ const functionName = 'asva-api'
 const servicePath = 'asva-api'
 const serviceUrl = 'https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.com/asva-api'
 const functionDir = path.join(root, 'cloudbase/functions/asva-api')
+const workerName = 'asva-ai-archive'
+const workerDir = path.join(root, 'cloudbase/functions/asva-ai-archive')
+const workerTriggerName = 'asva-auto-archive-every-minute'
+const workerCron = '0 */1 * * * * *'
 
 export function parseEnv(text) {
   const values = {}
@@ -180,7 +184,13 @@ export async function deployProduction() {
       functionRoot: functionDir,
       functions: [{
         name: functionName,
-        type: 'HTTP',
+        handler: 'index.main',
+        runtime: 'Nodejs20.19',
+        timeout: 60,
+        memorySize: 256,
+        envVariables,
+      }, {
+        name: workerName,
         handler: 'index.main',
         runtime: 'Nodejs20.19',
         timeout: 60,
@@ -198,6 +208,18 @@ export async function deployProduction() {
     if (hasExistingTarget) functionArgs.push('--force')
     functionArgs.push('--json')
     await run(tcb, functionArgs, tempDir)
+
+    const hasExistingWorker = (functions.data || []).some((item) => item.name === workerName)
+    const workerArgs = ['fn', 'deploy', workerName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
+    if (hasExistingWorker) workerArgs.push('--force')
+    workerArgs.push('--json')
+    await run(tcb, workerArgs, tempDir)
+    const workerDetailOutput = await runCapture(tcb, ['fn', 'detail', workerName, '--env-id', envId, '--json'], root)
+    const workerDetailJsonStart = workerDetailOutput.indexOf('{')
+    const workerDetail = workerDetailJsonStart >= 0 ? JSON.parse(workerDetailOutput.slice(workerDetailJsonStart)) : { data: {} }
+    const workerTriggers = workerDetail.data?.Triggers || []
+    const hasWorkerTrigger = workerTriggers.some((trigger) => trigger.TriggerName === workerTriggerName || trigger.triggerName === workerTriggerName || trigger.Name === workerTriggerName || trigger.name === workerTriggerName)
+    if (!hasWorkerTrigger) await run(tcb, ['fn', 'trigger', 'create', workerName, '--trigger-name', workerTriggerName, '--cron', workerCron, '--json'], tempDir)
 
     const servicesOutput = await runCapture(tcb, ['service', 'list', '--env-id', envId, '--json'], root)
     const servicesJsonStart = servicesOutput.indexOf('{')
