@@ -512,7 +512,7 @@ function profileMaterializationEvidence({ evidenceItems = [], sourceRecords = []
   const isAssignedMentor = role !== 'MENTOR' || customer?.mentorId === actor?.id
   return evidenceItems.filter((evidence) => {
     if (evidence.customerId !== customer?.id) return false
-    if (evidence.contentSource === 'THIRD_PARTY_REPORTED') return false
+    if (evidence.contentSource === 'THIRD_PARTY_REPORTED' && !evidence.fieldKey) return false
     const source = sourceById.get(evidence.sourceId)
     const privacy = combinePrivacyContext(evidence, source)
     const policy = resolvePrivacyPolicy({ ...privacy, currentRole: role, isAssignedMentor })
