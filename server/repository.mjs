@@ -263,6 +263,23 @@ function classifyStage4ArchivingOutcome({
   return { status: 'REVIEW_REQUIRED', outcome: 'NO_ARCHIVABLE_FACTS', errorCode: 'NO_ARCHIVABLE_FACTS' }
 }
 
+async function removeCustomerSupplementaryItemsByEvidence(database, customerId, evidenceIds, operatorId, { suppressLegacyAppointmentMirrors = false } = {}) {
+  const customerRecord = database.customers.find((item) => item.id === customerId)
+  const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
+  const removable = new Set(Array.isArray(evidenceIds) ? evidenceIds.filter(Boolean) : [])
+  if (!customerRecord || !row || !removable.size) return 0
+  const items = Array.isArray(customerRecord.supplementaryItems) ? customerRecord.supplementaryItems : []
+  const retained = items.filter((item) => !removable.has(item.evidenceId))
+  const removedCount = items.length - retained.length
+  if (!removedCount) return 0
+  customerRecord.supplementaryItems = retained
+  customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
+  customerRecord.profileUpdatedAt = now()
+  customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
+  await updateRecord(config.feishu.tables.customers, row.record_id, profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors }))
+  return removedCount
+}
+
 function stage4CustomerReadback(customer, database, customerId, sourceId, expectedProfileWrites = [], expectedSupplementaryEvidence = []) {
   if (!customer || customer.id !== customerId) return { ok: false, physicalFieldWriteCount: 0, supplementaryWriteCount: 0, errorCode: 'CUSTOMER_READBACK_MISSING' }
   const evidenceIds = new Set(database.evidenceItems.filter((item) => item.sourceId === sourceId && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).map((item) => item.id))
@@ -791,7 +808,7 @@ async function appendCustomerSupplementaryItems(database, customerId, evidenceIt
   for (const evidence of evidenceItems) {
     if (!evidence?.displayText) continue
     const itemId = stableId('SUP', `${customerId}:${evidence.sourceId || ''}:${evidence.id || evidence.displayText}`)
-    if (items.some((item) => item.id === itemId || (item.text === evidence.displayText && item.sourceId === evidence.sourceId)) || additions.some((item) => item.id === itemId)) continue
+    if (items.some((item) => item.id === itemId || item.evidenceId === evidence.id || (item.text === evidence.displayText && item.sourceId === evidence.sourceId)) || additions.some((item) => item.id === itemId || item.evidenceId === evidence.id)) continue
     additions.push({
       id: itemId,
       text: evidence.displayText,
@@ -2630,15 +2647,15 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
-  async processSource(actorId, sourceId, { force = false, stage = 'full' } = {}) {
+  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false } = {}) {
     const lockKey = `${sourceId}:${stage}`
     const inFlight = this.sourceProcessingLocks.get(lockKey)
     if (inFlight) return inFlight
-    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage })
+    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence })
     this.sourceProcessingLocks.set(lockKey, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
-  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full' } = {}) {
+  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
@@ -2665,10 +2682,10 @@ export class FeishuRepository {
     // confuse it with a genuine review-required outcome.
     const hasUnactivatedEvidenceBatch = source.processingStatus === 'REVIEW_REQUIRED' && existingEvidence.length > 0 && !source.lastBatchId
     if (!force && stage === 'extract' && ['EXTRACT_READY', 'COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
-    if (!force && stage === 'full' && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch) return this.sourceDetail(actorId, sourceId)
+    if (!force && stage === 'full' && ['COMPLETED', 'REVIEW_REQUIRED'].includes(source.processingStatus) && existingEvidence.length && !hasUnactivatedEvidenceBatch && !reconcileExistingEvidence) return this.sourceDetail(actorId, sourceId)
     if (!force && source.processingStatus === 'PROCESSING' && !isStaleProcessing(source)) return this.sourceDetail(actorId, sourceId)
     const processingVersion = Number(source.processingVersion || 1) + 1
-    const resumeExistingEvidence = !force && existingEvidence.length > 0 && ['EXTRACT_READY', 'PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus)
+    const resumeExistingEvidence = (reconcileExistingEvidence || (!force && ['EXTRACT_READY', 'PROCESSING', 'FAILED', 'REVIEW_REQUIRED'].includes(source.processingStatus))) && existingEvidence.length > 0
     // A failed automatic run may have committed its Evidence before the
     // post-write readback returned. Continue that exact batch instead of
     // calling the model again or creating a second set of Evidence.
@@ -2852,10 +2869,11 @@ export class FeishuRepository {
       const allEvidence = dedupeEvidence(refreshed.evidenceItems.filter((item) => item.sourceId === sourceId))
       if (!customerRecord) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
       const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
-      const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && wasExtractReady
+      const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && (wasExtractReady || reconcileExistingEvidence)
       const derivedErrors = []
       const stage4ProfileWrites = []
       const stage4SupplementaryEvidence = []
+      const stage4MappedEvidenceForSupplementaryRemoval = new Set()
       const archivingCounts = {
         mappedEvidenceCount: 0,
         mappedNoChangeCount: 0,
@@ -2883,8 +2901,12 @@ export class FeishuRepository {
             // Evidence/supplementary_info, but never materializes them into
             // the legacy Customers appointment columns.
             if (!evidence.fieldKey || blockedField || isAiHypothesis || isThirdParty || !isStage4PhysicalCandidate) {
-              if (evidence.fieldKey) archivingCounts.mappedNoChangeCount += 1
-              if (privacyPolicy.canPromoteToProfile) stage4SupplementaryEvidence.push(evidence)
+              if (evidence.fieldKey) {
+                archivingCounts.unresolvedMappedEvidenceCount += 1
+                if (privacyPolicy.canPromoteToProfile && PROFILE_FIELD_KEYS.has(evidence.fieldKey)) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
+              } else if (privacyPolicy.canPromoteToProfile) {
+                stage4SupplementaryEvidence.push(evidence)
+              }
               continue
             }
 
@@ -2923,8 +2945,8 @@ export class FeishuRepository {
               continue
             }
             if (staleIncoming || !validCustomerFact || !privacyPolicy.canPromoteToProfile) {
-              if (privacyPolicy.canPromoteToProfile) stage4SupplementaryEvidence.push(evidence)
-              archivingCounts.mappedNoChangeCount += 1
+              archivingCounts.unresolvedMappedEvidenceCount += 1
+              if (privacyPolicy.canPromoteToProfile) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
               continue
             }
             const profileSource = evidence.contentSource === 'MENTOR_OBSERVATION' || evidence.informationNature === 'BEHAVIOR_OBSERVATION' ? 'MENTOR_OBSERVATION' : 'AI_EXTRACTED'
@@ -3052,6 +3074,14 @@ export class FeishuRepository {
       }
       let debugBeforeStatus = await this.load()
       if (stage4Finalize) {
+        if (stage4MappedEvidenceForSupplementaryRemoval.size) {
+          try {
+            await removeCustomerSupplementaryItemsByEvidence(database, source.customerId, [...stage4MappedEvidenceForSupplementaryRemoval], actorId, { suppressLegacyAppointmentMirrors: true })
+            debugBeforeStatus = await this.load({ force: true })
+          } catch (error) {
+            derivedErrors.push(processingErrorCode(error))
+          }
+        }
         const targetCustomer = debugBeforeStatus.customers.find((item) => item.id === source.customerId)
         try {
           const targetRecordId = targetCustomer?._recordId || database.customers.find((item) => item.id === source.customerId)?._recordId

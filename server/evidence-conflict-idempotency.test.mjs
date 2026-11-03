@@ -223,7 +223,7 @@ describe('stage 4 corrected Evidence materialization rules', () => {
       const repository = setupRepository(async () => { throw new Error('EXTRACT_READY must not call DeepSeek') })
       const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
 
-      expect(result.source.processingStatus).toBe('COMPLETED')
+      expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
       expect(activeDatabase.customers[0].profileFields).toMatchObject({ age: 35, city: '深圳', job_status: '在职' })
       expect(activeDatabase.customers[0].need).toBe('旧需求')
       expect(activeDatabase.customers[0].helpExpectation).toBe('旧期待')
@@ -234,23 +234,54 @@ describe('stage 4 corrected Evidence materialization rules', () => {
       expect(activeDatabase.profileChanges.filter((item) => item.customerId === 'CUS-SYNTH-1').length).toBe(3)
       expect(activeDatabase.profileUpdateProposals).toHaveLength(0)
       expect(activeDatabase.evidenceConflicts).toHaveLength(0)
-      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(expect.arrayContaining(['客户说最近工作压力很大', '客户在杭州工作', 'AI推断客户可能想创业']))
-      expect(activeDatabase.customers[0].supplementaryItems.find((item) => item.evidenceId === 'EVD-STAGE4-HYPOTHESIS').source).toBe('AI_INFERENCE')
+      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['客户在杭州工作'])
+      expect(activeDatabase.customers[0].supplementaryItems.some((item) => item.evidenceId === 'EVD-STAGE4-OLD-NEED')).toBe(false)
+      expect(activeDatabase.customers[0].supplementaryItems.some((item) => item.evidenceId === 'EVD-STAGE4-HYPOTHESIS')).toBe(false)
       expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers)).toHaveLength(2)
       expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers).every(([, , fields]) => !['当前困扰', '希望获得帮助', '当前目标'].some((key) => Object.prototype.hasOwnProperty.call(fields, key)))).toBe(true)
 
       const materialized = materializeCustomerProfile({ customer: activeDatabase.customers[0], evidenceItems })
-      expect(materialized.supplementaryItems.map((item) => item.statusLabel)).toEqual(expect.arrayContaining(['待核实', 'AI推断 · 待验证']))
+      expect(materialized.supplementaryItems.map((item) => item.statusLabel)).toEqual(['待核实'])
       expect(materialized.provisionalItems.some((item) => item.evidenceId === 'EVD-STAGE4-UNMAPPED')).toBe(false)
+      expect(materialized.provisionalItems.map((item) => item.evidenceId)).toEqual(expect.arrayContaining(['EVD-STAGE4-OLD-NEED', 'EVD-STAGE4-HYPOTHESIS']))
+      expect(materialized.provisionalItems.find((item) => item.evidenceId === 'EVD-STAGE4-HYPOTHESIS').statusLabel).toBe('AI推断 · 待验证')
 
       const writesAfterFirst = createRecordMock.mock.calls.length
       const retry = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
-      expect(retry.source.processingStatus).toBe('COMPLETED')
+      expect(retry.source.processingStatus).toBe('REVIEW_REQUIRED')
       expect(createRecordMock.mock.calls.length).toBe(writesAfterFirst)
-      expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(3)
+      expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(1)
     } finally {
       config.features.automaticProfileArchiving = originalAuto
       config.features.automaticProfileArchivingMode = originalMode
+    }
+  })
+
+  it('re-materializes a completed source from existing Evidence without extraction and removes mapped duplicate supplements', async () => {
+    const previousAutomatic = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      const evidenceItems = [
+        stage4Evidence({ id: 'EVD-STAGE4-RECONCILE-GENDER', fieldKey: 'gender', standardValue: '女性', displayText: '客户性别为女性', sourceExcerpt: '性别女性', contentSource: 'THIRD_PARTY_REPORTED', informationNature: 'REPORTED_SPEECH' }),
+        stage4Evidence({ id: 'EVD-STAGE4-RECONCILE-OTHER', fieldKey: null, semanticKind: 'OTHER', standardValue: '曾参加活动', displayText: '客户曾参加活动', sourceExcerpt: '曾参加活动' }),
+      ]
+      seedStage4Source(evidenceItems)
+      activeDatabase.sourceRecords[0].processingStatus = 'COMPLETED'
+      activeDatabase.customers[0].supplementaryItems = [
+        { id: 'SUP-RECONCILE-GENDER', text: '客户性别为女性', source: 'THIRD_PARTY_REPORTED', confirmed: false, status: 'PENDING_REVIEW', sourceRecordId: 'SRC-SYNTH-1', evidenceId: 'EVD-STAGE4-RECONCILE-GENDER' },
+        { id: 'SUP-RECONCILE-OTHER', text: '客户曾参加活动', source: 'AI_EXTRACTED', confirmed: false, status: 'PENDING_REVIEW', sourceRecordId: 'SRC-SYNTH-1', evidenceId: 'EVD-STAGE4-RECONCILE-OTHER' },
+      ]
+      const extractor = vi.fn(async () => { throw new Error('completed reconciliation must not call DeepSeek') })
+      const repository = setupRepository(extractor)
+      const result = await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { reconcileExistingEvidence: true })
+
+      expect(extractor).not.toHaveBeenCalled()
+      expect(result.source.processingStatus).toBe('REVIEW_REQUIRED')
+      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.evidenceId)).toEqual(['EVD-STAGE4-RECONCILE-OTHER'])
+      expect(activeDatabase._allEvidenceItems).toHaveLength(2)
+      expect(activeDatabase.customers[0].profileFields.gender).toBeUndefined()
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomatic
     }
   })
 
