@@ -177,6 +177,32 @@ describe('structured archive completion criteria', () => {
     expect(finalize.source.processingStatus).not.toBe('EXTRACT_READY')
     expect(extractor).toHaveBeenCalledTimes(1)
   })
+
+  it('routes an unkeyed current city to Customers and keeps historical occupation supplementary', async () => {
+    const previousAutomatic = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      activeDatabase.sourceRecords[0].rawText = '客户现居广州，过去从事教练技术咨询。'
+      const repository = setupRepository(async () => [
+        { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: '', value: '广州', display_text: '客户现居广州', source_excerpt: '客户现居广州', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'occupation', value: '教练技术咨询', display_text: '客户过去从事教练技术咨询', source_excerpt: '过去从事教练技术咨询', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+      ])
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+      expect(activeDatabase.customers[0].profileFields.city).toBe('广州')
+      expect(activeDatabase.customers[0].profileFields.occupation).toBeUndefined()
+      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['客户过去从事教练技术咨询'])
+      expect(activeDatabase.customers[0].supplementaryItems[0]).toMatchObject({ verificationStatus: 'SOURCE_SUPPORTED', sourceRecordId: 'SRC-SYNTH-1' })
+
+      const writesBeforeRetry = createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+      expect(activeDatabase.customers[0].profileFields.city).toBe('广州')
+      expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(1)
+      expect(createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length).toBe(writesBeforeRetry)
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomatic
+    }
+  })
 })
 
 describe('stage 4 corrected Evidence materialization rules', () => {
@@ -248,7 +274,7 @@ describe('stage 4 corrected Evidence materialization rules', () => {
       expect(updateRecordMock.mock.calls.filter(([tableId]) => tableId === config.feishu.tables.customers).every(([, , fields]) => !['当前困扰', '希望获得帮助', '当前目标'].some((key) => Object.prototype.hasOwnProperty.call(fields, key)))).toBe(true)
 
       const materialized = materializeCustomerProfile({ customer: activeDatabase.customers[0], evidenceItems })
-      expect(materialized.supplementaryItems.map((item) => item.statusLabel)).toEqual(['待核实'])
+      expect(materialized.supplementaryItems.map((item) => item.statusLabel)).toEqual(['AI提取'])
       expect(materialized.sections.flatMap((section) => section.items).find((item) => item.label === '教育经历')).toMatchObject({ text: '金融专业', statusLabel: '' })
       expect(materialized.sections.flatMap((section) => section.items).find((item) => item.label === '情绪表达')).toMatchObject({ text: '表达比较克制', statusLabel: '' })
       expect(materialized.provisionalItems.some((item) => item.evidenceId === 'EVD-STAGE4-UNMAPPED')).toBe(false)
@@ -773,7 +799,7 @@ describe('R036 source-scoped evidence replacement and conflict confirmation', ()
       await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
 
       expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(1)
-      expect(activeDatabase.customers[0].supplementaryItems[0]).toMatchObject({ text: '客户希望把生活节奏放慢', confirmed: false, status: 'PENDING_REVIEW' })
+      expect(activeDatabase.customers[0].supplementaryItems[0]).toMatchObject({ text: '客户希望把生活节奏放慢', confirmed: false, status: 'PENDING_REVIEW', reviewStatus: 'PENDING_REVIEW', verificationStatus: 'SOURCE_SUPPORTED' })
       expect(activeDatabase.customers[0].supplementaryItems.some((item) => /暴力|心理咨询/.test(item.text))).toBe(false)
       expect(activeDatabase._allEvidenceItems.some((item) => item.privacyLevel === 'HIGH_SENSITIVE' && item.displayText.includes('家庭暴力'))).toBe(true)
       expect(activeDatabase._allEvidenceItems.some((item) => item.privacyLevel === 'SENSITIVE' && item.displayText.includes('心理咨询'))).toBe(true)

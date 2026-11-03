@@ -166,7 +166,7 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.provisionalItems.find((item) => item.text === '近期睡眠有所改善').evidenceIds).toEqual(['EVD-1', 'EVD-2'])
   })
 
-  it('shows persisted fallback information as pending instead of dropping it', () => {
+  it('shows source-backed AI fallback information as extracted instead of pending', () => {
     const result = materializeCustomerProfile({
       customer: {
         profileFields: {},
@@ -176,8 +176,23 @@ describe('CustomerProfileRenderer materialization', () => {
       evidenceItems: [],
     })
     expect(result.supplementaryItems).toHaveLength(1)
-    expect(result.supplementaryItems[0]).toMatchObject({ label: '客户补充信息', statusLabel: '待核实' })
+    expect(result.supplementaryItems[0]).toMatchObject({ label: '客户补充信息', statusLabel: 'AI提取' })
     expect(result.sections.find((section) => section.title === '客户补充信息')?.items[0].text).toContain('希望逐步尝试')
+  })
+
+  it('labels inference and human verification separately for supplementary information', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        profileFields: {},
+        supplementaryItems: [
+          { id: 'SUP-AI', text: '客户可能回避冲突', source: 'AI_INFERENCE', confirmed: false, informationNature: 'AI_INFERENCE' },
+          { id: 'SUP-HUMAN', text: '客户已确认的补充说明', source: 'AI_EXTRACTED', confirmed: true },
+          { id: 'SUP-THIRD', text: '导师转述的补充信息', source: 'THIRD_PARTY_REPORTED', confirmed: false },
+        ],
+      },
+      evidenceItems: [],
+    })
+    expect(result.supplementaryItems.map((item) => item.statusLabel)).toEqual(['待确认', '已确认', '待确认'])
   })
 
   it('keeps an automatically extracted field visible as pending with its source basis', () => {

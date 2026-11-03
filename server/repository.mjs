@@ -315,7 +315,7 @@ function parseSupplementaryField(value) {
 }
 
 function serializeSupplementaryField(items) {
-  return JSON.stringify((Array.isArray(items) ? items : []).filter((item) => item && text(item.text)).map((item) => ({ id: item.id || '', text: text(item.text), source: item.source || 'AI_EXTRACTED', confirmed: item.confirmed === true, status: item.status || 'PENDING_REVIEW', confidence: item.confidence ?? null, sourceRecordId: item.sourceRecordId || '', evidenceId: item.evidenceId || '', updatedAt: item.updatedAt || '', operatorId: item.operatorId || '' })))
+  return JSON.stringify((Array.isArray(items) ? items : []).filter((item) => item && text(item.text)).map((item) => ({ id: item.id || '', text: text(item.text), source: item.source || 'AI_EXTRACTED', confirmed: item.confirmed === true, status: item.status || 'PENDING_REVIEW', reviewStatus: item.reviewStatus || '', verificationStatus: item.verificationStatus || 'UNKNOWN', informationNature: item.informationNature || '', evidenceType: item.evidenceType || '', contentSource: item.contentSource || '', confidence: item.confidence ?? null, sourceRecordId: item.sourceRecordId || '', evidenceId: item.evidenceId || '', updatedAt: item.updatedAt || '', operatorId: item.operatorId || '' })))
 }
 
 function mergeSupplementaryItems(fieldItems, metaItems) {
@@ -831,6 +831,11 @@ async function appendCustomerSupplementaryItems(database, customerId, evidenceIt
       confidence: evidence.confidence,
       confirmed: false,
       status: 'PENDING_REVIEW',
+      reviewStatus: evidence.reviewStatus || 'PENDING_REVIEW',
+      verificationStatus: evidence.verificationStatus || 'UNKNOWN',
+      informationNature: evidence.informationNature || '',
+      evidenceType: evidence.evidenceType || '',
+      contentSource: evidence.contentSource || '',
       sourceRecordId: evidence.sourceId || '',
       evidenceId: evidence.id || '',
       updatedAt: now(),

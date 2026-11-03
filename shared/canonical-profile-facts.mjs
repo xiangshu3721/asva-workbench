@@ -7,7 +7,7 @@ const CITY_WORDS = /北京|上海|天津|重庆|深圳|广州|杭州|南京|苏�
 const CURRENT_WORDS = /目前|现在|当前|现居|居住|住在|长期住|搬到|所在城市|生活在|定居/
 const RESIDENCE_CURRENT_WORDS = /现居|居住|住在|生活在|定居|搬到|所在城市|(?:在|于)[^，。；]{0,8}(?:生活|居住|定居)/
 const FUTURE_WORDS = /计划|打算|准备|考虑|未来|以后|将来|明年|下个月|之后|后面|想去|想搬|想做|想从事|希望.*(?:去|搬|生活|居住|辞职|成为|从事)/
-const HISTORY_WORDS = /曾经|以前|原来|三年前|几年前|过去|历史上|曾在|曾住|离开.*(?:之前|以后)?/
+const HISTORY_WORDS = /曾经|以前|原来|三年前|几年前|过去|历史上|曾在|曾住|曾(?=失业|工作|从事|居住|住在|在)|离开.*(?:之前|以后)?/
 const RESIDENCE_STATE_WORDS = /一个人|独居|同住|合租|和父母住|和家人住|居住状态|生活状态|居住比较稳定/
 const EMPLOYMENT_CURRENT_WORDS = /目前|现在|当前|已经|已从|离职|在职|自由职业|失业|工作中/
 const GOAL_FIELDS = new Set(['career_goal', 'relationship_goal', 'current_goal', 'current_expectation'])
@@ -83,6 +83,16 @@ function isResidenceStateOnly(value, quote) {
   return RESIDENCE_STATE_WORDS.test(`${valueText(value)} ${quote}`) && !CITY_WORDS.test(valueText(value))
 }
 
+function inferUnkeyedCanonicalField({ value = '', sourceExcerpt = '' } = {}) {
+  const candidate = valueText(value)
+  const quote = text(sourceExcerpt)
+  if (!candidate || !quote || !quote.includes(candidate)) return ''
+  if (/性别|男生|女生|男性|女性/.test(quote) && /男|女/.test(candidate)) return 'gender'
+  if (CITY_WORDS.test(candidate) && RESIDENCE_CURRENT_WORDS.test(quote) && !HISTORY_WORDS.test(quote) && !FUTURE_WORDS.test(quote)) return 'current_city'
+  if (/(?:当前|目前|现在|现任).{0,8}(?:职业|工作|从事|职位|岗位)|(?:当前|目前|现在).{0,8}(?:做|负责)/.test(quote) && !HISTORY_WORDS.test(quote) && !FUTURE_WORDS.test(quote)) return 'occupation'
+  return ''
+}
+
 export function resolveCanonicalField({ fieldKey = '', value = '', sourceExcerpt = '', displayText = '' } = {}) {
   const rawField = text(fieldKey).toLowerCase()
   // Only the original excerpt is evidence. A model-generated display label
@@ -92,17 +102,19 @@ export function resolveCanonicalField({ fieldKey = '', value = '', sourceExcerpt
   const canonical = rawField === 'living_status' && isCityLike(value, quote)
     ? 'current_city'
     : ALIAS_TO_CANONICAL.get(rawField)
-  if (!canonical) return { canonicalFieldKey: 'UNKNOWN', storageFieldKey: null, reason: '未找到现有档案字段映射' }
-  if (canonical === 'occupation' && nearby(quote, FUTURE_WORDS, value) && !nearby(quote, CURRENT_WORDS, value)) {
+  const inferredCanonical = canonical || inferUnkeyedCanonicalField({ value, sourceExcerpt: quote })
+  if (!inferredCanonical) return { canonicalFieldKey: 'UNKNOWN', storageFieldKey: null, reason: '未找到现有档案字段映射' }
+  const resolvedCanonical = inferredCanonical
+  if (resolvedCanonical === 'occupation' && nearby(quote, FUTURE_WORDS, value) && !nearby(quote, CURRENT_WORDS, value)) {
     return { canonicalFieldKey: 'career_goal', storageFieldKey: 'career_goal', reason: '未来职业意向归入职业目标而不是当前职业' }
   }
-  if (canonical === 'current_city') {
+  if (resolvedCanonical === 'current_city') {
     if (isResidenceStateOnly(value, quote)) {
       return { canonicalFieldKey: 'living_status', storageFieldKey: 'living_status', reason: '原文只表达居住状态' }
     }
     if (!isCityLike(value, quote)) return { canonicalFieldKey: 'UNKNOWN', storageFieldKey: null, reason: '城市字段缺少城市或居住地点语义' }
   }
-  return { canonicalFieldKey: canonical, storageFieldKey: FIELD_REGISTRY[canonical].storageFieldKey, reason: `归一到现有字段 ${FIELD_REGISTRY[canonical].storageFieldKey}` }
+  return { canonicalFieldKey: resolvedCanonical, storageFieldKey: FIELD_REGISTRY[resolvedCanonical].storageFieldKey, reason: `归一到现有字段 ${FIELD_REGISTRY[resolvedCanonical].storageFieldKey}` }
 }
 
 export function classifyTemporalFact({ fieldKey = '', value = '', sourceExcerpt = '', semanticKind = '' } = {}) {
@@ -155,8 +167,11 @@ export function normalizeCanonicalFact({ fieldKey = '', value = '', sourceExcerp
   const temporalType = classifyTemporalFact({ fieldKey: resolved.canonicalFieldKey, value, sourceExcerpt, semanticKind })
   const grounded = canonicalValueMatchesQuote(resolved.canonicalFieldKey, value, sourceExcerpt)
   const effectiveSemanticKind = temporalType === 'CURRENT' ? (resolved.storageFieldKey ? 'CURRENT_STATE' : semanticKind) : 'EVENT'
+  const isCurrentSnapshot = ['current_city', 'city', 'occupation', 'employment_status', 'job_status'].includes(resolved.canonicalFieldKey) || ['city', 'occupation', 'job_status'].includes(resolved.storageFieldKey)
+  const storageFieldKey = isCurrentSnapshot && temporalType !== 'CURRENT' ? null : resolved.storageFieldKey
   return {
     ...resolved,
+    storageFieldKey,
     canonicalValue: value,
     temporalType,
     grounded,
