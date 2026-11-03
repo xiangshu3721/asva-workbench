@@ -799,6 +799,15 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
   return { customerRecord, writeResult, changes: persistedChanges }
 }
 
+// Supplementary information is an ordinary, broadly visible Customers field.
+// Never put SENSITIVE / HIGH_SENSITIVE Evidence in it, even when the
+// generic privacy policy allows promotion of some SENSITIVE profile facts.
+function isOrdinarySupplementaryEvidence(evidence) {
+  const evidenceLevel = String(evidence?.privacyLevel || '').toUpperCase()
+  const itemLevel = String(evidence?.privacyMeta?.privacyLevel || evidenceLevel).toUpperCase()
+  return evidenceLevel === 'NORMAL' && itemLevel === 'NORMAL'
+}
+
 async function appendCustomerSupplementaryItems(database, customerId, evidenceItems, operatorId, { suppressLegacyAppointmentMirrors = false } = {}) {
   const customerRecord = database.customers.find((item) => item.id === customerId)
   const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
@@ -806,7 +815,7 @@ async function appendCustomerSupplementaryItems(database, customerId, evidenceIt
   const items = Array.isArray(customerRecord.supplementaryItems) ? customerRecord.supplementaryItems : []
   const additions = []
   for (const evidence of evidenceItems) {
-    if (!evidence?.displayText) continue
+    if (!evidence?.displayText || !isOrdinarySupplementaryEvidence(evidence)) continue
     const itemId = stableId('SUP', `${customerId}:${evidence.sourceId || ''}:${evidence.id || evidence.displayText}`)
     if (items.some((item) => item.id === itemId || item.evidenceId === evidence.id || (item.text === evidence.displayText && item.sourceId === evidence.sourceId)) || additions.some((item) => item.id === itemId || item.evidenceId === evidence.id)) continue
     additions.push({
@@ -2932,7 +2941,7 @@ export class FeishuRepository {
               if (evidence.fieldKey) {
                 archivingCounts.unresolvedMappedEvidenceCount += 1
                 if (!blockedField && customerSubjectConfirmed && privacyPolicy.canPromoteToProfile && PROFILE_FIELD_KEYS.has(evidence.fieldKey)) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
-              } else if (privacyPolicy.canPromoteToProfile) {
+              } else if (privacyPolicy.canPromoteToProfile && isOrdinarySupplementaryEvidence(evidence)) {
                 stage4SupplementaryEvidence.push(evidence)
               }
               continue
