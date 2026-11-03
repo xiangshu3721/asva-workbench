@@ -72,7 +72,7 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.rawNotes).toBe('客户正在考虑职业转型。')
     expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
     expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
-    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 未人工确认' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '' })
     expect(fields.map((item) => item.text)).not.toContain('客户正在考虑职业转型。')
   })
 
@@ -109,7 +109,7 @@ describe('CustomerProfileRenderer materialization', () => {
     const fields = result.sections.flatMap((section) => section.items)
     expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
     expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
-    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 未人工确认' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '' })
   })
 
   it('keeps a work location out of the current residence field in the display projection', () => {
@@ -186,7 +186,7 @@ describe('CustomerProfileRenderer materialization', () => {
       evidenceItems: [{ id: 'EVD-1', fieldKey: 'career_goal', standardValue: '想做自己感兴趣的事业', displayText: '事业目标：想做自己感兴趣的事业', sourceExcerpt: '想做自己感兴趣的事业', sourceId: 'SRC-1', customerId: 'CUS-1', reviewStatus: 'PENDING_REVIEW', evidenceType: 'FACT', semanticKind: 'GOAL' }],
     })
     const item = result.sections.find((section) => section.title === '职业与事业')?.items.find((candidate) => candidate.label === '事业目标')
-    expect(item).toMatchObject({ text: '想做自己感兴趣的事业', statusLabel: 'AI整理 · 未人工确认' })
+    expect(item).toMatchObject({ text: '想做自己感兴趣的事业', statusLabel: '' })
     expect(item.basis[0]).toMatchObject({ evidenceId: 'EVD-1', sourceId: 'SRC-1' })
     expect(result.provisionalItems).toHaveLength(0)
   })

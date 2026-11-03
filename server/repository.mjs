@@ -2748,6 +2748,7 @@ export class FeishuRepository {
               const explicitRange = rangeIsGrounded(rawStart, rawEnd) || rangeIsGrounded(Number(chunk.charStart || 0) + rawStart, Number(chunk.charStart || 0) + rawEnd)
               normalized._sourceGrounded = exactExcerpt || explicitRange
               const privacy = classifyPrivacyText(`${normalized.displayText}\n${normalized.sourceExcerpt}`)
+              privacy.subjectScope = String(rawItem?.subject_scope || rawItem?.subjectScope || '').trim().toUpperCase() || 'UNKNOWN'
               normalized.privacyLevel = privacy.privacyLevel
               normalized.privacyMeta = privacy
               normalized.mentorSafeText = privacySafeText(privacy, normalized.displayText)
@@ -2889,9 +2890,29 @@ export class FeishuRepository {
             const currentValue = currentCustomer?.profileFields?.[evidence.fieldKey] ?? null
             const change = classifyEvidenceChange(evidence, currentValue)
             const timestamp = now()
-            const privacyPolicy = resolvePrivacyPolicy({ ...combinePrivacyContext(evidence, source), currentRole: 'ADMIN' })
+            const combinedPrivacy = combinePrivacyContext(evidence, source)
+            const evidenceMeta = evidence.privacyMeta && typeof evidence.privacyMeta === 'object' ? evidence.privacyMeta : {}
+            // A mixed source may contain one ordinary excerpt and one high
+            // sensitivity excerpt. Use the explicit item classification for
+            // profile promotion when available; the source-level floor still
+            // protects legacy evidence without item-level privacy metadata.
+            const privacyPolicy = Object.prototype.hasOwnProperty.call(evidenceMeta, 'privacyLevel')
+              ? resolvePrivacyPolicy({
+                privacyLevel: evidenceMeta.privacyLevel,
+                categories: evidenceMeta.categories,
+                safetyFlags: evidenceMeta.safetyFlags,
+                currentRole: 'ADMIN',
+                assertionType: evidenceMeta.assertionType,
+                verification: evidenceMeta.verification,
+                serviceNecessity: evidenceMeta.serviceNecessity,
+                serviceNecessityOverride: evidenceMeta.serviceNecessityOverride,
+                temporalType: evidenceMeta.temporalType,
+              })
+              : resolvePrivacyPolicy({ ...combinedPrivacy, currentRole: 'ADMIN' })
             const isAiHypothesis = evidence.informationNature === 'AI_INFERENCE' || evidence.evidenceType === 'HYPOTHESIS'
             const isThirdParty = evidence.contentSource === 'THIRD_PARTY_REPORTED'
+            const subjectScope = String(evidence.subjectScope || evidenceMeta.subjectScope || '').trim().toUpperCase()
+            const customerSubjectConfirmed = evidence.subjectId === source.customerId && (!isThirdParty || subjectScope === 'CURRENT_CUSTOMER')
             const blockedField = Boolean(evidence.fieldKey && STAGE4_BLOCKED_PROFILE_FIELDS.has(evidence.fieldKey))
             // Ordinary, source-grounded profile facts are the current
             // Customers snapshot even when the extractor confidence is below
@@ -2907,10 +2928,10 @@ export class FeishuRepository {
             // Stage 4 deliberately keeps the three appointment concepts in
             // Evidence/supplementary_info, but never materializes them into
             // the legacy Customers appointment columns.
-            if (!evidence.fieldKey || blockedField || isAiHypothesis || isThirdParty || !isStage4PhysicalCandidate) {
+            if (!evidence.fieldKey || blockedField || isAiHypothesis || !customerSubjectConfirmed || !isStage4PhysicalCandidate) {
               if (evidence.fieldKey) {
                 archivingCounts.unresolvedMappedEvidenceCount += 1
-                if (privacyPolicy.canPromoteToProfile && PROFILE_FIELD_KEYS.has(evidence.fieldKey)) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
+                if (!blockedField && customerSubjectConfirmed && privacyPolicy.canPromoteToProfile && PROFILE_FIELD_KEYS.has(evidence.fieldKey)) stage4MappedEvidenceForSupplementaryRemoval.add(evidence.id)
               } else if (privacyPolicy.canPromoteToProfile) {
                 stage4SupplementaryEvidence.push(evidence)
               }
@@ -2942,7 +2963,7 @@ export class FeishuRepository {
             const validCustomerFact = !['UNKNOWN', 'MIXED'].includes(evidence.contentSource)
               && evidence.informationNature !== 'AI_INFERENCE'
               && evidence.verificationStatus !== 'CONFLICTED'
-              && !isThirdParty
+              && customerSubjectConfirmed
             if (humanConfirmedConflict) {
               const latest = await this.load({ force: true })
               const currentEvidence = latest.evidenceItems.find((item) => item.customerId === source.customerId && item.fieldKey === evidence.fieldKey && item.reviewStatus === 'CONFIRMED' && sameProfileValue(item.standardValue, currentValue))
