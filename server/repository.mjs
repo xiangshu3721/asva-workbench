@@ -38,7 +38,7 @@ export function readFeishuRichText(value) {
 }
 const text = readFeishuRichText
 const boolean = (value) => value === true || value === 'true' || value === '是'
-const date = (value) => parseDateFromFeishu(value)
+const date = (value) => parseDateFromFeishu((Array.isArray(value) || (value && typeof value === 'object' && ('text' in value || Array.isArray(value.children) || Array.isArray(value.content)))) ? readFeishuRichText(value) : value)
 const normalizePhone = foundationNormalizePhone
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
@@ -1494,18 +1494,20 @@ export class FeishuRepository {
         if (!String(source.notes || '').startsWith(AUTO_PROFILE_CUSTOMER_SAVE_PREFIX)) continue
         if (!automaticProfileArchivingAllowedForCustomer(source.customerId)) continue
         if (!automaticProfileEventAllowed(source.createdAt || source.uploadedAt || source.occurredAt || source.processingStartedAt)) continue
+        if (status === 'PROCESSING' && !isStaleProcessing(source)) continue
+        if (status === 'FAILED' && !shouldAutoRecoverSource(source)) continue
         return { customerId: source.customerId, actorId: source.uploadedBy, sourceId: source.id, stage }
       }
     }
     const pendingRows = await this.archiveSearch(config.feishu.tables.customers, {
       conjunction: 'and', conditions: [{ field_name: mapField('customers', 'profile_field_meta_json'), operator: 'contains', value: ['_automatic_profile_pending'] }],
     }, { pageSize: 20 })
-    for (const row of pendingRows) {
-      const pendingCustomer = customer(row)
+    const pendingCandidates = pendingRows.map((row) => ({ row, pendingCustomer: customer(row) })).filter(({ pendingCustomer }) => {
       const pending = pendingCustomer.automaticProfilePending
-      if (pending?.reason !== 'CUSTOMER_SAVE' || !pending.contentHash || !pending.actorId) continue
-      if (!automaticProfileArchivingAllowedForCustomer(pendingCustomer.id)) continue
-      if (!automaticProfileEventAllowed(pending.createdAt || pendingCustomer.createdAt)) continue
+      return pending?.reason === 'CUSTOMER_SAVE' && pending.contentHash && pending.actorId && automaticProfileArchivingAllowedForCustomer(pendingCustomer.id) && automaticProfileEventAllowed(pending.createdAt || pendingCustomer.createdAt)
+    }).sort((left, right) => String(right.pendingCustomer.automaticProfilePending.createdAt || '').localeCompare(String(left.pendingCustomer.automaticProfilePending.createdAt || '')))
+    for (const { row, pendingCustomer } of pendingCandidates) {
+      const pending = pendingCustomer.automaticProfilePending
       return { customerId: pendingCustomer.id, actorId: pending.actorId, sourceId: '', stage: 'create' }
     }
     return null
@@ -1521,6 +1523,11 @@ export class FeishuRepository {
       if (!actor || actor.status !== 'ACTIVE' || actor.loginEnabled !== true) return { status: 'BLOCKED', customerId: candidate.customerId, sourceId: candidate.sourceId, errorCode: 'AUTOMATIC_ARCHIVE_ACTOR_UNAVAILABLE', durationMs: Date.now() - startedAt }
       if (candidate.stage === 'create') {
         const customerRecord = workspace.customers.find((item) => item.id === candidate.customerId)
+        const existingSource = latestAutomaticProfileSource(workspace.sourceRecords, candidate.customerId)
+        if (existingSource && ['COMPLETED', 'REVIEW_REQUIRED'].includes(existingSource.processingStatus)) {
+          if (customerRecord?.automaticProfilePending) await this.clearAutomaticProfilePending(candidate.customerId, customerRecord.automaticProfilePending).catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', candidate.customerId, candidate.actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
+          return { status: 'SKIPPED_ALREADY_ARCHIVED', customerId: candidate.customerId, sourceId: existingSource.id, phase: 'CREATE_ALREADY_ARCHIVED', durationMs: Date.now() - startedAt }
+        }
         const rawText = normalizeSourceRawText(customerRecord?.notes)
         if (!rawText) return { status: 'NOT_REQUIRED', customerId: candidate.customerId, phase: 'CREATE', durationMs: Date.now() - startedAt }
         const ensured = await this.createAutomaticProfileSource(candidate.actorId, candidate.customerId, rawText, 'CUSTOMER_SAVE')
