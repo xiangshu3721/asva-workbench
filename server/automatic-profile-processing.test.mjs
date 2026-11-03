@@ -72,7 +72,7 @@ describe('automatic customer profile processing', () => {
 
     await expect(repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).resolves.toEqual({ status: 'DISABLED' })
     expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-BLOCKED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'DISABLED' })
-    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toEqual({ status: 'QUEUED' })
+    expect(repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-ALLOWED', '客户资料', 'CUSTOMER_SAVE')).toMatchObject({ status: 'QUEUED', customerId: 'CUS-AUTO-ALLOWED', reason: 'CUSTOMER_SAVE' })
     expect(repository.createSource).not.toHaveBeenCalled()
   })
 
@@ -103,16 +103,12 @@ describe('automatic customer profile processing', () => {
     expect(repository.scheduleAutomaticProcessing).not.toHaveBeenCalledWith('ADMIN-1', 'SRC-BLOCKED')
   })
 
-  it('returns before automatic source work starts, avoiding nested customer-queue waits', async () => {
+  it('returns a durable queue acknowledgement without starting source work in the HTTP instance', async () => {
     const repository = new FeishuRepository({ authRepository: {} })
-    let release
-    repository.queueAutomaticCustomerProfile = vi.fn(() => new Promise((resolve) => { release = resolve }))
+    repository.queueAutomaticCustomerProfile = vi.fn()
     const result = repository.scheduleAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
-    expect(result).toEqual({ status: 'QUEUED' })
+    expect(result).toMatchObject({ status: 'QUEUED', customerId: 'CUS-AUTO-4', reason: 'CUSTOMER_UPDATE' })
     expect(repository.queueAutomaticCustomerProfile).not.toHaveBeenCalled()
-    await new Promise((resolve) => setImmediate(resolve))
-    expect(repository.queueAutomaticCustomerProfile).toHaveBeenCalledWith('ADMIN-1', 'CUS-AUTO-4', '客户新增资料', 'CUSTOMER_UPDATE')
-    release({ status: 'QUEUED', sourceId: 'SRC-AUTO-4' })
   })
 
   it('recovers a long pending text from stable customer fields without storing raw text in metadata', async () => {

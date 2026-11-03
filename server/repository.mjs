@@ -1,5 +1,5 @@
 import { config } from './config.mjs'
-import { createRecord, deleteRecord, getRecord, listRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
+import { createRecord, deleteRecord, getRecord, listRecords, searchRecords, updateRecord, FeishuUnavailableError } from './feishu.mjs'
 import { classifyDialogue, createCustomerIntelligence, createCustomerUnderstanding, createCustomerSalesUnderstanding, createEvidenceCandidates, createProfileDraft, createSafetySignalCandidates } from './deepseek.mjs'
 import { queryAssistant } from './assistant.mjs'
 import { field as mapField, fields as mapFields, read as readField } from './field-mapping.mjs'
@@ -26,7 +26,17 @@ import { applyServiceNecessityOverride, buildConsultationContext, buildSalesCont
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
-const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+export function readFeishuRichText(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(readFeishuRichText).join('')
+  if (typeof value !== 'object') return ''
+  if (Object.prototype.hasOwnProperty.call(value, 'text')) return readFeishuRichText(value.text)
+  if (Array.isArray(value.children)) return value.children.map(readFeishuRichText).join('')
+  if (Array.isArray(value.content)) return value.content.map(readFeishuRichText).join('')
+  return ''
+}
+const text = readFeishuRichText
 const boolean = (value) => value === true || value === 'true' || value === '是'
 const date = (value) => parseDateFromFeishu(value)
 const normalizePhone = foundationNormalizePhone
@@ -133,6 +143,7 @@ const incompleteMutationError = (state) => Object.assign(new Error('该保存操
 const confirmedMutationFailureError = () => Object.assign(new Error('客户保存已确认失败，不能自动重放原操作。'), { code: 'CUSTOMER_SAVE_CONFIRMED_FAILED', status: 409 })
 const mentorCreateLocks = new Map()
 const AUTO_PROFILE_SOURCE_PREFIX = 'AUTO_PROFILE_ORGANIZE:'
+const AUTO_PROFILE_CUSTOMER_SAVE_PREFIX = `${AUTO_PROFILE_SOURCE_PREFIX}CUSTOMER_SAVE`
 const AUTO_PROCESSING_INTERVAL_MS = 30_000
 const ENROLLMENT_RECOVERY_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes as per PRD
 const publicSource = (source, { includeRaw = false } = {}) => {
@@ -894,6 +905,20 @@ function automaticProfileEventAllowed(eventAt) {
   return Number.isFinite(enabledAt) && Number.isFinite(occurredAt) && occurredAt >= enabledAt
 }
 
+function feishuEqualsFilter(fieldName, value) {
+  return { conjunction: 'and', conditions: [{ field_name: fieldName, operator: 'is', value: [String(value)] }] }
+}
+
+function automaticSourceFilter(status) {
+  return {
+    conjunction: 'and',
+    conditions: [
+      { field_name: mapField('sourceRecords', 'notes'), operator: 'contains', value: [AUTO_PROFILE_CUSTOMER_SAVE_PREFIX] },
+      { field_name: mapField('sourceRecords', 'processing_status'), operator: 'is', value: [status] },
+    ],
+  }
+}
+
 function latestAutomaticProfileSource(sources, customerId) {
   return (sources || [])
     .filter((source) => source.customerId === customerId && isAutomaticProfileSource(source))
@@ -987,7 +1012,7 @@ function evidenceWriteFields(item, source, sourceId) {
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -1072,27 +1097,18 @@ export class FeishuRepository {
   }
 
   scheduleAutomaticProcessing(actorId, sourceId) {
-    if (!config.features.automaticProfileArchiving) return
-    this.startAutomaticProcessingRecovery()
-    setImmediate(() => { void this.processSource(actorId, sourceId).catch((error) => this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'FAIL', error?.code || 'AUTO_PROCESSING_FAILED')) })
+    // HTTP mutations only persist the durable marker. The CloudBase timer
+    // worker owns all Extract/Finalize writes, so a browser response or
+    // short-lived function instance can never be the task scheduler.
+    if (!config.features.automaticProfileArchiving) return { status: 'DISABLED' }
+    return { status: 'PENDING', sourceId }
   }
 
   scheduleAutomaticCustomerProfile(actorId, customerId, rawText, reason) {
     if (!automaticProfileArchivingAllowedForCustomer(customerId) || !automaticProfileEventAllowed(now())) return { status: 'DISABLED' }
     const normalizedText = normalizeSourceRawText(rawText)
     if (!normalizedText) return { status: 'NOT_REQUIRED' }
-    const pendingKey = `${customerId}:${contentHash(normalizedText)}`
-    if (this.automaticProfilePendingKeys.has(pendingKey)) return { status: 'QUEUED' }
-    this.automaticProfilePendingKeys.add(pendingKey)
-    // Do not await this task from a customer mutation. In particular, updateCustomer
-    // already owns the per-customer queue; createSource acquires that queue itself.
-    // Starting on the next check phase guarantees the outer mutation has released it.
-    setImmediate(() => {
-      void this.queueAutomaticCustomerProfile(actorId, customerId, normalizedText, reason)
-        .catch((error) => this.audit('QUEUE_AUTOMATIC_CUSTOMER_PROFILE', customerId, actorId, 'FAIL', error?.code || 'AUTO_SOURCE_QUEUE_FAILED'))
-        .finally(() => this.automaticProfilePendingKeys.delete(pendingKey))
-    })
-    return { status: 'QUEUED' }
+    return { status: 'QUEUED', customerId, contentHash: contentHash(normalizedText), reason }
   }
 
   async clearAutomaticProfilePending(customerId, marker) {
@@ -1229,15 +1245,17 @@ export class FeishuRepository {
       const visible = scope(database, actorId)
       const customer = visible.customers.find((item) => item.id === requestedCustomerId)
       if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-      if (customer.automaticProfilePending?.reason !== 'CUSTOMER_SAVE') return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'CREATE_ONLY', errorCode: 'CREATE_ONLY', durationMs: Date.now() - startedAt }
-      if (!automaticProfileEventAllowed(customer.automaticProfilePending?.createdAt || customer.createdAt)) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'DATE_GATE', errorCode: 'BEFORE_ENABLED_AT', durationMs: Date.now() - startedAt }
-      const recoveredText = normalizeSourceRawText(customer.notes)
+      const existingAutomaticSource = latestAutomaticProfileSource(database.sourceRecords, requestedCustomerId)
+      const pendingMarker = customer.automaticProfilePending?.reason === 'CUSTOMER_SAVE' ? customer.automaticProfilePending : null
+      if (!pendingMarker && !existingAutomaticSource) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'CREATE_ONLY', errorCode: 'CREATE_ONLY', durationMs: Date.now() - startedAt }
+      if (!automaticProfileEventAllowed(pendingMarker?.createdAt || existingAutomaticSource?.createdAt || existingAutomaticSource?.uploadedAt || customer.createdAt)) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'DATE_GATE', errorCode: 'BEFORE_ENABLED_AT', durationMs: Date.now() - startedAt }
+      const recoveredText = normalizeSourceRawText(existingAutomaticSource?.rawText || customer.notes)
       if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'NO_TEXT', durationMs: Date.now() - startedAt }
-      if (customer.automaticProfilePending?.contentHash && customer.automaticProfilePending.contentHash !== contentHash(recoveredText)) {
+      if (pendingMarker?.contentHash && pendingMarker.contentHash !== contentHash(recoveredText)) {
         return { status: 'FAILED', customerId: requestedCustomerId, phase: 'CREATE_PENDING', errorCode: 'AUTOMATIC_PROFILE_CONTENT_CHANGED', durationMs: Date.now() - startedAt }
       }
       const sourceStartedAt = Date.now()
-      const ensured = await this.createAutomaticProfileSource(actorId, requestedCustomerId, recoveredText, customer.automaticProfilePending?.reason || 'CUSTOMER_SAVE')
+      const ensured = await this.createAutomaticProfileSource(actorId, requestedCustomerId, recoveredText, pendingMarker?.reason || 'CUSTOMER_SAVE')
       timings.source_ms = Date.now() - sourceStartedAt
       if (ensured.status === 'NOT_REQUIRED') return { ...ensured, customerId: requestedCustomerId, phase: 'NO_TEXT', durationMs: Date.now() - startedAt }
       const source = ensured.source
@@ -1270,6 +1288,7 @@ export class FeishuRepository {
             ? (readback.supplementaryWriteCount > 0 && readback.physicalFieldWriteCount === 0 ? 'SUPPLEMENTARY_ONLY' : 'CUSTOMERS_FIELDS_WRITTEN')
             : 'REVIEW_REQUIRED'
         const readbackOk = readback.ok && !/CUSTOMER_READBACK_MISMATCH|DERIVED_WRITE_FAILED/.test(afterSource.processingError || '')
+        if (readbackOk && ['COMPLETED', 'REVIEW_REQUIRED'].includes(afterSource.processingStatus) && pendingMarker) await this.clearAutomaticProfilePending(requestedCustomerId, pendingMarker).catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', requestedCustomerId, actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
         return { status: afterSource.processingStatus, customerId: requestedCustomerId, sourceId: source.id, reused: true, phase: 'FINALIZE', archiveOutcome, evidenceCount: after.evidenceItems.filter((item) => item.sourceId === source.id && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).length, physicalFieldWriteCount: readback.physicalFieldWriteCount, supplementaryWriteCount: readback.supplementaryWriteCount, readbackOk, timings, durationMs: Date.now() - startedAt, source: processed?.source ? publicSource(processed.source, { includeRaw: false }) : undefined }
       }
       if (existingEvidence.length && ['EXTRACT_READY', 'COMPLETED', 'REVIEW_REQUIRED'].includes(currentSource.processingStatus)) {
@@ -1429,6 +1448,87 @@ export class FeishuRepository {
       _allEvidenceItems: allEvidenceItems,
       _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows, sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
     }
+  }
+
+  async loadAutomaticArchiveWorkspace(customerId, actorId) {
+    const customerFilter = feishuEqualsFilter(mapField('customers', 'customer_id'), customerId)
+    const sourceFilter = feishuEqualsFilter(mapField('sourceRecords', 'customer_id'), customerId)
+    const evidenceFilter = feishuEqualsFilter(mapField('evidenceItems', 'customer_id'), customerId)
+    const [customerRows, staffRows, sourceRows, evidenceRows, profileChangeRows, proposalRows, conflictRows] = await Promise.all([
+      this.archiveSearch(config.feishu.tables.customers, customerFilter, { pageSize: 1 }),
+      this.archiveSearch(config.feishu.tables.staff, feishuEqualsFilter(mapField('staff', 'staff_id'), actorId), { pageSize: 1 }),
+      this.archiveSearch(stage2Table('sourceRecords'), sourceFilter, { pageSize: 20 }),
+      this.archiveSearch(stage2Table('evidenceItems'), evidenceFilter, { pageSize: 100 }),
+      this.archiveSearch(config.feishu.tables.profileChanges, feishuEqualsFilter(mapField('profileChanges', 'customer_id'), customerId), { pageSize: 100 }),
+      this.archiveSearch(stage2Table('profileUpdateProposals'), feishuEqualsFilter(mapField('profileUpdateProposals', 'customer_id'), customerId), { pageSize: 100 }),
+      this.archiveSearch(stage2Table('evidenceConflicts'), feishuEqualsFilter(mapField('evidenceConflicts', 'customer_id'), customerId), { pageSize: 100 }),
+    ])
+    const customers = customerRows.map(customer)
+    const sourceRecords = sourceRows.map(sourceRecord)
+    const allEvidenceItems = evidenceRows.map(evidenceItem)
+    const evidenceItems = allEvidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' || item.reviewStatus !== 'PENDING_REVIEW' || sourceRecords.find((source) => source.id === item.sourceId)?.lastBatchId === item.extractionBatchId)
+    const activeEvidenceIds = new Set(evidenceItems.map((item) => item.id))
+    return {
+      staff: staffRows.map(staff), customers, appointments: [], sessions: [], followups: [], products: [], enrollments: [],
+      profileChanges: profileChangeRows.map(profileChange), sourceRecords, evidenceItems,
+      profileUpdateProposals: proposalRows.map(proposalRecord).filter((item) => activeEvidenceIds.has(item.evidenceId)),
+      evidenceConflicts: conflictRows.map(conflictRecord).filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId)),
+      _allEvidenceItems: allEvidenceItems,
+      _missingRepositories: [],
+      _rows: { appointments: [], customers: customerRows, services: [], staff: staffRows, products: [], enrollments: [], profileChanges: profileChangeRows, sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
+    }
+  }
+
+  async withAutomaticArchiveWorkspace(customerId, actorId, task) {
+    const originalLoad = this.load
+    this.load = async () => this.loadAutomaticArchiveWorkspace(customerId, actorId)
+    try { return await task() } finally { this.load = originalLoad }
+  }
+
+  async nextAutomaticArchiveCandidate() {
+    if (!config.features.automaticProfileArchiving) return null
+    for (const [status, stage] of [['EXTRACT_READY', 'finalize'], ['UPLOADED', 'extract'], ['FAILED', 'extract'], ['PROCESSING', 'extract']]) {
+      const rows = await this.archiveSearch(stage2Table('sourceRecords'), automaticSourceFilter(status), { pageSize: 20 })
+      for (const row of rows) {
+        const source = sourceRecord(row)
+        if (!String(source.notes || '').startsWith(AUTO_PROFILE_CUSTOMER_SAVE_PREFIX)) continue
+        if (!automaticProfileArchivingAllowedForCustomer(source.customerId)) continue
+        if (!automaticProfileEventAllowed(source.createdAt || source.uploadedAt || source.occurredAt || source.processingStartedAt)) continue
+        return { customerId: source.customerId, actorId: source.uploadedBy, sourceId: source.id, stage }
+      }
+    }
+    const pendingRows = await this.archiveSearch(config.feishu.tables.customers, {
+      conjunction: 'and', conditions: [{ field_name: mapField('customers', 'profile_field_meta_json'), operator: 'contains', value: ['_automatic_profile_pending'] }],
+    }, { pageSize: 20 })
+    for (const row of pendingRows) {
+      const pendingCustomer = customer(row)
+      const pending = pendingCustomer.automaticProfilePending
+      if (pending?.reason !== 'CUSTOMER_SAVE' || !pending.contentHash || !pending.actorId) continue
+      if (!automaticProfileArchivingAllowedForCustomer(pendingCustomer.id)) continue
+      if (!automaticProfileEventAllowed(pending.createdAt || pendingCustomer.createdAt)) continue
+      return { customerId: pendingCustomer.id, actorId: pending.actorId, sourceId: '', stage: 'create' }
+    }
+    return null
+  }
+
+  async runAutomaticArchiveWorkerTick() {
+    const startedAt = Date.now()
+    const candidate = await this.nextAutomaticArchiveCandidate()
+    if (!candidate) return { status: config.features.automaticProfileArchiving ? 'IDLE' : 'DISABLED', durationMs: Date.now() - startedAt }
+    return this.withAutomaticArchiveWorkspace(candidate.customerId, candidate.actorId, async () => {
+      const workspace = await this.load({ force: true })
+      const actor = workspace.staff.find((item) => item.id === candidate.actorId)
+      if (!actor || actor.status !== 'ACTIVE' || actor.loginEnabled !== true) return { status: 'BLOCKED', customerId: candidate.customerId, sourceId: candidate.sourceId, errorCode: 'AUTOMATIC_ARCHIVE_ACTOR_UNAVAILABLE', durationMs: Date.now() - startedAt }
+      if (candidate.stage === 'create') {
+        const customerRecord = workspace.customers.find((item) => item.id === candidate.customerId)
+        const rawText = normalizeSourceRawText(customerRecord?.notes)
+        if (!rawText) return { status: 'NOT_REQUIRED', customerId: candidate.customerId, phase: 'CREATE', durationMs: Date.now() - startedAt }
+        const ensured = await this.createAutomaticProfileSource(candidate.actorId, candidate.customerId, rawText, 'CUSTOMER_SAVE')
+        return { status: ensured.status, customerId: candidate.customerId, sourceId: ensured.source?.id || '', phase: 'SOURCE_CREATED', durationMs: Date.now() - startedAt }
+      }
+      const result = await this.runCustomerAutoArchive(candidate.actorId, candidate.customerId, { stage: candidate.stage })
+      return { ...result, workerStage: candidate.stage, durationMs: result.durationMs ?? Date.now() - startedAt }
+    })
   }
 
   async scopedDirectory(actorId) {
@@ -1694,6 +1794,7 @@ export class FeishuRepository {
   }
 
   scheduleCustomerUnderstandingRefresh(actorId, customerId) {
+    if (this.backgroundArchiveWorker) return
     if (!config.deepseek.apiKey) return
     const previous = this.understandingRefreshTimers.get(customerId)
     if (previous) clearTimeout(previous)

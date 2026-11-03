@@ -106,4 +106,15 @@ describe('FeishuGateway', () => {
     const client = createFeishuWriteClient({ gateway: { updateRecord: async () => { throw failure } } })
     await expect(client.updateRecord('tbl-customers', 'rec-1', { 状态: '待同步' }, { operation: 'customer.update', operationId: 'CUS-1', entityType: 'customers' })).rejects.toBe(failure)
   })
+
+  it('searches only the requested records with a bounded filter and page size', async () => {
+    const { gateway, calls } = gatewayWith([
+      response({ tenant_access_token: 'token-1', expire: 7200 }),
+      response({ data: { items: [{ record_id: 'rec-target' }], has_more: false } }),
+    ])
+    const filter = { conjunction: 'and', conditions: [{ field_name: '客户ID', operator: 'is', value: ['CUS-1'] }] }
+    await expect(gateway.searchRecords('tbl-customers', filter, { pageSize: 1 })).resolves.toEqual([{ record_id: 'rec-target' }])
+    expect(calls[1].url).toContain('/tables/tbl-customers/records/search')
+    expect(JSON.parse(calls[1].request.body)).toEqual({ page_size: 1, filter })
+  })
 })
