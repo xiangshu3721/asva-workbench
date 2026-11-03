@@ -87,6 +87,24 @@ describe('automatic archive timer worker', () => {
     await expect(repository.nextAutomaticArchiveCandidate()).resolves.toBeNull()
   })
 
+  it('recognizes rich-text Source timestamps under the production enable-time gate', async () => {
+    const originalAppEnv = config.appEnv
+    const originalEnabledAt = config.features.automaticProfileArchivingEnabledAt
+    config.appEnv = 'production'
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'production'
+    config.features.automaticProfileArchivingEnabledAt = '2026-11-01T00:00:00.000Z'
+    const sourceRow = { record_id: 'rec-timestamp-source', fields: {
+      资料ID: rich('SRC-TIMESTAMP'), 客户ID: rich('CUS-TIMESTAMP'), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'), 处理状态: rich('UPLOADED'), 创建时间: rich('2026-11-03T00:00:00.000Z'), 上传时间: rich('2026-11-03T00:00:00.000Z'),
+    } }
+    const search = vi.fn(async (tableId, filter) => tableId === config.feishu.tables.sourceRecords && filter.conditions.some((item) => item.field_name === '处理状态' && item.value[0] === 'UPLOADED') ? [sourceRow] : [])
+    const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
+
+    await expect(repository.nextAutomaticArchiveCandidate()).resolves.toMatchObject({ customerId: 'CUS-TIMESTAMP', sourceId: 'SRC-TIMESTAMP', stage: 'extract' })
+    config.appEnv = originalAppEnv
+    config.features.automaticProfileArchivingEnabledAt = originalEnabledAt
+  })
+
   it('prioritizes the newest pending customer after terminal work is excluded', async () => {
     config.features.automaticProfileArchiving = true
     config.features.automaticProfileArchivingMode = 'off'

@@ -38,7 +38,7 @@ export function readFeishuRichText(value) {
 }
 const text = readFeishuRichText
 const boolean = (value) => value === true || value === 'true' || value === '是'
-const date = (value) => parseDateFromFeishu(value)
+const date = (value) => parseDateFromFeishu((Array.isArray(value) || (value && typeof value === 'object' && ('text' in value || Array.isArray(value.children) || Array.isArray(value.content)))) ? readFeishuRichText(value) : value)
 const normalizePhone = foundationNormalizePhone
 const validPhone = (value) => /^1\d{10}$/.test(normalizePhone(value))
 const now = () => new Date().toISOString()
