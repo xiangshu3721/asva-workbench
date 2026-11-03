@@ -26,7 +26,17 @@ import { applyServiceNecessityOverride, buildConsultationContext, buildSalesCont
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
-const text = (value) => Array.isArray(value) ? value.map(text).filter(Boolean).join('、') : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+export function readFeishuRichText(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(readFeishuRichText).join('')
+  if (typeof value !== 'object') return ''
+  if (Object.prototype.hasOwnProperty.call(value, 'text')) return readFeishuRichText(value.text)
+  if (Array.isArray(value.children)) return value.children.map(readFeishuRichText).join('')
+  if (Array.isArray(value.content)) return value.content.map(readFeishuRichText).join('')
+  return ''
+}
+const text = readFeishuRichText
 const boolean = (value) => value === true || value === 'true' || value === '是'
 const date = (value) => parseDateFromFeishu(value)
 const normalizePhone = foundationNormalizePhone

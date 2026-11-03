@@ -17,11 +17,16 @@ describe('automatic archive timer worker', () => {
     config.features.automaticProfileCanaryCustomerIds = original.allowlist
   })
 
+  const rich = (value) => [{ type: 'text', text: String(value) }]
+  const splitRich = (value) => {
+    const source = String(value)
+    return [source.slice(0, 17), ...(source.slice(17).match(/.{1,23}/gs) || [])].filter(Boolean).map(rich)
+  }
   const customerRow = (customerId, actorId, notes = '客户希望调整工作节奏') => ({ record_id: 'rec-customer', fields: {
-    客户ID: customerId, 客户昵称: '系统演练客户', 备注: notes,
-    '档案字段元数据': JSON.stringify({ _automatic_profile_pending: { contentHash: 'pending-hash', actorId, reason: 'CUSTOMER_SAVE', createdAt: new Date().toISOString() } }),
+    客户ID: rich(customerId), 客户昵称: rich('系统演练客户'), 备注: splitRich(notes),
+    '档案字段元数据': splitRich(JSON.stringify({ _automatic_profile_pending: { contentHash: 'pending-hash', actorId, reason: 'CUSTOMER_SAVE', createdAt: new Date().toISOString() } })),
   } })
-  const staffRow = { record_id: 'rec-staff', fields: { 人员ID: 'ADMIN-1', 姓名: '测试管理员', 角色: 'ADMIN', 状态: 'ACTIVE', 允许登录: true } }
+  const staffRow = { record_id: 'rec-staff', fields: { 人员ID: rich('ADMIN-1'), 姓名: rich('测试管理员'), 角色: rich('ADMIN'), 状态: rich('ACTIVE'), 允许登录: true } }
 
   it('creates the durable Source task without invoking DeepSeek in the save process', async () => {
     config.features.automaticProfileArchiving = true
@@ -45,8 +50,8 @@ describe('automatic archive timer worker', () => {
     config.features.automaticProfileArchivingMode = 'off'
     const customerId = 'CUS-WORKER-2'
     const sourceRow = { record_id: 'rec-source', fields: {
-      资料ID: 'SRC-WORKER-2', 客户ID: customerId, 上传人: 'ADMIN-1', 备注: 'AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE',
-      处理状态: 'EXTRACT_READY', 原始文本: '客户希望调整工作节奏', 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
+      资料ID: rich('SRC-WORKER-2'), 客户ID: rich(customerId), 上传人: rich('ADMIN-1'), 备注: splitRich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'),
+      处理状态: rich('EXTRACT_READY'), 原始文本: splitRich('客户希望调整工作节奏'), 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
     } }
     const search = vi.fn(async (tableId, filter) => {
       if (tableId === config.feishu.tables.sourceRecords && filter.conditions.some((item) => item.field_name === '处理状态' && item.value[0] === 'EXTRACT_READY')) return [sourceRow]
