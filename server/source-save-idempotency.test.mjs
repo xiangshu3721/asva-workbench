@@ -64,6 +64,24 @@ describe('source save idempotency', () => {
     expect(dialogueClassifier).not.toHaveBeenCalled()
   })
 
+  it('translates the validated customer update intent into the automatic Source marker', async () => {
+    const repository = new FeishuRepository()
+    repository.load = async () => activeDatabase
+
+    const source = await repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: '目前在广州', operationId: 'customer-update-intent-1', archiveIntent: 'CUSTOMER_UPDATE' })
+
+    expect(source.notes.trim()).toBe('AUTO_PROFILE_ORGANIZE:CUSTOMER_UPDATE')
+    expect(createRecordMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an unknown archive intent before creating a Source', async () => {
+    const repository = new FeishuRepository()
+    repository.load = async () => activeDatabase
+
+    await expect(repository.createSource('ADMIN-1', { customerId: 'CUS-SAVE-1', sourceType: 'TEXT_INPUT', rawText: '普通资料', operationId: 'invalid-archive-intent-1', archiveIntent: 'OTHER' })).rejects.toMatchObject({ code: 'INVALID_ARCHIVE_INTENT', status: 400 })
+    expect(createRecordMock).not.toHaveBeenCalled()
+  })
+
   it('keeps the file upload gate fail-closed for legacy clients', async () => {
     const repository = new FeishuRepository({ dialogueClassifier: async () => ({ classification: 'ONE_SPEAKER', speakers: [{ id: 'A', excerpt: '我最近很困惑' }], summary: 'speaker requires confirmation' }) })
     repository.load = async () => activeDatabase

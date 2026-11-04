@@ -154,7 +154,7 @@ const publicSource = (source, { includeRaw = false } = {}) => {
 const cloneDatabase = (database) => typeof structuredClone === 'function' ? structuredClone(database) : JSON.parse(JSON.stringify(database))
 const pickDefined = (item, keys) => Object.fromEntries(keys.filter((key) => item?.[key] !== undefined).map((key) => [key, item[key]]))
 const publicStaff = (item) => pickDefined(item, ['id', 'name', 'role', 'permissionRole', 'status', 'loginEnabled', 'displayRole', 'title', 'specialty', 'avatar'])
-const publicCustomerDirectory = (item, sources = [], evidenceItems = []) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), ...(item?.automaticProfilePending?.reason === 'CUSTOMER_SAVE' ? { automaticProfilePending: { reason: 'CUSTOMER_SAVE', contentHash: item.automaticProfilePending.contentHash, createdAt: item.automaticProfilePending.createdAt } } : {}), ...(sources.length ? { automaticProfileStatus: automaticProfileStatus(sources, evidenceItems, item.id), automaticProfileAutoResume: automaticProfileAutoResume(sources, item.id) } : {}), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
+const publicCustomerDirectory = (item, sources = [], evidenceItems = []) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), ...(['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(item?.automaticProfilePending?.reason) ? { automaticProfilePending: { reason: item.automaticProfilePending.reason, contentHash: item.automaticProfilePending.contentHash, createdAt: item.automaticProfilePending.createdAt } } : {}), ...(sources.length ? { automaticProfileStatus: automaticProfileStatus(sources, evidenceItems, item.id), automaticProfileAutoResume: automaticProfileAutoResume(sources, item.id) } : {}), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
 const publicCustomerDetail = (item, sources = [], evidenceItems = []) => ({ ...publicCustomerDirectory(item, sources, evidenceItems), profileFields: item?.profileFields || {}, profileFieldMeta: item?.profileFieldMeta || {}, profileSchemaVersion: item?.profileSchemaVersion, profileVersion: item?.profileVersion, brief: item?.brief || '' })
 const publicCustomerProfile = (item, profileMaterialization, autoOrganizeStatus) => ({
   customerId: item.id,
@@ -207,8 +207,8 @@ export function publicCustomerMutationDto(database, actorId, customerId, custome
     customerCreated,
     persistenceStatus,
     enrollmentStatus: mutation?.enrollmentStatus || 'COMPLETED',
-    automaticProfile: customerRecord.automaticProfilePending?.reason === 'CUSTOMER_SAVE'
-      ? { status: 'PENDING', contentHash: customerRecord.automaticProfilePending.contentHash }
+    automaticProfile: ['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(customerRecord.automaticProfilePending?.reason)
+      ? { status: 'PENDING', reason: customerRecord.automaticProfilePending.reason, contentHash: customerRecord.automaticProfilePending.contentHash }
       : { status: 'NOT_REQUIRED' },
     ...(mutation ? { mutation } : {}),
   }
@@ -1592,6 +1592,7 @@ export class FeishuRepository {
         if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: candidate.customerId, phase: 'CREATE', durationMs: Date.now() - startedAt }
         const ensured = await this.createAutomaticProfileSource(candidate.actorId, candidate.customerId, recoveredText, candidate.reason || 'CUSTOMER_SAVE')
         if (ensured.source?.id && ensured.source.id !== candidate.sourceId) return { status: 'FAILED', customerId: candidate.customerId, sourceId: candidate.sourceId, phase: 'SOURCE_CREATED', errorCode: 'AUTOMATIC_SOURCE_ID_MISMATCH', durationMs: Date.now() - startedAt }
+        if (ensured.source?.id && customerRecord?.automaticProfilePending) await this.clearAutomaticProfilePending(candidate.customerId, customerRecord.automaticProfilePending).catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', candidate.customerId, candidate.actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
         return { status: ensured.status, customerId: candidate.customerId, sourceId: ensured.source?.id || '', phase: 'SOURCE_CREATED', durationMs: Date.now() - startedAt }
       }
       const result = await this.runCustomerAutoArchive(candidate.actorId, candidate.customerId, { stage: candidate.stage, sourceId: candidate.sourceId })
@@ -2478,9 +2479,9 @@ export class FeishuRepository {
     }
     // Customer updates do not create or mutate Appointment in Stage 1.
     if (enrollmentsChanged) latest = await this.loadAfterWrite(undefined, customerId)
-    const automaticProfile = automaticText
-      ? await this.queueAutomaticCustomerProfile(actorId, customerId, automaticText, 'CUSTOMER_UPDATE')
-      : { status: 'NOT_REQUIRED' }
+    const automaticProfile = automaticText && automaticProfileArchivingAllowedForCustomer(customerId)
+      ? { status: 'PENDING', reason: 'CUSTOMER_UPDATE', contentHash: contentHash(normalizeSourceRawText(automaticText)) }
+      : { status: automaticText ? 'DISABLED' : 'NOT_REQUIRED' }
     if (operationId) {
       const mutationWrite = await this.persistCustomerMutationState(latest, customerId, operationId, { kind: 'UPDATE', status: 'COMMITTED', payloadHash: inputHash, updatedAt: now() })
       if (mutationWrite) latest = await this.loadCustomerAfterWrite(mutationWrite, customerId, latest)
@@ -2577,6 +2578,9 @@ export class FeishuRepository {
         if (persisted) return persisted
       }
       let sourceInputValue = input
+      const archiveIntent = text(input?.archiveIntent).trim().toUpperCase()
+      if (archiveIntent && archiveIntent !== 'CUSTOMER_UPDATE') throw Object.assign(new Error('不支持的归档意图'), { code: 'INVALID_ARCHIVE_INTENT', status: 400 })
+      if (archiveIntent === 'CUSTOMER_UPDATE') sourceInputValue = { ...sourceInputValue, notes: AUTO_PROFILE_CUSTOMER_UPDATE_PREFIX }
       const rawText = normalizeSourceRawText(input?.rawText || input?.document?.extractedText || input?.document?.extracted_text)
       let hasValidConfirmation = false
       if (typeof input?.dialogueConfirmation === 'string' && input.dialogueConfirmation) {
