@@ -58,6 +58,8 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId)')
     expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetSalesUnderstanding(requestCustomerId)')
     expect(appSource).toContain('onLoadRef.current(force)')
+    expect(appSource).toContain('if (loading || lastLoadedRefreshKeyRef.current === refreshKey) return')
+    expect(appSource).toContain('lastLoadedRefreshKeyRef.current = null')
   })
 
   it('keeps customer understanding retryable and removes the working-hypothesis panel', () => {
@@ -69,5 +71,12 @@ describe('R043 progressive customer rendering', () => {
   it('does not use the global directory refresh revision as the profile cache version', () => {
     expect(appSource).not.toContain('customerProfileCacheKey(props.staffId, requestCustomerId, props.profileRefreshRevision)')
     expect(appSource).toContain('refreshKey={customer.profileVersion ?? 0}')
+  })
+
+  it('checks the archive status with bounded read-only refreshes while the profile is open', () => {
+    expect(appSource).toContain('AUTO_PROFILE_REFRESH_INTERVAL_MS')
+    expect(appSource).toContain('AUTO_PROFILE_REFRESH_MAX_ATTEMPTS')
+    expect(appSource).toContain('void onLoadRef.current(true)')
+    expect(appSource).toContain('稍后重新打开档案，可再次检查最新结果')
   })
 })

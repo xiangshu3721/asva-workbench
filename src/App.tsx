@@ -29,6 +29,7 @@ import { clearSessionSnapshots, readSessionSnapshot, writeSessionSnapshot } from
 import { sortProductsForSelection } from './product-order'
 import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
+import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { validateCustomerContacts } from '../shared/customer-foundation.mjs'
 const repository = createLocalRepository()
@@ -851,15 +852,22 @@ function dedupeEvidenceDisplay(items: EvidenceDisplayInput[]): EvidenceDisplayIt
 
 function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, refreshKey = 0 }: { customer: Customer; profile?: CustomerProfileResponse; loading: boolean; error: string; onLoad: (force?: boolean) => Promise<void>; refreshKey?: number }) {
   const [open, setOpen] = useState(false)
+  const [autoRefreshExhausted, setAutoRefreshExhausted] = useState(false)
   const lastLoadedRefreshKeyRef = useRef<number | null>(null)
+  const autoRefreshAttemptsRef = useRef(0)
+  const autoRefreshScopeRef = useRef('')
   const onLoadRef = useRef(onLoad)
   useEffect(() => { onLoadRef.current = onLoad }, [onLoad])
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      lastLoadedRefreshKeyRef.current = null
+      return
+    }
+    if (loading || lastLoadedRefreshKeyRef.current === refreshKey) return
     const force = lastLoadedRefreshKeyRef.current !== null && refreshKey !== lastLoadedRefreshKeyRef.current
     lastLoadedRefreshKeyRef.current = refreshKey
     void onLoadRef.current(force)
-  }, [open, refreshKey])
+  }, [open, loading, refreshKey])
   const hydratedCustomer = profile ? { ...customer, profileFields: profile.profileFields, profileFieldMeta: profile.profileFieldMeta, profileUpdatedAt: profile.profileUpdatedAt, profileSchemaVersion: profile.profileSchemaVersion, profileVersion: profile.profileVersion, profileMaterialization: profile.profileMaterialization, profileMaterializationLoaded: true } : customer
   const sections = profileRendererSections(hydratedCustomer).map((section) => ({ ...section, title: sanitizeUserVisibleText(section.title), items: section.items.map((item) => ({ ...item, label: sanitizeUserVisibleText(item.label), text: sanitizeUserVisibleText(item.text), basis: dedupeEvidenceDisplay(item.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))) })) }))
   const materialization = hydratedCustomer.profileMaterialization
@@ -879,21 +887,39 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const hasEntered = fieldItems.some((item) => item.statusLabel === '已录入') || Boolean(rawNotes)
   const hasProvisional = provisionalItems.length > 0
   const coverageLabel = showInitialLoading ? '正在读取档案' : error && !profile ? '档案读取失败' : !profile ? '展开后读取' : !hasDisplayContent ? '暂无可展示资料' : hasProvisional && (hasConfirmed || hasEntered) ? '已确认资料与待核实资料' : hasProvisional ? '待核实资料' : hasConfirmed ? '已确认资料' : hasEntered ? '已录入资料' : '已录入资料'
-  const autoStatusMessage = profile?.autoOrganizeStatus === 'PROCESSING'
-    ? 'AI正在整理资料，原始资料已保存。'
-    : profile?.autoOrganizeStatus === 'FAILED'
-      ? 'AI整理失败，将自动重试，原始资料已保留。'
-      : profile?.autoOrganizeStatus === 'REVIEW_REQUIRED'
-        ? 'AI整理完成，部分信息待核实。'
-        : profile?.autoOrganizeStatus === 'NO_USABLE_OUTPUT'
-          ? '本次整理未生成可展示资料，原始资料已保留。'
-          : profile?.autoOrganizeStatus === 'EXTRACT_READY'
-            ? 'AI资料提取完成，后续归档待处理。'
-          : profile?.autoOrganizeStatus === 'COMPLETED'
-            ? 'AI整理完成，档案已更新。'
-            : profile?.autoOrganizeStatus === 'PENDING'
-              ? 'AI整理等待后台恢复，原始资料已保留。'
-              : ''
+  const hasPendingAutoProfileMarker = customer.automaticProfilePending?.reason === 'CUSTOMER_SAVE'
+  const shouldResumeFailedAutoProfile = customer.automaticProfileAutoResume === true
+  const pendingVerificationCount = countProfileVerificationItems(materialization)
+  const automaticProfileInProgress = isAutomaticProfileInProgress(profile?.autoOrganizeStatus, hasPendingAutoProfileMarker, shouldResumeFailedAutoProfile)
+  const autoStatusMessage = automaticProfileStatusMessage(profile?.autoOrganizeStatus, pendingVerificationCount, hasPendingAutoProfileMarker, shouldResumeFailedAutoProfile)
+  const autoRefreshScope = `${customer.id}:${customer.automaticProfilePending?.contentHash || ''}`
+  useEffect(() => {
+    if (autoRefreshScopeRef.current !== autoRefreshScope) {
+      autoRefreshScopeRef.current = autoRefreshScope
+      autoRefreshAttemptsRef.current = 0
+      setAutoRefreshExhausted(false)
+    }
+    if (!open) {
+      autoRefreshAttemptsRef.current = 0
+      setAutoRefreshExhausted(false)
+      return
+    }
+    if (!automaticProfileInProgress) {
+      autoRefreshAttemptsRef.current = 0
+      setAutoRefreshExhausted(false)
+      return
+    }
+    if (loading) return
+    if (autoRefreshAttemptsRef.current >= AUTO_PROFILE_REFRESH_MAX_ATTEMPTS) {
+      setAutoRefreshExhausted(true)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      autoRefreshAttemptsRef.current += 1
+      void onLoadRef.current(true)
+    }, AUTO_PROFILE_REFRESH_INTERVAL_MS)
+    return () => window.clearTimeout(timer)
+  }, [open, loading, automaticProfileInProgress, autoRefreshScope, refreshKey])
   const profileContent = showInitialLoading ? <p className="detail-empty-line">正在读取该客户的确认档案…</p>
     : error && !profile ? <div className="detail-empty-line"><p>档案暂时读取失败，客户基础资料不受影响。</p><button className="secondary-button small" type="button" onClick={() => void onLoad()}>重新读取档案</button></div>
       : !profile ? <p className="detail-empty-line">展开后按需读取该客户的确认档案。</p>
@@ -921,7 +947,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
             </article>)}</div> : null}
             {rawNotes && <details className="profile-original-notes"><summary>查看原始资料</summary><p>{sanitizeUserVisibleText(rawNotes)}</p></details>}
           </>
-  return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{autoStatusMessage && <p className="profile-refresh-note">{autoStatusMessage}</p>}{profileContent}{profile && loading && <p className="profile-refresh-note">正在后台更新档案，当前内容仍可查看。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
+  return <section className="customer-detail-section customer-profile-renderer"><details className="record-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>客户档案</strong><small>{coverageLabel}</small></span><b>{showInitialLoading ? '读取中' : open ? '收起档案' : '展开档案'}</b></summary><div className="record-disclosure-body">{autoStatusMessage && <p className="profile-refresh-note">{autoStatusMessage}</p>}{profileContent}{profile && loading && <p className="profile-refresh-note">正在检查后台整理进度，当前档案内容仍可查看。</p>}{autoRefreshExhausted && automaticProfileInProgress && <p className="profile-refresh-note">后台仍在处理，原始资料已保存。稍后重新打开档案，可再次检查最新结果。</p>}{profile && error && <p className="profile-refresh-note">最新档案暂时无法更新，当前内容仍保留。</p>}</div></details></section>
 }
 function customerPaymentLabel(customer: Customer, enrollments: Database['enrollments']) {
   if (!enrollments.length) return customer.paid ? '已付费' : '暂未付费'
