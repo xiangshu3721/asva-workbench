@@ -75,6 +75,6 @@ export function automaticProfileStatusMessage(
     case 'NO_USABLE_OUTPUT':
       return '本次未提取到可归档信息，原始资料已完整保留。'
     default:
-      return ''
+      return hasPendingMarker ? '资料已保存，等待后台开始整理；页面会自动检查进度。' : ''
   }
 }
