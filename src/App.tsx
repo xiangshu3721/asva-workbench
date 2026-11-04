@@ -1493,7 +1493,6 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
   const fieldLabel = (field: string) => ({ birth_date: '出生日期', gender: '性别', phone: '手机号', wechat: '微信号', city: '居住城市', current_city: '居住城市', occupation: '当前职业', job_status: '工作状态', employment_status: '工作状态', relationship_status: '关系状态', marital_status: '婚姻状态', age: '年龄', sleep: '睡眠情况', sleep_status: '睡眠情况' } as Record<string, string>)[field] || '待确认资料'
   return <section className="customer-detail-section profile-supplement" id="profile-supplement" aria-busy={workspaceLoading} data-refreshing={workspaceRefreshing ? 'true' : undefined}>
     <SectionHeading title="档案记录" meta={historyRequested || cachedWorkspace ? `已记录 ${workspace.sources.length} 份 · 待确认 ${workspace.conflicts.filter((item) => item.status === 'OPEN').length} 项` : '可立即录入，历史资料按需查看'} icon="＋" action={<button className="secondary-button small" type="button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? '收起' : '＋ 补充档案'}</button>} />
-    {!historyRequested && <button className="secondary-button small" type="button" onClick={() => setHistoryRequested(true)}>查看已有资料与依据</button>}
     {historyRequested && workspaceLoading && <p className="understanding-empty evidence-workspace-loading">正在加载相关依据…</p>}
     {workspaceLoadError && !workspaceLoading && !workspaceLoaded && <div className="evidence-load-error"><p>{workspaceLoadError}</p><button className="secondary-button small" type="button" onClick={() => void load()}>重试</button></div>}
     {composerOpen && <>
@@ -1532,7 +1531,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
         </div>
       </div>
     })}
-    <details className="advanced-evidence"><summary>查看整理依据</summary><div className="evidence-results"><EvidenceGroup title="明确信息" items={grouped('FACT')} isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /><EvidenceGroup title="客户表达" items={grouped('SELF_MEANING')} isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /><EvidenceGroup title="导师观察" items={grouped('OBSERVATION')} isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /><EvidenceGroup title="AI提示（仅供参考）" items={grouped('HYPOTHESIS')} weak isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /></div></details>
+    <details className="advanced-evidence" onToggle={(event) => { if (event.currentTarget.open) setHistoryRequested(true) }}><summary>查看整理依据</summary><div className="evidence-results"><EvidenceGroup title="明确信息" items={grouped('FACT')} isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /><EvidenceGroup title="客户表达" items={grouped('SELF_MEANING')} isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /><EvidenceGroup title="导师观察" items={grouped('OBSERVATION')} isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /><EvidenceGroup title="AI提示（仅供参考）" items={grouped('HYPOTHESIS')} weak isAdmin={isAdmin} saving={saving} onOverrideNecessity={overrideNecessity} /></div></details>
   </section>
 }
 
