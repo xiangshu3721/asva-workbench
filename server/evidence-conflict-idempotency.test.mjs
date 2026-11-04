@@ -178,6 +178,35 @@ describe('structured archive completion criteria', () => {
     expect(extractor).toHaveBeenCalledTimes(1)
   })
 
+  it('archives a mentor update stating currently in Shenzhen without classifying camp attendance as a city', async () => {
+    const previousAutomatic = config.features.automaticProfileArchiving
+    config.features.automaticProfileArchiving = true
+    try {
+      activeDatabase.sourceRecords[0].rawText = '目前人在深圳，上过好几次探索营'
+      const extractor = vi.fn(async () => [
+        { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: '', value: '深圳', display_text: '目前人在深圳', source_excerpt: '目前人在深圳', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+        { evidence_type: 'FACT', semantic_kind: 'EVENT', field_key: '', value: '上过好几次探索营', display_text: '参加过多次探索营', source_excerpt: '上过好几次探索营', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+      ])
+      const repository = setupRepository(extractor)
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+
+      expect(activeDatabase.customers[0].profileFields.city).toBe('深圳')
+      expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['参加过多次探索营'])
+      expect(activeDatabase.profileChanges.filter((change) => change.field === 'city')).toHaveLength(1)
+      expect(activeDatabase._allEvidenceItems).toHaveLength(2)
+      expect(extractor).toHaveBeenCalledTimes(1)
+
+      const changesBeforeRetry = activeDatabase.profileChanges.length
+      const supplementCountBeforeRetry = activeDatabase.customers[0].supplementaryItems.length
+      await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+      expect(activeDatabase.profileChanges).toHaveLength(changesBeforeRetry)
+      expect(activeDatabase.customers[0].supplementaryItems).toHaveLength(supplementCountBeforeRetry)
+      expect(extractor).toHaveBeenCalledTimes(1)
+    } finally {
+      config.features.automaticProfileArchiving = previousAutomatic
+    }
+  })
+
   it('routes an unkeyed current city to Customers and keeps historical occupation supplementary', async () => {
     const previousAutomatic = config.features.automaticProfileArchiving
     config.features.automaticProfileArchiving = true

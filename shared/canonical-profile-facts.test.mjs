@@ -14,6 +14,20 @@ describe('R037 canonical profile fact normalization', () => {
     expect(normalizeCanonicalFact({ fieldKey: '', value: '参加过探索营', sourceExcerpt: '客户曾参加过探索营。', semanticKind: 'EVENT' }).storageFieldKey).toBeNull()
   })
 
+  it('maps colloquial current location into the existing city field', () => {
+    for (const excerpt of ['目前人在深圳，上过好几次探索营', '现在人在深圳', '当前人在深圳']) {
+      const fact = normalizeCanonicalFact({ fieldKey: '', value: '深圳', sourceExcerpt: excerpt, semanticKind: 'CURRENT_STATE' })
+      expect(fact).toMatchObject({ canonicalFieldKey: 'current_city', storageFieldKey: 'city', temporalType: 'CURRENT', grounded: true })
+    }
+  })
+
+  it('does not promote a work location or an activity into current city', () => {
+    const work = normalizeCanonicalFact({ fieldKey: '', value: '杭州', sourceExcerpt: '目前在杭州工作', semanticKind: 'CURRENT_STATE' })
+    const activity = normalizeCanonicalFact({ fieldKey: '', value: '上过好几次探索营', sourceExcerpt: '目前人在深圳，上过好几次探索营', semanticKind: 'EVENT' })
+    expect(work.storageFieldKey).toBeNull()
+    expect(activity.storageFieldKey).toBeNull()
+  })
+
   it('does not turn living alone into a city', () => {
     const fact = normalizeCanonicalFact({ fieldKey: 'living_status', value: '一个人居住', sourceExcerpt: '她目前一个人居住。', semanticKind: 'CURRENT_STATE' })
     expect(fact).toMatchObject({ canonicalFieldKey: 'living_status', storageFieldKey: 'living_status' })
