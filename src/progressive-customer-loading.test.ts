@@ -58,6 +58,8 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId)')
     expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetSalesUnderstanding(requestCustomerId)')
     expect(appSource).toContain('onLoadRef.current(force)')
+    expect(appSource).toContain('if (loading || lastLoadedRefreshKeyRef.current === refreshKey) return')
+    expect(appSource).toContain('lastLoadedRefreshKeyRef.current = null')
   })
 
   it('keeps customer understanding retryable and removes the working-hypothesis panel', () => {

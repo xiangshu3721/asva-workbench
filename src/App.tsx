@@ -859,11 +859,15 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const onLoadRef = useRef(onLoad)
   useEffect(() => { onLoadRef.current = onLoad }, [onLoad])
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      lastLoadedRefreshKeyRef.current = null
+      return
+    }
+    if (loading || lastLoadedRefreshKeyRef.current === refreshKey) return
     const force = lastLoadedRefreshKeyRef.current !== null && refreshKey !== lastLoadedRefreshKeyRef.current
     lastLoadedRefreshKeyRef.current = refreshKey
     void onLoadRef.current(force)
-  }, [open, refreshKey])
+  }, [open, loading, refreshKey])
   const hydratedCustomer = profile ? { ...customer, profileFields: profile.profileFields, profileFieldMeta: profile.profileFieldMeta, profileUpdatedAt: profile.profileUpdatedAt, profileSchemaVersion: profile.profileSchemaVersion, profileVersion: profile.profileVersion, profileMaterialization: profile.profileMaterialization, profileMaterializationLoaded: true } : customer
   const sections = profileRendererSections(hydratedCustomer).map((section) => ({ ...section, title: sanitizeUserVisibleText(section.title), items: section.items.map((item) => ({ ...item, label: sanitizeUserVisibleText(item.label), text: sanitizeUserVisibleText(item.text), basis: dedupeEvidenceDisplay(item.basis.map((reference) => ({ id: reference.evidenceId, sourceId: reference.sourceId, displayText: reference.displayText, excerpt: reference.excerpt }))) })) }))
   const materialization = hydratedCustomer.profileMaterialization
