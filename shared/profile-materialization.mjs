@@ -142,6 +142,15 @@ function sectionTitleForEvidence(evidence) {
   return '当前状态'
 }
 
+function supplementaryStatusLabel(item) {
+  if (item.confirmed === true || item.verificationStatus === 'HUMAN_VERIFIED' || item.reviewStatus === 'CONFIRMED') return '已确认'
+  if (item.verificationStatus === 'CONFLICTED' || item.informationNature === 'AI_INFERENCE' || item.evidenceType === 'HYPOTHESIS' || item.source === 'AI_INFERENCE') return '待确认'
+  if (item.source === 'THIRD_PARTY_REPORTED') return '待确认'
+  if (item.source === 'MENTOR_OBSERVATION') return '待确认'
+  if (item.source === 'AI_EXTRACTED' && item.verificationStatus !== 'CONFLICTED') return 'AI提取'
+  return '待确认'
+}
+
 function isProvisionalEvidence(evidence) {
   if (!evidence || PROVISIONAL_EXCLUDED_STATUSES.has(evidence.reviewStatus)) return false
   if (!evidence.displayText || !evidence.sourceId || !evidence.customerId) return false
@@ -269,21 +278,18 @@ export function materializeCustomerProfile({ customer, evidenceItems = [], summa
     id: String(item.id || hashText(`${item.sourceRecordId || ''}:${item.text}`)),
     label: '客户补充信息',
     text: String(item.text),
-    statusLabel: item.confirmed === true
-      ? '已确认'
-      : item.source === 'AI_INFERENCE'
-        ? 'AI推断 · 待验证'
-        : item.source === 'THIRD_PARTY_REPORTED'
-          ? '第三方说法 · 待核实'
-          : item.source === 'MENTOR_OBSERVATION'
-            ? '导师观察 · 待核实'
-            : '待核实',
+    statusLabel: supplementaryStatusLabel(item),
     evidenceIds: item.evidenceId ? [item.evidenceId] : [],
     basis: item.evidenceId ? [{ evidenceId: item.evidenceId, sourceId: item.sourceRecordId || '', displayText: String(item.text), excerpt: String(item.text) }] : [],
     source: item.source || 'AI_EXTRACTED',
     confirmed: item.confirmed === true,
     sourceRecordId: item.sourceRecordId || '',
     evidenceId: item.evidenceId || '',
+    reviewStatus: item.reviewStatus || '',
+    verificationStatus: item.verificationStatus || 'UNKNOWN',
+    informationNature: item.informationNature || '',
+    evidenceType: item.evidenceType || '',
+    contentSource: item.contentSource || '',
   })) : []
   const supplementaryEvidenceIds = new Set(supplementaryItems.flatMap((item) => item.evidenceIds || []))
   const provisionalItems = uniqueProvisionalItems(evidenceItems.filter(isProvisionalEvidence).filter((item) => !confirmed(item)).filter((item) => fieldMeta[item.fieldKey]?.evidenceId !== item.id).filter((item) => !supplementaryEvidenceIds.has(item.id)).map(provisionalItemFromEvidence))

@@ -8,6 +8,12 @@ describe('R037 canonical profile fact normalization', () => {
     expect(fact).toMatchObject({ canonicalFieldKey: 'current_city', storageFieldKey: 'city', temporalType: 'CURRENT', semanticKind: 'CURRENT_STATE', grounded: true })
   })
 
+  it('recovers a missing model field key only when the source explicitly names an existing field', () => {
+    expect(normalizeCanonicalFact({ fieldKey: '', value: '上海', sourceExcerpt: '客户现居上海。', semanticKind: 'CURRENT_STATE' })).toMatchObject({ canonicalFieldKey: 'current_city', storageFieldKey: 'city', temporalType: 'CURRENT', grounded: true })
+    expect(normalizeCanonicalFact({ fieldKey: '', value: '女性', sourceExcerpt: '客户性别为女性。', semanticKind: 'PROFILE_FIELD' })).toMatchObject({ canonicalFieldKey: 'gender', storageFieldKey: 'gender', grounded: true })
+    expect(normalizeCanonicalFact({ fieldKey: '', value: '参加过探索营', sourceExcerpt: '客户曾参加过探索营。', semanticKind: 'EVENT' }).storageFieldKey).toBeNull()
+  })
+
   it('does not turn living alone into a city', () => {
     const fact = normalizeCanonicalFact({ fieldKey: 'living_status', value: '一个人居住', sourceExcerpt: '她目前一个人居住。', semanticKind: 'CURRENT_STATE' })
     expect(fact).toMatchObject({ canonicalFieldKey: 'living_status', storageFieldKey: 'living_status' })
@@ -84,6 +90,26 @@ describe('R037 canonical profile fact normalization', () => {
   it('keeps future career intent out of current occupation', () => {
     const fact = normalizeCanonicalFact({ fieldKey: 'occupation', value: '自己感兴趣的事业', sourceExcerpt: '她想做自己感兴趣的事业。', semanticKind: 'CURRENT_STATE' })
     expect(fact).toMatchObject({ canonicalFieldKey: 'career_goal', storageFieldKey: 'career_goal', temporalType: 'CURRENT', semanticKind: 'CURRENT_STATE', grounded: true })
+  })
+
+  it('keeps historical city, occupation and employment facts out of current fields', () => {
+    expect(normalizeCanonicalFact({ fieldKey: 'city', value: '上海', sourceExcerpt: '客户曾在上海生活。', semanticKind: 'CURRENT_STATE' })).toMatchObject({ temporalType: 'HISTORICAL', storageFieldKey: null })
+    expect(normalizeCanonicalFact({ fieldKey: 'occupation', value: '教练技术咨询', sourceExcerpt: '客户过去从事教练技术咨询。', semanticKind: 'CURRENT_STATE' })).toMatchObject({ temporalType: 'HISTORICAL', storageFieldKey: null })
+    expect(normalizeCanonicalFact({ fieldKey: 'job_status', value: '失业', sourceExcerpt: '客户曾失业一段时间。', semanticKind: 'CURRENT_STATE' })).toMatchObject({ temporalType: 'HISTORICAL', storageFieldKey: null })
+  })
+
+  it('separates historical and current occupation clauses in one source', () => {
+    const historical = normalizeCanonicalFact({ fieldKey: 'occupation', value: '金融分析', sourceExcerpt: '客户之前从事金融分析，目前从事AI产品顾问。', semanticKind: 'CURRENT_STATE' })
+    const current = normalizeCanonicalFact({ fieldKey: 'occupation', value: 'AI产品顾问', sourceExcerpt: '客户之前从事金融分析，目前从事AI产品顾问。', semanticKind: 'CURRENT_STATE' })
+    expect(historical).toMatchObject({ temporalType: 'HISTORICAL', storageFieldKey: null })
+    expect(current).toMatchObject({ temporalType: 'CURRENT', storageFieldKey: 'occupation' })
+  })
+
+  it('only recovers gender when the candidate is explicitly the customer gender', () => {
+    const female = normalizeCanonicalFact({ fieldKey: '', value: '女性', sourceExcerpt: '客户性别为女性，曾提到一位男性导师。', semanticKind: 'PROFILE_FIELD' })
+    const male = normalizeCanonicalFact({ fieldKey: '', value: '男性', sourceExcerpt: '客户性别为女性，曾提到一位男性导师。', semanticKind: 'PROFILE_FIELD' })
+    expect(female).toMatchObject({ canonicalFieldKey: 'gender', storageFieldKey: 'gender', grounded: true })
+    expect(male).toMatchObject({ canonicalFieldKey: 'UNKNOWN', storageFieldKey: null })
   })
 
   it('allows a normal structured field when its value is directly grounded', () => {
