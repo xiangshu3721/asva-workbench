@@ -144,6 +144,7 @@ const confirmedMutationFailureError = () => Object.assign(new Error('客户保�
 const mentorCreateLocks = new Map()
 const AUTO_PROFILE_SOURCE_PREFIX = 'AUTO_PROFILE_ORGANIZE:'
 const AUTO_PROFILE_CUSTOMER_SAVE_PREFIX = `${AUTO_PROFILE_SOURCE_PREFIX}CUSTOMER_SAVE`
+const AUTO_PROFILE_CUSTOMER_UPDATE_PREFIX = `${AUTO_PROFILE_SOURCE_PREFIX}CUSTOMER_UPDATE`
 const AUTO_PROCESSING_INTERVAL_MS = 30_000
 const ENROLLMENT_RECOVERY_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes as per PRD
 const publicSource = (source, { includeRaw = false } = {}) => {
@@ -905,6 +906,13 @@ function isAutomaticProfileSource(source) {
   return String(source?.notes || '').startsWith(AUTO_PROFILE_SOURCE_PREFIX)
 }
 
+function automaticProfileTaskReason(source) {
+  const notes = String(source?.notes || '')
+  if (notes === AUTO_PROFILE_CUSTOMER_UPDATE_PREFIX) return 'CUSTOMER_UPDATE'
+  if (notes === AUTO_PROFILE_CUSTOMER_SAVE_PREFIX) return 'CUSTOMER_SAVE'
+  return ''
+}
+
 function automaticProfileSourceIdForContentHash(customerId, hash) {
   const operationId = stableOperationId(`${customerId}:${hash}`, 'AUTO-SOURCE')
   return stableId('SRC', `${customerId}:${operationId}`)
@@ -944,7 +952,7 @@ function automaticSourceFilter(status) {
   return {
     conjunction: 'and',
     conditions: [
-      { field_name: mapField('sourceRecords', 'notes'), operator: 'contains', value: [AUTO_PROFILE_CUSTOMER_SAVE_PREFIX] },
+      { field_name: mapField('sourceRecords', 'notes'), operator: 'contains', value: [AUTO_PROFILE_SOURCE_PREFIX] },
       { field_name: mapField('sourceRecords', 'processing_status'), operator: 'is', value: [status] },
     ],
   }
@@ -1261,7 +1269,7 @@ export class FeishuRepository {
     }
   }
 
-  async runCustomerAutoArchive(actorId, customerId, { stage = 'extract' } = {}) {
+  async runCustomerAutoArchive(actorId, customerId, { stage = 'extract', sourceId = '' } = {}) {
     const requestedCustomerId = text(customerId).trim()
     if (!requestedCustomerId) throw Object.assign(new Error('customerId 必填'), { code: 'CUSTOMER_ID_REQUIRED', status: 400 })
     if (!['extract', 'finalize'].includes(stage)) throw Object.assign(new Error('不支持的自动归档阶段'), { code: 'AUTO_ARCHIVE_STAGE_INVALID', status: 400 })
@@ -1276,8 +1284,14 @@ export class FeishuRepository {
       const visible = scope(database, actorId)
       const customer = visible.customers.find((item) => item.id === requestedCustomerId)
       if (!customer) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-      const existingAutomaticSource = latestAutomaticProfileSource(database.sourceRecords, requestedCustomerId)
-      const pendingMarker = customer.automaticProfilePending?.reason === 'CUSTOMER_SAVE' ? customer.automaticProfilePending : null
+      const requestedSourceId = text(sourceId).trim()
+      const existingAutomaticSource = requestedSourceId
+        ? database.sourceRecords.find((item) => item.id === requestedSourceId && item.customerId === requestedCustomerId && isAutomaticProfileSource(item))
+        : latestAutomaticProfileSource(database.sourceRecords, requestedCustomerId)
+      const pendingMarker = ['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(customer.automaticProfilePending?.reason)
+        ? customer.automaticProfilePending
+        : null
+      if (requestedSourceId && !existingAutomaticSource && !pendingMarker) return { status: 'FAILED', customerId: requestedCustomerId, sourceId: requestedSourceId, phase: 'SOURCE_LOOKUP', errorCode: 'AUTOMATIC_SOURCE_NOT_FOUND', durationMs: Date.now() - startedAt }
       if (!pendingMarker && !existingAutomaticSource) return { status: 'NOT_REQUIRED', customerId: requestedCustomerId, phase: 'CREATE_ONLY', errorCode: 'CREATE_ONLY', durationMs: Date.now() - startedAt }
       if (!automaticProfileEventAllowed(pendingMarker?.createdAt || existingAutomaticSource?.createdAt || existingAutomaticSource?.uploadedAt || customer.createdAt)) return { status: 'DISABLED', customerId: requestedCustomerId, phase: 'DATE_GATE', errorCode: 'BEFORE_ENABLED_AT', durationMs: Date.now() - startedAt }
       const recoveredText = normalizeSourceRawText(existingAutomaticSource?.rawText || customer.notes)
@@ -1518,16 +1532,20 @@ export class FeishuRepository {
 
   async nextAutomaticArchiveCandidate() {
     if (!config.features.automaticProfileArchiving) return null
+    let deferredUpdateCandidate = null
     for (const [status, stage] of [['EXTRACT_READY', 'finalize'], ['UPLOADED', 'extract'], ['FAILED', 'extract'], ['PROCESSING', 'extract']]) {
       const rows = await this.archiveSearch(stage2Table('sourceRecords'), automaticSourceFilter(status), { pageSize: 20 })
       for (const row of rows) {
         const source = sourceRecord(row)
-        if (!String(source.notes || '').startsWith(AUTO_PROFILE_CUSTOMER_SAVE_PREFIX)) continue
+        const reason = automaticProfileTaskReason(source)
+        if (!['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(reason)) continue
         if (!automaticProfileArchivingAllowedForCustomer(source.customerId)) continue
         if (!automaticProfileEventAllowed(source.createdAt || source.uploadedAt || source.occurredAt || source.processingStartedAt)) continue
         if (status === 'PROCESSING' && !isStaleProcessing(source)) continue
         if (status === 'FAILED' && !shouldAutoRecoverSource(source)) continue
-        return { customerId: source.customerId, actorId: source.uploadedBy, sourceId: source.id, stage }
+        const candidate = { customerId: source.customerId, actorId: source.uploadedBy, sourceId: source.id, stage, reason }
+        if (reason === 'CUSTOMER_SAVE') return candidate
+        deferredUpdateCandidate ||= candidate
       }
     }
     const pendingRows = await this.archiveSearch(config.feishu.tables.customers, {
@@ -1535,36 +1553,44 @@ export class FeishuRepository {
     }, { pageSize: 20 })
     const pendingCandidates = pendingRows.map((row) => ({ row, pendingCustomer: customer(row) })).filter(({ pendingCustomer }) => {
       const pending = pendingCustomer.automaticProfilePending
-      return pending?.reason === 'CUSTOMER_SAVE' && pending.contentHash && pending.actorId && automaticProfileArchivingAllowedForCustomer(pendingCustomer.id) && automaticProfileEventAllowed(pending.createdAt || pendingCustomer.createdAt)
+      return ['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(pending?.reason) && pending.contentHash && pending.actorId && automaticProfileArchivingAllowedForCustomer(pendingCustomer.id) && automaticProfileEventAllowed(pending.createdAt || pendingCustomer.createdAt)
     }).sort((left, right) => String(right.pendingCustomer.automaticProfilePending.createdAt || '').localeCompare(String(left.pendingCustomer.automaticProfilePending.createdAt || '')))
     for (const { row, pendingCustomer } of pendingCandidates) {
       const pending = pendingCustomer.automaticProfilePending
-      return { customerId: pendingCustomer.id, actorId: pending.actorId, sourceId: '', stage: 'create' }
+      const rawText = normalizeSourceRawText(pendingCustomer.notes)
+      if (!rawText) continue
+      const candidate = { customerId: pendingCustomer.id, actorId: pending.actorId, sourceId: automaticProfileSourceIdForContentHash(pendingCustomer.id, pending.contentHash), stage: 'create', reason: pending.reason }
+      const reason = candidate.reason
+      if (reason === 'CUSTOMER_SAVE') return candidate
+      deferredUpdateCandidate ||= candidate
     }
-    return null
+    return deferredUpdateCandidate
   }
 
   async runAutomaticArchiveWorkerTick() {
     const startedAt = Date.now()
     const candidate = await this.nextAutomaticArchiveCandidate()
     if (!candidate) return { status: config.features.automaticProfileArchiving ? 'IDLE' : 'DISABLED', durationMs: Date.now() - startedAt }
+    if (candidate.reason === 'CUSTOMER_UPDATE') {
+      return { status: 'DEFERRED_STAGE2', customerId: candidate.customerId, sourceId: candidate.sourceId, taskReason: candidate.reason, phase: 'TASK_DISCOVERED', durationMs: Date.now() - startedAt }
+    }
     return this.withAutomaticArchiveWorkspace(candidate.customerId, candidate.actorId, async () => {
       const workspace = await this.load({ force: true })
       const actor = workspace.staff.find((item) => item.id === candidate.actorId)
       if (!actor || actor.status !== 'ACTIVE' || actor.loginEnabled !== true) return { status: 'BLOCKED', customerId: candidate.customerId, sourceId: candidate.sourceId, errorCode: 'AUTOMATIC_ARCHIVE_ACTOR_UNAVAILABLE', durationMs: Date.now() - startedAt }
       if (candidate.stage === 'create') {
         const customerRecord = workspace.customers.find((item) => item.id === candidate.customerId)
-        const existingSource = latestAutomaticProfileSource(workspace.sourceRecords, candidate.customerId)
+        const recoveredText = normalizeSourceRawText(customerRecord?.notes)
+        const existingSource = workspace.sourceRecords.find((item) => item.id === candidate.sourceId && item.customerId === candidate.customerId && isAutomaticProfileSource(item)) || findMatchingAutomaticProfileSource(workspace.sourceRecords, candidate.customerId, contentHash(recoveredText))
         if (existingSource && ['COMPLETED', 'REVIEW_REQUIRED'].includes(existingSource.processingStatus)) {
           if (customerRecord?.automaticProfilePending) await this.clearAutomaticProfilePending(candidate.customerId, customerRecord.automaticProfilePending).catch((error) => this.audit('CLEAR_AUTOMATIC_PROFILE_PENDING', candidate.customerId, candidate.actorId, 'PENDING', error?.code || 'AUTO_PENDING_CLEAR_FAILED'))
           return { status: 'SKIPPED_ALREADY_ARCHIVED', customerId: candidate.customerId, sourceId: existingSource.id, phase: 'CREATE_ALREADY_ARCHIVED', durationMs: Date.now() - startedAt }
         }
-        const rawText = normalizeSourceRawText(customerRecord?.notes)
-        if (!rawText) return { status: 'NOT_REQUIRED', customerId: candidate.customerId, phase: 'CREATE', durationMs: Date.now() - startedAt }
-        const ensured = await this.createAutomaticProfileSource(candidate.actorId, candidate.customerId, rawText, 'CUSTOMER_SAVE')
+        if (!recoveredText) return { status: 'NOT_REQUIRED', customerId: candidate.customerId, phase: 'CREATE', durationMs: Date.now() - startedAt }
+        const ensured = await this.createAutomaticProfileSource(candidate.actorId, candidate.customerId, recoveredText, candidate.reason || 'CUSTOMER_SAVE')
         return { status: ensured.status, customerId: candidate.customerId, sourceId: ensured.source?.id || '', phase: 'SOURCE_CREATED', durationMs: Date.now() - startedAt }
       }
-      const result = await this.runCustomerAutoArchive(candidate.actorId, candidate.customerId, { stage: candidate.stage })
+      const result = await this.runCustomerAutoArchive(candidate.actorId, candidate.customerId, { stage: candidate.stage, sourceId: candidate.sourceId })
       return { ...result, workerStage: candidate.stage, durationMs: result.durationMs ?? Date.now() - startedAt }
     })
   }

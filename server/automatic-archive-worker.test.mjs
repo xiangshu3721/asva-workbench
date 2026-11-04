@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { config } from './config.mjs'
 import { FeishuRepository } from './repository.mjs'
+import { contentHash } from '../shared/evidence-contract.mjs'
 
 describe('automatic archive timer worker', () => {
   const original = {
@@ -65,7 +66,7 @@ describe('automatic archive timer worker', () => {
     const result = await repository.runAutomaticArchiveWorkerTick()
 
     expect(result).toMatchObject({ status: 'COMPLETED', customerId, workerStage: 'finalize' })
-    expect(repository.runCustomerAutoArchive).toHaveBeenCalledWith('ADMIN-1', customerId, { stage: 'finalize' })
+    expect(repository.runCustomerAutoArchive).toHaveBeenCalledWith('ADMIN-1', customerId, { stage: 'finalize', sourceId: 'SRC-WORKER-2' })
     expect(search).not.toHaveBeenCalledWith(config.feishu.tables.appointments, expect.anything(), expect.anything())
   })
 
@@ -114,15 +115,16 @@ describe('automatic archive timer worker', () => {
     newer.fields['档案字段元数据'] = splitRich(JSON.stringify({ _automatic_profile_pending: { contentHash: 'newer', actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE', createdAt: '2026-11-03T00:00:00.000Z' } }))
     const search = vi.fn(async (tableId, filter) => tableId === config.feishu.tables.customers ? [older, newer] : [])
     const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
-    await expect(repository.nextAutomaticArchiveCandidate()).resolves.toMatchObject({ customerId: 'CUS-NEWER', stage: 'create' })
+    await expect(repository.nextAutomaticArchiveCandidate()).resolves.toMatchObject({ customerId: 'CUS-NEWER', stage: 'create', sourceId: expect.stringMatching(/^SRC-/), reason: 'CUSTOMER_SAVE' })
   })
 
   it('clears a stale pending marker when its terminal Source is already archived', async () => {
     config.features.automaticProfileArchiving = true
     config.features.automaticProfileArchivingMode = 'off'
     const customerId = 'CUS-ALREADY-ARCHIVED'
+    const archivedText = '客户希望调整工作节奏'
     const sourceRow = { record_id: 'rec-terminal-source', fields: {
-      资料ID: rich('SRC-TERMINAL'), 客户ID: rich(customerId), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'), 处理状态: rich('COMPLETED'), 原始文本: rich('已归档'), 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
+      资料ID: rich('SRC-TERMINAL'), 客户ID: rich(customerId), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE'), 内容Hash: rich(contentHash(archivedText)), 处理状态: rich('COMPLETED'), 原始文本: rich(archivedText), 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
     } }
     const search = vi.fn(async (tableId, filter) => {
       if (tableId === config.feishu.tables.customers) return [customerRow(customerId, 'ADMIN-1')]
@@ -132,8 +134,47 @@ describe('automatic archive timer worker', () => {
     })
     const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
     repository.clearAutomaticProfilePending = vi.fn(async () => true)
+    const row = customerRow(customerId, 'ADMIN-1', archivedText)
+    row.fields['档案字段元数据'] = splitRich(JSON.stringify({ _automatic_profile_pending: { contentHash: contentHash(archivedText), actorId: 'ADMIN-1', reason: 'CUSTOMER_SAVE', createdAt: new Date().toISOString() } }))
+    search.mockImplementation(async (tableId, filter) => {
+      if (tableId === config.feishu.tables.customers) return [row]
+      if (tableId === config.feishu.tables.staff) return [staffRow]
+      if (tableId === config.feishu.tables.sourceRecords && filter?.conditions?.some((item) => item.field_name === '客户ID')) return [sourceRow]
+      return []
+    })
 
     await expect(repository.runAutomaticArchiveWorkerTick()).resolves.toMatchObject({ status: 'SKIPPED_ALREADY_ARCHIVED', customerId, sourceId: 'SRC-TERMINAL' })
     expect(repository.clearAutomaticProfilePending).toHaveBeenCalledWith(customerId, expect.objectContaining({ reason: 'CUSTOMER_SAVE' }))
+  })
+
+  it('defers CUSTOMER_UPDATE without starting the stage 2 archive execution', async () => {
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    const customerId = 'CUS-UPDATE-1'
+    const sourceRow = { record_id: 'rec-update-source', fields: {
+      资料ID: rich('SRC-UPDATE-1'), 客户ID: rich(customerId), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_UPDATE'), 处理状态: rich('UPLOADED'), 原始文本: rich('客户目前在广州'), 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
+    } }
+    const search = vi.fn(async (tableId, filter) => tableId === config.feishu.tables.sourceRecords && filter.conditions.some((item) => item.field_name === '处理状态' && item.value[0] === 'UPLOADED') ? [sourceRow] : [])
+    const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
+    repository.runCustomerAutoArchive = vi.fn()
+
+    await expect(repository.runAutomaticArchiveWorkerTick()).resolves.toMatchObject({ status: 'DEFERRED_STAGE2', customerId, sourceId: 'SRC-UPDATE-1', taskReason: 'CUSTOMER_UPDATE' })
+    expect(repository.runCustomerAutoArchive).not.toHaveBeenCalled()
+  })
+
+  it('assigns a stable Source ID to a pending CUSTOMER_UPDATE without writing during discovery', async () => {
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    const customerId = 'CUS-UPDATE-2'
+    const row = customerRow(customerId, 'ADMIN-1', '客户目前在广州')
+    row.fields['档案字段元数据'] = splitRich(JSON.stringify({ _automatic_profile_pending: { contentHash: 'pending-update', actorId: 'ADMIN-1', reason: 'CUSTOMER_UPDATE', createdAt: '2026-11-03T00:00:00.000Z' } }))
+    const search = vi.fn(async (tableId) => tableId === config.feishu.tables.customers ? [row] : [])
+    const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
+    repository.createAutomaticProfileSource = vi.fn()
+
+    const candidate = await repository.nextAutomaticArchiveCandidate()
+
+    expect(candidate).toMatchObject({ customerId, reason: 'CUSTOMER_UPDATE', stage: 'create', sourceId: expect.stringMatching(/^SRC-/) })
+    expect(repository.createAutomaticProfileSource).not.toHaveBeenCalled()
   })
 })
