@@ -1576,9 +1576,6 @@ export class FeishuRepository {
     const startedAt = Date.now()
     const candidate = await this.nextAutomaticArchiveCandidate()
     if (!candidate) return { status: config.features.automaticProfileArchiving ? 'IDLE' : 'DISABLED', durationMs: Date.now() - startedAt }
-    if (candidate.reason === 'CUSTOMER_UPDATE') {
-      return { status: 'DEFERRED_STAGE2', customerId: candidate.customerId, sourceId: candidate.sourceId, taskReason: candidate.reason, phase: 'TASK_DISCOVERED', durationMs: Date.now() - startedAt }
-    }
     return this.withAutomaticArchiveWorkspace(candidate.customerId, candidate.actorId, async () => {
       const workspace = await this.load({ force: true })
       const actor = workspace.staff.find((item) => item.id === candidate.actorId)

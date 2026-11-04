@@ -10,12 +10,14 @@ describe('automatic archive timer worker', () => {
     canary: config.features.automaticProfileArchivingCanary,
     allowlist: config.features.automaticProfileCanaryCustomerIds,
   }
+  const originalTables = { ...config.feishu.tables }
 
   afterEach(() => {
     config.features.automaticProfileArchiving = original.enabled
     config.features.automaticProfileArchivingMode = original.mode
     config.features.automaticProfileArchivingCanary = original.canary
     config.features.automaticProfileCanaryCustomerIds = original.allowlist
+    Object.assign(config.feishu.tables, originalTables)
   })
 
   const rich = (value) => [{ type: 'text', text: String(value) }]
@@ -149,19 +151,33 @@ describe('automatic archive timer worker', () => {
     expect(repository.clearAutomaticProfilePending).toHaveBeenCalledWith(customerId, expect.objectContaining({ reason: 'CUSTOMER_SAVE' }))
   })
 
-  it('defers CUSTOMER_UPDATE without starting the stage 2 archive execution', async () => {
+  it('executes CUSTOMER_UPDATE through the shared Source-scoped archive entry point', async () => {
     config.features.automaticProfileArchiving = true
     config.features.automaticProfileArchivingMode = 'off'
+    Object.assign(config.feishu.tables, {
+      sourceRecords: 'tbl-stage2-source', evidenceItems: 'tbl-stage2-evidence',
+      profileUpdateProposals: 'tbl-stage2-proposals', evidenceConflicts: 'tbl-stage2-conflicts',
+    })
     const customerId = 'CUS-UPDATE-1'
+    const updateCustomer = customerRow(customerId, 'ADMIN-1', '客户目前在广州')
+    delete updateCustomer.fields['档案字段元数据']
     const sourceRow = { record_id: 'rec-update-source', fields: {
       资料ID: rich('SRC-UPDATE-1'), 客户ID: rich(customerId), 上传人: rich('ADMIN-1'), 备注: rich('AUTO_PROFILE_ORGANIZE:CUSTOMER_UPDATE'), 处理状态: rich('UPLOADED'), 原始文本: rich('客户目前在广州'), 创建时间: new Date().toISOString(), 上传时间: new Date().toISOString(),
     } }
-    const search = vi.fn(async (tableId, filter) => tableId === config.feishu.tables.sourceRecords && filter.conditions.some((item) => item.field_name === '处理状态' && item.value[0] === 'UPLOADED') ? [sourceRow] : [])
+    const search = vi.fn(async (tableId, filter) => {
+      if (tableId === config.feishu.tables.sourceRecords) {
+        const status = filter?.conditions?.find((item) => item.field_name === '处理状态')?.value?.[0]
+        return !status || status === 'UPLOADED' ? [sourceRow] : []
+      }
+      if (tableId === config.feishu.tables.customers) return [updateCustomer]
+      if (tableId === config.feishu.tables.staff) return [staffRow]
+      return []
+    })
     const repository = new FeishuRepository({ authRepository: {}, archiveSearch: search })
-    repository.runCustomerAutoArchive = vi.fn()
+    repository.runCustomerAutoArchive = vi.fn(async (_actorId, requestedCustomerId, options) => ({ status: 'EXTRACT_READY', customerId: requestedCustomerId, ...options }))
 
-    await expect(repository.runAutomaticArchiveWorkerTick()).resolves.toMatchObject({ status: 'DEFERRED_STAGE2', customerId, sourceId: 'SRC-UPDATE-1', taskReason: 'CUSTOMER_UPDATE' })
-    expect(repository.runCustomerAutoArchive).not.toHaveBeenCalled()
+    await expect(repository.runAutomaticArchiveWorkerTick()).resolves.toMatchObject({ status: 'EXTRACT_READY', customerId, sourceId: 'SRC-UPDATE-1', workerStage: 'extract' })
+    expect(repository.runCustomerAutoArchive).toHaveBeenCalledWith('ADMIN-1', customerId, { stage: 'extract', sourceId: 'SRC-UPDATE-1' })
   })
 
   it('assigns a stable Source ID to a pending CUSTOMER_UPDATE without writing during discovery', async () => {
