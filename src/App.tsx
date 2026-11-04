@@ -986,6 +986,15 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const [understandingView, setUnderstandingView] = useState<'consultation' | 'sales'>('consultation')
   const [editingEnrollments, setEditingEnrollments] = useState(false)
   const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const moreDetailsRef = useRef<HTMLDetailsElement>(null)
+  const evidenceDisclosureRef = useRef<HTMLDetailsElement>(null)
+  const [composerRequest, setComposerRequest] = useState<{ customerId: string; sequence: number } | null>(null)
+  const openSourceComposer = () => {
+    if (moreDetailsRef.current) moreDetailsRef.current.open = true
+    if (evidenceDisclosureRef.current) evidenceDisclosureRef.current.open = true
+    setEvidenceOpen(true)
+    setComposerRequest((previous) => ({ customerId: customer.id, sequence: (previous?.sequence || 0) + 1 }))
+  }
   const activeCustomerIdRef = useRef(customer.id)
   const understandingSequenceRef = useRef(0)
   const salesSequenceRef = useRef(0)
@@ -1014,7 +1023,6 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const profileLoading = Boolean(profileState?.loading)
   const understandingRefreshing = understandingRefreshingCustomerId === customer.id
   const salesRefreshing = salesRefreshingCustomerId === customer.id
-  useEffect(() => { const openProfileComposer = () => { const root = document.querySelector<HTMLElement>('.customer-detail-page.customer-detail-v2'); const moreDetails = root?.querySelector<HTMLDetailsElement>('.customer-more-details'); const evidenceDetails = moreDetails?.querySelector<HTMLDetailsElement>('.evidence-disclosure'); if (!root || !moreDetails || !evidenceDetails) return; moreDetails.open = true; evidenceDetails.open = true; requestAnimationFrame(() => root.querySelector<HTMLElement>('#profile-supplement')?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }; window.addEventListener('asva-open-source-composer', openProfileComposer); return () => window.removeEventListener('asva-open-source-composer', openProfileComposer) }, [customer.id])
   const loadUnderstanding = async () => {
     const requestCustomerId = customer.id
     const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
@@ -1174,14 +1182,14 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const panelSalesStatus = salesResponse?.status || (salesError ? 'FAILED' : customer.salesUnderstandingStatus || 'STALE')
   return <article className="customer-detail-page customer-detail-v2">
     <header className="customer-detail-header">
-      <div className="customer-detail-identity"><span className="customer-detail-avatar">{customer.initials}</span><div><div className="customer-detail-name-row"><h1>{customer.name}</h1><button className="primary-button small customer-profile-update-button" type="button" onClick={() => window.dispatchEvent(new Event('asva-open-source-composer'))}>更新客户档案</button></div>{headerOverviewFacts.length > 0 && <div className="customer-overview-facts">{headerOverviewFacts.map((fact) => <span key={fact}>{fact}</span>)}</div>}</div></div>
+      <div className="customer-detail-identity"><span className="customer-detail-avatar">{customer.initials}</span><div><div className="customer-detail-name-row"><h1>{customer.name}</h1><button className="primary-button small customer-profile-update-button" type="button" onClick={openSourceComposer}>更新客户档案</button></div>{headerOverviewFacts.length > 0 && <div className="customer-overview-facts">{headerOverviewFacts.map((fact) => <span key={fact}>{fact}</span>)}</div>}</div></div>
       <section className="customer-relationship-block"><div className="customer-relation-facts"><div><span>联系方式</span><strong>{customer.phone ? maskPhone(customer.phone) : customer.wechat ? `微信 ${customer.wechat}` : '—'}</strong>{customer.phone && customer.wechat && <small>微信 {customer.wechat}</small>}</div><div><span>介绍人</span><strong>{referrer || '—'}</strong></div><div><span>创建人</span><strong>{relationOwner || '—'}</strong></div><div><span>已报名课程</span><strong>{courseNames.length ? courseNames.join('、') : '—'}</strong></div></div></section>
       <section className="customer-service-block"><div className={`customer-service-facts ${sessions[0] ? '' : 'customer-service-facts-without-session'}`}>{sessions[0] && <div><span>最近服务</span><strong>{friendlyDetailDate(sessions[0].date).split(' ')[0] || '暂无'}</strong></div>}<div className="customer-service-suggestion"><span>当前建议</span><strong>{serviceSuggestion}</strong></div><div><span>最近更新</span><strong>{recentUpdate || '—'}</strong></div></div></section>
     </header>
     <CustomerUnderstandingOverview understanding={currentUnderstanding} source={understandingResponse?.meta.source} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => void refreshUnderstanding(true)} />
     <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
     <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
-    <details className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
+    <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={sortProductsForSelection(database.products.filter(activeProductForManualEntry))} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
 }
@@ -1320,17 +1328,19 @@ function EnrollmentEditor({ customer, products, enrollments, onClose, onSave }: 
 
 function CustomerHistory({ appointments, sessions, database }: { appointments: Database['appointments']; sessions: Database['sessions']; database: Database }) { const events = [...appointments.map((item) => ({ id: item.id, date: item.createdAt, type: '预约', title: item.topic, body: item.description || item.expectation, mentorId: item.assignedMentorId })), ...sessions.map((item) => ({ id: item.id, date: item.date, type: '服务记录', title: item.topic, body: item.aiSummary || item.note, mentorId: item.mentorId }))].sort((a, b) => b.date.localeCompare(a.date)); return <section className="customer-detail-section"><SectionHeading title="历史记录" meta={`${events.length} 条`} icon="◷" action={<span className="history-filter">全部</span>} />{events.length ? <div className="history-timeline">{events.map((event) => { const mentor = database.staff.find((item) => item.id === event.mentorId); return <article className="history-event" key={event.id}><time>{detailDate(event.date)}</time><span className="history-dot" /><div><div className="history-event-title"><strong>{event.title}</strong></div><small>{event.type}{mentor ? ` · ${mentor.name}` : ''}</small><p>{event.body || '暂无详细记录。'}</p></div></article> })}</div> : <div className="detail-empty-line">还没有预约或服务记录。</div>}</section> }
 
-function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, onLoad, onWorkspaceChange, onSourceStatus, onCreate, onProcess, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
+function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, historyInitiallyRequested = true, editorRequestId = 0, onLoad, onWorkspaceChange, onSourceStatus, onCreate, onProcess, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; historyInitiallyRequested?: boolean; editorRequestId?: number; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
   const emptyWorkspace: SourceWorkspace = { sources: [], evidenceItems: [], proposals: [], conflicts: [] }
   const [workspace, setWorkspace] = useState<SourceWorkspace>(() => cachedWorkspace || emptyWorkspace)
   const workspaceRef = useRef(cachedWorkspace || emptyWorkspace)
   const workspaceLoadedRef = useRef(Boolean(cachedWorkspace))
   const [workspaceLoaded, setWorkspaceLoaded] = useState(Boolean(cachedWorkspace))
-  const [workspaceLoading, setWorkspaceLoading] = useState(!cachedWorkspace)
+  const [workspaceLoading, setWorkspaceLoading] = useState(!cachedWorkspace && historyInitiallyRequested)
+  const [historyRequested, setHistoryRequested] = useState(historyInitiallyRequested)
   const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false)
   const [workspaceLoadError, setWorkspaceLoadError] = useState('')
   const [rawText, setRawText] = useState('')
-  const [sourcePerspective, setSourcePerspective] = useState<'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'>('STAFF_REPORTED')
+  const editorRef = useRef<HTMLTextAreaElement>(null)
+  const lastFocusedEditorRequestRef = useRef(0)
   const [composerOpen, setComposerOpen] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveState, setSaveState] = useState<SourceSaveState>('IDLE')
@@ -1374,7 +1384,19 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     }
   }
   useEffect(() => () => { processingRef.current.clear() }, [customer.id])
-  useEffect(() => { const open = () => setComposerOpen(true); window.addEventListener('asva-open-source-composer', open); return () => window.removeEventListener('asva-open-source-composer', open) }, [])
+  useEffect(() => {
+    if (editorRequestId > 0) setComposerOpen(true)
+  }, [editorRequestId])
+  useEffect(() => {
+    if (!editorRequestId || !composerOpen || lastFocusedEditorRequestRef.current === editorRequestId) return
+    const frame = window.requestAnimationFrame(() => {
+      if (!editorRef.current) return
+      editorRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      editorRef.current.focus({ preventScroll: true })
+      lastFocusedEditorRequestRef.current = editorRequestId
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [editorRequestId, composerOpen])
   useEffect(() => {
     const shouldWarn = isSourceSavePending(saveState) || saveState === 'UNKNOWN'
     if (!shouldWarn) return
@@ -1392,6 +1414,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     setAnalysisSummary(`已整理完成 · 更新 ${updated} 项 · 新增 ${processed.evidenceItems.length} 条记录 · 需要确认 ${confirmations} 项`)
   }
   useEffect(() => {
+    if (!historyRequested) return
     let cancelled = false
     const reconcile = async () => {
       const next = await load()
@@ -1406,7 +1429,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     }
     void reconcile()
     return () => { cancelled = true }
-  }, [customer.id])
+  }, [customer.id, historyRequested])
   const retrySource = async (sourceId: string) => {
     setSaving(true); setError('')
     try { mergeProcessed(await onProcess(sourceId, true)); setMessage('已重新识别并整理完成') } catch (processError) { await load({ refresh: true }); setMessage(sourceFailureMessage(processError)) } finally { setSaving(false) }
@@ -1446,7 +1469,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     updateSaveState('START')
     const saveStartedAt = pendingSaveRef.current?.startedAt || performance.now()
     try {
-      const input = pendingSaveRef.current?.input || { operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: 'TEXT_INPUT', rawText: rawText.trim(), sourcePerspective, dialogueConfirmation: '' }
+      const input = pendingSaveRef.current?.input || { operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: 'TEXT_INPUT', rawText: rawText.trim(), sourcePerspective: 'STAFF_REPORTED', dialogueConfirmation: '' }
       pendingSaveRef.current = { operationId: input.operationId || '', input, startedAt: saveStartedAt }
       const source = await onCreate(input)
       confirmSourceSave(source, pendingSaveRef.current?.startedAt || saveStartedAt)
@@ -1469,14 +1492,14 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
   const grouped = (type: string) => workspace.evidenceItems.filter((item) => item.evidenceType === type)
   const fieldLabel = (field: string) => ({ birth_date: '出生日期', gender: '性别', phone: '手机号', wechat: '微信号', city: '居住城市', current_city: '居住城市', occupation: '当前职业', job_status: '工作状态', employment_status: '工作状态', relationship_status: '关系状态', marital_status: '婚姻状态', age: '年龄', sleep: '睡眠情况', sleep_status: '睡眠情况' } as Record<string, string>)[field] || '待确认资料'
   return <section className="customer-detail-section profile-supplement" id="profile-supplement" aria-busy={workspaceLoading} data-refreshing={workspaceRefreshing ? 'true' : undefined}>
-    <SectionHeading title="档案记录" meta={`已记录 ${workspace.sources.length} 份 · 待确认 ${workspace.conflicts.filter((item) => item.status === 'OPEN').length} 项`} icon="＋" action={<button className="secondary-button small" type="button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? '收起' : '＋ 补充档案'}</button>} />
-    {workspaceLoading && <p className="understanding-empty evidence-workspace-loading">正在加载相关依据…</p>}
+    <SectionHeading title="档案记录" meta={historyRequested || cachedWorkspace ? `已记录 ${workspace.sources.length} 份 · 待确认 ${workspace.conflicts.filter((item) => item.status === 'OPEN').length} 项` : '可立即录入，历史资料按需查看'} icon="＋" action={<button className="secondary-button small" type="button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? '收起' : '＋ 补充档案'}</button>} />
+    {!historyRequested && <button className="secondary-button small" type="button" onClick={() => setHistoryRequested(true)}>查看已有资料与依据</button>}
+    {historyRequested && workspaceLoading && <p className="understanding-empty evidence-workspace-loading">正在加载相关依据…</p>}
     {workspaceLoadError && !workspaceLoading && !workspaceLoaded && <div className="evidence-load-error"><p>{workspaceLoadError}</p><button className="secondary-button small" type="button" onClick={() => void load()}>重试</button></div>}
     {composerOpen && <>
       <p className="supplement-note">写下补充说明，保存后系统会在后台读取并整理。</p>
-      <textarea value={rawText} disabled={isSourceSavePending(saveState) || saveState === 'UNKNOWN'} onChange={(event) => setRawText(event.target.value)} placeholder="可选：补充资料背景，例如：这是客户上周咨询后的整理资料。" />
+      <textarea ref={editorRef} value={rawText} disabled={isSourceSavePending(saveState) || saveState === 'UNKNOWN'} onChange={(event) => setRawText(event.target.value)} placeholder="可选：补充资料背景，例如：这是客户上周咨询后的整理资料。" />
       <small className="field-hint input-method-voice-hint">🎙 语音录入：点击输入框，使用手机键盘上的麦克风说话，即可转换成文字。</small>
-      <label className="perspective-toggle"><input type="checkbox" disabled={isSourceSavePending(saveState) || saveState === 'UNKNOWN'} checked={sourcePerspective === 'CUSTOMER_FIRST_PARTY'} onChange={(event) => setSourcePerspective(event.target.checked ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED')} /> 这是客户本人原话 / 原始资料</label>
       <div className="source-tools">
         <button className="primary-button" type="button" disabled={!rawText.trim() || saving || isSourceSavePending(saveState)} onClick={() => void save()}>{saving ? '保存中…' : saveState === 'UNKNOWN' ? '重新确认保存' : saveState === 'FAILED' ? '重试保存' : '保存'}</button>
       </div>
