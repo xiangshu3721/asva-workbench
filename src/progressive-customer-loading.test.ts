@@ -73,6 +73,27 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain('refreshKey={customer.profileVersion ?? 0}')
   })
 
+  it('opens the existing customer input on the first click and focuses its mounted editor', () => {
+    expect(appSource).toContain('onClick={openSourceComposer}>更新客户档案')
+    expect(appSource).toContain('moreDetailsRef.current.open = true')
+    expect(appSource).toContain('evidenceDisclosureRef.current.open = true')
+    expect(appSource).toContain('setEvidenceOpen(true)')
+    expect(appSource).toContain('editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0}')
+    expect(appSource).toContain('editorRef.current.focus({ preventScroll: true })')
+    expect(appSource).not.toContain('asva-open-source-composer')
+  })
+
+  it('lets mentors save text before requesting the evidence workspace and removes the source perspective toggle', () => {
+    expect(appSource).toContain('historyInitiallyRequested={composerRequest?.customerId !== customer.id}')
+    expect(appSource).toContain('const [historyRequested, setHistoryRequested] = useState(historyInitiallyRequested)')
+    expect(appSource).toContain('if (!historyRequested) return')
+    expect(appSource).toContain('onClick={() => setHistoryRequested(true)}>查看已有资料与依据')
+    expect(appSource).toContain("sourcePerspective: 'STAFF_REPORTED'")
+    expect(appSource).not.toContain('这是客户本人原话 / 原始资料')
+    expect(appSource).toContain('const source = await onCreate(input)')
+    expect(appSource).toContain('void onProcess(source.id).then(mergeProcessed)')
+  })
+
   it('checks the archive status with bounded read-only refreshes while the profile is open', () => {
     expect(appSource).toContain('AUTO_PROFILE_REFRESH_INTERVAL_MS')
     expect(appSource).toContain('AUTO_PROFILE_REFRESH_MAX_ATTEMPTS')
