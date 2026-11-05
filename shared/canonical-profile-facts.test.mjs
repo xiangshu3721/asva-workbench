@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalProfileFieldCatalog, canonicalProfileFieldRegistry, classifyTemporalFact, normalizeCanonicalFact, resolveCanonicalField } from './canonical-profile-facts.mjs'
+import { canonicalProfileFieldCatalog, canonicalProfileFieldRegistry, classifyTemporalFact, isExplicitCustomerAcquisitionSource, normalizeCanonicalFact, resolveCanonicalField } from './canonical-profile-facts.mjs'
 import { FIELD_MAPPING } from '../server/field-mapping.mjs'
 
 describe('R037 canonical profile fact normalization', () => {
@@ -57,6 +57,16 @@ describe('R037 canonical profile fact normalization', () => {
   it('supports stable synonyms but does not guess unknown fields', () => {
     expect(resolveCanonicalField({ fieldKey: 'current_location', value: '深圳', sourceExcerpt: '现在住在深圳' })).toMatchObject({ canonicalFieldKey: 'current_city', storageFieldKey: 'city' })
     expect(resolveCanonicalField({ fieldKey: 'mood_level', value: '稳定', sourceExcerpt: '最近状态稳定' })).toMatchObject({ canonicalFieldKey: 'UNKNOWN', storageFieldKey: null })
+  })
+
+  it('maps only explicit customer acquisition language to the existing source field', () => {
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '女性成长读书会', sourceExcerpt: '通过女性成长读书会认识', semanticKind: 'CURRENT_STATE' })).toMatchObject({ canonicalFieldKey: 'customer_source', storageFieldKey: 'source', canonicalValue: '女性成长读书会', grounded: true })
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '解忧小屋微信群', sourceExcerpt: '来自解忧小屋微信群', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('解忧小屋微信群')
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '张老师转介绍', sourceExcerpt: '经张老师介绍认识', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('张老师转介绍')
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '女性成长读书会', sourceExcerpt: '参加过女性成长读书会', semanticKind: 'EVENT' }).storageFieldKey).toBeNull()
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '女性成长读书会', sourceExcerpt: '通过女性成长读书会认识，也参加过其他活动', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('女性成长读书会')
+    expect(isExplicitCustomerAcquisitionSource({ value: '张老师转介绍', sourceExcerpt: '经张老师介绍认识' })).toBe(true)
+    expect(isExplicitCustomerAcquisitionSource({ value: '女性成长读书会', sourceExcerpt: '参加过女性成长读书会' })).toBe(false)
   })
 
   it('rejects canonical values whose quote does not support them', () => {

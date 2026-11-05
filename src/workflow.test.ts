@@ -72,7 +72,7 @@ describe('V0.3 appointment workflow and permissions', () => {
     expect(() => api.createCustomer('staff-admin', { nickname: '林知微', phone: '13800001212', situation: '希望梳理职业方向。', needsFollowup: true })).toThrow('重复')
     const created = api.createCustomer('staff-admin', { nickname: '顾清弦', wechat: 'gqx-demo', situation: '最近在考虑换行业，希望有人帮我拆解下一步。', needsFollowup: true, mentorId: 'mentor-li', profileUpdates: [{ field: 'current_core_issue', value: '职业方向选择', source: 'AI_INFERENCE', confidence: 0.94 }] })
     const customer = created.customers.find((item) => item.name === '顾清弦')
-    expect(customer?.source).toBe('管理员手动录入')
+    expect(customer?.source).toBe('')
     expect(customer?.profileFields?.current_core_issue).toBe('职业方向选择')
     expect(created.appointments.some((item) => item.customerId === customer?.id)).toBe(false)
     const archiveOnly = api.createCustomer('staff-admin', { nickname: '闻溪月', phone: '13900001234', situation: '先存档，暂时不安排跟进。', needsFollowup: false })

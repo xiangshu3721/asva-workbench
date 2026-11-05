@@ -21,7 +21,7 @@ import { SAFETY_ASSESSMENT_VERSION, SAFETY_PROMPT_VERSION, buildSafetyFailureMet
 import { applyAbilityEvidenceGate, applyWillingnessEvidenceGate, buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_SALES_UNDERSTANDING_VERSION, historicalSalesRecords, normalizeCustomerSalesUnderstanding, qualityCheckCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { CustomerWriteQueue } from './customer-write-queue.mjs'
 import { processingErrorMessage } from '../shared/source-processing-state.mjs'
-import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
+import { isExplicitCustomerAcquisitionSource, normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 
@@ -224,6 +224,7 @@ const safeEqual = (left, right) => {
 const feishuDate = () => serializeDateForFeishu(now())
 const get = (table, recordFields, key) => readField(table, recordFields, key)
 const PROFILE_FIELD_KEYS = new Set('phone wechat gender birth_date age birth_year city hometown marital_status education living_status children_summary occupation industry position work_years job_status income_range career_stage career_satisfaction career_problem career_goal entrepreneurship_experience family_summary parents_relationship father_summary mother_summary relationship_with_father relationship_with_mother siblings family_events family_support_level relationship_status partner_summary marriage_years relationship_satisfaction relationship_conflicts communication_pattern conflict_pattern relationship_goal children_detail parent_child_relationship parenting_problem parenting_values hobbies sports reading travel art_preferences social_preference sleep diet routine life_satisfaction self_description personality_traits communication_style decision_style emotion_expression stress_response conflict_style action_style strengths common_blocks core_values family_values career_values money_values relationship_values success_definition happiness_definition freedom_definition growth_attitude current_core_issue secondary_issues current_stressors current_goal current_expectation current_resources support_system current_barriers energy_state recent_major_changes ai_customer_summary'.split(' '))
+const CUSTOMER_SOURCE_PLACEHOLDERS = new Set(['', '管理员手动录入', '历史数据导入'])
 const STAGE4_BLOCKED_PROFILE_FIELDS = new Set(['current_core_issue', 'current_goal', 'current_expectation'])
 const IMPORTANT_PROFILE_FIELDS = new Set(['phone', 'wechat', 'birth_date', 'age', 'city', 'occupation', 'job_status', 'marital_status', 'relationship_status', 'current_core_issue', 'current_goal', 'current_expectation', 'current_mentor_id', 'mentor_id', 'grade', 'paid', 'intended_course'])
 const CUSTOMER_PROFILE_SCHEMA_VERSION = 'v1.0'
@@ -281,10 +282,10 @@ async function removeCustomerSupplementaryItemsByEvidence(database, customerId, 
   return removedCount
 }
 
-function stage4CustomerReadback(customer, database, customerId, sourceId, expectedProfileWrites = [], expectedSupplementaryEvidence = []) {
+function stage4CustomerReadback(customer, database, customerId, sourceId, expectedProfileWrites = [], expectedSupplementaryEvidence = [], expectedSourceWrites = []) {
   if (!customer || customer.id !== customerId) return { ok: false, physicalFieldWriteCount: 0, supplementaryWriteCount: 0, errorCode: 'CUSTOMER_READBACK_MISSING' }
   const evidenceIds = new Set(database.evidenceItems.filter((item) => item.sourceId === sourceId && !['SUPERSEDED', 'REJECTED'].includes(item.reviewStatus)).map((item) => item.id))
-  const profileEntries = Object.entries(customer.profileFieldMeta || {}).filter(([, meta]) => meta?.sourceRecordId === sourceId)
+  const profileEntries = Object.entries(customer.profileFieldMeta || {}).filter(([field, meta]) => field !== 'source' && meta?.sourceRecordId === sourceId)
   const invalidProfileEntries = profileEntries.filter(([field, meta]) => !evidenceIds.has(meta.evidenceId) || !Object.prototype.hasOwnProperty.call(customer.profileFields || {}, field) || customer.profileFields?.[field] === null || customer.profileFields?.[field] === undefined || customer.profileFields?.[field] === '')
   const supplementaryItems = (customer.supplementaryItems || []).filter((item) => item.sourceRecordId === sourceId)
   const invalidSupplementaryItems = supplementaryItems.filter((item) => !evidenceIds.has(item.evidenceId) || !text(item.text))
@@ -294,8 +295,9 @@ function stage4CustomerReadback(customer, database, customerId, sourceId, expect
   })
   const supplementaryEvidenceIds = new Set(supplementaryItems.map((item) => item.evidenceId))
   const expectedSupplementaryMismatch = expectedSupplementaryEvidence.some((item) => !supplementaryEvidenceIds.has(item.id))
-  const mismatch = invalidProfileEntries.length > 0 || invalidSupplementaryItems.length > 0 || expectedProfileMismatch || expectedSupplementaryMismatch
-  return { ok: !mismatch, physicalFieldWriteCount: profileEntries.length, supplementaryWriteCount: supplementaryItems.length, errorCode: mismatch ? 'CUSTOMER_READBACK_MISMATCH' : '' }
+  const expectedSourceMismatch = expectedSourceWrites.some((item) => customer.source !== item.value)
+  const mismatch = invalidProfileEntries.length > 0 || invalidSupplementaryItems.length > 0 || expectedProfileMismatch || expectedSupplementaryMismatch || expectedSourceMismatch
+  return { ok: !mismatch, physicalFieldWriteCount: profileEntries.length + expectedSourceWrites.length, supplementaryWriteCount: supplementaryItems.length, errorCode: mismatch ? 'CUSTOMER_READBACK_MISMATCH' : '' }
 }
 
 function appointment(row) {
@@ -383,8 +385,8 @@ function customer(row) {
     if (Number.isFinite(legacyAge) && legacyAge > 0) profileFields.age = legacyAge
   }
   const referrerName = text(get('customers', f, 'referrer_name'))
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
-  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')) || '历史数据导入', status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')), status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
+  return { id: text(get('customers', f, 'customer_id')) || row.record_id, createdAt: date(get('customers', f, 'created_at')) || date(get('customers', f, 'submitted_at')), createdByStaffId: text(get('customers', f, 'created_by_staff_id')) || undefined, createdByName: text(get('customers', f, 'created_by_name')) || undefined, name, initials: name.slice(0, 1), phone: normalizePhone(get('customers', f, 'phone')), wechat: text(get('customers', f, 'wechat')), source: text(get('customers', f, 'source')), status: '活跃', grade: text(get('customers', f, 'sabc')) || 'C', gradeSource: '导师确认', mentorId: text(get('customers', f, 'current_mentor_id')) || null, referrerName, introducer: referrerName, need: text(get('customers', f, 'current_issue')), helpExpectation: text(get('customers', f, 'help_expectation')), goal: text(get('customers', f, 'current_goal')), brief: text(get('customers', f, 'brief')), aiSummary: aiSummary && typeof aiSummary === 'object' ? aiSummary : undefined, aiSummaryStatus: aiSummaryMeta?.status, aiSummaryMeta, understanding: understanding && typeof understanding === 'object' ? understanding : undefined, understandingStatus: understandingMeta?.status, understandingMeta, salesUnderstanding: salesUnderstanding && typeof salesUnderstanding === 'object' ? salesUnderstanding : undefined, salesUnderstandingStatus: salesUnderstandingMeta?.status, salesUnderstandingMeta, safety: safetyMeta?.payload && typeof safetyMeta.payload === 'object' ? safetyMeta.payload : undefined, safetyStatus: safetyMeta?.status, safetyMeta, intendedCourse: text(get('customers', f, 'intended_course')) || null, confirmedFacts: [], aiQuestions: [], paid: boolean(get('customers', f, 'is_paid')), lastActivity: '', nextFollowup: null, lastFollowupAt: null, nextFollowupAt: null, followupStatus: '待跟进', notes: text(get('customers', f, 'notes')), profileFields, profileFieldMeta, supplementaryItems, automaticProfilePending, profileUpdatedAt: date(get('customers', f, 'profile_updated_at')) || null, profileSchemaVersion: text(get('customers', f, 'profile_schema_version')) || CUSTOMER_PROFILE_SCHEMA_VERSION, profileVersion, mutationStates, _recordId: row.record_id }
 }
 
 function staff(row) {
@@ -798,6 +800,58 @@ async function persistCustomerProfile(database, customerId, updates, serviceReco
     persistedChanges.push({ id: changeId, customerId, field: change.field, fieldName: mapField('customers', change.field), oldValue: change.oldValue ?? null, newValue: change.value ?? null, source: change.source, confidence: change.confidence, confirmed: change.confirmed, updatedAt: new Date().toISOString(), operatorId, serviceRecordId })
   }
   return { customerRecord, writeResult, changes: persistedChanges }
+}
+
+function isCustomerSourceEvidence(evidence) {
+  return evidence?.fieldKey === 'source'
+    && evidence.evidenceType === 'FACT'
+    && evidence.semanticKind !== 'EVENT'
+    && isExplicitCustomerAcquisitionSource({ value: evidence.standardValue, sourceExcerpt: evidence.sourceExcerpt })
+}
+
+async function persistCustomerSource(database, customerId, evidence, operatorId, provenanceContext = {}, { source = 'AI_EXTRACTED', confirmed = false } = {}) {
+  const customerRecord = database.customers.find((item) => item.id === customerId)
+  const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
+  if (!customerRecord || !row) throw new Error('客户不存在')
+  const nextValue = text(evidence.standardValue)
+  const currentValue = text(get('customers', row.fields, 'source'))
+  const visibleCurrentValue = currentValue || customerRecord.source || ''
+  if (!nextValue) return { status: 'SKIPPED', changes: [] }
+  if (visibleCurrentValue && !CUSTOMER_SOURCE_PLACEHOLDERS.has(visibleCurrentValue) && visibleCurrentValue !== nextValue) return { status: 'CONFLICT', currentValue: visibleCurrentValue, changes: [] }
+  if (visibleCurrentValue === nextValue) return { status: 'NO_CHANGE', currentValue: visibleCurrentValue, changes: [] }
+  const existingChange = (database.profileChanges || []).find((item) => item.customerId === customerId && item.field === 'source' && item.evidenceId === evidence.id)
+  if (existingChange) return { status: 'NO_CHANGE', currentValue: nextValue, changes: [] }
+  customerRecord.source = nextValue
+  customerRecord.profileFieldMeta = { ...(customerRecord.profileFieldMeta || {}), source: {
+    source, confidence: evidence.confidence, confirmed, updatedAt: now(),
+    ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}),
+    ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}),
+    ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}),
+  } }
+  customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
+  customerRecord.profileUpdatedAt = now()
+  customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
+  const values = profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors: provenanceContext.suppressLegacyAppointmentMirrors === true })
+  values[mapField('customers', 'source')] = nextValue
+  await updateRecord(config.feishu.tables.customers, row.record_id, values)
+  const changedAt = feishuDate()
+  const changeId = provenanceContext.updateBatchId ? stableOperationId(`${provenanceContext.updateBatchId}:source`, 'PCH') : stableId('PCH', `${customerId}:${evidence.id}:source`)
+  await createMappedRecord('profileChanges', 'profile-change.customer-source', { change_id: changeId, customer_id: customerId, field: 'source', field_key: 'source', field_name: mapField('customers', 'source'), old_value: JSON.stringify(visibleCurrentValue || null), new_value: JSON.stringify(nextValue), source, confidence: evidence.confidence, confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: '', source_record_id: provenanceContext.sourceRecordId || '', evidence_id: provenanceContext.evidenceId || evidence.id || '', update_batch_id: provenanceContext.updateBatchId || '' })
+  return { status: 'APPLIED', currentValue: nextValue, changes: [{ field: 'source', oldValue: visibleCurrentValue || null, newValue: nextValue }] }
+}
+
+async function createCustomerSourceConflict(database, source, evidence, currentValue, actorId) {
+  const timestamp = now()
+  const proposal = { id: proposalId(evidence.id, 'source'), customerId: source.customerId, subjectId: source.subjectId, evidenceId: evidence.id, sourceId: source.id, fieldKey: 'source', fieldName: mapField('customers', 'source'), currentValue, proposedValue: evidence.standardValue, action: 'REVIEW_REQUIRED', changeType: 'FACT_CONTRADICTION', reviewStatus: 'PENDING_REVIEW', reason: evidence.displayText, confidence: evidence.confidence, extractionBatchId: evidence.extractionBatchId, reviewerId: '', reviewedAt: null, createdAt: timestamp, updatedAt: timestamp }
+  if (!(database.profileUpdateProposals || []).some((item) => item.id === proposal.id)) {
+    await createMappedRecord('profileUpdateProposals', 'proposal.customer-source-conflict', { proposal_id: proposal.id, customer_id: proposal.customerId, subject_id: proposal.subjectId, evidence_id: proposal.evidenceId, source_id: proposal.sourceId, field_key: proposal.fieldKey, field_name: proposal.fieldName, current_value: stage2Json(proposal.currentValue), proposed_value: stage2Json(proposal.proposedValue), action: proposal.action, change_type: proposal.changeType, review_status: proposal.reviewStatus, reason: proposal.reason, confidence: proposal.confidence, extraction_batch_id: proposal.extractionBatchId, reviewer_id: '', reviewed_at: '', created_at: proposal.createdAt, updated_at: proposal.updatedAt })
+  }
+  const currentEvidence = (database.evidenceItems || []).find((item) => item.customerId === source.customerId && item.fieldKey === 'source' && item.reviewStatus === 'CONFIRMED' && sameProfileValue(item.standardValue, currentValue))
+  const conflict = { id: conflictId('source', currentEvidence?.id || '', evidence.id), subjectId: source.subjectId, customerId: source.customerId, fieldKey: 'source', conflictType: 'FACT_CONTRADICTION', currentValue, newValue: evidence.standardValue, currentEvidenceId: currentEvidence?.id || '', newEvidenceId: evidence.id, status: 'OPEN', suggestedResolution: '人工核验客户来源的新旧记录', resolution: '', reviewerId: '', resolvedAt: null, createdAt: timestamp, updatedAt: timestamp }
+  if (!(database.evidenceConflicts || []).some((item) => item.id === conflict.id)) {
+    await createMappedRecord('evidenceConflicts', 'conflict.customer-source', { conflict_id: conflict.id, subject_id: conflict.subjectId, customer_id: conflict.customerId, field_key: conflict.fieldKey, conflict_type: conflict.conflictType, current_value: stage2Json(conflict.currentValue), new_value: stage2Json(conflict.newValue), current_evidence_id: conflict.currentEvidenceId, new_evidence_id: conflict.newEvidenceId, status: 'OPEN', suggested_resolution: conflict.suggestedResolution, resolution: '', reviewer_id: '', resolved_at: '', created_at: conflict.createdAt, updated_at: conflict.updatedAt })
+  }
+  return conflict
 }
 
 // Supplementary information is an ordinary, broadly visible Customers field.
@@ -2281,7 +2335,7 @@ export class FeishuRepository {
         if (assignedMentorId && !database.staff.some((item) => item.id === assignedMentorId && item.permissionRole === 'MENTOR' && item.status === 'ACTIVE')) throw Object.assign(new Error('所选导师不存在或已停用'), { status: 400, code: 'INVALID_MENTOR_ASSIGNMENT' })
         const mutationStates = operationId ? { [operationId]: { operationId, kind: 'CREATE', customerId, status: 'PERSISTED', payloadHash: inputHash, enrollmentStatus: hasEnrollments ? 'PENDING' : 'COMPLETED', enrollmentDrafts: normalizeMutationEnrollments(input.enrollments).items, updatedAt: createdAt } } : {}
         automaticProfilePending = automaticProfile.status === 'PENDING' ? automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_SAVE') : null
-        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim() || '管理员手动录入', notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfilePending, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
+        const writeValues = { customer_id: customerId, nickname: normalized.nickname, created_by_staff_id: actorId, created_by_name: actor?.name || '', current_mentor_id: assignedMentorId, source: text(input.source).trim(), notes: normalized.situation, current_issue: '', help_expectation: '', current_goal: '', sabc: 'C', is_paid: false, created_at: createdAt, profile_field_meta_json: JSON.stringify({ _profile_version: 1, _fields: initialFields, _automatic_profile_pending: automaticProfilePending, _mutation_states: sanitizeMutationStates(mutationStates) }), profile_schema_version: CUSTOMER_PROFILE_SCHEMA_VERSION, profile_updated_at: createdAt }
         if (normalized.phone) writeValues.phone = normalized.phone
         if (normalized.wechat) writeValues.wechat = normalized.wechat
         if (normalized.introducer) writeValues.referrer_name = normalized.introducer
@@ -2946,6 +3000,7 @@ export class FeishuRepository {
       const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && (wasExtractReady || reconcileExistingEvidence)
       const derivedErrors = []
       const stage4ProfileWrites = []
+      const stage4SourceWrites = []
       const stage4SupplementaryEvidence = []
       const stage4MappedEvidenceForSupplementaryRemoval = new Set()
       const archivingCounts = {
@@ -2960,7 +3015,7 @@ export class FeishuRepository {
           if (stage4Finalize) {
             if (evidence.fieldKey) archivingCounts.mappedEvidenceCount += 1
             const currentCustomer = database.customers.find((item) => item.id === source.customerId)
-            const currentValue = currentCustomer?.profileFields?.[evidence.fieldKey] ?? null
+            const currentValue = evidence.fieldKey === 'source' ? (currentCustomer?.source || null) : currentCustomer?.profileFields?.[evidence.fieldKey] ?? null
             const change = classifyEvidenceChange(evidence, currentValue)
             const timestamp = now()
             const combinedPrivacy = combinePrivacyContext(evidence, source)
@@ -3003,8 +3058,26 @@ export class FeishuRepository {
             // canonical-profile-facts has already classified historical and
             // future material separately.
             const isStage4PhysicalCandidate = ['FACT', 'SELF_MEANING', 'OBSERVATION'].includes(evidence.evidenceType)
-              && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+              && (PROFILE_FIELD_KEYS.has(evidence.fieldKey) || isCustomerSourceEvidence(evidence))
               && evidence.semanticKind !== 'EVENT'
+
+            if (isCustomerSourceEvidence(evidence)) {
+              if (blockedField || isAiHypothesis || !customerSubjectConfirmed || !privacyPolicy.canPromoteToProfile || ['UNKNOWN', 'MIXED'].includes(evidence.contentSource) || evidence.informationNature === 'AI_INFERENCE' || evidence.verificationStatus === 'CONFLICTED') {
+                archivingCounts.unresolvedMappedEvidenceCount += 1
+                continue
+              }
+              const sourceResult = await persistCustomerSource(database, source.customerId, evidence, actorId, { sourceRecordId: sourceId, evidenceId: evidence.id, updateBatchId: evidence.extractionBatchId, suppressLegacyAppointmentMirrors: true })
+              if (sourceResult.status === 'APPLIED') {
+                stage4SourceWrites.push({ value: sourceResult.currentValue, evidenceId: evidence.id })
+                archivingCounts.physicalFieldWriteCount += sourceResult.changes.length
+              } else if (sourceResult.status === 'CONFLICT') {
+                await createCustomerSourceConflict(database, source, evidence, sourceResult.currentValue, actorId)
+                archivingCounts.unresolvedMappedEvidenceCount += 1
+              } else if (sourceResult.status === 'NO_CHANGE') {
+                archivingCounts.mappedNoChangeCount += 1
+              }
+              continue
+            }
 
             // Stage 4 deliberately keeps the three appointment concepts in
             // Evidence/supplementary_info, but never materializes them into
@@ -3080,7 +3153,8 @@ export class FeishuRepository {
             continue
           }
           if (evidence.fieldKey) archivingCounts.mappedEvidenceCount += 1
-          const currentValue = database.customers.find((item) => item.id === source.customerId)?.profileFields?.[evidence.fieldKey] ?? null
+          const currentCustomerForEvidence = database.customers.find((item) => item.id === source.customerId)
+          const currentValue = evidence.fieldKey === 'source' ? (currentCustomerForEvidence?.source || null) : currentCustomerForEvidence?.profileFields?.[evidence.fieldKey] ?? null
           const change = classifyEvidenceChange(evidence, currentValue)
           const existingProposal = refreshed.profileUpdateProposals.find((item) => item.evidenceId === evidence.id)
           if (existingProposal || (evidence.evidenceType !== 'FACT' && evidence.fieldKey)) {
@@ -3126,22 +3200,32 @@ export class FeishuRepository {
           const olderSameSourceVersion = sameSource && incomingVersion > 0 && currentVersion > 0 && incomingVersion < currentVersion
           const staleIncoming = olderSourceOrder || olderSameSourceVersion
           const currentFactAllowed = automaticMode && isSnapshotEvidence(evidence) && !staleIncoming
-          const requiresReview = Boolean(change.conflictType && isSnapshotEvidence(evidence) && !currentFactAllowed)
-          const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !staleIncoming && isSnapshotEvidence(evidence) && (['ADD', 'UPDATE', 'APPEND'].includes(change.action) || currentFactAllowed) && PROFILE_FIELD_KEYS.has(evidence.fieldKey)
+          const sourceHasRealValue = evidence.fieldKey === 'source' && currentValue && !CUSTOMER_SOURCE_PLACEHOLDERS.has(currentValue) && currentValue !== evidence.standardValue
+          const requiresReview = Boolean(sourceHasRealValue || (change.conflictType && isSnapshotEvidence(evidence) && !currentFactAllowed))
+          const sourceAutoApplyAllowed = evidence.fieldKey !== 'source' || !sourceHasRealValue
+          const autoApply = privacyPolicy.canPromoteToProfile && provenanceAllowsAutoApply && !requiresReview && !sourceHasRealValue && sourceAutoApplyAllowed && !staleIncoming && isSnapshotEvidence(evidence) && (['ADD', 'UPDATE', 'APPEND'].includes(change.action) || currentFactAllowed) && (PROFILE_FIELD_KEYS.has(evidence.fieldKey) || isCustomerSourceEvidence(evidence))
           if (autoApply) {
-            const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), automaticMode ? false : true)[0]
-            if (update) {
-              const profileWrite = await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
-                sourceRecordId: sourceId,
-                evidenceId: evidence.id,
-                updateBatchId: evidence.extractionBatchId,
-                sourceEventAt: incomingEventAt,
-                sourceEntryAt: incomingEntryAt,
-                sourceVersion: incomingVersion,
-              })
-              archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
-              if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += 1
-              if (!automaticMode) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+            if (isCustomerSourceEvidence(evidence)) {
+              const sourceResult = await persistCustomerSource(database, source.customerId, evidence, actorId, { sourceRecordId: sourceId, evidenceId: evidence.id, updateBatchId: evidence.extractionBatchId })
+              if (sourceResult.status === 'APPLIED') archivingCounts.physicalFieldWriteCount += sourceResult.changes.length
+              else if (sourceResult.status === 'NO_CHANGE') archivingCounts.mappedNoChangeCount += 1
+            } else {
+              const update = normalizeProfileUpdates([{ field: evidence.fieldKey, value: evidence.standardValue, source: 'AI_EXTRACTED', confidence: evidence.confidence }], database.customers.find((item) => item.id === source.customerId), automaticMode ? false : true)[0]
+              if (update) {
+                const profileWrite = await persistCustomerProfile(database, source.customerId, [update], undefined, actorId, {
+                  sourceRecordId: sourceId,
+                  evidenceId: evidence.id,
+                  updateBatchId: evidence.extractionBatchId,
+                  sourceEventAt: incomingEventAt,
+                  sourceEntryAt: incomingEntryAt,
+                  sourceVersion: incomingVersion,
+                })
+                archivingCounts.physicalFieldWriteCount += profileWrite.changes.length
+                if (profileWrite.changes.length === 0) archivingCounts.mappedNoChangeCount += 1
+                if (!automaticMode) await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
+              } else {
+                archivingCounts.unresolvedMappedEvidenceCount += 1
+              }
             }
           }
           if (!autoApply) archivingCounts.unresolvedMappedEvidenceCount += 1
@@ -3197,7 +3281,7 @@ export class FeishuRepository {
           if (!targetRecordId) throw Object.assign(new Error('客户物理记录 ID 缺失'), { code: 'CUSTOMER_READBACK_MISSING', status: 502 })
           const physicalRow = await getRecord(config.feishu.tables.customers, targetRecordId)
           const physicalCustomer = customer(physicalRow)
-          const readback = stage4CustomerReadback(physicalCustomer, debugBeforeStatus, source.customerId, sourceId, stage4ProfileWrites.map((item) => item.update), stage4SupplementaryEvidence)
+          const readback = stage4CustomerReadback(physicalCustomer, debugBeforeStatus, source.customerId, sourceId, stage4ProfileWrites.map((item) => item.update), stage4SupplementaryEvidence, stage4SourceWrites)
           if (!readback.ok) derivedErrors.push(readback.errorCode || 'CUSTOMER_READBACK_MISMATCH')
           archivingCounts.physicalFieldWriteCount = readback.physicalFieldWriteCount
           archivingCounts.supplementaryWriteCount = readback.supplementaryWriteCount
@@ -3262,9 +3346,14 @@ export class FeishuRepository {
       const evidence = database.evidenceItems.find((item) => item.id === proposal.evidenceId)
       if (!evidence || !proposal.fieldKey) throw new Error('建议缺少可追溯证据')
       const current = database.customers.find((item) => item.id === proposal.customerId)
-      const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'MENTOR_CONFIRMED', confidence: proposal.confidence, confirmed: true }
-      if (update.source === 'AI_INFERENCE') throw Object.assign(new Error('AI假设不能写入当前客户档案'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
-      await persistCustomerProfile(database, proposal.customerId, normalizeProfileUpdates([update], current, true), undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      if (proposal.fieldKey === 'source') {
+        if (evidence.evidenceType === 'HYPOTHESIS') throw Object.assign(new Error('AI假设不能写入客户来源'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
+        await persistCustomerSource(database, proposal.customerId, { ...evidence, standardValue: proposal.proposedValue }, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId }, { source: 'MENTOR_CONFIRMED', confirmed: true })
+      } else {
+        const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'MENTOR_CONFIRMED', confidence: proposal.confidence, confirmed: true }
+        if (update.source === 'AI_INFERENCE') throw Object.assign(new Error('AI假设不能写入当前客户档案'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
+        await persistCustomerProfile(database, proposal.customerId, normalizeProfileUpdates([update], current, true), undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      }
       // Confirming a profile proposal records a human decision about this
       // proposal. It does not prove the external truth of the evidence.
       await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
@@ -3299,9 +3388,13 @@ export class FeishuRepository {
     if (resolution === 'USE_NEW' && proposal) {
       if (!evidence || !proposal.fieldKey) throw new Error('冲突缺少可追溯证据')
       const current = database.customers.find((item) => item.id === proposal.customerId)
-      const update = normalizeProfileUpdates([{ field: proposal.fieldKey, value: proposal.proposedValue, source: 'MENTOR_CONFIRMED', confidence: proposal.confidence }], current, true)[0]
-      if (!update) throw new Error('冲突的新资料无效')
-      await persistCustomerProfile(database, proposal.customerId, [update], undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      if (proposal.fieldKey === 'source') {
+        await persistCustomerSource(database, proposal.customerId, { ...evidence, standardValue: proposal.proposedValue }, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId }, { source: 'MENTOR_CONFIRMED', confirmed: true })
+      } else {
+        const update = normalizeProfileUpdates([{ field: proposal.fieldKey, value: proposal.proposedValue, source: 'MENTOR_CONFIRMED', confidence: proposal.confidence }], current, true)[0]
+        if (!update) throw new Error('冲突的新资料无效')
+        await persistCustomerProfile(database, proposal.customerId, [update], undefined, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId })
+      }
       // Conflict resolution chooses how the profile should proceed; it is
       // not an external fact-verification operation.
       await updateRecord(stage2Table('evidenceItems'), evidence._recordId, mapFields('evidenceItems', { review_status: 'CONFIRMED', reviewer_id: actorId, reviewed_at: timestamp, updated_at: timestamp }))
