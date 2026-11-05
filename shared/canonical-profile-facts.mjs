@@ -97,6 +97,7 @@ function inferUnkeyedCanonicalField({ value = '', sourceExcerpt = '' } = {}) {
   if (!candidate || !quote || !quote.includes(candidate)) return ''
   const segment = semanticSegment(quote, candidate)
   if (isExplicitCustomerGender(candidate, segment)) return 'gender'
+  if (CITY_WORDS.test(candidate) && /(?:在|于).{0,8}(?:工作|上班|办公)/.test(segment) && !/(?:职业|从事|职位|岗位|做|负责)/.test(segment)) return ''
   if (CITY_WORDS.test(candidate) && RESIDENCE_CURRENT_WORDS.test(segment) && !HISTORY_WORDS.test(segment) && !FUTURE_WORDS.test(segment)) return 'current_city'
   if (/(?:当前|目前|现在|现任).{0,8}(?:职业|工作|从事|职位|岗位)|(?:当前|目前|现在).{0,8}(?:做|负责)/.test(segment) && !HISTORY_WORDS.test(segment) && !FUTURE_WORDS.test(segment)) return 'occupation'
   return ''

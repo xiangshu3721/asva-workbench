@@ -507,7 +507,7 @@ function WorkbenchApp() {
   const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput) => { const saveStartedAt = performance.now(); rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() }); let saved: CustomerMutationResult; try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) { if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId); throw error }; clearPendingCustomerMutation(input.operationId); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success'); else showCustomerSaveToast('客户已保存', 'success'); setManualCustomerOpen(false); openCustomer(customerId) }
   const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabaseSnapshot(saved); refresh() }
   const sourceWorkspace = (customerId: string) => workbenchApi.sourceWorkspace(activeStaff.id, customerId)
-  const sourceStatus = (customerId: string, operationId: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId)
+  const sourceStatus = (customerId: string, operationId: string, sourceId?: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId, sourceId)
   const createSource = (input: SourceCreateInput) => workbenchApi.createSource(activeStaff.id, input)
   const processSource = (sourceId: string, force = false) => workbenchApi.processSource(activeStaff.id, sourceId, force).then((result) => { invalidateCustomerResources(result.source.customerId); dataCache.invalidatePrefix(`customer-understanding:${customerResourceScope(activeStaff.id, activeStaff.permissionRole)}:${result.source.customerId}`); refresh(); return result })
   const reviewProposal = (proposalId: string, decision: 'CONFIRM' | 'REJECT') => workbenchApi.reviewProposal(activeStaff.id, proposalId, decision).then(() => { refresh() })
@@ -1328,7 +1328,7 @@ function EnrollmentEditor({ customer, products, enrollments, onClose, onSave }: 
 
 function CustomerHistory({ appointments, sessions, database }: { appointments: Database['appointments']; sessions: Database['sessions']; database: Database }) { const events = [...appointments.map((item) => ({ id: item.id, date: item.createdAt, type: '预约', title: item.topic, body: item.description || item.expectation, mentorId: item.assignedMentorId })), ...sessions.map((item) => ({ id: item.id, date: item.date, type: '服务记录', title: item.topic, body: item.aiSummary || item.note, mentorId: item.mentorId }))].sort((a, b) => b.date.localeCompare(a.date)); return <section className="customer-detail-section"><SectionHeading title="历史记录" meta={`${events.length} 条`} icon="◷" action={<span className="history-filter">全部</span>} />{events.length ? <div className="history-timeline">{events.map((event) => { const mentor = database.staff.find((item) => item.id === event.mentorId); return <article className="history-event" key={event.id}><time>{detailDate(event.date)}</time><span className="history-dot" /><div><div className="history-event-title"><strong>{event.title}</strong></div><small>{event.type}{mentor ? ` · ${mentor.name}` : ''}</small><p>{event.body || '暂无详细记录。'}</p></div></article> })}</div> : <div className="detail-empty-line">还没有预约或服务记录。</div>}</section> }
 
-function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, historyInitiallyRequested = true, editorRequestId = 0, onLoad, onWorkspaceChange, onSourceStatus, onCreate, onRefreshProfile, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; historyInitiallyRequested?: boolean; editorRequestId?: number; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onRefreshProfile?: () => Promise<void>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
+function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, historyInitiallyRequested = true, editorRequestId = 0, onLoad, onWorkspaceChange, onSourceStatus, onCreate, onRefreshProfile, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; historyInitiallyRequested?: boolean; editorRequestId?: number; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string, sourceId?: string) => Promise<SourceSaveStatus>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onRefreshProfile?: () => Promise<void>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
   const emptyWorkspace: SourceWorkspace = { sources: [], evidenceItems: [], proposals: [], conflicts: [] }
   const [workspace, setWorkspace] = useState<SourceWorkspace>(() => cachedWorkspace || emptyWorkspace)
   const workspaceRef = useRef(cachedWorkspace || emptyWorkspace)
@@ -1350,7 +1350,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
   const saveStateRef = useRef<SourceSaveState>('IDLE')
   const pendingSaveRef = useRef<{ operationId: string; input: SourceCreateInput; startedAt: number } | null>(null)
   const processingRef = useRef(new Set<string>())
-  const archivePollTimerRef = useRef<number | null>(null)
+  const archivePollTimersRef = useRef(new Map<string, number>())
   const archivePollGenerationRef = useRef(0)
   const archivePollAttemptsRef = useRef(new Map<string, number>())
   const ARCHIVE_STATUS_POLL_MAX_ATTEMPTS = 12
@@ -1390,8 +1390,8 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
   }
   useEffect(() => () => {
     archivePollGenerationRef.current += 1
-    if (archivePollTimerRef.current !== null) window.clearTimeout(archivePollTimerRef.current)
-    archivePollTimerRef.current = null
+    for (const timer of archivePollTimersRef.current.values()) window.clearTimeout(timer)
+    archivePollTimersRef.current.clear()
     archivePollAttemptsRef.current.clear()
     processingRef.current.clear()
   }, [customer.id])
@@ -1430,9 +1430,13 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       archivePollAttemptsRef.current.set(sourceId, attempt)
       let terminal = false
       try {
-        const next = await load({ refresh: true })
+        const status = await onSourceStatus(customer.id, '', sourceId)
         if (generation !== archivePollGenerationRef.current) return
-        const source = next?.sources.find((item) => item.id === sourceId)
+        const source = status.source && status.source.customerId === customer.id && status.source.id === sourceId ? status.source : null
+        if (source) {
+          const current = workspaceRef.current
+          setWorkspaceSnapshot({ ...current, sources: current.sources.map((item) => item.id === sourceId ? source : item) })
+        }
         terminal = Boolean(source && ['COMPLETED', 'REVIEW_REQUIRED', 'FAILED'].includes(source.processingStatus))
         if (terminal) {
           if (source?.processingStatus === 'COMPLETED') setMessage('AI整理完成，客户档案已刷新。')
@@ -1440,16 +1444,18 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
           else setMessage('AI整理失败，Worker 将按既有规则恢复。')
           if (source?.processingStatus !== 'FAILED') await onRefreshProfile?.()
         } else if (attempt < ARCHIVE_STATUS_POLL_MAX_ATTEMPTS) {
-          archivePollTimerRef.current = window.setTimeout(() => void poll(), ARCHIVE_STATUS_POLL_INTERVAL_MS)
+          archivePollTimersRef.current.set(sourceId, window.setTimeout(() => void poll(), ARCHIVE_STATUS_POLL_INTERVAL_MS))
         } else setMessage('已保存，后台整理仍在进行，可稍后查看。')
       } catch {
-        if (attempt < ARCHIVE_STATUS_POLL_MAX_ATTEMPTS) archivePollTimerRef.current = window.setTimeout(() => void poll(), ARCHIVE_STATUS_POLL_INTERVAL_MS)
+        if (attempt < ARCHIVE_STATUS_POLL_MAX_ATTEMPTS) archivePollTimersRef.current.set(sourceId, window.setTimeout(() => void poll(), ARCHIVE_STATUS_POLL_INTERVAL_MS))
         else setMessage('已保存，暂时无法读取后台整理状态。')
       } finally {
         if (terminal || attempt >= ARCHIVE_STATUS_POLL_MAX_ATTEMPTS || generation !== archivePollGenerationRef.current) {
           processingRef.current.delete(sourceId)
           archivePollAttemptsRef.current.delete(sourceId)
-          archivePollTimerRef.current = null
+          const timer = archivePollTimersRef.current.get(sourceId)
+          if (timer !== undefined) window.clearTimeout(timer)
+          archivePollTimersRef.current.delete(sourceId)
         }
       }
     }

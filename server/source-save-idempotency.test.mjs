@@ -168,4 +168,23 @@ describe('source save idempotency', () => {
 
     await expect(repository.sourceStatus('ADMIN-1', 'CUS-NOT-OWNED', 'operation-status-1')).rejects.toMatchObject({ code: 'CUSTOMER_NOT_FOUND', status: 404 })
   })
+
+  it('reads a processing status by exact Source ID without loading the full workspace', async () => {
+    const customerRow = { record_id: 'rec-customer-save-1', fields: { 客户ID: 'CUS-SAVE-1', 客户昵称: 'Synthetic Save Customer' } }
+    const staffRow = { record_id: 'rec-staff-1', fields: { 人员ID: 'ADMIN-1', 姓名: 'Synthetic Admin', 权限角色: 'ADMIN', 状态: 'ACTIVE', 登录状态: true } }
+    const exactSourceRow = { record_id: 'rec-source-processing-1', fields: { 资料ID: 'SRC-PROCESSING-1', 客户ID: 'CUS-SAVE-1', 上传人: 'ADMIN-1', 原始文本: '后台整理中', 处理状态: 'PROCESSING' } }
+    const archiveSearch = vi.fn(async (tableId) => {
+      if (tableId === config.feishu.tables.customers) return [customerRow]
+      if (tableId === config.feishu.tables.staff) return [staffRow]
+      if (tableId === config.feishu.tables.sourceRecords) return [exactSourceRow]
+      return []
+    })
+    const repository = new FeishuRepository({ archiveSearch })
+    repository.load = vi.fn(async () => { throw new Error('source status must not load the full workspace') })
+
+    const result = await repository.sourceStatus('ADMIN-1', 'CUS-SAVE-1', '', 'SRC-PROCESSING-1')
+
+    expect(result).toMatchObject({ status: 'PROCESSING', source: { id: 'SRC-PROCESSING-1', customerId: 'CUS-SAVE-1', processingStatus: 'PROCESSING' } })
+    expect(archiveSearch).toHaveBeenCalledTimes(3)
+  })
 })

@@ -88,7 +88,7 @@ export interface EvidenceItem { id: string; sourceId: string; customerId: string
 export interface ProfileUpdateProposal { id: string; customerId: string; evidenceId: string; sourceId: string; fieldKey: string; fieldName: string; currentValue: unknown; proposedValue: unknown; action: string; changeType: string; reviewStatus: string; reason: string; confidence: number }
 export interface EvidenceConflict { id: string; customerId: string; fieldKey: string; conflictType: string; currentValue: unknown; newValue: unknown; currentEvidenceId?: string; newEvidenceId: string; status: string; resolution?: string }
 export interface SourceWorkspace { sources: SourceRecord[]; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[]; profileMaterialization?: ProfileMaterialization }
-export interface SourceSaveStatus { status: 'PERSISTED' | 'NOT_FOUND'; source: SourceRecord | null }
+export interface SourceSaveStatus { status: string; source: SourceRecord | null }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -208,7 +208,7 @@ export interface WorkbenchApi {
   identifyDialogue(actorId: string, input: { text: string; targetCustomerId?: string; customerOperationId?: string }): Promise<DialogueAssessment>
   confirmDialogue(actorId: string, input: { analysisToken: string; contentHash: string; targetCustomerId?: string; customerOperationId?: string; speakerId?: string }): Promise<DialogueConfirmation>
   sourceWorkspace(actorId: string, customerId: string): Promise<SourceWorkspace>
-  sourceStatus(actorId: string, customerId: string, operationId: string): Promise<SourceSaveStatus>
+  sourceStatus(actorId: string, customerId: string, operationId: string, sourceId?: string): Promise<SourceSaveStatus>
   createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation?: string; archiveIntent?: 'CUSTOMER_UPDATE'; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
@@ -534,7 +534,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     identifyDialogue: (actorId, input) => request<DialogueAssessment>('/api/dialogue/identify', actorId, { method: 'POST', body: JSON.stringify(input) }).then((result) => ({ ...result, contentHash: result.contentHash || '' })),
     confirmDialogue: (actorId, input) => request<DialogueConfirmation>('/api/dialogue/confirm', actorId, { method: 'POST', body: JSON.stringify(input) }),
     sourceWorkspace: (actorId, customerId) => request<SourceWorkspace>(`/api/customers/${encodeURIComponent(customerId)}/sources`, actorId),
-    sourceStatus: (actorId, customerId, operationId) => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}`, actorId),
+    sourceStatus: (actorId, customerId, operationId, sourceId = '') => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}${sourceId ? `&sourceId=${encodeURIComponent(sourceId)}` : ''}`, actorId),
     createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),
     processSource: (actorId, sourceId, force = false) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/process`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
     overrideServiceNecessity: (actorId, input) => request<SourceWorkspace>('/api/privacy/service-necessity', actorId, { method: 'POST', body: JSON.stringify(input) }),

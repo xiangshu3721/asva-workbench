@@ -873,7 +873,7 @@ function normalizeSourceRawText(value) {
 function automaticProfileText(input, situation = '') {
   const chunks = []
   if (String(situation || '').trim()) chunks.push(String(situation).trim())
-  const labels = { current_core_issue: '当前困扰', help_expectation: '希望获得帮助', current_goal: '当前目标' }
+  const labels = { current_core_issue: '当前困扰', current_expectation: '希望获得帮助', help_expectation: '希望获得帮助', current_goal: '当前目标' }
   for (const update of Array.isArray(input?.profileUpdates) ? input.profileUpdates : []) {
     const field = String(update?.field || '').trim()
     const value = String(update?.value ?? '').trim()
@@ -2455,8 +2455,16 @@ export class FeishuRepository {
       }
     } else if (operationId) {
       const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
-        profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { mutationStates: { ...latestCustomer.mutationStates, [operationId]: persistedState } }),
+        profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, {
+          ...(automaticProfileArchivingAllowedForCustomer(customerId) && automaticText ? { automaticProfilePending: automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE') } : {}),
+          mutationStates: { ...latestCustomer.mutationStates, [operationId]: persistedState },
+        }),
       }), (latestCustomer) => latestCustomer.mutationStates?.[operationId]?.status === 'PERSISTED' && latestCustomer.mutationStates?.[operationId]?.payloadHash === inputHash)
+      customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
+    } else if (automaticProfileArchivingAllowedForCustomer(customerId) && automaticText) {
+      const safeWrite = await updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', {
+        profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { automaticProfilePending: automaticProfilePendingMarker(automaticText, actorId, 'CUSTOMER_UPDATE') }),
+      }), (latestCustomer) => latestCustomer.automaticProfilePending?.contentHash === contentHash(normalizeSourceRawText(automaticText)))
       customerWriteResult = { record: safeWrite.row, record_id: safeWrite.row.record_id }
     }
     const manualChanges = []
@@ -2681,16 +2689,33 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { source: publicSource(source, { includeRaw }), evidenceItems: visibleDatabase.evidenceItems.filter((item) => item.sourceId === sourceId), proposals: visibleDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId), conflicts: visibleDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && visibleDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId), profileMaterialization: visibleDatabase.customers.find((item) => item.id === source.customerId)?.profileMaterialization }
   }
-  async sourceStatus(actorId, customerId, operationId) {
+  async sourceStatus(actorId, customerId, operationId, sourceId = '') {
     requireStage2Tables()
     const requestedCustomerId = text(customerId).trim()
     const requestedOperationId = text(operationId).trim()
-    if (!requestedCustomerId || !requestedOperationId) throw Object.assign(new Error('保存状态查询参数不完整'), { code: 'SOURCE_STATUS_QUERY_REQUIRED', status: 400 })
+    const requestedSourceId = text(sourceId).trim()
+    if (!requestedCustomerId || (!requestedOperationId && !requestedSourceId)) throw Object.assign(new Error('保存状态查询参数不完整'), { code: 'SOURCE_STATUS_QUERY_REQUIRED', status: 400 })
+    if (requestedSourceId) {
+      const [customerRows, staffRows, sourceRows] = await Promise.all([
+        this.archiveSearch(config.feishu.tables.customers, feishuEqualsFilter(mapField('customers', 'customer_id'), requestedCustomerId), { pageSize: 1 }),
+        this.archiveSearch(config.feishu.tables.staff, feishuEqualsFilter(mapField('staff', 'staff_id'), actorId), { pageSize: 1 }),
+        this.archiveSearch(stage2Table('sourceRecords'), feishuEqualsFilter(mapField('sourceRecords', 'source_id'), requestedSourceId), { pageSize: 1 }),
+      ])
+      const customerRecords = customerRows.map(customer)
+      const staffRecords = staffRows.map(staff)
+      const sourceRecords = sourceRows.map(sourceRecord)
+      const database = { staff: staffRecords, customers: customerRecords, appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords, evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [] }
+      const visibleDatabase = scope(database, actorId)
+      if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
+      const source = visibleDatabase.sourceRecords.find((item) => item.id === requestedSourceId)
+      if (!source || source.customerId !== requestedCustomerId) return { status: 'NOT_FOUND', source: null }
+      return { status: source.processingStatus || 'UPLOADED', source: publicSource(source, { includeRaw: false }) }
+    }
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     if (!visibleDatabase.customers.some((item) => item.id === requestedCustomerId)) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-    const sourceId = stableId('SRC', `${requestedCustomerId}:${requestedOperationId}`)
-    const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
+    const persistedSourceId = stableId('SRC', `${requestedCustomerId}:${requestedOperationId}`)
+    const source = visibleDatabase.sourceRecords.find((item) => item.id === persistedSourceId)
     if (!source) return { status: 'NOT_FOUND', source: null }
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }

@@ -11,9 +11,11 @@ describe('stage 3 unified archive entry', () => {
     expect(workspaceSource).not.toContain('onProcess')
   })
 
-  it('polls the persisted Source state with a bounded customer-scoped refresh', () => {
+  it('polls a specific Source with bounded independent timers', () => {
     expect(workspaceSource).toContain('startArchiveStatusPolling')
-    expect(workspaceSource).toContain('load({ refresh: true })')
+    expect(workspaceSource).toContain("onSourceStatus(customer.id, '', sourceId)")
+    expect(workspaceSource).toContain('archivePollTimersRef')
+    expect(workspaceSource).toContain('archivePollTimersRef.current.clear()')
     expect(workspaceSource).toContain('ARCHIVE_STATUS_POLL_MAX_ATTEMPTS')
     expect(workspaceSource).toContain('window.setTimeout')
     expect(workspaceSource).toContain('onRefreshProfile')
