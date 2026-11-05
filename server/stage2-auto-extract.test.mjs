@@ -77,6 +77,39 @@ describe('stage 2 customer extract orchestration', () => {
     expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', source.id, { stage: 'full' })
   })
 
+  it('runs CUSTOMER_SAVE and CUSTOMER_UPDATE through the same Extract then Finalize engine', async () => {
+    for (const reason of ['CUSTOMER_SAVE', 'CUSTOMER_UPDATE']) {
+      const sourceId = `SRC-STAGE2-${reason}`
+      let source = { id: sourceId, customerId: 'CUS-STAGE2-1', rawText: '客户目前在杭州', contentHash: contentHash('客户目前在杭州'), notes: `AUTO_PROFILE_ORGANIZE:${reason}`, processingStatus: 'UPLOADED', _recordId: `rec-${sourceId}` }
+      let evidenceItems = []
+      const database = () => ({
+        customers: [{ id: 'CUS-STAGE2-1', notes: '客户目前在杭州', need: '', helpExpectation: '', goal: '', profileFieldMeta: {}, profileFields: {} }],
+        staff: [{ id: 'ADMIN-1', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
+        sourceRecords: [source], evidenceItems, profileUpdateProposals: [], evidenceConflicts: [], profileChanges: [], appointments: [], sessions: [], enrollments: [],
+      })
+      const repository = new FeishuRepository({ authRepository: {} })
+      repository.load = vi.fn(async () => database())
+      repository.processSource = vi.fn(async (_actorId, requestedSourceId, options) => {
+        expect(requestedSourceId).toBe(sourceId)
+        if (options.stage === 'extract') {
+          source = { ...source, processingStatus: 'EXTRACT_READY', processingError: 'ARCHIVE_FINALIZE_PENDING' }
+          evidenceItems = [{ id: `EVD-${reason}`, sourceId, reviewStatus: 'UNREVIEWED', displayText: '客户目前在杭州' }]
+        } else {
+          source = { ...source, processingStatus: 'COMPLETED', processingError: '' }
+        }
+        return { source }
+      })
+
+      const extracted = await repository.runCustomerAutoArchive('ADMIN-1', 'CUS-STAGE2-1', { stage: 'extract', sourceId })
+      const finalized = await repository.runCustomerAutoArchive('ADMIN-1', 'CUS-STAGE2-1', { stage: 'finalize', sourceId })
+
+      expect(extracted).toMatchObject({ status: 'EXTRACT_READY', sourceId, evidenceCount: 1 })
+      expect(finalized).toMatchObject({ status: 'COMPLETED', sourceId, phase: 'FINALIZE', readbackOk: true })
+      expect(repository.processSource).toHaveBeenNthCalledWith(1, 'ADMIN-1', sourceId, { stage: 'extract' })
+      expect(repository.processSource).toHaveBeenNthCalledWith(2, 'ADMIN-1', sourceId, { stage: 'full' })
+    }
+  })
+
   it('uses the customer-and-content hash as a stable Source identity', async () => {
     let source = null
     const repository = new FeishuRepository({ authRepository: {} })

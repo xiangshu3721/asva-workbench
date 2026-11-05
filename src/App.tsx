@@ -12,7 +12,7 @@ import { clearAssistantHistory, GlobalAIAssistant } from './GlobalAIAssistant'
 import { DebugPanel, ReleaseIndicator } from './DebugPanel'
 import { canStartCustomerSave } from './save-contract'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { isStaleProcessing, shouldResumeSource } from './processing-contract'
+import { isStaleProcessing } from './processing-contract'
 import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
@@ -58,7 +58,7 @@ type CustomerFilter = '待处理' | '待跟进' | '已完成'
 const statusLabel: Record<AppointmentWorkflowStatus, string> = { WAIT_ASSIGN: '待分配', WAIT_FOLLOW_UP: '待跟进', WAIT_FEEDBACK: '待反馈', COMPLETED: '已完成' }
 const statusTone: Record<AppointmentWorkflowStatus, 'amber' | 'blue' | 'rose' | 'green'> = { WAIT_ASSIGN: 'amber', WAIT_FOLLOW_UP: 'blue', WAIT_FEEDBACK: 'rose', COMPLETED: 'green' }
 const statusRank: Record<AppointmentWorkflowStatus, number> = { WAIT_ASSIGN: 0, WAIT_FOLLOW_UP: 1, WAIT_FEEDBACK: 2, COMPLETED: 3 }
-type SourceCreateInput = { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }
+type SourceCreateInput = { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation: string; archiveIntent?: 'CUSTOMER_UPDATE'; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }
 
 function sourceFileInfo(fileRef?: string) {
   try { const value = JSON.parse(fileRef || ''); return value?.storage === 'TEMPORARY' ? value as { original_filename: string; file_type: string; size: number } : null } catch { return null }
@@ -507,7 +507,7 @@ function WorkbenchApp() {
   const updateExistingCustomer = async (customerId: string, input: ManualCustomerInput) => { const saveStartedAt = performance.now(); rememberPendingCustomerMutation({ actorId: activeStaff.id, operationId: input.operationId || '', customerId, kind: 'UPDATE', startedAt: new Date().toISOString() }); let saved: CustomerMutationResult; try { saved = await workbenchApi.updateCustomer(activeStaff.id, customerId, input) } catch (error) { if ((error as { serverCode?: string })?.serverCode !== 'CUSTOMER_SAVE_UNKNOWN') clearPendingCustomerMutation(input.operationId); throw error }; clearPendingCustomerMutation(input.operationId); logAppPerformance('CUSTOMER_SAVE_PERSIST_MS', { duration_ms: Math.round(performance.now() - saveStartedAt) }); applyCustomerMutation(saved); if (saved.enrollmentStatus === 'PENDING') showCustomerSaveToast('客户已保存，课程正在后台同步', 'success'); else showCustomerSaveToast('客户已保存', 'success'); setManualCustomerOpen(false); openCustomer(customerId) }
   const updateCustomerEnrollments = async (customerId: string, enrollments: EnrollmentDraft[]) => { const saved = await workbenchApi.updateCustomerEnrollments(activeStaff.id, customerId, enrollments); setDatabaseSnapshot(saved); refresh() }
   const sourceWorkspace = (customerId: string) => workbenchApi.sourceWorkspace(activeStaff.id, customerId)
-  const sourceStatus = (customerId: string, operationId: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId)
+  const sourceStatus = (customerId: string, operationId: string, sourceId?: string) => workbenchApi.sourceStatus(activeStaff.id, customerId, operationId, sourceId)
   const createSource = (input: SourceCreateInput) => workbenchApi.createSource(activeStaff.id, input)
   const processSource = (sourceId: string, force = false) => workbenchApi.processSource(activeStaff.id, sourceId, force).then((result) => { invalidateCustomerResources(result.source.customerId); dataCache.invalidatePrefix(`customer-understanding:${customerResourceScope(activeStaff.id, activeStaff.permissionRole)}:${result.source.customerId}`); refresh(); return result })
   const reviewProposal = (proposalId: string, decision: 'CONFIRM' | 'REJECT') => workbenchApi.reviewProposal(activeStaff.id, proposalId, decision).then(() => { refresh() })
@@ -887,7 +887,7 @@ function CustomerProfileRenderer({ customer, profile, loading, error, onLoad, re
   const hasEntered = fieldItems.some((item) => item.statusLabel === '已录入') || Boolean(rawNotes)
   const hasProvisional = provisionalItems.length > 0
   const coverageLabel = showInitialLoading ? '正在读取档案' : error && !profile ? '档案读取失败' : !profile ? '展开后读取' : !hasDisplayContent ? '暂无可展示资料' : hasProvisional && (hasConfirmed || hasEntered) ? '已确认资料与待核实资料' : hasProvisional ? '待核实资料' : hasConfirmed ? '已确认资料' : hasEntered ? '已录入资料' : '已录入资料'
-  const hasPendingAutoProfileMarker = customer.automaticProfilePending?.reason === 'CUSTOMER_SAVE'
+  const hasPendingAutoProfileMarker = ['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(customer.automaticProfilePending?.reason || '')
   const shouldResumeFailedAutoProfile = customer.automaticProfileAutoResume === true
   const pendingVerificationCount = countProfileVerificationItems(materialization)
   const automaticProfileInProgress = isAutomaticProfileInProgress(profile?.autoOrganizeStatus, hasPendingAutoProfileMarker, shouldResumeFailedAutoProfile)
@@ -1189,7 +1189,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     <CustomerUnderstandingOverview understanding={currentUnderstanding} source={understandingResponse?.meta.source} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => void refreshUnderstanding(true)} />
     <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
     <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
-    <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
+    <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onRefreshProfile={() => loadCustomerProfile(true)} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={sortProductsForSelection(database.products.filter(activeProductForManualEntry))} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
 }
@@ -1328,7 +1328,7 @@ function EnrollmentEditor({ customer, products, enrollments, onClose, onSave }: 
 
 function CustomerHistory({ appointments, sessions, database }: { appointments: Database['appointments']; sessions: Database['sessions']; database: Database }) { const events = [...appointments.map((item) => ({ id: item.id, date: item.createdAt, type: '预约', title: item.topic, body: item.description || item.expectation, mentorId: item.assignedMentorId })), ...sessions.map((item) => ({ id: item.id, date: item.date, type: '服务记录', title: item.topic, body: item.aiSummary || item.note, mentorId: item.mentorId }))].sort((a, b) => b.date.localeCompare(a.date)); return <section className="customer-detail-section"><SectionHeading title="历史记录" meta={`${events.length} 条`} icon="◷" action={<span className="history-filter">全部</span>} />{events.length ? <div className="history-timeline">{events.map((event) => { const mentor = database.staff.find((item) => item.id === event.mentorId); return <article className="history-event" key={event.id}><time>{detailDate(event.date)}</time><span className="history-dot" /><div><div className="history-event-title"><strong>{event.title}</strong></div><small>{event.type}{mentor ? ` · ${mentor.name}` : ''}</small><p>{event.body || '暂无详细记录。'}</p></div></article> })}</div> : <div className="detail-empty-line">还没有预约或服务记录。</div>}</section> }
 
-function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, historyInitiallyRequested = true, editorRequestId = 0, onLoad, onWorkspaceChange, onSourceStatus, onCreate, onProcess, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; historyInitiallyRequested?: boolean; editorRequestId?: number; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string) => Promise<SourceSaveStatus>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onProcess: (sourceId: string, force?: boolean) => Promise<{ source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
+function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspaceFresh = true, historyInitiallyRequested = true, editorRequestId = 0, onLoad, onWorkspaceChange, onSourceStatus, onCreate, onRefreshProfile, onResolveConflict, onOverrideServiceNecessity }: { customer: Customer; isAdmin: boolean; cachedWorkspace?: SourceWorkspace; cachedWorkspaceFresh?: boolean; historyInitiallyRequested?: boolean; editorRequestId?: number; onLoad: (customerId: string, options?: { refresh?: boolean }) => Promise<SourceWorkspace>; onWorkspaceChange?: (customerId: string, workspace: SourceWorkspace) => void; onSourceStatus: (customerId: string, operationId: string, sourceId?: string) => Promise<SourceSaveStatus>; onCreate: (input: SourceCreateInput) => Promise<SourceRecord>; onRefreshProfile?: () => Promise<void>; onResolveConflict: (conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN') => Promise<void>; onOverrideServiceNecessity: (input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }) => Promise<SourceWorkspace> }) {
   const emptyWorkspace: SourceWorkspace = { sources: [], evidenceItems: [], proposals: [], conflicts: [] }
   const [workspace, setWorkspace] = useState<SourceWorkspace>(() => cachedWorkspace || emptyWorkspace)
   const workspaceRef = useRef(cachedWorkspace || emptyWorkspace)
@@ -1350,6 +1350,11 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
   const saveStateRef = useRef<SourceSaveState>('IDLE')
   const pendingSaveRef = useRef<{ operationId: string; input: SourceCreateInput; startedAt: number } | null>(null)
   const processingRef = useRef(new Set<string>())
+  const archivePollTimersRef = useRef(new Map<string, number>())
+  const archivePollGenerationRef = useRef(0)
+  const archivePollAttemptsRef = useRef(new Map<string, number>())
+  const ARCHIVE_STATUS_POLL_MAX_ATTEMPTS = 12
+  const ARCHIVE_STATUS_POLL_INTERVAL_MS = 5000
   const workspaceRequestSequenceRef = useRef(0)
   const setWorkspaceSnapshot = (next: SourceWorkspace) => {
     workspaceRef.current = next
@@ -1383,7 +1388,13 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       }
     }
   }
-  useEffect(() => () => { processingRef.current.clear() }, [customer.id])
+  useEffect(() => () => {
+    archivePollGenerationRef.current += 1
+    for (const timer of archivePollTimersRef.current.values()) window.clearTimeout(timer)
+    archivePollTimersRef.current.clear()
+    archivePollAttemptsRef.current.clear()
+    processingRef.current.clear()
+  }, [customer.id])
   useEffect(() => {
     if (editorRequestId > 0) setComposerOpen(true)
   }, [editorRequestId])
@@ -1404,35 +1415,56 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [saveState])
-  const mergeProcessed = (processed: { source: SourceRecord; evidenceItems: SourceWorkspace['evidenceItems']; proposals: SourceWorkspace['proposals']; conflicts: SourceWorkspace['conflicts'] }) => {
-    if (processed.source.customerId !== customer.id) return
-    const current = workspaceRef.current
-    const next = { sources: [processed.source, ...current.sources.filter((item) => item.id !== processed.source.id)], evidenceItems: [...current.evidenceItems.filter((item) => item.sourceId !== processed.source.id), ...processed.evidenceItems], proposals: [...current.proposals.filter((item) => item.sourceId !== processed.source.id), ...processed.proposals], conflicts: [...current.conflicts.filter((item) => !processed.conflicts.some((conflict) => conflict.id === item.id)), ...processed.conflicts] }
-    setWorkspaceSnapshot(next)
-    const updated = processed.proposals.filter((item) => item.reviewStatus === 'CONFIRMED').length
-    const confirmations = processed.conflicts.filter((item) => item.status === 'OPEN').length
-    setAnalysisSummary(`已整理完成 · 更新 ${updated} 项 · 新增 ${processed.evidenceItems.length} 条记录 · 需要确认 ${confirmations} 项`)
-  }
   useEffect(() => {
     if (!historyRequested) return
-    let cancelled = false
-    const reconcile = async () => {
-      const next = await load()
-      if (cancelled || !next) return
-      for (const source of next.sources.filter((item) => shouldResumeSource(item))) {
-        if (processingRef.current.has(source.id)) continue
-        processingRef.current.add(source.id)
-        if (source.processingStatus === 'UPLOADED') {
-          try { mergeProcessed(await onProcess(source.id)) } catch { if (!cancelled) setMessage('已保存，正在整理；稍后可重试。') } finally { processingRef.current.delete(source.id) }
-        } else processingRef.current.delete(source.id)
+    void load()
+  }, [customer.id, historyRequested])
+  const startArchiveStatusPolling = (sourceId: string) => {
+    if (!sourceId || processingRef.current.has(sourceId)) return
+    const generation = archivePollGenerationRef.current
+    processingRef.current.add(sourceId)
+    archivePollAttemptsRef.current.set(sourceId, 0)
+    const poll = async () => {
+      if (generation !== archivePollGenerationRef.current) return
+      const attempt = (archivePollAttemptsRef.current.get(sourceId) || 0) + 1
+      archivePollAttemptsRef.current.set(sourceId, attempt)
+      let terminal = false
+      try {
+        const status = await onSourceStatus(customer.id, '', sourceId)
+        if (generation !== archivePollGenerationRef.current) return
+        const source = status.source && status.source.customerId === customer.id && status.source.id === sourceId ? status.source : null
+        if (source) {
+          const current = workspaceRef.current
+          setWorkspaceSnapshot({ ...current, sources: current.sources.map((item) => item.id === sourceId ? source : item) })
+        }
+        terminal = Boolean(source && ['COMPLETED', 'REVIEW_REQUIRED', 'FAILED'].includes(source.processingStatus))
+        if (terminal) {
+          if (source?.processingStatus === 'COMPLETED') setMessage('AI整理完成，客户档案已刷新。')
+          else if (source?.processingStatus === 'REVIEW_REQUIRED') setMessage('AI整理完成，部分资料需要人工确认。')
+          else setMessage('AI整理失败，Worker 将按既有规则恢复。')
+          if (source?.processingStatus !== 'FAILED') await onRefreshProfile?.()
+        } else if (attempt < ARCHIVE_STATUS_POLL_MAX_ATTEMPTS) {
+          archivePollTimersRef.current.set(sourceId, window.setTimeout(() => void poll(), ARCHIVE_STATUS_POLL_INTERVAL_MS))
+        } else setMessage('已保存，后台整理仍在进行，可稍后查看。')
+      } catch {
+        if (attempt < ARCHIVE_STATUS_POLL_MAX_ATTEMPTS) archivePollTimersRef.current.set(sourceId, window.setTimeout(() => void poll(), ARCHIVE_STATUS_POLL_INTERVAL_MS))
+        else setMessage('已保存，暂时无法读取后台整理状态。')
+      } finally {
+        if (terminal || attempt >= ARCHIVE_STATUS_POLL_MAX_ATTEMPTS || generation !== archivePollGenerationRef.current) {
+          processingRef.current.delete(sourceId)
+          archivePollAttemptsRef.current.delete(sourceId)
+          const timer = archivePollTimersRef.current.get(sourceId)
+          if (timer !== undefined) window.clearTimeout(timer)
+          archivePollTimersRef.current.delete(sourceId)
+        }
       }
     }
-    void reconcile()
-    return () => { cancelled = true }
-  }, [customer.id, historyRequested])
+    void poll()
+  }
   const retrySource = async (sourceId: string) => {
-    setSaving(true); setError('')
-    try { mergeProcessed(await onProcess(sourceId, true)); setMessage('已重新识别并整理完成') } catch (processError) { await load({ refresh: true }); setMessage(sourceFailureMessage(processError)) } finally { setSaving(false) }
+    setError('')
+    setMessage('正在读取后台整理状态…')
+    startArchiveStatusPolling(sourceId)
   }
   const updateSaveState = (event: Parameters<typeof transitionSourceSaveState>[1]) => {
     const next = transitionSourceSaveState(saveStateRef.current, event)
@@ -1447,9 +1479,9 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     setSaving(false)
     setRawText('')
     setComposerOpen(false)
-    setMessage(`已确认保存，正在整理 · ${Math.round(performance.now() - saveStartedAt)}ms`)
+    setMessage(`已确认保存，等待后台整理 · ${Math.round(performance.now() - saveStartedAt)}ms`)
     setAnalysisSummary('')
-    void onProcess(source.id).then(mergeProcessed).then(() => setMessage('已确认保存并完成整理')).catch(async (processError) => { await load({ refresh: true }); setMessage(sourceFailureMessage(processError)) })
+    startArchiveStatusPolling(source.id)
   }
   const recoverPendingSave = async (pending: { operationId: string; input: SourceCreateInput; startedAt: number }) => {
     updateSaveState('TIMEOUT')
@@ -1469,7 +1501,7 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
     updateSaveState('START')
     const saveStartedAt = pendingSaveRef.current?.startedAt || performance.now()
     try {
-      const input = pendingSaveRef.current?.input || { operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: 'TEXT_INPUT', rawText: rawText.trim(), sourcePerspective: 'STAFF_REPORTED', dialogueConfirmation: '' }
+      const input = pendingSaveRef.current?.input || { operationId: `source-${customer.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`, customerId: customer.id, sourceType: 'TEXT_INPUT', rawText: rawText.trim(), sourcePerspective: 'STAFF_REPORTED', dialogueConfirmation: '', archiveIntent: 'CUSTOMER_UPDATE' as const }
       pendingSaveRef.current = { operationId: input.operationId || '', input, startedAt: saveStartedAt }
       const source = await onCreate(input)
       confirmSourceSave(source, pendingSaveRef.current?.startedAt || saveStartedAt)
@@ -1509,11 +1541,11 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       const file = sourceFileInfo(source.fileRef)
       const stale = isStaleProcessing(source)
       const presentation = sourceProcessingPresentation(source.processingStatus, source.processingError || '', stale)
-      const resumable = shouldResumeSource(source) || source.processingStatus === 'FAILED'
+      const resumable = isStaleProcessing(source) || source.processingStatus === 'FAILED'
       return <div className="source-file-status" key={source.id}>
         <span>{file ? `📄 ${file.original_filename}` : `✎ ${source.title || '文字资料'}`}</span>
         <small>{presentation.label}{presentation.message ? ` · ${presentation.message}` : ''}</small>
-        {resumable && <button className="secondary-button small" type="button" disabled={saving} onClick={() => void retrySource(source.id)}>{source.processingStatus === 'FAILED' ? '重新整理' : '继续整理'}</button>}
+        {resumable && <button className="secondary-button small" type="button" disabled={saving} onClick={() => void retrySource(source.id)}>{source.processingStatus === 'FAILED' ? '重新检查' : '检查状态'}</button>}
       </div>
     })}
     {analysisSummary && <p className="analysis-summary">{analysisSummary}</p>}

@@ -167,7 +167,7 @@ async function handle(request, response, requestId) {
   const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
   if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
   const sourceStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/source-status$/)
-  if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || ''), requestId)
+  if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || '', url.searchParams.get('sourceId') || ''), requestId)
   const customerSaveStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/save-status$/)
   if (request.method === 'GET' && customerSaveStatus) return send(request, response, 200, await repository.customerSaveStatus(await guard(request), decodeURIComponent(customerSaveStatus[1]), url.searchParams.get('operationId') || ''), requestId)
   if (request.method === 'POST' && url.pathname === '/api/privacy/service-necessity') return send(request, response, 200, await repository.overrideServiceNecessity(await guardAdmin(request), await readBody(request)), requestId)

@@ -44,7 +44,24 @@ describe('automatic customer profile processing', () => {
     expect(created[0]).toMatchObject({ customerId: 'CUS-AUTO-1', sourceType: 'TEXT_INPUT', sourcePerspective: 'STAFF_REPORTED' })
     expect(created[0].operationId).toBe(created[1].operationId)
     expect(created[0].notes).toContain('AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE')
+    expect(created[1].notes).toContain('AUTO_PROFILE_ORGANIZE:CUSTOMER_UPDATE')
     expect(repository.scheduleAutomaticProcessing).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps consecutive customer updates as independent Source operations', async () => {
+    const repository = new FeishuRepository({ authRepository: {} })
+    const created = []
+    repository.createSource = vi.fn(async (_actorId, input) => { created.push(input); return { id: input.operationId, ...input, processingStatus: 'UPLOADED' } })
+    repository.scheduleAutomaticProcessing = vi.fn()
+
+    const first = await repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-UPDATE', '目前在杭州', 'CUSTOMER_UPDATE')
+    const second = await repository.queueAutomaticCustomerProfile('ADMIN-1', 'CUS-AUTO-UPDATE', '目前在广州', 'CUSTOMER_UPDATE')
+
+    expect(first.sourceId).not.toBe(second.sourceId)
+    expect(created).toHaveLength(2)
+    expect(created[0].notes).toBe('AUTO_PROFILE_ORGANIZE:CUSTOMER_UPDATE')
+    expect(created[1].notes).toBe('AUTO_PROFILE_ORGANIZE:CUSTOMER_UPDATE')
+    expect(created[0].operationId).not.toBe(created[1].operationId)
   })
 
   it('keeps the original save successful when automatic source queuing is unavailable', async () => {

@@ -48,6 +48,7 @@ describe('Feishu gateway client_token integration', () => {
       fetchImpl: mockFetch,
       appId: 'test-app-id',
       appSecret: 'test-app-secret',
+      baseToken: 'test-base-token',
       baseUrl: 'https://test.feishu.cn',
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     })
