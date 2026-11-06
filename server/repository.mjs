@@ -3411,9 +3411,12 @@ export class FeishuRepository {
   async createMentorLocked(actorId, input, phone = normalizePhone(input?.phone)) {
     const startedAt = Date.now()
     const timings = { identity_query_ms: 0, password_hash_ms: 0, staff_write_ms: 0, credential_write_ms: 0, result_check_ms: 0, total_ms: 0 }
-    const finish = (result, outcome = 'CREATED') => {
+    const recordTiming = (outcome) => {
       timings.total_ms = Date.now() - startedAt
       console.info('[ASVA_MENTOR_CREATE_TIMING]', JSON.stringify({ outcome, ...timings }))
+    }
+    const finish = (result, outcome = 'CREATED') => {
+      recordTiming(outcome)
       return { ...result, timings: { ...timings } }
     }
     this.invalidateDatabaseCache()
@@ -3489,15 +3492,18 @@ export class FeishuRepository {
       if (authWriteCommitted && credentialCreationAcknowledged) error = null
       if (authWriteCommitted && !credentialCreationAcknowledged) {
         const alreadyExists = Object.assign(new Error('导师账号已创建，但初始密码无法安全恢复，请使用重置密码。'), { code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
+        recordTiming('ALREADY_EXISTS')
         this.audit('CREATE_MENTOR', staffId, actorId, 'EXISTS', alreadyExists.message)
         throw alreadyExists
       }
       if (staffWriteCommitted && !authWriteCommitted) {
         const partial = Object.assign(new Error('导师账号创建未完成，系统已保留异常记录，请联系管理员处理。'), { code: 'PARTIAL_INCONSISTENT', status: 503, cause: error })
+        recordTiming('PARTIAL')
         this.audit('CREATE_MENTOR', staffId, actorId, 'PARTIAL', partial.message)
         throw partial
       }
       if (error) {
+        recordTiming('FAILED')
         this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
         throw error
       }
