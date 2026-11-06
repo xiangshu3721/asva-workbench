@@ -27,7 +27,7 @@ import { runtimeConfig } from './runtime-config'
 import { createResourceCache, type ResourceCache } from './app-data-cache'
 import { clearSessionSnapshots, readSessionSnapshot, writeSessionSnapshot } from './session-snapshots'
 import { sortProductsForSelection } from './product-order'
-import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
+import { buildMentorCopyText, insertMentorSnapshot, mentorAccountRecoveryMessage, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
 import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
@@ -1786,9 +1786,30 @@ function TeamPanel({ staffId, api, cache }: { staffId: string; api: WorkbenchApi
   }
   const save = async (input: { name: string; phone: string; initialPassword?: string }): Promise<MentorAccountResult> => {
     let result: MentorAccountResult
-    if (formMentor === 'create') result = await api.createMentor(staffId, input)
-    else if (formMentor) result = await api.updateMentor(staffId, formMentor.id, input)
-    else throw new Error('导师表单已关闭')
+    try {
+      if (formMentor === 'create') result = await api.createMentor(staffId, input)
+      else if (formMentor) result = await api.updateMentor(staffId, formMentor.id, input)
+      else throw new Error('导师表单已关闭')
+    } catch (error) {
+      if (formMentor === 'create' && (error as { code?: string })?.code === 'REQUEST_TIMEOUT') {
+        setFeedback('正在确认创建结果…')
+        const status = await api.mentorAccountStatus(staffId, input.phone)
+        if (status.status === 'COMPLETED' && status.mentor) {
+          const confirmed = { mentor: status.mentor, customerCount: 0 }
+          const next = reconcileMentorSnapshot(teams || [], confirmed)
+          cache.set(cacheKey, next)
+          cache.invalidate(basicDashboardCacheKey(staffId))
+          cache.invalidate(dashboardCacheKey(staffId))
+          setFormMentor(null)
+          applyTeams(next)
+          refreshAfterMutation(confirmed)
+          setFeedback(mentorAccountRecoveryMessage(status.status))
+          return { ...status.mentor, accountCreateCommitted: true, createOutcome: 'ALREADY_EXISTS' }
+        }
+        throw Object.assign(new Error(mentorAccountRecoveryMessage(status.status)), { code: `ACCOUNT_${status.status}` })
+      }
+      throw error
+    }
     if (formMentor === 'create') {
       const mentor = publicMentorSummary(result)
       const optimistic = { mentor, customerCount: 0 }

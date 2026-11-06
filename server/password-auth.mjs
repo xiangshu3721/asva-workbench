@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 import { config } from './config.mjs'
-import { createRecord, listRecords, updateRecord } from './feishu.mjs'
+import { createRecord, listRecords, searchRecords, updateRecord } from './feishu.mjs'
 import { field, fields, read } from './field-mapping.mjs'
 import { PasswordPolicyError, PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 
@@ -99,15 +99,23 @@ export class FeishuAuthCredentialRepository {
   constructor(tableId = config.feishu.tables.authCredentials) { this.tableId = tableId }
   assertConfigured() { assertTable(this.tableId) }
   async list() { this.assertConfigured(); return (await listRecords(this.tableId)).map(credential) }
-  async findByPhone(phone) { if (!this.tableId) return null; return (await this.list()).find((item) => item.loginPhone === normalizePhone(phone)) }
-  async findByStaffId(staffId) { if (!this.tableId) return null; return (await this.list()).find((item) => item.staffId === staffId) }
+  async findByPhone(phone) {
+    if (!this.tableId) return null
+    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'login_phone'), operator: 'is', value: [normalizePhone(phone)] }] }, { pageSize: 20 })
+    return rows.map(credential).find((item) => item.loginPhone === normalizePhone(phone)) || null
+  }
+  async findByStaffId(staffId) {
+    if (!this.tableId) return null
+    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'staff_id'), operator: 'is', value: [String(staffId)] }] }, { pageSize: 20 })
+    return rows.map(credential).find((item) => item.staffId === String(staffId)) || null
+  }
   async create(input) {
     this.assertConfigured()
-    const existing = await this.list()
-    if (existing.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 })
+    const [existingByStaffId, existingByPhone] = await Promise.all([this.findByStaffId(input.staffId), this.findByPhone(input.loginPhone)])
+    if (existingByStaffId || existingByPhone) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 })
     const values = { credential_id: input.credentialId || `cred-${crypto.randomUUID()}`, staff_id: input.staffId, login_phone: normalizePhone(input.loginPhone), password_hash: input.passwordHash, password_algorithm: input.passwordAlgorithm || 'scrypt', must_change_password: input.mustChangePassword === true, auth_version: input.authVersion || 1, credential_status: input.credentialStatus || 'ACTIVE', password_changed_at: input.passwordChangedAt || null, created_at: input.createdAt || now(), updated_at: input.updatedAt || now(), last_login_at: input.lastLoginAt || null }
     const result = await createRecord(this.tableId, fields('authCredentials', values), { operation: 'auth-credential.create', operationId: values.credential_id, entityType: 'authCredentials', idempotency: { field: field('authCredentials', 'credential_id'), value: values.credential_id } })
-    return { ...input, id: result?.record?.record_id || result?.record_id || values.credential_id, ...values, loginPhone: values.login_phone, staffId: values.staff_id, passwordHash: values.password_hash, authVersion: values.auth_version, mustChangePassword: values.must_change_password, _recordId: result?.record?.record_id || result?.record_id }
+    return { ...input, id: result?.record?.record_id || result?.record_id || values.credential_id, ...values, loginPhone: values.login_phone, staffId: values.staff_id, passwordHash: values.password_hash, authVersion: values.auth_version, mustChangePassword: values.must_change_password, _recordId: result?.record?.record_id || result?.record_id, idempotencyRecovered: result?.idempotency_recovered === true }
   }
   async update(credentialRecord, patch) {
     this.assertConfigured()
