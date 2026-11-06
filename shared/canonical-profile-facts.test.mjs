@@ -63,6 +63,8 @@ describe('R037 canonical profile fact normalization', () => {
     expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '女性成长读书会', sourceExcerpt: '通过女性成长读书会认识', semanticKind: 'CURRENT_STATE' })).toMatchObject({ canonicalFieldKey: 'customer_source', storageFieldKey: 'source', canonicalValue: '女性成长读书会', grounded: true })
     expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '解忧小屋微信群', sourceExcerpt: '来自解忧小屋微信群', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('解忧小屋微信群')
     expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '张老师转介绍', sourceExcerpt: '经张老师介绍认识', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('张老师转介绍')
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '小红书', sourceExcerpt: '在小红书看到活动后主动咨询', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('小红书')
+    expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '杭州', sourceExcerpt: '客户来自杭州', semanticKind: 'CURRENT_STATE' }).storageFieldKey).toBeNull()
     expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '女性成长读书会', sourceExcerpt: '参加过女性成长读书会', semanticKind: 'EVENT' }).storageFieldKey).toBeNull()
     expect(normalizeCanonicalFact({ fieldKey: 'customer_source', value: '女性成长读书会', sourceExcerpt: '通过女性成长读书会认识，也参加过其他活动', semanticKind: 'CURRENT_STATE' }).canonicalValue).toBe('女性成长读书会')
     expect(isExplicitCustomerAcquisitionSource({ value: '张老师转介绍', sourceExcerpt: '经张老师介绍认识' })).toBe(true)

@@ -89,9 +89,16 @@ function explicitCustomerSourceFromQuote(quote) {
   const through = sourceText.match(/通过([^，。；,;]+?)(?:认识|成为客户|加(?:入|了)?群|联系上|转化为客户)/)
   if (through?.[1]) return through[1].replace(/^(?:一个|一次)/, '').trim()
   const from = sourceText.match(/来自([^，。；,;]+?)(?=$|[，。；,;])/)
-  if (from?.[1]) return from[1].trim()
+  if (from?.[1]) {
+    const fromValue = from[1].trim()
+    const cityOnly = fromValue.replace(/市$/, '')
+    if (CITY_WORDS.test(cityOnly) && cityOnly.length <= 4 && /^[\u4e00-\u9fff]+$/.test(cityOnly)) return ''
+    return fromValue
+  }
   const introduced = sourceText.match(/(?:经|由)([^，。；,;]+?)(?:介绍|推荐)(?:认识|成为客户)?/)
   if (introduced?.[1]) return `${introduced[1].trim()}转介绍`
+  const channelConsultation = sourceText.match(/(?:在|从)([^，。；,;]+?)(?:看到|刷到|了解到)[^，。；,;]*(?:主动咨询|咨询|联系|加(?:入|了)?群)/)
+  if (channelConsultation?.[1]) return channelConsultation[1].trim()
   return ''
 }
 

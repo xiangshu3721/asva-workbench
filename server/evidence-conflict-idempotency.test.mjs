@@ -160,6 +160,77 @@ it('keeps an existing real customer source and opens a review for an explicit co
   }
 })
 
+it('lets a mentor confirm a new source exactly once and records the replacement history', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '来源A'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自来源B。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '来源B', display_text: '客户来源：来源B', source_excerpt: '来自来源B', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const proposal = activeDatabase.profileUpdateProposals.find((item) => item.fieldKey === 'source')
+    expect(proposal).toBeTruthy()
+    await repository.reviewProposal('MENTOR-A', proposal.id, 'CONFIRM')
+    expect(activeDatabase.customers[0].source).toBe('来源B')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toEqual([
+      expect.objectContaining({ oldValue: '来源A', newValue: '来源B', source: 'MENTOR_CONFIRMED', confirmed: true }),
+    ])
+    await repository.reviewProposal('MENTOR-A', proposal.id, 'CONFIRM')
+    expect(activeDatabase.customers[0].source).toBe('来源B')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(1)
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
+it('keeps the old source when a mentor resolves a source conflict as KEEP_CURRENT', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '来源A'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自来源B。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '来源B', display_text: '客户来源：来源B', source_excerpt: '来自来源B', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const conflict = activeDatabase.evidenceConflicts.find((item) => item.fieldKey === 'source')
+    expect(conflict).toBeTruthy()
+    await repository.resolveConflict('MENTOR-A', conflict.id, 'KEEP_CURRENT')
+    expect(activeDatabase.customers[0].source).toBe('来源A')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(0)
+    expect(activeDatabase.evidenceConflicts.find((item) => item.id === conflict.id).status).toBe('RESOLVED')
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
+it('does not complete source review records when the confirmed write fails', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '来源A'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自来源B。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '来源B', display_text: '客户来源：来源B', source_excerpt: '来自来源B', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const proposal = activeDatabase.profileUpdateProposals.find((item) => item.fieldKey === 'source')
+    updateRecordMock.mockImplementation((tableId, recordId, fields) => {
+      if (tableId === config.feishu.tables.customers) throw new Error('synthetic customer write failure')
+      return updateExisting(tableId, recordId, fields)
+    })
+    await expect(repository.reviewProposal('MENTOR-A', proposal.id, 'CONFIRM')).rejects.toThrow('synthetic customer write failure')
+    expect(activeDatabase.customers[0].source).toBe('来源A')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(0)
+    expect(activeDatabase.profileUpdateProposals.find((item) => item.id === proposal.id).reviewStatus).toBe('PENDING_REVIEW')
+    expect(activeDatabase._allEvidenceItems.find((item) => item.id === proposal.evidenceId).reviewStatus).toBe('PENDING_REVIEW')
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
 describe('structured archive completion criteria', () => {
   it('does not treat technical Evidence completion as effective archiving', () => {
     expect(classifyStructuredArchivingOutcome({ validEvidenceCount: 5, mappedEvidenceCount: 0, physicalFieldWriteCount: 0 })).toEqual({ status: 'REVIEW_REQUIRED', outcome: 'PARTIAL', errorCode: 'STRUCTURED_ARCHIVE_PARTIAL' })

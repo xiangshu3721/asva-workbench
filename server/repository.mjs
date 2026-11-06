@@ -809,7 +809,7 @@ function isCustomerSourceEvidence(evidence) {
     && isExplicitCustomerAcquisitionSource({ value: evidence.standardValue, sourceExcerpt: evidence.sourceExcerpt })
 }
 
-async function persistCustomerSource(database, customerId, evidence, operatorId, provenanceContext = {}, { source = 'AI_EXTRACTED', confirmed = false } = {}) {
+async function persistCustomerSource(database, customerId, evidence, operatorId, provenanceContext = {}, { source = 'AI_EXTRACTED', confirmed = false, allowExistingSourceReplacement = false } = {}) {
   const customerRecord = database.customers.find((item) => item.id === customerId)
   const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
   if (!customerRecord || !row) throw new Error('客户不存在')
@@ -817,23 +817,32 @@ async function persistCustomerSource(database, customerId, evidence, operatorId,
   const currentValue = text(get('customers', row.fields, 'source'))
   const visibleCurrentValue = currentValue || customerRecord.source || ''
   if (!nextValue) return { status: 'SKIPPED', changes: [] }
-  if (visibleCurrentValue && !CUSTOMER_SOURCE_PLACEHOLDERS.has(visibleCurrentValue) && visibleCurrentValue !== nextValue) return { status: 'CONFLICT', currentValue: visibleCurrentValue, changes: [] }
+  if (visibleCurrentValue && !CUSTOMER_SOURCE_PLACEHOLDERS.has(visibleCurrentValue) && visibleCurrentValue !== nextValue && !allowExistingSourceReplacement) return { status: 'CONFLICT', currentValue: visibleCurrentValue, changes: [] }
   if (visibleCurrentValue === nextValue) return { status: 'NO_CHANGE', currentValue: visibleCurrentValue, changes: [] }
   const existingChange = (database.profileChanges || []).find((item) => item.customerId === customerId && item.field === 'source' && item.evidenceId === evidence.id)
   if (existingChange) return { status: 'NO_CHANGE', currentValue: nextValue, changes: [] }
-  customerRecord.source = nextValue
-  customerRecord.profileFieldMeta = { ...(customerRecord.profileFieldMeta || {}), source: {
+  const nextProfileFieldMeta = { ...(customerRecord.profileFieldMeta || {}), source: {
     source, confidence: evidence.confidence, confirmed, updatedAt: now(),
     ...(provenanceContext.sourceRecordId ? { sourceRecordId: provenanceContext.sourceRecordId } : {}),
     ...(provenanceContext.evidenceId ? { evidenceId: provenanceContext.evidenceId } : {}),
     ...(provenanceContext.updateBatchId ? { extractionBatchId: provenanceContext.updateBatchId } : {}),
   } }
-  customerRecord.profileVersion = Number(customerRecord.profileVersion || 0) + 1
-  customerRecord.profileUpdatedAt = now()
-  customerRecord.profileSchemaVersion = CUSTOMER_PROFILE_SCHEMA_VERSION
-  const values = profileFieldsForWrite(customerRecord, [], { suppressLegacyAppointmentMirrors: provenanceContext.suppressLegacyAppointmentMirrors === true })
+  const nextCustomerRecord = {
+    ...customerRecord,
+    source: nextValue,
+    profileFieldMeta: nextProfileFieldMeta,
+    profileVersion: Number(customerRecord.profileVersion || 0) + 1,
+    profileUpdatedAt: now(),
+    profileSchemaVersion: CUSTOMER_PROFILE_SCHEMA_VERSION,
+  }
+  const values = profileFieldsForWrite(nextCustomerRecord, [], { suppressLegacyAppointmentMirrors: provenanceContext.suppressLegacyAppointmentMirrors === true })
   values[mapField('customers', 'source')] = nextValue
   await updateRecord(config.feishu.tables.customers, row.record_id, values)
+  customerRecord.source = nextCustomerRecord.source
+  customerRecord.profileFieldMeta = nextCustomerRecord.profileFieldMeta
+  customerRecord.profileVersion = nextCustomerRecord.profileVersion
+  customerRecord.profileUpdatedAt = nextCustomerRecord.profileUpdatedAt
+  customerRecord.profileSchemaVersion = nextCustomerRecord.profileSchemaVersion
   const changedAt = feishuDate()
   const changeId = provenanceContext.updateBatchId ? stableOperationId(`${provenanceContext.updateBatchId}:source`, 'PCH') : stableId('PCH', `${customerId}:${evidence.id}:source`)
   await createMappedRecord('profileChanges', 'profile-change.customer-source', { change_id: changeId, customer_id: customerId, field: 'source', field_key: 'source', field_name: mapField('customers', 'source'), old_value: JSON.stringify(visibleCurrentValue || null), new_value: JSON.stringify(nextValue), source, confidence: evidence.confidence, confirmed, updated_at: changedAt, changed_at: changedAt, operator_id: operatorId || '', service_record_id: '', source_record_id: provenanceContext.sourceRecordId || '', evidence_id: provenanceContext.evidenceId || evidence.id || '', update_batch_id: provenanceContext.updateBatchId || '' })
@@ -3348,7 +3357,7 @@ export class FeishuRepository {
       const current = database.customers.find((item) => item.id === proposal.customerId)
       if (proposal.fieldKey === 'source') {
         if (evidence.evidenceType === 'HYPOTHESIS') throw Object.assign(new Error('AI假设不能写入客户来源'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
-        await persistCustomerSource(database, proposal.customerId, { ...evidence, standardValue: proposal.proposedValue }, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId }, { source: 'MENTOR_CONFIRMED', confirmed: true })
+        await persistCustomerSource(database, proposal.customerId, { ...evidence, standardValue: proposal.proposedValue }, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId }, { source: 'MENTOR_CONFIRMED', confirmed: true, allowExistingSourceReplacement: true })
       } else {
         const update = { field: proposal.fieldKey, value: proposal.proposedValue, source: evidence.evidenceType === 'HYPOTHESIS' ? 'AI_INFERENCE' : 'MENTOR_CONFIRMED', confidence: proposal.confidence, confirmed: true }
         if (update.source === 'AI_INFERENCE') throw Object.assign(new Error('AI假设不能写入当前客户档案'), { code: 'HYPOTHESIS_NOT_WRITABLE', status: 400 })
@@ -3389,7 +3398,7 @@ export class FeishuRepository {
       if (!evidence || !proposal.fieldKey) throw new Error('冲突缺少可追溯证据')
       const current = database.customers.find((item) => item.id === proposal.customerId)
       if (proposal.fieldKey === 'source') {
-        await persistCustomerSource(database, proposal.customerId, { ...evidence, standardValue: proposal.proposedValue }, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId }, { source: 'MENTOR_CONFIRMED', confirmed: true })
+        await persistCustomerSource(database, proposal.customerId, { ...evidence, standardValue: proposal.proposedValue }, actorId, { sourceRecordId: proposal.sourceId, evidenceId: proposal.evidenceId, updateBatchId: proposal.extractionBatchId }, { source: 'MENTOR_CONFIRMED', confirmed: true, allowExistingSourceReplacement: true })
       } else {
         const update = normalizeProfileUpdates([{ field: proposal.fieldKey, value: proposal.proposedValue, source: 'MENTOR_CONFIRMED', confidence: proposal.confidence }], current, true)[0]
         if (!update) throw new Error('冲突的新资料无效')
