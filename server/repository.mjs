@@ -163,6 +163,18 @@ function uniqueMentors(staffRecords) {
   }
   return [...selected.values()]
 }
+function mentorDuplicateCounts(staffRecords) {
+  const counts = new Map()
+  for (const mentor of (staffRecords || []).filter((item) => item.permissionRole === 'MENTOR')) {
+    const key = normalizePhone(mentor.phone) || mentor.id
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return counts
+}
+function mentorCredentialMatches(mentor, credential, phone) {
+  const normalizedPhone = normalizePhone(phone)
+  return Boolean(mentor && credential && mentor.status === 'ACTIVE' && mentor.loginEnabled === true && credential.credentialStatus === 'ACTIVE' && credential.staffId === mentor.id && normalizePhone(mentor.phone) === normalizedPhone && normalizePhone(credential.loginPhone) === normalizedPhone)
+}
 const publicCustomerDirectory = (item, sources = [], evidenceItems = []) => ({ ...pickDefined(item, ['id', 'name', 'initials', 'phone', 'wechat', 'source', 'status', 'grade', 'gradeSource', 'mentorId', 'referrerName', 'introducer', 'need', 'helpExpectation', 'goal', 'intendedCourse', 'paid', 'notes', 'createdAt', 'createdByStaffId', 'createdByName', 'profileUpdatedAt']), ...(['CUSTOMER_SAVE', 'CUSTOMER_UPDATE'].includes(item?.automaticProfilePending?.reason) ? { automaticProfilePending: { reason: item.automaticProfilePending.reason, contentHash: item.automaticProfilePending.contentHash, createdAt: item.automaticProfilePending.createdAt } } : {}), ...(sources.length ? { automaticProfileStatus: automaticProfileStatus(sources, evidenceItems, item.id), automaticProfileAutoResume: automaticProfileAutoResume(sources, item.id) } : {}), profileMaterialization: { coverage: item?.profileMaterialization?.coverage || materializeCustomerProfile({ customer: item, evidenceItems: [] }).coverage } })
 const publicCustomerDetail = (item, sources = [], evidenceItems = []) => ({ ...publicCustomerDirectory(item, sources, evidenceItems), profileFields: item?.profileFields || {}, profileFieldMeta: item?.profileFieldMeta || {}, profileSchemaVersion: item?.profileSchemaVersion, profileVersion: item?.profileVersion, brief: item?.brief || '' })
 const publicCustomerProfile = (item, profileMaterialization, autoOrganizeStatus) => ({
@@ -3429,14 +3441,23 @@ export class FeishuRepository {
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
     const findAuthByStaffId = async (staffId) => typeof this.authRepository.findByStaffId === 'function' ? this.authRepository.findByStaffId(staffId).catch(() => null) : null
     const duplicateStaff = identity.duplicateStaff
-    const existingCredential = await this.authRepository.findByPhone?.(phone)
+    let existingCredentials = []
+    if (typeof this.authRepository.findAllByPhone === 'function') existingCredentials = await this.authRepository.findAllByPhone(phone)
+    else {
+      const existing = await this.authRepository.findByPhone?.(phone)
+      if (existing) existingCredentials.push(existing)
+    }
+    const existingCredential = existingCredentials[0] || null
     timings.identity_query_ms = Date.now() - identityStartedAt
     if (duplicateStaff.length > 1) throw Object.assign(new Error('该手机号已存在多条导师人员记录，系统未自动合并，请联系管理员核查。'), { code: 'ACCOUNT_INCONSISTENT', status: 409 })
     const duplicate = duplicateStaff[0]
-    const credential = duplicate ? await findAuthByStaffId(duplicate.id) || existingCredential : existingCredential
-    if (duplicate || existingCredential) {
-      if (duplicate?.status === 'ACTIVE' && credential && credential.credentialStatus !== 'DISABLED') throw Object.assign(new Error('该手机号已绑定完整导师账户，无需重复创建。若未保存初始密码，请使用重置密码。'), { code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
-      if (!(duplicate?.status === 'ACTIVE' && !credential && !existingCredential)) throw Object.assign(new Error('该手机号对应的导师账户资料不完整，系统未重复创建，请联系管理员处理。'), { code: 'ACCOUNT_INCONSISTENT', status: 409 })
+    const credentialByStaffId = duplicate ? await findAuthByStaffId(duplicate.id) : null
+    const credentialCandidates = [...new Map([credentialByStaffId, ...existingCredentials].filter(Boolean).map((credential) => [credential._recordId || credential.id || `${credential.staffId}:${credential.loginPhone}`, credential])).values()]
+    const exactCredential = credentialCandidates.find((credential) => mentorCredentialMatches(duplicate, credential, phone))
+    const hasCredentialAnomaly = credentialCandidates.length > 1 || credentialCandidates.some((credential) => !mentorCredentialMatches(duplicate, credential, phone))
+    if (duplicate || existingCredentials.length || credentialByStaffId) {
+      if (duplicate?.status === 'ACTIVE' && exactCredential && !hasCredentialAnomaly) throw Object.assign(new Error('该手机号已绑定完整导师账户，无需重复创建。若未保存初始密码，请使用重置密码。'), { code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
+      if (!(duplicate?.status === 'ACTIVE' && credentialCandidates.length === 0)) throw Object.assign(new Error('该手机号对应的导师账户资料不完整，系统未重复创建，请联系管理员处理。'), { code: 'ACCOUNT_INCONSISTENT', status: 409 })
     }
     const initialPassword = typeof input?.initialPassword === 'string' && input.initialPassword ? input.initialPassword : generateInitialPassword({ phone })
     validatePassword(initialPassword, { phone })
@@ -3542,13 +3563,20 @@ export class FeishuRepository {
     const identity = await this.loadMentorCreateContext(actorId, normalizedPhone)
     if (identity.actor?.status !== 'ACTIVE' || identity.actor.permissionRole !== 'ADMIN' || identity.actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以核实导师账户'), { code: 'FORBIDDEN', status: 403 })
     const findCredentialByStaffId = (staffId) => typeof this.authRepository.findByStaffId === 'function' ? this.authRepository.findByStaffId(staffId).catch(() => null) : Promise.resolve(null)
-    const findCredentialByPhone = typeof this.authRepository.findByPhone === 'function' ? this.authRepository.findByPhone(normalizedPhone).catch(() => null) : Promise.resolve(null)
-    const credentials = await Promise.all(identity.duplicateStaff.map((item) => findCredentialByStaffId(item.id)))
-    const credential = credentials.find(Boolean) || await findCredentialByPhone
-    if (identity.duplicateStaff.length > 1) return { status: 'DUPLICATE', phone: normalizedPhone, mentorCount: identity.duplicateStaff.length, credentialCount: credentials.filter(Boolean).length }
+    let phoneCredentials = []
+    if (typeof this.authRepository.findAllByPhone === 'function') phoneCredentials = await this.authRepository.findAllByPhone(normalizedPhone).catch(() => [])
+    else {
+      const credentialByPhone = typeof this.authRepository.findByPhone === 'function' ? await this.authRepository.findByPhone(normalizedPhone).catch(() => null) : null
+      if (credentialByPhone) phoneCredentials = [credentialByPhone]
+    }
+    const staffCredentials = await Promise.all(identity.duplicateStaff.map((item) => findCredentialByStaffId(item.id)))
+    const credentials = [...new Map([...staffCredentials, ...phoneCredentials].filter(Boolean).map((credential) => [credential._recordId || credential.id || `${credential.staffId}:${credential.loginPhone}`, credential])).values()]
+    if (identity.duplicateStaff.length > 1) return { status: 'DUPLICATE', phone: normalizedPhone, mentorCount: identity.duplicateStaff.length, credentialCount: credentials.length }
     const mentor = identity.duplicateStaff[0]
-    if (mentor && credential && credential.credentialStatus !== 'DISABLED') return { status: 'COMPLETED', phone: normalizedPhone, mentor: publicStaff(mentor), credentialStatus: credential.credentialStatus }
-    if (mentor || credential) return { status: 'PARTIAL', phone: normalizedPhone, mentor: mentor ? publicStaff(mentor) : undefined, credentialStatus: credential?.credentialStatus || 'MISSING' }
+    const exactCredential = credentials.find((credential) => mentorCredentialMatches(mentor, credential, normalizedPhone))
+    const hasCredentialAnomaly = credentials.length > 1 || credentials.some((credential) => !mentorCredentialMatches(mentor, credential, normalizedPhone))
+    if (mentor && exactCredential && !hasCredentialAnomaly) return { status: 'COMPLETED', phone: normalizedPhone, mentor: publicStaff(mentor), credentialStatus: exactCredential.credentialStatus }
+    if (mentor || credentials.length) return { status: credentials.length > 1 ? 'DUPLICATE' : 'PARTIAL', phone: normalizedPhone, mentor: mentor ? publicStaff(mentor) : undefined, credentialStatus: exactCredential?.credentialStatus || credentials[0]?.credentialStatus || 'MISSING', credentialCount: credentials.length }
     return { status: 'NOT_FOUND', phone: normalizedPhone }
   }
 
@@ -3728,9 +3756,11 @@ export class FeishuRepository {
     const actor = database.staff.find((item) => item.id === actorId)
     if (actor?.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('无权查看团队数据')
     const all = await this.loadDirectory()
+    const duplicateCounts = mentorDuplicateCounts(all.staff)
     return uniqueMentors(all.staff).filter((item) => !statusFilter || item.status === statusFilter).map((mentor) => {
       const assignedCustomers = all.customers.filter((item) => customerBelongsToStaff(item, mentor.id))
-      return { mentor, customerCount: assignedCustomers.length, customerPreviews: assignedCustomers.slice(0, 6).map((customer) => ({ id: customer.id, name: customer.name, initials: customer.initials, need: customer.need })) }
+      const duplicateCount = duplicateCounts.get(normalizePhone(mentor.phone) || mentor.id) || 1
+      return { mentor, customerCount: assignedCustomers.length, duplicateCount, accountIntegrity: duplicateCount > 1 ? 'DUPLICATE' : 'OK', customerPreviews: assignedCustomers.slice(0, 6).map((customer) => ({ id: customer.id, name: customer.name, initials: customer.initials, need: customer.need })) }
     })
   }
 

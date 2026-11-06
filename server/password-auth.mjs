@@ -99,10 +99,14 @@ export class FeishuAuthCredentialRepository {
   constructor(tableId = config.feishu.tables.authCredentials) { this.tableId = tableId }
   assertConfigured() { assertTable(this.tableId) }
   async list() { this.assertConfigured(); return (await listRecords(this.tableId)).map(credential) }
+  async findAllByPhone(phone) {
+    if (!this.tableId) return []
+    const normalizedPhone = normalizePhone(phone)
+    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'login_phone'), operator: 'is', value: [normalizedPhone] }] }, { pageSize: 20 })
+    return rows.map(credential).filter((item) => item.loginPhone === normalizedPhone)
+  }
   async findByPhone(phone) {
-    if (!this.tableId) return null
-    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'login_phone'), operator: 'is', value: [normalizePhone(phone)] }] }, { pageSize: 20 })
-    return rows.map(credential).find((item) => item.loginPhone === normalizePhone(phone)) || null
+    return (await this.findAllByPhone(phone))[0] || null
   }
   async findByStaffId(staffId) {
     if (!this.tableId) return null
@@ -139,7 +143,8 @@ export class FeishuAuthCredentialRepository {
 
 export class MemoryAuthCredentialRepository {
   constructor(records = []) { this.records = records.map((record) => ({ ...record })) }
-  async findByPhone(phone) { return this.records.find((item) => item.loginPhone === normalizePhone(phone)) }
+  async findAllByPhone(phone) { return this.records.filter((item) => item.loginPhone === normalizePhone(phone)) }
+  async findByPhone(phone) { return (await this.findAllByPhone(phone))[0] }
   async findByStaffId(staffId) { return this.records.find((item) => item.staffId === staffId) }
   async create(input) { if (this.records.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 }); const record = { id: input.credentialId || `cred-${this.records.length + 1}`, credentialStatus: input.credentialStatus || 'ACTIVE', authVersion: input.authVersion || 1, ...input, _recordId: input.credentialId || `cred-${this.records.length + 1}` }; this.records.push(record); return record }
   async update(record, patch) { Object.assign(record, Object.fromEntries(Object.entries(patch).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]))); return record }

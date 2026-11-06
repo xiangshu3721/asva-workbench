@@ -166,6 +166,42 @@ describe('reliable mentor creation', () => {
     expect(status).not.toHaveProperty('passwordHash')
   })
 
+  it('does not report completed when the credential points to another staff identity', async () => {
+    const database = baseDatabase()
+    database.staff.push({ id: 'mentor-status', name: '状态导师', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true, phone: validInput.phone })
+    const authRepository = new MemoryAuthCredentialRepository([{ id: 'cred-mismatch', staffId: 'other-mentor', loginPhone: validInput.phone, credentialStatus: 'ACTIVE' }])
+    const { repository } = setup({ database, authRepository })
+    await expect(repository.mentorAccountStatus(admin.id, validInput.phone)).resolves.toMatchObject({ status: 'PARTIAL', credentialStatus: 'ACTIVE' })
+  })
+
+  it('does not create when an existing credential has mismatched staff identity', async () => {
+    const database = baseDatabase()
+    database.staff.push({ id: 'mentor-existing', name: '已有导师', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true, phone: validInput.phone })
+    const authRepository = new MemoryAuthCredentialRepository([{ id: 'cred-mismatch', staffId: 'other-mentor', loginPhone: validInput.phone, credentialStatus: 'ACTIVE' }])
+    const { repository } = setup({ database, authRepository })
+    await expect(repository.createMentor(admin.id, validInput)).rejects.toMatchObject({ code: 'ACCOUNT_INCONSISTENT', status: 409 })
+    expect(createRecordMock).not.toHaveBeenCalled()
+  })
+
+  it('reports duplicate credentials or disabled staff as non-completed', async () => {
+    const database = baseDatabase()
+    database.staff.push({ id: 'mentor-status', name: '状态导师', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true, phone: validInput.phone })
+    const authRepository = new MemoryAuthCredentialRepository([
+      { id: 'cred-1', staffId: 'mentor-status', loginPhone: validInput.phone, credentialStatus: 'ACTIVE' },
+      { id: 'cred-2', staffId: 'mentor-status', loginPhone: validInput.phone, credentialStatus: 'ACTIVE' },
+    ])
+    const { repository } = setup({ database, authRepository })
+    await expect(repository.mentorAccountStatus(admin.id, validInput.phone)).resolves.toMatchObject({ status: 'DUPLICATE', credentialCount: 2 })
+  })
+
+  it('reports an active credential as partial when the staff record cannot log in', async () => {
+    const database = baseDatabase()
+    database.staff.push({ id: 'mentor-disabled-login', name: '登录关闭导师', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: false, phone: validInput.phone })
+    const authRepository = new MemoryAuthCredentialRepository([{ id: 'cred-disabled-login', staffId: 'mentor-disabled-login', loginPhone: validInput.phone, credentialStatus: 'ACTIVE' }])
+    const { repository } = setup({ database, authRepository })
+    await expect(repository.mentorAccountStatus(admin.id, validInput.phone)).resolves.toMatchObject({ status: 'PARTIAL' })
+  })
+
   it('simulates two independent instances and never returns the losing password', async () => {
     const databaseA = baseDatabase()
     const databaseB = baseDatabase()

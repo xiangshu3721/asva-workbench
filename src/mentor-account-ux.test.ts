@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { MentorAccountResult } from './domain'
-import { buildMentorCopyText, insertMentorSnapshot, mentorAccountRecoveryMessage, publicMentorSummary, reconcileMentorSnapshot } from './mentor-account-ux'
+import { buildMentorCopyText, insertMentorSnapshot, mentorAccountRecoveryMessage, publicMentorSummary, recoverMentorAccountStatus, reconcileMentorSnapshot } from './mentor-account-ux'
 
 const created: MentorAccountResult = {
   id: 'mentor-new', name: '测试导师', role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true,
@@ -40,6 +40,20 @@ describe('mentor account UX safety', () => {
   it('keeps timeout recovery messages explicit and safe', () => {
     expect(mentorAccountRecoveryMessage('COMPLETED')).toContain('初始密码无法安全恢复')
     expect(mentorAccountRecoveryMessage('NOT_FOUND')).toContain('请勿重复提交')
+  })
+
+  it('polls a delayed mentor creation result without creating a second request', async () => {
+    const statuses = [
+      { status: 'NOT_FOUND' as const, phone: created.phone },
+      { status: 'NOT_FOUND' as const, phone: created.phone },
+      { status: 'COMPLETED' as const, phone: created.phone, mentor: publicMentorSummary(created), credentialStatus: 'ACTIVE' },
+    ]
+    const waits: number[] = []
+    let calls = 0
+    const result = await recoverMentorAccountStatus(async () => statuses[calls++] || statuses.at(-1)!, { wait: async (delay) => { waits.push(delay) } })
+    expect(result.status).toBe('COMPLETED')
+    expect(calls).toBe(3)
+    expect(waits).toEqual([500, 1000])
   })
 
   it('copies full credentials only for a temporary in-memory password', () => {
