@@ -1635,7 +1635,7 @@ function ManualCustomerDialog({ database, onClose, onPreview, onCreate, onUpdate
   }, [])
   const input = (): ManualCustomerInput => {
     const enrollments: EnrollmentDraft[] = selectedProductIds.map((productId) => ({ productId }))
-    return { operationId: operationIdRef.current, nickname, phone, wechat, introducer, situation, needsFollowup: false, mentorId: null, source: '管理员手动录入', caseSource: 'ADMIN_MANUAL', enrollments, confirmedNotSame: step === 'duplicate' && draft.identity?.result === 'POSSIBLE_MATCH' }
+    return { operationId: operationIdRef.current, nickname, phone, wechat, introducer, situation, needsFollowup: false, mentorId: null, source: '', caseSource: 'ADMIN_MANUAL', enrollments, confirmedNotSame: step === 'duplicate' && draft.identity?.result === 'POSSIBLE_MATCH' }
   }
   const toggleProduct = (productId: string) => setSelectedProductIds((ids) => ids.includes(productId) ? ids.filter((id) => id !== productId) : [...ids, productId])
   const visibleProducts = products.filter((product) => product.name.toLowerCase().includes(productQuery.trim().toLowerCase()))

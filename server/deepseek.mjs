@@ -220,8 +220,8 @@ export async function classifyDialogue(input) {
 
 export async function createEvidenceCandidates(input) {
   const sourceText = String(input.text || '')
-  const fieldCatalog = canonicalProfileFieldCatalog().map(({ storageFieldKey }) => ({
-    key: storageFieldKey,
+  const fieldCatalog = canonicalProfileFieldCatalog().map(({ canonicalFieldKey, storageFieldKey }) => ({
+    key: canonicalFieldKey === 'customer_source' ? 'customer_source' : storageFieldKey,
     meaning: FIELD_MAPPING.customers[storageFieldKey],
     ...(storageFieldKey === 'city' ? { boundary: '仅明确现居/居住城市；工作地点不得填入' } : {}),
     ...(storageFieldKey === 'living_status' ? { boundary: '居住方式或状态，不是城市名' } : {}),
@@ -240,7 +240,7 @@ export async function createEvidenceCandidates(input) {
   input.onDiagnostics?.({ source_char_count: sourceText.length, prompt_char_count: promptInput.length, token_estimate: Math.ceil(promptInput.length / 2) })
   const raw = await callDeepSeek([
     { role: 'system', content: '你是 ASVA 资料整理助手。仅根据 source_text 提取可回溯的原子信息，不总结、不诊断、不补全、不把推测写成事实。必须返回 JSON 对象：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"writable_customer_fields中的英文key或空","value":"尽量保留原文可直接核对的原子值","display_text":"简短中文展示","source_excerpt":"原文短摘录","occurred_at":"原文明确时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0},"speaker_id":"A|B|C|空","subject_scope":"CURRENT_CUSTOMER|MENTOR_SELF|OTHER_PARTICIPANT|UNKNOWN","content_source":"CUSTOMER_DIRECT|STAFF_TRANSCRIBED_CUSTOMER|MENTOR_REPORTED|MENTOR_OBSERVATION|THIRD_PARTY_REPORTED|UNKNOWN|MIXED","information_nature":"OBJECTIVE_RECORD|PERSONAL_STATEMENT|REPORTED_SPEECH|BEHAVIOR_OBSERVATION|SUBJECTIVE_JUDGMENT|AI_INFERENCE|UNKNOWN","verification_status":"UNKNOWN|SOURCE_SUPPORTED|HUMAN_VERIFIED|CONFLICTED"}]}。字段规则：只能使用用户消息中writable_customer_fields列出的key并严格遵守meaning/boundary；明确事实能匹配现有字段时必须优先输出准确field_key，只有确实无法归类时才留空；不得创造近义英文key。逐条拆分年龄、性别、工作地点、关系状态、关系困扰、情绪、睡眠、当前问题和目标。三个重点字段必须严格区分：current_core_issue是当前困扰/需要解决的问题，current_goal是客户想实现的目标或行动，current_expectation是客户希望从导师/服务中获得的帮助；同一原句同时包含多种语义时拆成多个有各自原文依据的Evidence。关系状态与关系冲突分别写relationship_status和relationship_conflicts，明确情绪写emotion_expression，睡眠情况写sleep。来源、人物归属和性质必须由原文决定，不能依赖uploaded_by/source_role，不能仅凭第一人称或引号推断客户身份。对话资料必须区分实际说话人和被提及的人；无法判断时使用UNKNOWN，只有subject_scope=CURRENT_CUSTOMER才可进入档案。STAFF_REPORTED不得写成客户原话；导师观察与主观判断分开；第三方陈述保留不确定性。工作地点没有独立物理字段时field_key留空，绝不能写入现居地city；当前职业只提取原文明确职业；过去职业使用EVENT且不能覆盖当前职业；“想做某事业”归入career_goal而不是occupation。当前状态、历史事件和未来目标必须分开。保留原文依据和待核实状态；AI不得输出HUMAN_VERIFIED。禁止心理诊断、无依据频率、数量、经济状态或背景。' },
-    { role: 'system', content: '补充边界：明确的“想/希望/考虑/打算”是客户自己的意向陈述，不是 AI 推测；除非模型补写了原文没有的内容，否则不要使用 HYPOTHESIS。工作地点原文含“工作/上班/办公/通勤”但没有居住语义时，city 必须留空。同一原文同一含义只输出一次；仅有家庭支持时使用family_support_level，不要再复制到support_system。' },
+    { role: 'system', content: '补充边界：明确的“想/希望/考虑/打算”是客户自己的意向陈述，不是 AI 推测；除非模型补写了原文没有的内容，否则不要使用 HYPOTHESIS。工作地点原文含“工作/上班/办公/通勤”但没有居住语义时，city 必须留空。同一原文同一含义只输出一次；仅有家庭支持时使用family_support_level，不要再复制到support_system。客户获客来源只能使用customer_source，且必须有“通过…认识”“来自…群/渠道”“经…介绍/推荐”等明确因果表达；value仅保留来源本身。只有“参加过/上过/去过某活动”时不要输出customer_source。customer_source是客户如何成为客户，不能与content_source（这条资料由谁提供）混淆。' },
     { role: 'user', content: promptInput },
   ], 0, { model: config.deepseek.evidenceModel, operation: 'evidence.extract', timeoutMs: EVIDENCE_EXTRACT_TIMEOUT_MS, maxAttempts: EVIDENCE_EXTRACT_MAX_ATTEMPTS, maxTokens: 4096, thinking: { type: 'disabled' }, responseFormat: { type: 'json_object' }, requireJson: true })
   const parsed = parseJson(raw)

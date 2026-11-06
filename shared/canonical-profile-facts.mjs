@@ -31,6 +31,7 @@ Object.assign(FIELD_REGISTRY, {
   employment_status: { storageFieldKey: 'job_status', aliases: ['employment_status', 'job_status', 'work_status', 'employment_state'] },
   sleep_status: { storageFieldKey: 'sleep', aliases: ['sleep_status', 'sleep', 'sleep_quality'] },
   income: { storageFieldKey: 'income_range', aliases: ['income', 'income_range'] },
+  customer_source: { storageFieldKey: 'source', aliases: ['customer_source', 'source', 'acquisition_source', 'lead_source', 'source_of_acquisition', 'customer_origin'] },
 })
 
 const EXTRA_ALIASES = {
@@ -82,6 +83,40 @@ function nearby(textValue, pattern, value) {
   return pattern.test(semanticSegment(textValue, candidate))
 }
 
+function explicitCustomerSourceFromQuote(quote) {
+  const sourceText = text(quote)
+  if (!sourceText) return ''
+  const through = sourceText.match(/通过([^，。；,;]+?)(?:认识|成为客户|加(?:入|了)?群|联系上|转化为客户)/)
+  if (through?.[1]) return through[1].replace(/^(?:一个|一次)/, '').trim()
+  const from = sourceText.match(/来自([^，。；,;]+?)(?=$|[，。；,;])/)
+  if (from?.[1]) {
+    const fromValue = from[1].trim()
+    const cityOnly = fromValue.replace(/市$/, '')
+    if (CITY_WORDS.test(cityOnly) && cityOnly.length <= 4 && /^[\u4e00-\u9fff]+$/.test(cityOnly)) return ''
+    return fromValue
+  }
+  const introduced = sourceText.match(/(?:经|由)([^，。；,;]+?)(?:介绍|推荐)(?:认识|成为客户)?/)
+  if (introduced?.[1]) return `${introduced[1].trim()}转介绍`
+  const channelConsultation = sourceText.match(/(?:在|从)([^，。；,;]+?)(?:看到|刷到|了解到)[^，。；,;]*(?:主动咨询|咨询|联系|加(?:入|了)?群)/)
+  if (channelConsultation?.[1]) return channelConsultation[1].trim()
+  return ''
+}
+
+export function normalizeCustomerSourceValue(value, sourceExcerpt = '') {
+  const candidate = valueText(value)
+  const extracted = explicitCustomerSourceFromQuote(sourceExcerpt)
+  if (!candidate || !extracted) return ''
+  const compactCandidate = compact(candidate)
+  const compactExtracted = compact(extracted)
+  if (compactCandidate === compactExtracted || compactCandidate.includes(compactExtracted) || compactExtracted.includes(compactCandidate)) return extracted
+  if (text(sourceExcerpt).includes(candidate)) return candidate
+  return ''
+}
+
+export function isExplicitCustomerAcquisitionSource({ value = '', sourceExcerpt = '' } = {}) {
+  return Boolean(normalizeCustomerSourceValue(value, sourceExcerpt))
+}
+
 function isCityLike(value, quote) {
   const candidate = valueText(value)
   return Boolean(candidate && CITY_WORDS.test(candidate) && (RESIDENCE_CURRENT_WORDS.test(quote) || FUTURE_WORDS.test(quote) || HISTORY_WORDS.test(quote)))
@@ -123,6 +158,9 @@ export function resolveCanonicalField({ fieldKey = '', value = '', sourceExcerpt
   const inferredCanonical = canonical || inferUnkeyedCanonicalField({ value, sourceExcerpt: quote })
   if (!inferredCanonical) return { canonicalFieldKey: 'UNKNOWN', storageFieldKey: null, reason: '未找到现有档案字段映射' }
   const resolvedCanonical = inferredCanonical
+  if (resolvedCanonical === 'customer_source' && !isExplicitCustomerAcquisitionSource({ value, sourceExcerpt: quote })) {
+    return { canonicalFieldKey: 'UNKNOWN', storageFieldKey: null, reason: '原文没有明确表达客户获客来源' }
+  }
   if (resolvedCanonical === 'occupation' && nearby(quote, FUTURE_WORDS, value) && !nearby(quote, CURRENT_WORDS, value)) {
     return { canonicalFieldKey: 'career_goal', storageFieldKey: 'career_goal', reason: '未来职业意向归入职业目标而不是当前职业' }
   }
@@ -158,6 +196,7 @@ function canonicalValueMatchesQuote(fieldKey, value, quote) {
   const source = compact(quote)
   if (!candidate || !source) return false
   if (source.includes(candidate)) return true
+  if (fieldKey === 'customer_source') return isExplicitCustomerAcquisitionSource({ value, sourceExcerpt: quote })
   if (fieldKey === 'current_city' && CITY_WORDS.test(candidate)) return source.includes(candidate) && (CURRENT_WORDS.test(quote) || FUTURE_WORDS.test(quote) || HISTORY_WORDS.test(quote))
   if (fieldKey === 'employment_status') return /离职|在职|自由职业|失业|工作中/.test(`${valueText(value)} ${quote}`) && EMPLOYMENT_CURRENT_WORDS.test(quote)
   if (fieldKey === 'occupation') return /职业|工作|从事|做|职位|岗位/.test(quote)
@@ -184,15 +223,16 @@ function canonicalValueMatchesQuote(fieldKey, value, quote) {
 export function normalizeCanonicalFact({ fieldKey = '', value = '', sourceExcerpt = '', displayText = '', semanticKind = '', occurredAt = '' } = {}) {
   const resolved = resolveCanonicalField({ fieldKey, value, sourceExcerpt, displayText })
   if (resolved.canonicalFieldKey === 'UNKNOWN') return { ...resolved, canonicalValue: value, temporalType: classifyTemporalFact({ fieldKey, value, sourceExcerpt, semanticKind }), grounded: true, semanticKind }
-  const temporalType = classifyTemporalFact({ fieldKey: resolved.canonicalFieldKey, value, sourceExcerpt, semanticKind })
-  const grounded = canonicalValueMatchesQuote(resolved.canonicalFieldKey, value, sourceExcerpt)
+  const canonicalValue = resolved.canonicalFieldKey === 'customer_source' ? normalizeCustomerSourceValue(value, sourceExcerpt) : value
+  const temporalType = classifyTemporalFact({ fieldKey: resolved.canonicalFieldKey, value: canonicalValue, sourceExcerpt, semanticKind })
+  const grounded = canonicalValueMatchesQuote(resolved.canonicalFieldKey, canonicalValue, sourceExcerpt)
   const effectiveSemanticKind = temporalType === 'CURRENT' ? (resolved.storageFieldKey ? 'CURRENT_STATE' : semanticKind) : 'EVENT'
   const isCurrentSnapshot = ['current_city', 'city', 'occupation', 'employment_status', 'job_status'].includes(resolved.canonicalFieldKey) || ['city', 'occupation', 'job_status'].includes(resolved.storageFieldKey)
   const storageFieldKey = isCurrentSnapshot && temporalType !== 'CURRENT' ? null : resolved.storageFieldKey
   return {
     ...resolved,
     storageFieldKey,
-    canonicalValue: value,
+    canonicalValue,
     temporalType,
     grounded,
     semanticKind: effectiveSemanticKind,

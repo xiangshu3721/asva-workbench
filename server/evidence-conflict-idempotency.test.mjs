@@ -29,7 +29,7 @@ let recordSequence = 0
 const json = (value) => { try { return JSON.parse(value) } catch { return value } }
 
 function makeDatabase() {
-  const customer = { id: 'CUS-SYNTH-1', name: 'Synthetic 客户', mentorId: 'MENTOR-A', _recordId: 'rec-customer-1', profileFields: { city: '杭州', job_status: '在职' }, profileFieldMeta: {}, profileVersion: 1, profileSchemaVersion: 'v1.0', need: '', helpExpectation: '', goal: '', grade: 'C', paid: false, intendedCourse: '' }
+  const customer = { id: 'CUS-SYNTH-1', name: 'Synthetic 客户', source: '', mentorId: 'MENTOR-A', _recordId: 'rec-customer-1', profileFields: { city: '杭州', job_status: '在职' }, profileFieldMeta: {}, profileVersion: 1, profileSchemaVersion: 'v1.0', need: '', helpExpectation: '', goal: '', grade: 'C', paid: false, intendedCourse: '' }
   const source = { id: 'SRC-SYNTH-1', customerId: customer.id, subjectId: customer.id, sourceType: 'TEXT_INPUT', sourceRole: 'MENTOR', sourcePerspective: 'STAFF_REPORTED', rawText: '她目前已经长期住在深圳。', contentHash: 'hash-1', extractorVersion: 'evidence-v1', processingStatus: 'UPLOADED', processingVersion: 1, lastBatchId: '', _recordId: 'rec-source-1' }
   return { staff: [{ id: 'MENTOR-A', name: 'Synthetic Mentor A', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }, { id: 'MENTOR-B', name: 'Synthetic Mentor B', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true }], customers: [customer], appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords: [source], evidenceItems: [], _allEvidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: { customers: [{ record_id: 'rec-customer-1', fields: { '客户ID': customer.id } }], sourceRecords: [{ record_id: source._recordId, fields: {} }], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], profileChanges: [] } }
 }
@@ -55,6 +55,7 @@ function updateExisting(tableId, recordId, fields) {
     const customer = activeDatabase.customers.find((item) => item.id === row?.fields?.['客户ID'])
     if (row && customer) {
       row.fields = { ...row.fields, ...fields }
+      if (fields[customerField('customers', 'source')] !== undefined) customer.source = fields[customerField('customers', 'source')]
       for (const [key, value] of Object.entries(activeDatabase._rows.customers.find((item) => item.record_id === recordId)?.fields || {})) {
         if (key === customerField('customers', '档案字段元数据')) continue
         const match = Object.entries({ age: '年龄', city: '所在城市', living_status: '居住状态', job_status: '工作状态' }).find(([, label]) => label === key)
@@ -93,9 +94,11 @@ beforeEach(() => {
       档案版本: customer.profileSchemaVersion || 'v1.0',
       档案更新时间: customer.profileUpdatedAt || null,
       客户补充信息: JSON.stringify(customer.supplementaryItems || []),
+      客户来源: customer.source || '',
       ...Object.fromEntries(Object.entries(customer.profileFields || {}).map(([key, value]) => [customerField('customers', key), value])),
     } }
   })
+
 })
 
 function setupRepository(extractor = async () => [{ evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'living_status', value: '深圳', display_text: '当前居住地为深圳', source_excerpt: '她目前已经长期住在深圳。', confidence: 0.96, locator: { paragraph_index: 0 } }]) {
@@ -114,6 +117,119 @@ function setupRepository(extractor = async () => [{ evidence_type: 'FACT', seman
   repository.scheduleCustomerUnderstandingRefresh = () => {}
   return repository
 }
+
+it('archives an explicit customer acquisition source without treating attendance as acquisition', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.sourceRecords[0].rawText = '通过女性成长读书会认识，参加过其他活动。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '女性成长读书会', display_text: '客户来源：女性成长读书会', source_excerpt: '通过女性成长读书会认识', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+      { evidence_type: 'FACT', semantic_kind: 'EVENT', field_key: '', value: '参加过其他活动', display_text: '参加过其他活动', source_excerpt: '参加过其他活动', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect(activeDatabase.customers[0].source).toBe('女性成长读书会')
+    expect(activeDatabase.customers[0].supplementaryItems.map((item) => item.text)).toEqual(['参加过其他活动'])
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(1)
+    const writes = createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1')
+    expect(activeDatabase.customers[0].source).toBe('女性成长读书会')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(1)
+    expect(createRecordMock.mock.calls.length + updateRecordMock.mock.calls.length).toBe(writes)
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
+it('keeps an existing real customer source and opens a review for an explicit correction', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '既有真实来源'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自新渠道。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '新渠道', display_text: '客户来源：新渠道', source_excerpt: '来自新渠道', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    expect(activeDatabase.customers[0].source).toBe('既有真实来源')
+    expect(activeDatabase.profileUpdateProposals.filter((item) => item.fieldKey === 'source')).toHaveLength(1)
+    expect(activeDatabase.evidenceConflicts.filter((item) => item.fieldKey === 'source')).toHaveLength(1)
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(0)
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
+it('lets a mentor confirm a new source exactly once and records the replacement history', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '来源A'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自来源B。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '来源B', display_text: '客户来源：来源B', source_excerpt: '来自来源B', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const proposal = activeDatabase.profileUpdateProposals.find((item) => item.fieldKey === 'source')
+    expect(proposal).toBeTruthy()
+    await repository.reviewProposal('MENTOR-A', proposal.id, 'CONFIRM')
+    expect(activeDatabase.customers[0].source).toBe('来源B')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toEqual([
+      expect.objectContaining({ oldValue: '来源A', newValue: '来源B', source: 'MENTOR_CONFIRMED', confirmed: true }),
+    ])
+    await repository.reviewProposal('MENTOR-A', proposal.id, 'CONFIRM')
+    expect(activeDatabase.customers[0].source).toBe('来源B')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(1)
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
+it('keeps the old source when a mentor resolves a source conflict as KEEP_CURRENT', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '来源A'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自来源B。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '来源B', display_text: '客户来源：来源B', source_excerpt: '来自来源B', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const conflict = activeDatabase.evidenceConflicts.find((item) => item.fieldKey === 'source')
+    expect(conflict).toBeTruthy()
+    await repository.resolveConflict('MENTOR-A', conflict.id, 'KEEP_CURRENT')
+    expect(activeDatabase.customers[0].source).toBe('来源A')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(0)
+    expect(activeDatabase.evidenceConflicts.find((item) => item.id === conflict.id).status).toBe('RESOLVED')
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
+
+it('does not complete source review records when the confirmed write fails', async () => {
+  const previousAutomatic = config.features.automaticProfileArchiving
+  config.features.automaticProfileArchiving = true
+  try {
+    activeDatabase.customers[0].source = '来源A'
+    activeDatabase.sourceRecords[0].rawText = '客户明确说明来自来源B。'
+    const repository = setupRepository(async () => [
+      { evidence_type: 'FACT', semantic_kind: 'CURRENT_STATE', field_key: 'customer_source', value: '来源B', display_text: '客户来源：来源B', source_excerpt: '来自来源B', content_source: 'STAFF_TRANSCRIBED_CUSTOMER', information_nature: 'PERSONAL_STATEMENT', verification_status: 'SOURCE_SUPPORTED', confidence: 0.96, locator: { paragraph_index: 0 } },
+    ])
+    await repository.processSource('MENTOR-A', 'SRC-SYNTH-1', { force: true })
+    const proposal = activeDatabase.profileUpdateProposals.find((item) => item.fieldKey === 'source')
+    updateRecordMock.mockImplementation((tableId, recordId, fields) => {
+      if (tableId === config.feishu.tables.customers) throw new Error('synthetic customer write failure')
+      return updateExisting(tableId, recordId, fields)
+    })
+    await expect(repository.reviewProposal('MENTOR-A', proposal.id, 'CONFIRM')).rejects.toThrow('synthetic customer write failure')
+    expect(activeDatabase.customers[0].source).toBe('来源A')
+    expect(activeDatabase.profileChanges.filter((item) => item.field === 'source')).toHaveLength(0)
+    expect(activeDatabase.profileUpdateProposals.find((item) => item.id === proposal.id).reviewStatus).toBe('PENDING_REVIEW')
+    expect(activeDatabase._allEvidenceItems.find((item) => item.id === proposal.evidenceId).reviewStatus).toBe('PENDING_REVIEW')
+  } finally {
+    config.features.automaticProfileArchiving = previousAutomatic
+  }
+})
 
 describe('structured archive completion criteria', () => {
   it('does not treat technical Evidence completion as effective archiving', () => {

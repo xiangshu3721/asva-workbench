@@ -16,7 +16,7 @@ export const CONFLICT_STATUSES = new Set(['OPEN', 'RESOLVED', 'DISMISSED'])
 export const CONFLICT_RESOLUTIONS = new Set(['USE_NEW', 'KEEP_CURRENT', 'KEEP_BOTH', 'MARK_UNKNOWN'])
 
 export const PROFILE_FIELD_ALIASES = { current_city: 'city', current_occupation: 'occupation', current_job_status: 'job_status', birth_place: 'hometown' }
-export const STABLE_FACT_FIELDS = new Set(['birth_date', 'gender', 'phone', 'wechat'])
+export const STABLE_FACT_FIELDS = new Set(['birth_date', 'gender', 'phone', 'wechat', 'source'])
 export const CUMULATIVE_FIELDS = new Set(['hobbies', 'sports', 'reading', 'travel', 'art_preferences', 'important_experiences', 'resources'])
 export const SUBJECTIVE_FIELDS = new Set(['self_description', 'personality_traits', 'communication_style', 'decision_style', 'emotion_expression', 'stress_response', 'conflict_style', 'action_style', 'core_values', 'family_values', 'career_values', 'money_values', 'relationship_values', 'success_definition', 'happiness_definition', 'freedom_definition', 'growth_attitude'])
 
