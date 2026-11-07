@@ -165,7 +165,7 @@ export interface MentorAccountInput {
   initialPassword?: string
 }
 
-export type MentorAccountResult = Staff & { initialPassword?: string; accountCreateCommitted?: boolean; createOutcome?: 'CREATED' | 'ALREADY_EXISTS' | 'PARTIAL_INCONSISTENT' }
+export type MentorAccountResult = Staff & { initialPassword?: string; accountCreateCommitted?: boolean; createOutcome?: 'CREATED' | 'ALREADY_EXISTS' | 'PARTIAL_INCONSISTENT'; timings?: Record<string, number> }
 
 export interface ProfileEvidenceReference {
   evidenceId: string

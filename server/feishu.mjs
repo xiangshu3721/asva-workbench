@@ -137,7 +137,7 @@ export function createFeishuGateway({
     // Generate stable client_token for create_record operations (Feishu official idempotency)
     let finalPath = path
     let clientToken = null
-    if (isWrite && operation === 'create_record' && operationId && context.table) {
+    if (isWrite && context.requestType === 'create_record' && operationId && context.table) {
       clientToken = feishuClientToken(operationId, context.table)
       if (clientToken) {
         const separator = path.includes('?') ? '&' : '?'
@@ -229,7 +229,7 @@ export function createFeishuGateway({
     listTables: () => listPaged((query) => `/open-apis/bitable/v1/apps/${baseToken}/tables?${query}`, 'list_tables'),
     createTable: (name, fields = []) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables`, { method: 'POST', body: JSON.stringify({ table: { name, default_view_name: '默认视图', fields } }) }, { operation: 'create_table', retry: false }),
     createField: (tableId, fieldName, type = 1) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/fields`, { method: 'POST', body: JSON.stringify({ field_name: fieldName, type }) }, { operation: 'create_field', table: tableId, retry: false }),
-    createRecord: (tableId, fields, context = {}) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records`, { method: 'POST', body: JSON.stringify({ fields }) }, { ...context, operation: context.operation || 'create_record', table: tableId, retry: true }),
+    createRecord: (tableId, fields, context = {}) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records`, { method: 'POST', body: JSON.stringify({ fields }) }, { ...context, requestType: 'create_record', operation: context.operation || 'create_record', table: tableId, retry: true }),
     updateRecord: (tableId, recordId, fields, context = {}) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`, { method: 'PUT', body: JSON.stringify({ fields }) }, { ...context, operation: context.operation || 'update_record', table: tableId, retry: true }),
     deleteRecord: (tableId, recordId, context = {}) => request(`/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/${recordId}`, { method: 'DELETE' }, { ...context, operation: context.operation || 'delete_record', table: tableId, retry: false }),
   }

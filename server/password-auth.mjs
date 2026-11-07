@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 import { config } from './config.mjs'
-import { createRecord, listRecords, updateRecord } from './feishu.mjs'
+import { createRecord, listRecords, searchRecords, updateRecord } from './feishu.mjs'
 import { field, fields, read } from './field-mapping.mjs'
 import { PasswordPolicyError, PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 
@@ -99,15 +99,27 @@ export class FeishuAuthCredentialRepository {
   constructor(tableId = config.feishu.tables.authCredentials) { this.tableId = tableId }
   assertConfigured() { assertTable(this.tableId) }
   async list() { this.assertConfigured(); return (await listRecords(this.tableId)).map(credential) }
-  async findByPhone(phone) { if (!this.tableId) return null; return (await this.list()).find((item) => item.loginPhone === normalizePhone(phone)) }
-  async findByStaffId(staffId) { if (!this.tableId) return null; return (await this.list()).find((item) => item.staffId === staffId) }
+  async findAllByPhone(phone) {
+    if (!this.tableId) return []
+    const normalizedPhone = normalizePhone(phone)
+    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'login_phone'), operator: 'is', value: [normalizedPhone] }] }, { pageSize: 20 })
+    return rows.map(credential).filter((item) => item.loginPhone === normalizedPhone)
+  }
+  async findByPhone(phone) {
+    return (await this.findAllByPhone(phone))[0] || null
+  }
+  async findByStaffId(staffId) {
+    if (!this.tableId) return null
+    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'staff_id'), operator: 'is', value: [String(staffId)] }] }, { pageSize: 20 })
+    return rows.map(credential).find((item) => item.staffId === String(staffId)) || null
+  }
   async create(input) {
     this.assertConfigured()
-    const existing = await this.list()
-    if (existing.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 })
+    const [existingByStaffId, existingByPhone] = await Promise.all([this.findByStaffId(input.staffId), this.findByPhone(input.loginPhone)])
+    if (existingByStaffId || existingByPhone) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 })
     const values = { credential_id: input.credentialId || `cred-${crypto.randomUUID()}`, staff_id: input.staffId, login_phone: normalizePhone(input.loginPhone), password_hash: input.passwordHash, password_algorithm: input.passwordAlgorithm || 'scrypt', must_change_password: input.mustChangePassword === true, auth_version: input.authVersion || 1, credential_status: input.credentialStatus || 'ACTIVE', password_changed_at: input.passwordChangedAt || null, created_at: input.createdAt || now(), updated_at: input.updatedAt || now(), last_login_at: input.lastLoginAt || null }
     const result = await createRecord(this.tableId, fields('authCredentials', values), { operation: 'auth-credential.create', operationId: values.credential_id, entityType: 'authCredentials', idempotency: { field: field('authCredentials', 'credential_id'), value: values.credential_id } })
-    return { ...input, id: result?.record?.record_id || result?.record_id || values.credential_id, ...values, loginPhone: values.login_phone, staffId: values.staff_id, passwordHash: values.password_hash, authVersion: values.auth_version, mustChangePassword: values.must_change_password, _recordId: result?.record?.record_id || result?.record_id }
+    return { ...input, id: result?.record?.record_id || result?.record_id || values.credential_id, ...values, loginPhone: values.login_phone, staffId: values.staff_id, passwordHash: values.password_hash, authVersion: values.auth_version, mustChangePassword: values.must_change_password, _recordId: result?.record?.record_id || result?.record_id, idempotencyRecovered: result?.idempotency_recovered === true }
   }
   async update(credentialRecord, patch) {
     this.assertConfigured()
@@ -131,7 +143,8 @@ export class FeishuAuthCredentialRepository {
 
 export class MemoryAuthCredentialRepository {
   constructor(records = []) { this.records = records.map((record) => ({ ...record })) }
-  async findByPhone(phone) { return this.records.find((item) => item.loginPhone === normalizePhone(phone)) }
+  async findAllByPhone(phone) { return this.records.filter((item) => item.loginPhone === normalizePhone(phone)) }
+  async findByPhone(phone) { return (await this.findAllByPhone(phone))[0] }
   async findByStaffId(staffId) { return this.records.find((item) => item.staffId === staffId) }
   async create(input) { if (this.records.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 }); const record = { id: input.credentialId || `cred-${this.records.length + 1}`, credentialStatus: input.credentialStatus || 'ACTIVE', authVersion: input.authVersion || 1, ...input, _recordId: input.credentialId || `cred-${this.records.length + 1}` }; this.records.push(record); return record }
   async update(record, patch) { Object.assign(record, Object.fromEntries(Object.entries(patch).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]))); return record }

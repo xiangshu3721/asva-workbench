@@ -95,6 +95,21 @@ describe('Feishu gateway client_token integration', () => {
     expect(token1).toBe(token2)
   })
 
+  it('appends client_token for custom create operations through the createRecord entry point', async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ tenant_access_token: 'test-token', expire: 7200 }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { record: { id: 'rec-mentor' } } }) })
+
+    await gateway.createRecord('tbl-staff', { 手机号: '13900000001' }, {
+      operation: 'mentor.create',
+      operationId: 'M-stable-mentor',
+      entityType: 'staff',
+    })
+
+    expect(mockFetch.mock.calls[1][0]).toContain('client_token=')
+    expect(mockFetch.mock.calls[1][1].method).toBe('POST')
+  })
+
   it('does not append client_token to updateRecord requests', async () => {
     mockFetch
       .mockResolvedValueOnce({ ok: true, json: async () => ({ tenant_access_token: 'test-token', expire: 7200 }) })
@@ -122,5 +137,15 @@ describe('Feishu gateway client_token integration', () => {
     const createCall = mockFetch.mock.calls[1]
     const url = createCall[0]
     expect(url).not.toContain('client_token=')
+  })
+
+  it('does not append client_token to an arbitrary POST request', async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ tenant_access_token: 'test-token', expire: 7200 }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { ok: true } }) })
+
+    await gateway.request('/custom-endpoint', { method: 'POST', body: '{}' }, { operation: 'custom.post', operationId: 'op-123', table: 'tbl-abc' })
+
+    expect(mockFetch.mock.calls[1][0]).not.toContain('client_token=')
   })
 })
