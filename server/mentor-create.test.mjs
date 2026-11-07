@@ -12,7 +12,7 @@ vi.mock('./feishu.mjs', async () => {
 })
 
 const { FeishuRepository } = await import('./repository.mjs')
-const { MemoryAuthCredentialRepository } = await import('./password-auth.mjs')
+const { MemoryAuthCredentialRepository, verifyPassword } = await import('./password-auth.mjs')
 
 const admin = { id: 'admin-1', name: '管理员', role: 'ADMIN', permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }
 const baseDatabase = () => ({ staff: [admin], customers: [], appointments: [], sessions: [], followups: [], products: [], enrollments: [], profileChanges: [], sourceRecords: [], evidenceItems: [], profileUpdateProposals: [], evidenceConflicts: [], _rows: {} })
@@ -39,6 +39,7 @@ describe('reliable mentor creation', () => {
     const result = await repository.createMentor(admin.id, validInput)
 
     expect(result).toMatchObject({ name: validInput.name, phone: validInput.phone, accountCreateCommitted: true, createOutcome: 'CREATED', initialPassword: validInput.initialPassword })
+    expect(await verifyPassword(result.initialPassword, (await repository.authRepository.findByStaffId(result.id)).passwordHash)).toBe(true)
     expect(loads).toBe(1)
     expect(createRecordMock).toHaveBeenCalledTimes(1)
     expect(createRecordMock.mock.calls[0][2]).toMatchObject({ operationId: expect.stringMatching(/^M-/), idempotency: { field: '手机号', value: validInput.phone } })
@@ -80,7 +81,7 @@ describe('reliable mentor creation', () => {
     expect(createRecordMock).toHaveBeenCalledTimes(1)
   })
 
-  it('does not return a new password when an auth response times out after commit', async () => {
+  it('returns the original password when an auth response times out after commit and readback verifies it', async () => {
     const authRepository = new MemoryAuthCredentialRepository()
     const originalCreate = authRepository.createCredential.bind(authRepository)
     let authAttempts = 0
@@ -92,10 +93,25 @@ describe('reliable mentor creation', () => {
     }
     const { repository } = setup({ authRepository })
 
-    await expect(repository.createMentor(admin.id, validInput)).rejects.toMatchObject({ code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
+    await expect(repository.createMentor(admin.id, validInput)).resolves.toMatchObject({ accountCreateCommitted: true, initialPassword: validInput.initialPassword })
     expect(authAttempts).toBe(1)
     expect(authRepository.records).toHaveLength(1)
     expect(deleteRecordMock).not.toHaveBeenCalled()
+  })
+
+  it('does not guess when credential readback is temporarily unavailable', async () => {
+    const authRepository = new MemoryAuthCredentialRepository()
+    const originalFind = authRepository.findByStaffId.bind(authRepository)
+    let readbacks = 0
+    authRepository.findByStaffId = async (staffId) => {
+      readbacks += 1
+      if (readbacks > 0) throw Object.assign(new Error('readback timeout'), { code: 'FEISHU_TIMEOUT', retryable: true })
+      return originalFind(staffId)
+    }
+    const { repository } = setup({ authRepository })
+
+    await expect(repository.createMentor(admin.id, validInput)).rejects.toMatchObject({ code: 'ACCOUNT_CONFIRMATION_PENDING', status: 503 })
+    expect(authRepository.records).toHaveLength(1)
   })
 
   it('does not create auth when staff persistence definitely fails', async () => {
@@ -213,7 +229,7 @@ describe('reliable mentor creation', () => {
       createCredential: async (input) => {
         await new Promise((resolve) => setTimeout(resolve, 5))
         const existing = credentialRecords.get(input.staffId)
-        if (existing) return { ...existing, idempotencyRecovered: true }
+        if (existing) return { ...existing }
         const record = { ...input, loginPhone: input.loginPhone, credentialStatus: 'ACTIVE', staffId: input.staffId }
         credentialRecords.set(input.staffId, record)
         return record
@@ -234,5 +250,13 @@ describe('reliable mentor creation', () => {
     expect(results.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
     expect(results.filter((item) => item.status === 'rejected').map((item) => item.reason.code)).toEqual(['ACCOUNT_ALREADY_EXISTS'])
     expect(credentialRecords.size).toBe(1)
+    const fulfilled = results.find((item) => item.status === 'fulfilled')
+    const rejected = results.find((item) => item.status === 'rejected')
+    const actualCredential = credentialRecords.values().next().value
+    expect(['Aa123456789!', 'Bb123456789!']).toContain(fulfilled.value.initialPassword)
+    expect(rejected.reason).not.toHaveProperty('initialPassword')
+    expect(await verifyPassword(fulfilled.value.initialPassword, actualCredential.passwordHash)).toBe(true)
+    const passwordMatches = await Promise.all(['Aa123456789!', 'Bb123456789!'].map((password) => verifyPassword(password, actualCredential.passwordHash)))
+    expect(passwordMatches.filter(Boolean)).toHaveLength(1)
   })
 })

@@ -3420,6 +3420,24 @@ export class FeishuRepository {
     try { return await current } finally { if (mentorCreateLocks.get(phone) === tracked) mentorCreateLocks.delete(phone) }
   }
 
+  async confirmMentorCredential(staffId, phone, initialPassword) {
+    let credential
+    try {
+      credential = await this.authRepository.findByStaffId?.(staffId)
+    } catch {
+      return { status: 'UNKNOWN' }
+    }
+    const mentor = { id: staffId, status: 'ACTIVE', loginEnabled: true, phone }
+    if (!credential) return { status: 'UNKNOWN' }
+    if (!mentorCredentialMatches(mentor, credential, phone)) return { status: 'MISMATCH' }
+    try {
+      const passwordMatches = await verifyPassword(initialPassword, credential.passwordHash || dummyPasswordHash)
+      return passwordMatches ? { status: 'CONFIRMED' } : { status: 'MISMATCH' }
+    } catch {
+      return { status: 'UNKNOWN' }
+    }
+  }
+
   async createMentorLocked(actorId, input, phone = normalizePhone(input?.phone)) {
     const startedAt = Date.now()
     const timings = { identity_query_ms: 0, password_hash_ms: 0, staff_write_ms: 0, credential_write_ms: 0, result_check_ms: 0, total_ms: 0 }
@@ -3439,7 +3457,11 @@ export class FeishuRepository {
     const name = text(input?.name).trim()
     if (!name) throw new Error('导师昵称不能为空')
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
-    const findAuthByStaffId = async (staffId) => typeof this.authRepository.findByStaffId === 'function' ? this.authRepository.findByStaffId(staffId).catch(() => null) : null
+    let authReadbackUnknown = false
+    const findAuthByStaffId = async (staffId) => {
+      if (typeof this.authRepository.findByStaffId !== 'function') return null
+      try { return await this.authRepository.findByStaffId(staffId) } catch { authReadbackUnknown = true; return null }
+    }
     const duplicateStaff = identity.duplicateStaff
     let existingCredentials = []
     if (typeof this.authRepository.findAllByPhone === 'function') existingCredentials = await this.authRepository.findAllByPhone(phone)
@@ -3447,11 +3469,16 @@ export class FeishuRepository {
       const existing = await this.authRepository.findByPhone?.(phone)
       if (existing) existingCredentials.push(existing)
     }
-    const existingCredential = existingCredentials[0] || null
     timings.identity_query_ms = Date.now() - identityStartedAt
     if (duplicateStaff.length > 1) throw Object.assign(new Error('该手机号已存在多条导师人员记录，系统未自动合并，请联系管理员核查。'), { code: 'ACCOUNT_INCONSISTENT', status: 409 })
     const duplicate = duplicateStaff[0]
     const credentialByStaffId = duplicate ? await findAuthByStaffId(duplicate.id) : null
+    if (authReadbackUnknown) {
+      const pending = Object.assign(new Error('导师账号状态暂时无法核实，请勿重复创建；稍后可使用状态查询或重置密码。'), { code: 'ACCOUNT_CONFIRMATION_PENDING', status: 503 })
+      recordTiming('PENDING')
+      this.audit('CREATE_MENTOR', duplicate?.id || stableOperationId(phone, 'M'), actorId, 'PENDING', pending.message)
+      throw pending
+    }
     const credentialCandidates = [...new Map([credentialByStaffId, ...existingCredentials].filter(Boolean).map((credential) => [credential._recordId || credential.id || `${credential.staffId}:${credential.loginPhone}`, credential])).values()]
     const exactCredential = credentialCandidates.find((credential) => mentorCredentialMatches(duplicate, credential, phone))
     const hasCredentialAnomaly = credentialCandidates.length > 1 || credentialCandidates.some((credential) => !mentorCredentialMatches(duplicate, credential, phone))
@@ -3470,7 +3497,7 @@ export class FeishuRepository {
     let staffRecordId = ''
     let staffWriteCommitted = Boolean(duplicate)
     let authWriteCommitted = false
-    let credentialCreationAcknowledged = false
+    let lastError = null
     try {
       if (!staffWriteCommitted) {
         const staffWriteStartedAt = Date.now()
@@ -3482,52 +3509,65 @@ export class FeishuRepository {
         staffRecordId = duplicate?._recordId || ''
       }
       const credentialWriteStartedAt = Date.now()
-      const credentialResult = await this.authRepository.createCredential({ credentialId, staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
+      await this.authRepository.createCredential({ credentialId, staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
       timings.credential_write_ms = Date.now() - credentialWriteStartedAt
       authWriteCommitted = true
-      const resultCheckStartedAt = Date.now()
-      credentialCreationAcknowledged = credentialResult?.idempotencyRecovered !== true && credentialResult?.idempotency_recovered !== true
-      timings.result_check_ms = Date.now() - resultCheckStartedAt
-      if (!credentialCreationAcknowledged) throw Object.assign(new Error('该导师账号已由其他请求完成创建，初始密码无法安全恢复，请使用重置密码。'), { code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
     } catch (error) {
+      lastError = error
       if (!staffWriteCommitted && error?.retryable) {
         const reconciledStaff = await this.reconcileMentorStaff(phone, staffId, actorId)
         if (reconciledStaff) {
           staffRecordId = reconciledStaff._recordId || staffRecordId
           staffWriteCommitted = true
           try {
-            const credentialResult = await this.authRepository.createCredential({ credentialId, staffId: reconciledStaff.id || staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
+            await this.authRepository.createCredential({ credentialId, staffId: reconciledStaff.id || staffId, loginPhone: phone, passwordHash, passwordAlgorithm: 'scrypt', mustChangePassword: true, passwordChangedAt: null, authVersion: 1, credentialStatus: 'ACTIVE', createdAt, updatedAt: createdAt, lastLoginAt: null })
             authWriteCommitted = true
-            credentialCreationAcknowledged = credentialResult?.idempotencyRecovered !== true && credentialResult?.idempotency_recovered !== true
           } catch (reconcileError) {
             const existingAuth = await findAuthByStaffId(staffId)
-            if (existingAuth) { authWriteCommitted = true; credentialCreationAcknowledged = false }
-            else error = reconcileError
+            if (existingAuth) authWriteCommitted = true
+            else lastError = reconcileError
           }
         }
       }
       if (staffWriteCommitted && !authWriteCommitted) {
         const existingAuth = await findAuthByStaffId(staffId)
-        if (existingAuth) { authWriteCommitted = true; credentialCreationAcknowledged = false }
+        if (existingAuth) authWriteCommitted = true
       }
-      if (authWriteCommitted && credentialCreationAcknowledged) error = null
-      if (authWriteCommitted && !credentialCreationAcknowledged) {
+    }
+    if (authReadbackUnknown && !authWriteCommitted) {
+      const pending = Object.assign(new Error('导师账号提交结果暂时无法核实，请勿重复创建；稍后可使用状态查询或重置密码。'), { code: 'ACCOUNT_CONFIRMATION_PENDING', status: 503 })
+      recordTiming('PENDING')
+      this.audit('CREATE_MENTOR', staffId, actorId, 'PENDING', pending.message)
+      throw pending
+    }
+    if (authWriteCommitted) {
+      const resultCheckStartedAt = Date.now()
+      const confirmation = await this.confirmMentorCredential(staffId, phone, initialPassword)
+      timings.result_check_ms = Date.now() - resultCheckStartedAt
+      if (confirmation.status === 'CONFIRMED') {
+        lastError = null
+      } else if (confirmation.status === 'UNKNOWN') {
+        const pending = Object.assign(new Error('导师账号已提交，正在核实实际凭据，请勿重复创建；如需登录请使用重置密码。'), { code: 'ACCOUNT_CONFIRMATION_PENDING', status: 503 })
+        recordTiming('PENDING')
+        this.audit('CREATE_MENTOR', staffId, actorId, 'PENDING', pending.message)
+        throw pending
+      } else {
         const alreadyExists = Object.assign(new Error('导师账号已创建，但初始密码无法安全恢复，请使用重置密码。'), { code: 'ACCOUNT_ALREADY_EXISTS', status: 409 })
         recordTiming('ALREADY_EXISTS')
         this.audit('CREATE_MENTOR', staffId, actorId, 'EXISTS', alreadyExists.message)
         throw alreadyExists
       }
-      if (staffWriteCommitted && !authWriteCommitted) {
-        const partial = Object.assign(new Error('导师账号创建未完成，系统已保留异常记录，请联系管理员处理。'), { code: 'PARTIAL_INCONSISTENT', status: 503, cause: error })
-        recordTiming('PARTIAL')
-        this.audit('CREATE_MENTOR', staffId, actorId, 'PARTIAL', partial.message)
-        throw partial
-      }
-      if (error) {
-        recordTiming('FAILED')
-        this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', error instanceof Error ? error.message : String(error))
-        throw error
-      }
+    }
+    if (staffWriteCommitted && !authWriteCommitted) {
+      const partial = Object.assign(new Error('导师账号创建未完成，系统已保留异常记录，请联系管理员处理。'), { code: 'PARTIAL_INCONSISTENT', status: 503, cause: lastError })
+      recordTiming('PARTIAL')
+      this.audit('CREATE_MENTOR', staffId, actorId, 'PARTIAL', partial.message)
+      throw partial
+    }
+    if (lastError) {
+      recordTiming('FAILED')
+      this.audit('CREATE_MENTOR', staffId, actorId, 'FAILED', lastError instanceof Error ? lastError.message : String(lastError))
+      throw lastError
     }
     this.audit('CREATE_MENTOR', staffId, actorId)
     const created = { id: staffId, name, role: 'MENTOR', permissionRole: 'MENTOR', status: 'ACTIVE', loginEnabled: true, displayRole: '导师', title: '导师', phone, specialty: '', avatar: name.slice(0, 1) }
