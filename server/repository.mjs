@@ -1798,19 +1798,27 @@ export class FeishuRepository {
     if (loginRateLimiter.isBlocked(phone, ip)) throw Object.assign(new Error('登录尝试过于频繁，请稍后再试'), { code: 'AUTH_RATE_LIMITED', status: 429 })
     const database = { staff: await this.loadStaffRecords() }
     const normalized = normalizePhone(phone)
-    const account = database.staff.find((item) => normalizePhone(item.phone) === normalized)
+    const matchingStaff = database.staff.filter((item) => normalizePhone(item.phone) === normalized)
+    const staffIdentityConflict = matchingStaff.length > 1 && new Set(matchingStaff.map((item) => JSON.stringify({ id: item.id, permissionRole: item.permissionRole, status: item.status, loginEnabled: item.loginEnabled }))).size > 1
+    const account = matchingStaff[0]
     const validStaff = ['ADMIN', 'MENTOR'].includes(account?.permissionRole) && account.status === 'ACTIVE' && account.loginEnabled === true
     if (config.authMode === 'PASSWORD') {
       if (config.dataMode === 'production' && !config.feishu.tables.authCredentials) throw new AuthCredentialStoreNotConfiguredError('生产密码凭据表尚未配置')
-      const credential = await this.authRepository.findByPhone(normalized)
+      const credentialCandidates = typeof this.authRepository.findAllByPhone === 'function'
+        ? await this.authRepository.findAllByPhone(normalized)
+        : [await this.authRepository.findByPhone(normalized)].filter(Boolean)
+      const credential = credentialCandidates.length === 1 ? credentialCandidates[0] : null
       const passwordMatches = await verifyPassword(secret, credential?.passwordHash || dummyPasswordHash)
       const credentialMatches = Boolean(credential && credential.staffId === account?.id && credential.loginPhone === normalized && credential.credentialStatus !== 'DISABLED')
-      if (!validStaff || !credentialMatches || !passwordMatches) {
+      if (staffIdentityConflict || credentialCandidates.length !== 1 || !validStaff || !credentialMatches || !passwordMatches) {
         loginRateLimiter.recordFailure(phone, ip)
         throw invalidLogin()
       }
       loginRateLimiter.clear(phone, ip)
-      await this.authRepository.recordSuccessfulLogin(account.id)
+      // Authentication has completed. This optional timestamp must not delay
+      // the response or turn a valid password into a failed login.
+      Promise.resolve().then(() => this.authRepository.recordSuccessfulLogin(account.id))
+        .catch(() => console.warn('[ASVA_AUTH_LOGIN_METADATA]', JSON.stringify({ lastLoginWriteSucceeded: false, failureStage: 'LAST_LOGIN_WRITE' })))
       return { ...account, authVersion: Number(credential.authVersion || 0), mustChangePassword: credential.mustChangePassword === true, authMode: 'PASSWORD' }
     }
     if (config.dataMode === 'production' && !config.adminLoginCode) throw Object.assign(new Error('生产认证未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
