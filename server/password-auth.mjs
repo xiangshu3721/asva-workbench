@@ -27,6 +27,16 @@ const bool = (value) => value === true || value === 'true' || value === '是'
 const normalizePhone = (value) => text(value).replace(/[\s-]/g, '')
 const now = () => new Date().toISOString()
 
+function identityConflict(message, details = {}) {
+  return Object.assign(new Error(message), { code: 'AUTH_IDENTITY_CONFLICT', status: 409, details })
+}
+
+function uniqueCredentialMatches(records, identity, label) {
+  const unique = [...new Map(records.map((item) => [item._recordId || item.id || `${item.staffId}:${item.loginPhone}`, item])).values()]
+  if (unique.length > 1) throw identityConflict(`存在多个匹配的${label}，已拒绝继续操作`, { matchCount: unique.length })
+  return unique[0] || null
+}
+
 export class AuthCredentialStoreNotConfiguredError extends Error {
   code = 'AUTH_CREDENTIAL_STORE_NOT_CONFIGURED'
   status = 503
@@ -111,12 +121,17 @@ export class FeishuAuthCredentialRepository {
     return rows.map(credential).filter((item) => item.loginPhone === normalizedPhone)
   }
   async findByPhone(phone) {
-    return (await this.findAllByPhone(phone))[0] || null
+    return uniqueCredentialMatches(await this.findAllByPhone(phone), normalizePhone(phone), '手机号凭据')
   }
   async findByStaffId(staffId) {
     if (!this.tableId) return null
     const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'staff_id'), operator: 'is', value: [String(staffId)] }] }, { pageSize: 20 })
-    return rows.map(credential).find((item) => item.staffId === String(staffId)) || null
+    return uniqueCredentialMatches(rows.map(credential).filter((item) => item.staffId === String(staffId)), String(staffId), '人员凭据')
+  }
+  async findAllByStaffId(staffId) {
+    if (!this.tableId) return []
+    const rows = await searchRecords(this.tableId, { conjunction: 'and', conditions: [{ field_name: field('authCredentials', 'staff_id'), operator: 'is', value: [String(staffId)] }] }, { pageSize: 100 })
+    return rows.map(credential).filter((item) => item.staffId === String(staffId))
   }
   async create(input) {
     this.assertConfigured()
@@ -149,8 +164,9 @@ export class FeishuAuthCredentialRepository {
 export class MemoryAuthCredentialRepository {
   constructor(records = []) { this.records = records.map((record) => ({ ...record })) }
   async findAllByPhone(phone) { return this.records.filter((item) => item.loginPhone === normalizePhone(phone)) }
-  async findByPhone(phone) { return (await this.findAllByPhone(phone))[0] }
-  async findByStaffId(staffId) { return this.records.find((item) => item.staffId === staffId) }
+  async findByPhone(phone) { return uniqueCredentialMatches(await this.findAllByPhone(phone), normalizePhone(phone), '手机号凭据') }
+  async findByStaffId(staffId) { return uniqueCredentialMatches(this.records.filter((item) => item.staffId === staffId), String(staffId), '人员凭据') }
+  async findAllByStaffId(staffId) { return this.records.filter((item) => item.staffId === staffId) }
   async create(input) { if (this.records.some((item) => item.staffId === input.staffId || item.loginPhone === normalizePhone(input.loginPhone))) throw Object.assign(new Error('Auth credential identity conflict'), { code: 'AUTH_CREDENTIAL_CONFLICT', status: 409 }); const record = { id: input.credentialId || `cred-${this.records.length + 1}`, credentialStatus: input.credentialStatus || 'ACTIVE', authVersion: input.authVersion || 1, ...input, _recordId: input.credentialId || `cred-${this.records.length + 1}` }; this.records.push(record); return record }
   async update(record, patch) { Object.assign(record, Object.fromEntries(Object.entries(patch).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase()), value]))); return record }
   async updateByStaffId(staffId, patch) { const record = await this.findByStaffId(staffId); return record ? this.update(record, patch) : null }

@@ -416,9 +416,28 @@ function staff(row) {
   const status = ['INACTIVE', '停用', '已停用'].includes(rawStatus) ? 'INACTIVE' : 'ACTIVE'
   const name = text(get('staff', f, 'nickname')) || text(get('staff', f, 'name')) || '未命名人员'
   const phone = normalizePhone(get('staff', f, 'phone') || get('staff', f, 'login_phone'))
+  const loginPhone = normalizePhone(get('staff', f, 'login_phone') || get('staff', f, 'phone'))
   const rawLoginEnabled = get('staff', f, 'login_enabled')
   const loginEnabled = permissionRole === 'ADMIN' ? rawLoginEnabled === '' || rawLoginEnabled === undefined || rawLoginEnabled === null ? true : boolean(rawLoginEnabled) : boolean(rawLoginEnabled)
-  return { id: text(get('staff', f, 'staff_id')) || row.record_id, name, role: permissionRole, permissionRole, status, loginEnabled, displayRole: permissionRole === 'MENTOR' ? '导师' : '管理员', title: permissionRole === 'MENTOR' ? '导师' : '管理员', phone, specialty: text(get('staff', f, 'specialty')), avatar: name.slice(0, 1), _recordId: row.record_id }
+  return { id: text(get('staff', f, 'staff_id')) || row.record_id, name, role: permissionRole, permissionRole, status, loginEnabled, displayRole: permissionRole === 'MENTOR' ? '导师' : '管理员', title: permissionRole === 'MENTOR' ? '导师' : '管理员', phone, loginPhone, specialty: text(get('staff', f, 'specialty')), avatar: name.slice(0, 1), _recordId: row.record_id }
+}
+
+function accountInconsistent(message, details = {}) {
+  return Object.assign(new Error(message), { code: 'ACCOUNT_INCONSISTENT', status: 409, details })
+}
+
+function uniqueStaffMatch(records, staffId) {
+  const matches = records.filter((item) => item.id === staffId)
+  if (matches.length > 1) throw accountInconsistent('该业务人员存在多条物理记录，系统已拒绝有歧义的管理写入。', { staffId, matchCount: matches.length })
+  return matches[0] || null
+}
+
+function readableStaffMatch(records, staffId) {
+  const matches = records.filter((item) => item.id === staffId)
+  if (matches.length <= 1) return matches[0] || null
+  const identity = (item) => JSON.stringify({ id: item.id, permissionRole: item.permissionRole, status: item.status, loginEnabled: item.loginEnabled, phone: normalizePhone(item.phone), loginPhone: normalizePhone(item.loginPhone) })
+  if (new Set(matches.map(identity)).size > 1) throw accountInconsistent('该业务人员的重复记录存在身份字段冲突，系统拒绝读取会话。', { staffId, matchCount: matches.length })
+  return matches[0]
 }
 
 function product(row) {
@@ -1779,7 +1798,7 @@ export class FeishuRepository {
   async savePerformanceTraces(actorId) { await this.dashboard(actorId); return [...this.saveTraces] }
   async evidenceDebug(actorId) { await this.staff(actorId); return [...this.evidenceTraces] }
   async staff(staffId) {
-    const record = (await this.loadStaffRecords()).find((item) => item.id === staffId)
+    const record = readableStaffMatch(await this.loadStaffRecords(), staffId)
     if (!record) throw new Error('账号不存在')
     if (record.status !== 'ACTIVE') throw new Error('该账户已停用，请联系管理员。')
     return record
@@ -1798,8 +1817,8 @@ export class FeishuRepository {
     if (loginRateLimiter.isBlocked(phone, ip)) throw Object.assign(new Error('登录尝试过于频繁，请稍后再试'), { code: 'AUTH_RATE_LIMITED', status: 429 })
     const database = { staff: await this.loadStaffRecords() }
     const normalized = normalizePhone(phone)
-    const matchingStaff = database.staff.filter((item) => normalizePhone(item.phone) === normalized)
-    const staffIdentityConflict = matchingStaff.length > 1 && new Set(matchingStaff.map((item) => JSON.stringify({ id: item.id, permissionRole: item.permissionRole, status: item.status, loginEnabled: item.loginEnabled }))).size > 1
+    const matchingStaff = database.staff.filter((item) => normalizePhone(item.phone) === normalized || normalizePhone(item.loginPhone) === normalized)
+    const staffIdentityConflict = matchingStaff.length > 1 && new Set(matchingStaff.map((item) => JSON.stringify({ id: item.id, permissionRole: item.permissionRole, status: item.status, loginEnabled: item.loginEnabled, phone: item.phone, loginPhone: item.loginPhone }))).size > 1
     const account = matchingStaff[0]
     const validStaff = ['ADMIN', 'MENTOR'].includes(account?.permissionRole) && account.status === 'ACTIVE' && account.loginEnabled === true
     if (config.authMode === 'PASSWORD') {
@@ -1830,7 +1849,7 @@ export class FeishuRepository {
   }
   async setInitialPassword(staffId, password, { mustChangePassword = true } = {}) {
     this.invalidateDatabaseCache()
-    const account = (await this.load()).staff.find((item) => item.id === staffId)
+    const account = uniqueStaffMatch((await this.load()).staff, staffId)
     if (!account) throw new Error('账号不存在')
     if (account.status !== 'ACTIVE' || account.loginEnabled !== true) throw new Error('账号当前不可登录')
     validatePassword(password, { phone: account.phone })
@@ -1866,7 +1885,7 @@ export class FeishuRepository {
     this.invalidateDatabaseCache()
     const actor = await this.staff(actorId)
     if (actor.permissionRole !== 'ADMIN') throw new Error('只有 ADMIN 可以重置密码')
-    const target = (await this.load()).staff.find((item) => item.id === targetStaffId)
+    const target = uniqueStaffMatch((await this.load()).staff, targetStaffId)
     if (!target) throw new Error('账号不存在')
     const generated = generateInitialPassword({ phone: target.phone })
     validatePassword(generated, { phone: target.phone })
@@ -3478,8 +3497,9 @@ export class FeishuRepository {
       if (existing) existingCredentials.push(existing)
     }
     timings.identity_query_ms = Date.now() - identityStartedAt
-    if (duplicateStaff.length > 1) throw Object.assign(new Error('该手机号已存在多条导师人员记录，系统未自动合并，请联系管理员核查。'), { code: 'ACCOUNT_INCONSISTENT', status: 409 })
+    if (duplicateStaff.length > 1) throw accountInconsistent('该手机号已存在多条人员记录，系统未自动合并，请联系管理员核查。', { phone, matchCount: duplicateStaff.length })
     const duplicate = duplicateStaff[0]
+    if (duplicate && duplicate.permissionRole !== 'MENTOR') throw accountInconsistent('该手机号已绑定管理员或其他身份，系统拒绝创建导师凭据。', { phone, staffId: duplicate.id, role: duplicate.permissionRole })
     const credentialByStaffId = duplicate ? await findAuthByStaffId(duplicate.id) : null
     if (authReadbackUnknown) {
       const pending = Object.assign(new Error('导师账号状态暂时无法核实，请勿重复创建；稍后可使用状态查询或重置密码。'), { code: 'ACCOUNT_CONFIRMATION_PENDING', status: 503 })
@@ -3585,16 +3605,16 @@ export class FeishuRepository {
   async loadMentorCreateContext(actorId, phone) {
     if (this.load !== FeishuRepository.prototype.load) {
       const database = await this.load()
-      return { actor: database.staff.find((item) => item.id === actorId), duplicateStaff: database.staff.filter((item) => normalizePhone(item.phone) === phone) }
+      return { actor: uniqueStaffMatch(database.staff, actorId), duplicateStaff: database.staff.filter((item) => normalizePhone(item.phone) === phone || normalizePhone(item.loginPhone) === phone) }
     }
     const staffTable = config.feishu.tables.staff
     const [actorRows, phoneRows, loginPhoneRows] = await Promise.all([
-      actorId ? this.archiveSearch(staffTable, feishuEqualsFilter(mapField('staff', 'staff_id'), actorId), { pageSize: 1 }) : [],
+      actorId ? this.archiveSearch(staffTable, feishuEqualsFilter(mapField('staff', 'staff_id'), actorId), { pageSize: 20 }) : [],
       this.archiveSearch(staffTable, feishuEqualsFilter(mapField('staff', 'phone'), phone), { pageSize: 20 }),
       this.archiveSearch(staffTable, feishuEqualsFilter(mapField('staff', 'login_phone'), phone), { pageSize: 20 }),
     ])
-    const actor = actorRows.map(staff).find((item) => item.id === actorId)
-    const duplicateStaff = uniqueRows([...phoneRows, ...loginPhoneRows]).map(staff).filter((item) => normalizePhone(item.phone) === phone)
+    const actor = uniqueStaffMatch(actorRows.map(staff), actorId)
+    const duplicateStaff = uniqueRows([...phoneRows, ...loginPhoneRows]).map(staff).filter((item) => normalizePhone(item.phone) === phone || normalizePhone(item.loginPhone) === phone)
     return { actor, duplicateStaff }
   }
 
@@ -3610,40 +3630,56 @@ export class FeishuRepository {
     if (!validPhone(normalizedPhone)) throw Object.assign(new Error('请输入有效手机号'), { code: 'INVALID_PHONE', status: 400 })
     const identity = await this.loadMentorCreateContext(actorId, normalizedPhone)
     if (identity.actor?.status !== 'ACTIVE' || identity.actor.permissionRole !== 'ADMIN' || identity.actor.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以核实导师账户'), { code: 'FORBIDDEN', status: 403 })
-    const findCredentialByStaffId = (staffId) => typeof this.authRepository.findByStaffId === 'function' ? this.authRepository.findByStaffId(staffId).catch(() => null) : Promise.resolve(null)
-    let phoneCredentials = []
-    if (typeof this.authRepository.findAllByPhone === 'function') phoneCredentials = await this.authRepository.findAllByPhone(normalizedPhone).catch(() => [])
-    else {
-      const credentialByPhone = typeof this.authRepository.findByPhone === 'function' ? await this.authRepository.findByPhone(normalizedPhone).catch(() => null) : null
-      if (credentialByPhone) phoneCredentials = [credentialByPhone]
+    const findCredentialsByStaffId = async (staffId) => {
+      if (typeof this.authRepository.findAllByStaffId === 'function') return this.authRepository.findAllByStaffId(staffId)
+      if (typeof this.authRepository.findByStaffId !== 'function') return []
+      const credential = await this.authRepository.findByStaffId(staffId)
+      return credential ? [credential] : []
     }
-    const staffCredentials = await Promise.all(identity.duplicateStaff.map((item) => findCredentialByStaffId(item.id)))
+    let phoneCredentials = []
+    let lookupPending = false
+    try {
+      if (typeof this.authRepository.findAllByPhone === 'function') phoneCredentials = await this.authRepository.findAllByPhone(normalizedPhone)
+      else {
+        const credentialByPhone = typeof this.authRepository.findByPhone === 'function' ? await this.authRepository.findByPhone(normalizedPhone) : null
+        if (credentialByPhone) phoneCredentials = [credentialByPhone]
+      }
+    } catch {
+      lookupPending = true
+    }
+    let staffCredentials = []
+    try {
+      staffCredentials = (await Promise.all(identity.duplicateStaff.map((item) => findCredentialsByStaffId(item.id)))).flat()
+    } catch {
+      lookupPending = true
+    }
+    if (lookupPending) return { status: 'PENDING', phone: normalizedPhone, reason: 'CREDENTIAL_LOOKUP_UNAVAILABLE' }
     const credentials = [...new Map([...staffCredentials, ...phoneCredentials].filter(Boolean).map((credential) => [credential._recordId || credential.id || `${credential.staffId}:${credential.loginPhone}`, credential])).values()]
     if (identity.duplicateStaff.length > 1) return { status: 'DUPLICATE', phone: normalizedPhone, mentorCount: identity.duplicateStaff.length, credentialCount: credentials.length }
     const mentor = identity.duplicateStaff[0]
     const exactCredential = credentials.find((credential) => mentorCredentialMatches(mentor, credential, normalizedPhone))
     const hasCredentialAnomaly = credentials.length > 1 || credentials.some((credential) => !mentorCredentialMatches(mentor, credential, normalizedPhone))
+    if (mentor && mentor.permissionRole !== 'MENTOR') return { status: 'INCONSISTENT', phone: normalizedPhone, mentor: publicStaff(mentor), credentialCount: credentials.length }
     if (mentor && exactCredential && !hasCredentialAnomaly) return { status: 'COMPLETED', phone: normalizedPhone, mentor: publicStaff(mentor), credentialStatus: exactCredential.credentialStatus }
-    if (mentor || credentials.length) return { status: credentials.length > 1 ? 'DUPLICATE' : 'PARTIAL', phone: normalizedPhone, mentor: mentor ? publicStaff(mentor) : undefined, credentialStatus: exactCredential?.credentialStatus || credentials[0]?.credentialStatus || 'MISSING', credentialCount: credentials.length }
+    if (mentor || credentials.length) return { status: credentials.length > 1 ? 'DUPLICATE' : 'PARTIAL', phone: normalizedPhone, mentor: mentor ? publicStaff(mentor) : undefined, credentialStatus: exactCredential?.credentialStatus || credentials[0]?.credentialStatus || 'MISSING', credentialCount: credentials.length, identityConflict: hasCredentialAnomaly || undefined }
     return { status: 'NOT_FOUND', phone: normalizedPhone }
   }
 
   async updateMentor(actorId, mentorId, input) {
     this.invalidateDatabaseCache()
     const database = await this.load()
-    const actor = database.staff.find((item) => item.id === actorId)
+    const actor = uniqueStaffMatch(database.staff, actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
-    const mentor = database.staff.find((item) => item.id === mentorId && item.permissionRole === 'MENTOR')
+    const mentor = uniqueStaffMatch(database.staff, mentorId)
     const row = database._rows.staff.find((item) => item.record_id === mentor?._recordId)
-    if (!mentor || !row) throw new Error('导师不存在')
+    if (!mentor || mentor.permissionRole !== 'MENTOR' || !row) throw new Error('导师不存在')
     if (mentor.status !== 'ACTIVE') throw new Error('已注销导师只能查看历史信息')
     const name = text(input?.name).trim()
     const phone = normalizePhone(input?.phone)
     if (!name) throw new Error('导师昵称不能为空')
     if (!validPhone(phone)) throw new Error('请输入有效手机号')
-    const duplicate = database.staff.find((item) => item.id !== mentorId && normalizePhone(item.phone) === phone)
-    if (duplicate?.status === 'ACTIVE') throw Object.assign(new Error('该手机号已绑定账户'), { status: 409 })
-    if (duplicate?.status === 'INACTIVE') throw Object.assign(new Error('该手机号对应一个已停用导师，请使用未占用的手机号'), { status: 409 })
+    const duplicates = database.staff.filter((item) => item.id !== mentorId && (normalizePhone(item.phone) === phone || normalizePhone(item.loginPhone) === phone))
+    if (duplicates.length) throw Object.assign(new Error('该手机号已绑定其他账户'), { status: 409, code: 'ACCOUNT_IDENTITY_CONFLICT', details: { matchCount: duplicates.length } })
     try {
       const credential = await this.authRepository.findByStaffId(mentorId)
       await updateRecord(config.feishu.tables.staff, row.record_id, mapFields('staff', { nickname: name, name, phone, login_phone: phone, role: 'MENTOR', permission_role: 'MENTOR', status: 'ACTIVE', display_status: '在职', login_enabled: Boolean(credential && credential.credentialStatus !== 'DISABLED'), updated_at: feishuDate(), display_role: '导师' }))
@@ -3661,11 +3697,11 @@ export class FeishuRepository {
   async deactivateMentor(actorId, mentorId) {
     this.invalidateDatabaseCache()
     const database = await this.load()
-    const actor = database.staff.find((item) => item.id === actorId)
+    const actor = uniqueStaffMatch(database.staff, actorId)
     if (actor?.status !== 'ACTIVE' || actor.permissionRole !== 'ADMIN' || actor.loginEnabled !== true) throw new Error('只有 ADMIN 可以管理导师账户')
-    const mentor = database.staff.find((item) => item.id === mentorId && item.permissionRole === 'MENTOR')
+    const mentor = uniqueStaffMatch(database.staff, mentorId)
     const row = database._rows.staff.find((item) => item.record_id === mentor?._recordId)
-    if (!mentor || !row) throw new Error('导师不存在')
+    if (!mentor || mentor.permissionRole !== 'MENTOR' || !row) throw new Error('导师不存在')
     if (mentor.status !== 'ACTIVE') throw new Error('导师账户已注销')
     const following = database.appointments.filter((item) => item.assignedMentorId === mentorId && item.status === 'WAIT_FOLLOW_UP').length
     const waitFeedback = database.appointments.filter((item) => item.assignedMentorId === mentorId && item.status === 'WAIT_FEEDBACK').length
