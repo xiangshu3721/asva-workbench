@@ -45,6 +45,19 @@ describe('customer profile archive status', () => {
     expect(countProfileVerificationItems(materialization)).toBe(2)
   })
 
+  it('treats coverage-only and partially materialized profiles as empty verification lists', () => {
+    expect(countProfileVerificationItems({ coverage: { percentage: 27, domains: [] } } as unknown as Pick<ProfileMaterialization, 'sections' | 'provisionalItems'>)).toBe(0)
+    expect(countProfileVerificationItems({ sections: [{ title: '家庭与关系', emptyLabel: '暂无' }] } as unknown as Pick<ProfileMaterialization, 'sections' | 'provisionalItems'>)).toBe(0)
+    expect(countProfileVerificationItems({ provisionalItems: undefined } as unknown as Pick<ProfileMaterialization, 'sections' | 'provisionalItems'>)).toBe(0)
+  })
+
+  it('keeps verification counts isolated for different customer reads', () => {
+    const customerA = { sections: [{ title: '家庭与关系', items: [{ label: '家庭', text: '待确认', statusLabel: '待核实', evidenceIds: [] }] }], provisionalItems: [] }
+    const customerB = { sections: [{ title: '职业与事业', items: [{ label: '职业', text: '已确认', statusLabel: '已确认', evidenceIds: [] }] }], provisionalItems: [] }
+    expect(countProfileVerificationItems(customerA as unknown as Pick<ProfileMaterialization, 'sections' | 'provisionalItems'>)).toBe(1)
+    expect(countProfileVerificationItems(customerB as unknown as Pick<ProfileMaterialization, 'sections' | 'provisionalItems'>)).toBe(0)
+  })
+
   it('explains completed extraction separately from information still awaiting confirmation', () => {
     expect(automaticProfileStatusMessage('REVIEW_REQUIRED', 1)).toBe('AI整理已完成，档案已更新；另有 1 条信息待核实。')
     expect(automaticProfileStatusMessage('COMPLETED', 0)).toBe('AI整理完成，档案已更新。')

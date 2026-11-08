@@ -23,9 +23,11 @@ export function countProfileVerificationItems(
   materialization?: Pick<ProfileMaterialization, 'sections' | 'provisionalItems'>,
 ): number {
   if (!materialization) return 0
+  const sections = Array.isArray(materialization.sections) ? materialization.sections : []
+  const provisionalItems = Array.isArray(materialization.provisionalItems) ? materialization.provisionalItems : []
   const items = [
-    ...materialization.sections.flatMap((section) => section.items),
-    ...materialization.provisionalItems,
+    ...sections.flatMap((section) => Array.isArray(section?.items) ? section.items : []),
+    ...provisionalItems,
   ]
   const seen = new Set<string>()
   let count = 0
