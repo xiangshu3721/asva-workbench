@@ -8,7 +8,7 @@ import { understandingInputFingerprint } from '../shared/customer-understanding.
 
 type ProfileMeta = { source?: string; confirmed?: boolean }
 
-export type OneLineCustomerData = Pick<Customer, 'id' | 'name' | 'need' | 'helpExpectation' | 'goal' | 'notes' | 'source' | 'profileFields' | 'profileFieldMeta' | 'profileVersion' | 'understandingMeta'>
+export type OneLineCustomerData = Pick<Customer, 'id' | 'name' | 'need' | 'helpExpectation' | 'goal' | 'notes' | 'source' | 'profileFields' | 'profileFieldMeta' | 'profileVersion' | 'understandingMeta'> & Partial<Pick<Customer, 'phone' | 'wechat'>>
 
 export interface OneLineUnderstanding {
   text: string
@@ -175,7 +175,7 @@ export function createRuleOneLineUnderstanding(customer: OneLineCustomerData): O
   const visibleParts = [...core.slice(0, 2), ...identity.slice(0, 3)]
   if (!visibleParts.length && note) visibleParts.push(`已记录：${note}`)
   if (!visibleParts.length) {
-    visibleParts.push('当前尚未录入客户的核心情况、身份或需求信息。')
+    visibleParts.push(customer.phone || customer.wechat ? '已录入客户联系方式，其他背景与需求尚未录入。' : '当前尚未录入客户的核心情况、身份或需求信息。')
   } else if (note && visibleParts.length < 4 && !visibleParts.some((item) => item.includes(note))) {
     visibleParts.push(`已记录：${note}`)
   }
@@ -193,11 +193,11 @@ export function createRuleOneLineUnderstanding(customer: OneLineCustomerData): O
     usedFields: [...new Set(usedFields)],
   }
 }
-export function selectOneLineUnderstanding({ local, understanding, meta }: { local: OneLineUnderstanding; understanding?: ExistingOneLineUnderstanding; meta?: ExistingOneLineMeta }) {
+export function selectOneLineUnderstanding({ local, understanding, meta, clientSnapshotFingerprint }: { local: OneLineUnderstanding; understanding?: ExistingOneLineUnderstanding; meta?: ExistingOneLineMeta; clientSnapshotFingerprint?: string }) {
   const aiText = understanding?.one_line_understanding?.text?.trim() || ''
   // The backend fingerprint includes confirmed Evidence and conflicts unavailable to this page.
   // Compare the local snapshot captured when the server response was requested instead.
-  const aiIsCurrent = Boolean(aiText && meta?.status === 'FRESH' && meta?.source !== 'STRUCTURED_FALLBACK' && meta?.clientSnapshotFingerprint === local.inputFingerprint && meta?.profileVersion === local.profileVersion)
+  const aiIsCurrent = Boolean(aiText && meta?.status === 'FRESH' && meta?.source !== 'STRUCTURED_FALLBACK' && meta?.clientSnapshotFingerprint === (clientSnapshotFingerprint || local.inputFingerprint) && meta?.profileVersion === local.profileVersion)
   if (aiIsCurrent) {
     return { ...local, text: aiText, source: 'AI' as const, evidenceIds: understanding?.one_line_understanding?.evidence_ids || [] }
   }

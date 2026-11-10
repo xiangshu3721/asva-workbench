@@ -12,6 +12,13 @@ describe('一句话理解 V1 本地摘要', () => {
     expect(result.source).toBe('RULE')
   })
 
+  it('describes a contact-only customer without leaking identifiers', () => {
+    const result = createRuleOneLineUnderstanding(base({ phone: '13800138000', wechat: 'wx_abc123' }))
+    expect(result.text).toContain('已录入客户联系方式')
+    expect(result.text).not.toContain('13800138000')
+    expect(result.text).not.toContain('wx_abc123')
+  })
+
   it('supports a gender-only profile', () => {
     expect(createRuleOneLineUnderstanding(base({ profileFields: { gender: '女' } })).text).toBe('目前了解到客户为女性，其他背景与需求尚未录入')
   })
@@ -63,6 +70,19 @@ describe('一句话理解 V1 本地摘要', () => {
     const stale = selectOneLineUnderstanding({ local: changed, understanding: ai, meta: serverMeta })
     expect(stale.source).toBe('RULE')
     expect(stale.text).not.toContain('正在准备求职')
+  })
+
+  it('does not reject fresh AI when a same-version profile detail loads later', () => {
+    const customer = base({ profileVersion: 3, profileFields: { gender: '女' } })
+    const requested = createRuleOneLineUnderstanding(customer)
+    const detailed = mergeOneLineCustomer(customer, { customerId: customer.id, profileVersion: 3, profileFields: { gender: '女', occupation: '设计师' } })
+    const mergedSummary = createRuleOneLineUnderstanding(detailed)
+    expect(requested.inputFingerprint).not.toBe(mergedSummary.inputFingerprint)
+    const ai = { one_line_understanding: { text: '客户从事设计工作，关注职业发展。' } }
+    const meta = { status: 'FRESH', source: 'DEEPSEEK', profileVersion: 3, clientSnapshotFingerprint: requested.inputFingerprint }
+    expect(selectOneLineUnderstanding({ local: mergedSummary, understanding: ai, meta, clientSnapshotFingerprint: requested.inputFingerprint }).source).toBe('AI')
+    const changed = base({ profileVersion: 4, profileFields: { gender: '女', occupation: '教师' } })
+    expect(selectOneLineUnderstanding({ local: createRuleOneLineUnderstanding(changed), understanding: ai, meta, clientSnapshotFingerprint: createRuleOneLineUnderstanding(changed).inputFingerprint }).source).toBe('RULE')
   })
 
   it('falls back to rules after AI failure and keeps customer switches isolated', () => {
