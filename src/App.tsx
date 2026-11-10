@@ -6,6 +6,7 @@ import type { Appointment, AppointmentWorkflowStatus, Customer, CustomerGrade, C
 import { createLocalRepository } from './repositories'
 import { clearPendingCustomerMutation, createHttpApi, createLocalAsyncApi, readPendingCustomerMutation, rememberPendingCustomerMutation, type BasicDashboard, type CustomerMutationResult, type CustomerProfileResponse, type CustomerSalesUnderstandingResponse, type CustomerUnderstandingResponse, type SafetyAssessmentResponse, type FeedbackDraftInput, type SourceRecord, type SourceSaveStatus, type SourceWorkspace, type WorkbenchApi } from './clientApi'
 import { assembleCustomerContext, type AiBrief, type AiCoreSummary } from './customer-ai'
+import { createRuleOneLineUnderstanding, mergeOneLineCustomer, selectOneLineUnderstanding } from './one-line-understanding'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { humanizeEvidenceType, humanizeLevel, humanizeProcessingStatus, humanizeStrategy, humanizeTiming, sanitizeUserVisibleText } from './presentationCopy'
 import { clearAssistantHistory, GlobalAIAssistant } from './GlobalAIAssistant'
@@ -1036,11 +1037,15 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       return
     }
     const requestSequence = ++understandingSequenceRef.current
+    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer).inputFingerprint
     const startedAt = performance.now()
     const previous = current?.value || cached || null
     setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, previous, true) }))
     try {
-      const result = await props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId), { ttlMs: DATABASE_TTL_MS })
+      const result = await props.resourceCache.load(cacheKey, async () => {
+        const response = await props.onGetUnderstanding(requestCustomerId)
+        return { ...response, meta: { ...response.meta, clientSnapshotFingerprint } }
+      }, { ttlMs: DATABASE_TTL_MS })
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: result, loading: false, error: '' } }))
       logAppPerformance('CUSTOMER_UNDERSTANDING_FETCH_MS', { duration_ms: Math.round(performance.now() - startedAt) })
@@ -1129,9 +1134,11 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const requestCustomerId = customer.id
     const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
     const requestSequence = ++understandingSequenceRef.current
+    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer).inputFingerprint
     setUnderstandingRefreshingCustomerId(requestCustomerId)
     try {
-      const result = await props.onRefreshUnderstanding(requestCustomerId, force)
+      const refreshed = await props.onRefreshUnderstanding(requestCustomerId, force)
+      const result = { ...refreshed, meta: { ...refreshed.meta, clientSnapshotFingerprint } }
       props.resourceCache.set(cacheKey, result)
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)), value: result, loading: false, error: '' } }))
@@ -1180,13 +1187,16 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const panelUnderstandingStatus = understandingResponse?.status || (understandingError ? 'FAILED' : customer.understandingStatus || 'STALE')
   const panelUnderstandingError = understandingError && !customer.understanding ? understandingError : ''
   const panelSalesStatus = salesResponse?.status || (salesError ? 'FAILED' : customer.salesUnderstandingStatus || 'STALE')
+  const oneLineCustomer = mergeOneLineCustomer(customer, profileResponse?.customerId === customer.id ? profileResponse : undefined)
+  const localOneLine = createRuleOneLineUnderstanding(oneLineCustomer)
+  const oneLine = selectOneLineUnderstanding({ local: localOneLine, understanding: currentUnderstanding, meta: understandingResponse?.meta || oneLineCustomer.understandingMeta, clientSnapshotFingerprint: createRuleOneLineUnderstanding(customer).inputFingerprint })
   return <article className="customer-detail-page customer-detail-v2">
     <header className="customer-detail-header">
       <div className="customer-detail-identity"><span className="customer-detail-avatar">{customer.initials}</span><div><div className="customer-detail-name-row"><h1>{customer.name}</h1><button className="primary-button small customer-profile-update-button" type="button" onClick={openSourceComposer}>更新客户档案</button></div>{headerOverviewFacts.length > 0 && <div className="customer-overview-facts">{headerOverviewFacts.map((fact) => <span key={fact}>{fact}</span>)}</div>}</div></div>
       <section className="customer-relationship-block"><div className="customer-relation-facts"><div><span>联系方式</span><strong>{customer.phone ? maskPhone(customer.phone) : customer.wechat ? `微信 ${customer.wechat}` : '—'}</strong>{customer.phone && customer.wechat && <small>微信 {customer.wechat}</small>}</div><div><span>介绍人</span><strong>{referrer || '—'}</strong></div><div><span>创建人</span><strong>{relationOwner || '—'}</strong></div><div><span>已报名课程</span><strong>{courseNames.length ? courseNames.join('、') : '—'}</strong></div></div></section>
       <section className="customer-service-block"><div className={`customer-service-facts ${sessions[0] ? '' : 'customer-service-facts-without-session'}`}>{sessions[0] && <div><span>最近服务</span><strong>{friendlyDetailDate(sessions[0].date).split(' ')[0] || '暂无'}</strong></div>}<div className="customer-service-suggestion"><span>当前建议</span><strong>{serviceSuggestion}</strong></div><div><span>最近更新</span><strong>{recentUpdate || '—'}</strong></div></div></section>
     </header>
-    <CustomerUnderstandingOverview understanding={currentUnderstanding} source={understandingResponse?.meta.source} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => void refreshUnderstanding(true)} />
+    <CustomerUnderstandingOverview localSummary={oneLine} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => void refreshUnderstanding(true)} />
     <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
     <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
     <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onRefreshProfile={() => loadCustomerProfile(true)} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
@@ -1195,9 +1205,10 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
 }
 
 function understandingStatusLabel(status: string) { return humanizeProcessingStatus(status) }
-function CustomerUnderstandingOverview({ understanding, source, refs, loading, processing, error, refreshing, onRefresh }: { understanding?: CustomerUnderstandingV1; source?: string; refs: CustomerUnderstandingResponse['evidence_refs']; loading: boolean; processing: boolean; error: boolean; refreshing: boolean; onRefresh: () => void }) {
-  const message = loading || processing ? '正在读取该客户的最新理解…' : '还没有形成一句话理解。'
-  return <section className="customer-detail-section understanding-overview-section"><div className="understanding-overview"><div className="understanding-overview-heading"><div className="understanding-overview-label">一句话理解</div><button className="secondary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '理解中…' : '重新理解'}</button></div><div className="understanding-hero">{understanding ? <><p>{sanitizeUserVisibleText(understanding.one_line_understanding?.text || '当前资料不足，先从确认客户最近最在意的事情开始。')}</p>{source === 'STRUCTURED_FALLBACK' && <small className="understanding-read-warning">基于已录入基础资料，尚未形成最新 AI 分析。</small>}{error && <small className="understanding-read-warning">暂时无法获取最新内容，当前显示上一次整理结果。</small>}<UnderstandingEvidence ids={understanding.one_line_understanding?.evidence_ids} refs={refs} /></> : <p className="understanding-empty">{message}</p>}</div></div></section>
+function CustomerUnderstandingOverview({ localSummary, refs, loading, processing, error, refreshing, onRefresh }: { localSummary: ReturnType<typeof selectOneLineUnderstanding>; refs: CustomerUnderstandingResponse['evidence_refs']; loading: boolean; processing: boolean; error: boolean; refreshing: boolean; onRefresh: () => void }) {
+  const display = localSummary
+  const ruleNotice = error ? 'AI 理解暂时不可用，当前显示基于已加载资料的即时摘要。' : processing || loading ? 'AI 正在整理，当前先显示基于已加载资料的即时摘要。' : '基于当前已加载资料即时生成，不包含未提供的性格或心理判断。'
+  return <section className="customer-detail-section understanding-overview-section"><div className="understanding-overview"><div className="understanding-overview-heading"><div className="understanding-overview-label">一句话理解</div><button className="secondary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '理解中…' : '重新理解'}</button></div><div className="understanding-hero"><p>{sanitizeUserVisibleText(display.text)}</p>{display.source === 'RULE' && <small className="understanding-read-warning">{ruleNotice}</small>}{localSummary.sourceNotice && <small className="understanding-read-warning">{sanitizeUserVisibleText(localSummary.sourceNotice)}</small>}{display.source === 'AI' && <UnderstandingEvidence ids={display.evidenceIds} refs={refs} />}</div></div></section>
 }
 function safetyStatusLabel(response: SafetyAssessmentResponse | null) {
   if (!response?.assessment) return response?.status === 'PROCESSING' ? '正在确认安全边界' : '尚未形成服务安全判断'
