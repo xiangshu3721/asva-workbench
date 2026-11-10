@@ -850,6 +850,9 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 .customer-detail-v2 .consultation-module-tone-question .consultation-module-heading h3 { color: #80652e; }
 .customer-detail-v2 .consultation-module-tone-caution .consultation-module-heading h3 { color: #6f5d89; }
 .customer-detail-v2 .consultation-grid { row-gap: 26px; }
+/* Consultation guidance followed by resources, in that order on all screen widths. */
+.customer-detail-v2 .consultation-view .consultation-module-tone-caution,
+.customer-detail-v2 .consultation-view .consultation-module-tone-resource { grid-column: 1 / -1; }
 .customer-detail-v2 .consultation-module-content { padding: 16px; border: 1px solid #d7ebe2; border-radius: 15px; background: rgba(255,255,255,.84); }
 .customer-detail-v2 .consultation-module-question .consultation-module-content { border-color: #d8e7ef; background: #f7fbff; }
 .customer-detail-v2 .consultation-card { padding: 2px 0 13px; border: 0; border-bottom: 1px solid #e1eee8; border-radius: 0; background: transparent; }
