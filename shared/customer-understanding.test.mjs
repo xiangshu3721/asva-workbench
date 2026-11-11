@@ -121,7 +121,34 @@ describe('CustomerUnderstandingV1 contract', () => {
 
   it('uses one confirmed explicit concern as the primary local issue', () => {
     const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-ONE', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-ONE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '最近项目交付反复拖延，影响收入', standardValue: '最近项目交付反复拖延，影响收入' })] })
-    expect(createLocalCustomerUnderstanding(context).top_issues[0]).toMatchObject({ text: '最近项目交付反复拖延，影响收入', evidence_ids: ['EVD-ONE'] })
+    const local = createLocalCustomerUnderstanding(context)
+    expect(local.top_issues[0]).toMatchObject({ text: '最近项目交付反复拖延，影响收入', evidence_ids: ['EVD-ONE'] })
+    expect(local.next_conversation[0]).toMatchObject({ focus: '围绕最近项目交付反复拖延，影响收入了解最需要优先处理的部分' })
+  })
+
+  it('keeps a clear raw consultation topic as a provisional direction with a matching entry point', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-DIRECTION', need: '更多咨询情感问题', profileFields: {} }, evidenceItems: [] })
+    const local = createLocalCustomerUnderstanding(context)
+    expect(context.current_issue_candidates.evidence).toEqual([])
+    expect(context.current_issue_candidates.provisional).toEqual([expect.objectContaining({ title: '情感关系方面的咨询需求', evidence_ids: [] })])
+    expect(local.top_issues).toEqual([expect.objectContaining({ title: '情感关系方面的咨询需求', confidence: 'LOW', evidence_ids: [] })])
+    expect(local.next_conversation[0]).toMatchObject({ focus: '围绕情感关系方面的咨询需求了解客户最想优先谈的事情' })
+    expect(local.next_conversation[0].suggested_entry).toContain('情感关系')
+  })
+
+  it('does not infer a consultation direction from relationship, family, or work background alone', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-BACKGROUND', profileFields: { marital_status: '离异', relationship_status: '有男朋友', occupation: '工作繁忙' }, notes: '已记录婚姻、家庭和职业背景。' }, evidenceItems: [] })
+    expect(context.current_issue_candidates.provisional).toEqual([])
+    expect(createLocalCustomerUnderstanding(context).top_issues).toEqual([])
+  })
+
+  it('does not turn resolved history or ungrounded AI inference into a provisional direction', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-NO-DIRECTION', profileFields: {} }, evidenceItems: [
+      fact({ id: 'EVD-RESOLVED', semanticKind: 'EVENT', displayText: '过去咨询过情感问题，目前已解决', standardValue: '过去咨询过情感问题，目前已解决' }),
+      fact({ id: 'EVD-AI', evidenceType: 'HYPOTHESIS', reviewStatus: 'PENDING_REVIEW', semanticKind: 'NEED', displayText: 'AI 推测存在情感困扰', standardValue: 'AI 推测存在情感困扰' }),
+    ] })
+    expect(context.current_issue_candidates.provisional).toEqual([])
+    expect(createLocalCustomerUnderstanding(context).top_issues).toEqual([])
   })
 
   it('does not turn goals, service expectations, or ordinary current states into core issues', () => {
