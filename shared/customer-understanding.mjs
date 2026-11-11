@@ -15,6 +15,7 @@ const RESOLVED_ISSUE_PATTERN = /(已(?:经)?(?:解决|缓解|恢复|过去)|不�
 const EXPLICIT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|问题|无法|影响)/
 const CURRENT_IMPACT_PATTERN = /(影响|导致|无法|反复|持续|下降|中断|冲突|困难|拖延|失眠)/
 const CONSULTATION_TOPIC_PATTERN = /(咨询|想谈|想聊|需要帮助).{0,24}(情感|关系|婚姻|伴侣|家庭|亲子|职业|工作|睡眠|压力)/
+const CONCRETE_CURRENT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|无法|影响)/
 const PROVISIONAL_DIRECTION_DETAIL = '原始资料已提及该咨询主题，具体情况待客户确认。'
 const AI_DERIVED_EVIDENCE_TYPES = new Set(['HYPOTHESIS', 'AI_INFERENCE'])
 const present = (value) => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
@@ -66,6 +67,7 @@ function sortedEvidence(items, options = {}) {
 function isCurrentIssueEvidence(item) {
   const text = safeText(item?.displayText || item?.standardValue)
   if (item?.semanticKind === 'EVENT' || RESOLVED_ISSUE_PATTERN.test(text) || ['STAFF_REPORTED', 'MENTOR_OBSERVATION'].includes(item?.sourcePerspective)) return false
+  if (CONSULTATION_TOPIC_PATTERN.test(text) && !CONCRETE_CURRENT_ISSUE_PATTERN.test(text)) return false
   const explicitIssue = item?.fieldKey === 'current_core_issue' || (item?.semanticKind === 'NEED' && EXPLICIT_ISSUE_PATTERN.test(text))
   const impactSupportingFact = item?.evidenceType === 'FACT' && (item?.semanticKind === 'CURRENT_STATE' || item?.fieldKey === 'current_barriers') && CURRENT_IMPACT_PATTERN.test(text)
   return explicitIssue || impactSupportingFact
