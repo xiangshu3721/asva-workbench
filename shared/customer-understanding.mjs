@@ -15,6 +15,8 @@ const RESOLVED_ISSUE_PATTERN = /(已(?:经)?(?:解决|缓解|恢复|过去)|不�
 const EXPLICIT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|问题|无法|影响)/
 const CURRENT_IMPACT_PATTERN = /(影响|导致|无法|反复|持续|下降|中断|冲突|困难|拖延|失眠)/
 const CONSULTATION_TOPIC_PATTERN = /(咨询|想谈|想聊|需要帮助).{0,24}(情感|关系|婚姻|伴侣|家庭|亲子|职业|工作|睡眠|压力)/
+const PROVISIONAL_DIRECTION_DETAIL = '原始资料已提及该咨询主题，具体情况待客户确认。'
+const AI_DERIVED_EVIDENCE_TYPES = new Set(['HYPOTHESIS', 'AI_INFERENCE'])
 const present = (value) => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
 const valueText = (value) => Array.isArray(value) ? value.join('、') : present(value) ? String(value) : ''
 const safeText = (value, limit = 240) => valueText(value).replace(/\s+/g, ' ').trim().slice(0, limit)
@@ -169,7 +171,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
   const currentEvidence = sortedEvidence(confirmed.filter((item) => item.semanticKind !== 'EVENT'), { current: true }).slice(0, 18)
   const events = sortedEvidence(confirmed.filter((item) => item.semanticKind === 'EVENT')).slice(0, 12)
   const currentIssueEvidence = sortedCurrentIssueEvidence(confirmed.filter((item) => isCurrentIssueEvidence(item) && !conflictingEvidenceIds.has(item.id))).slice(0, 24)
-  const provisionalTopicEvidence = sortedEvidence([...confirmed, ...hypotheses].filter((item) => !openConflictEvidenceIds.has(item.id) && item.semanticKind !== 'EVENT' && consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null))).slice(0, 12)
+  const provisionalTopicEvidence = sortedEvidence(confirmed.filter((item) => !AI_DERIVED_EVIDENCE_TYPES.has(item.evidenceType) && !openConflictEvidenceIds.has(item.id) && item.semanticKind !== 'EVENT' && consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null))).slice(0, 12)
   const needs = sortedCurrentIssueEvidence(confirmed.filter((item) => (item.semanticKind === 'NEED' || item.semanticKind === 'GOAL' || CURRENT_ISSUE_FIELDS.has(item.fieldKey)) && !conflictingEvidenceIds.has(item.id))).slice(0, 24)
   const selfMeanings = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'SELF_MEANING')).slice(0, 8)
   const observations = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'OBSERVATION')).slice(0, 8)
@@ -190,7 +192,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
   ].filter(Boolean).slice(0, 8)
   const provisionalDirections = [
     ...provisionalTopicEvidence.map((item) => consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null)),
-    ...[recordedContext.current_need, recordedContext.help_expectation, recordedContext.notes].map((text) => consultationDirection(text)),
+    ...[recordedContext.current_need, recordedContext.help_expectation].map((text) => consultationDirection(text)),
   ].filter(Boolean).filter((item, index, list) => list.findIndex((candidate) => candidate.title === item.title) === index).slice(0, 4)
   return {
     schema_version: CUSTOMER_UNDERSTANDING_VERSION,
@@ -267,7 +269,7 @@ export function applyCurrentIssuePolicy(value, { currentIssueEvidenceIds = [], c
       const direction = provisional.find((candidate) => isSimilarIssue(title, candidate.title) || isSimilarIssue(issue?.text || '', candidate.title))
       if (!direction || directions.some((existing) => isSimilarIssue(existing.title || existing.text, direction.title))) continue
       const evidenceIds = (issue?.evidence_ids || []).filter((id) => direction.evidence_ids?.includes(id))
-      directions.push({ ...issue, text: direction.title, title: direction.title, evidence_ids: evidenceIds, confidence: 'LOW', type: 'SYNTHESIS' })
+      directions.push(cleanInsight({ title: direction.title, detail: PROVISIONAL_DIRECTION_DETAIL, evidence_ids: evidenceIds, confidence: 'LOW', type: 'SYNTHESIS' }))
       continue
     }
     const evidenceIds = (issue?.evidence_ids || []).filter((id) => allowed.has(id))
@@ -341,7 +343,7 @@ export function createLocalCustomerUnderstanding(context) {
   const noteSignal = recorded.notes ? { text: `已录入资料：${safeText(recorded.notes, 220)}`, evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' } : null
   const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text))].slice(0, 3)
   const issueCandidates = refsFor(context.current_issue_candidates?.evidence || [])
-  const provisionalDirections = (context.current_issue_candidates?.provisional || []).map((item) => ({ text: item.title, title: item.title, detail: '原始资料已提及该咨询主题，具体情况待客户确认。', evidence_ids: item.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS' }))
+  const provisionalDirections = (context.current_issue_candidates?.provisional || []).map((item) => ({ text: item.title, title: item.title, detail: PROVISIONAL_DIRECTION_DETAIL, evidence_ids: item.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS' }))
   const oneLineSignals = [...usableNeeds, ...(noteSignal ? [noteSignal] : [])]
   const resources = refsFor(context.resources || [])
   const events = refsFor(context.top_life_events || [])

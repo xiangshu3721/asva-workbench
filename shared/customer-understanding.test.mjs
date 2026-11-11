@@ -151,6 +151,30 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(createLocalCustomerUnderstanding(context).top_issues).toEqual([])
   })
 
+  it('excludes AI-derived topics and unsourced notes from provisional direction candidates', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-AI-TOPIC', notes: 'AI 总结：更多咨询情感问题', profileFields: {} }, evidenceItems: [
+      fact({ id: 'EVD-HYPOTHESIS-TOPIC', evidenceType: 'HYPOTHESIS', reviewStatus: 'PENDING_REVIEW', semanticKind: 'NEED', displayText: 'AI 推测客户想咨询情感问题', standardValue: 'AI 推测客户想咨询情感问题' }),
+      fact({ id: 'EVD-INFERENCE-TOPIC', evidenceType: 'AI_INFERENCE', reviewStatus: 'CONFIRMED', semanticKind: 'NEED', displayText: 'AI 推断客户想咨询情感问题', standardValue: 'AI 推断客户想咨询情感问题' }),
+    ] })
+    expect(context.current_issue_candidates.provisional).toEqual([])
+  })
+
+  it('keeps only the vetted topic and safe confirmation wording for provisional directions', () => {
+    const filtered = applyCurrentIssuePolicy({ top_issues: [{ title: '情感关系方面的咨询需求', text: '情感关系方面的咨询需求', detail: '模型推测客户长期回避亲密关系', why_it_matters: '已造成关系冲突和工作受影响', trigger: '伴侣沟通减少', evidence_ids: ['EVD-TOPIC'], confidence: 'LOW', type: 'SYNTHESIS' }] }, {
+      currentIssueCandidates: [{ title: '情感关系方面的咨询需求', evidence_ids: ['EVD-TOPIC'], provisional: true }],
+    })
+    expect(filtered.top_issues).toEqual([expect.objectContaining({ title: '情感关系方面的咨询需求', detail: '原始资料已提及该咨询主题，具体情况待客户确认。', why_it_matters: '', trigger: '', evidence_ids: ['EVD-TOPIC'], confidence: 'LOW' })])
+    expect(JSON.stringify(filtered.top_issues)).not.toContain('长期回避')
+    expect(JSON.stringify(filtered.top_issues)).not.toContain('关系冲突')
+  })
+
+  it('marks only current rule-generated provisional directions for safe display', () => {
+    const current = createLocalCustomerUnderstanding(buildCustomerUnderstandingContext({ customer: { id: 'CUS-CURRENT-DIRECTION', need: '更多咨询情感问题', profileFields: {} }, evidenceItems: [] }))
+    const legacy = applyCurrentIssuePolicy({ top_issues: [{ title: '情感关系方面的咨询需求', evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' }] })
+    expect(current.top_issues[0]).toMatchObject({ detail: '原始资料已提及该咨询主题，具体情况待客户确认。' })
+    expect(legacy.top_issues).toEqual([])
+  })
+
   it('does not turn goals, service expectations, or ordinary current states into core issues', () => {
     const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-NON-ISSUE', goal: '稳定作息', helpExpectation: '先找到能执行的一步', profileFields: {} }, evidenceItems: [
       fact({ id: 'EVD-GOAL', semanticKind: 'GOAL', fieldKey: 'current_goal', displayText: '希望稳定作息', standardValue: '希望稳定作息' }),
