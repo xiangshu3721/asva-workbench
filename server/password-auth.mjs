@@ -17,7 +17,12 @@ const INITIAL_PASSWORD_CHARSETS = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopq
 export { PasswordPolicyError, PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword }
 export const PASSWORD_POLICY_MESSAGE = PASSWORD_POLICY_MESSAGES[PASSWORD_POLICY_CODES.LENGTH_INVALID]
 
-const text = (value) => typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+const text = (value) => {
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(text).join('')
+  if (value && typeof value === 'object' && Object.hasOwn(value, 'text')) return text(value.text)
+  return ''
+}
 const bool = (value) => value === true || value === 'true' || value === '是'
 const normalizePhone = (value) => text(value).replace(/[\s-]/g, '')
 const now = () => new Date().toISOString()

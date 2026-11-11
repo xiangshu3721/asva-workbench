@@ -1779,7 +1779,10 @@ export class FeishuRepository {
         throw invalidLogin()
       }
       loginRateLimiter.clear(phone, ip)
-      await this.authRepository.recordSuccessfulLogin(account.id)
+      // Authentication has completed. This optional timestamp must not delay
+      // the response or turn a valid password into a failed login.
+      Promise.resolve().then(() => this.authRepository.recordSuccessfulLogin(account.id))
+        .catch(() => console.warn('[ASVA_AUTH_LOGIN_METADATA]', JSON.stringify({ lastLoginWriteSucceeded: false, failureStage: 'LAST_LOGIN_WRITE' })))
       return { ...account, authVersion: Number(credential.authVersion || 0), mustChangePassword: credential.mustChangePassword === true, authMode: 'PASSWORD' }
     }
     if (config.dataMode === 'production' && !config.adminLoginCode) throw Object.assign(new Error('生产认证未配置'), { code: 'AUTH_NOT_CONFIGURED', status: 503 })
