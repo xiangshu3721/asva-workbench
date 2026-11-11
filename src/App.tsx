@@ -1277,21 +1277,26 @@ function ConsultationModule({ title, hint, items, refs, kind = 'default', tone =
   if (!items.length) return null
   return <section className={`consultation-module consultation-module-${kind} consultation-module-tone-${tone}`}><div className="consultation-module-heading"><h3>{title}</h3>{hint && <span>{hint}</span>}</div><div className="consultation-module-content"><div className="consultation-card-list">{items.map((item, index) => <ConsultationCard item={item} refs={refs} kind={kind} key={`${item.text}-${index}`} />)}</div></div></section>
 }
-function CurrentCoreIssuesModule({ issues, gaps, refs }: { issues: UnderstandingInsight[]; gaps: CustomerUnderstandingV1['knowledge_gaps']; refs: CustomerUnderstandingResponse['evidence_refs'] }) {
+function CurrentCoreIssuesModule({ issues, gaps, refs, allowProvisional }: { issues: UnderstandingInsight[]; gaps: CustomerUnderstandingV1['knowledge_gaps']; refs: CustomerUnderstandingResponse['evidence_refs']; allowProvisional: boolean }) {
   const resolvedPattern = /(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/
-  const verifiedIssues = issues.filter((issue) => issue.confidence !== 'LOW' && issue.evidence_ids?.length > 0 && issue.evidence_ids.every((id) => {
+  const hasValidEvidence = (issue: UnderstandingInsight) => issue.evidence_ids?.length > 0 && issue.evidence_ids.every((id) => {
     const evidence = refs.find((item) => item.evidence_id === id)
     return Boolean(evidence && !resolvedPattern.test(`${evidence.display_text} ${evidence.excerpt}`))
-  }))
+  })
+  const verifiedIssues = issues.filter((issue) => issue.confidence !== 'LOW' && hasValidEvidence(issue))
+  const provisionalDirections = allowProvisional ? issues.filter((issue) => issue.confidence === 'LOW' && (!issue.evidence_ids?.length || hasValidEvidence(issue))) : []
   const [primary, ...related] = verifiedIssues.slice(0, 3)
-  const primaryTitle = primary ? (primary.title || primary.text) : ''
-  const relatedGaps = primary ? gaps.filter((gap) => {
+  const [direction, ...additionalDirections] = provisionalDirections.slice(0, 2)
+  const lead = primary || direction
+  const leadIsDirection = !primary && Boolean(direction)
+  const leadTitle = lead ? (lead.title || lead.text) : ''
+  const relatedGaps = lead ? gaps.filter((gap) => {
     const extended = gap as typeof gap & { related_issue?: string; why_it_matters?: string }
     const relatedIssue = extended.related_issue || ''
-    return Boolean(relatedIssue && (relatedIssue.includes(primaryTitle) || primaryTitle.includes(relatedIssue)))
+    return Boolean(relatedIssue && (relatedIssue.includes(leadTitle) || leadTitle.includes(relatedIssue)))
   }).slice(0, 3) : []
-  const primaryDetail = primary ? (primary.why_it_matters || primary.detail || primary.description) : ''
-  return <section className="consultation-module consultation-module-tone-core"><div className="consultation-module-heading"><h3>当前核心议题</h3><span>首要 1 项，关联最多 2 项</span></div><div className="consultation-module-content">{!primary ? <p className="understanding-empty">当前资料不足，尚不能确认核心议题；可先核实客户最近最希望处理的具体问题及现实影响。</p> : <div className="consultation-card-list"><article className="consultation-card"><span className="understanding-field-label">首要议题</span><strong>{sanitizeUserVisibleText(primaryTitle)}</strong>{primaryDetail && <><span className="understanding-field-label">具体表现与现实影响</span><p>{sanitizeUserVisibleText(primaryDetail)}</p></>}<span className="understanding-confidence">{primary.confidence === 'HIGH' ? '把握较高' : primary.confidence === 'MEDIUM' ? '把握中等' : '待进一步确认'}</span><UnderstandingEvidence ids={primary.evidence_ids} refs={refs} /></article>{related.length > 0 && <div className="consultation-card"><span className="understanding-field-label">关联议题</span>{related.map((item, index) => <div key={`${item.text}-${index}`}><strong>{sanitizeUserVisibleText(item.title || item.text)}</strong>{(item.why_it_matters || item.detail || item.description) && <p>{sanitizeUserVisibleText(item.why_it_matters || item.detail || item.description || '')}</p>}<UnderstandingEvidence ids={item.evidence_ids} refs={refs} /></div>)}</div>}{relatedGaps.length > 0 && <div className="consultation-card"><span className="understanding-field-label">待确认</span>{relatedGaps.map((gap, index) => <p key={`${gap.text}-${index}`}>{sanitizeUserVisibleText(gap.text)}</p>)}</div>}</div>}</div></section>
+  const leadDetail = lead ? (lead.why_it_matters || lead.detail || lead.description) : ''
+  return <section className="consultation-module consultation-module-tone-core"><div className="consultation-module-heading"><h3>当前核心议题</h3><span>首要 1 项，关联最多 2 项</span></div><div className="consultation-module-content">{!lead ? <p className="understanding-empty">当前资料不足，尚不能确认核心议题；可先核实客户最近最希望处理的具体问题及现实影响。</p> : <div className="consultation-card-list"><article className="consultation-card"><span className="understanding-field-label">{leadIsDirection ? '初步咨询方向 · 待客户确认' : '首要议题'}</span><strong>{sanitizeUserVisibleText(leadTitle)}</strong>{leadDetail && <><span className="understanding-field-label">{leadIsDirection ? '已知线索' : '具体表现与现实影响'}</span><p>{sanitizeUserVisibleText(leadDetail)}</p></>}{leadIsDirection ? <small className="understanding-confidence">原始资料已提及，待客户确认具体情况</small> : <span className="understanding-confidence">{lead.confidence === 'HIGH' ? '把握较高' : '把握中等'}</span>}{lead.evidence_ids.length > 0 && <UnderstandingEvidence ids={lead.evidence_ids} refs={refs} />}</article>{related.length > 0 && <div className="consultation-card"><span className="understanding-field-label">关联议题</span>{related.map((item, index) => <div key={`${item.text}-${index}`}><strong>{sanitizeUserVisibleText(item.title || item.text)}</strong>{(item.why_it_matters || item.detail || item.description) && <p>{sanitizeUserVisibleText(item.why_it_matters || item.detail || item.description || '')}</p>}<UnderstandingEvidence ids={item.evidence_ids} refs={refs} /></div>)}</div>}{(primary ? provisionalDirections : additionalDirections).length > 0 && <div className="consultation-card"><span className="understanding-field-label">初步咨询方向 · 待客户确认</span>{(primary ? provisionalDirections : additionalDirections).map((item, index) => <div key={`${item.text}-${index}`}><strong>{sanitizeUserVisibleText(item.title || item.text)}</strong>{(item.why_it_matters || item.detail || item.description) && <p>{sanitizeUserVisibleText(item.why_it_matters || item.detail || item.description || '')}</p>}{item.evidence_ids.length > 0 && <UnderstandingEvidence ids={item.evidence_ids} refs={refs} />}</div>)}</div>}{relatedGaps.length > 0 && <div className="consultation-card"><span className="understanding-field-label">待确认</span>{relatedGaps.map((gap, index) => <p key={`${gap.text}-${index}`}>{sanitizeUserVisibleText(gap.text)}</p>)}</div>}</div>}</div></section>
 }
 function salesStrategyLabel(strategy: string) { return humanizeStrategy(strategy) }
 function salesTimingLabel(timing: string) { return humanizeTiming(timing) }
@@ -1335,7 +1340,7 @@ function CustomerUnderstandingPanel({ response, fallback, status, error, loading
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
   const entryPoints = (understanding?.next_conversation || []).filter((item) => item.focus || item.suggested_entry || item.prompt).slice(0, 3)
   const consultationContent = error ? <div className="sales-empty"><p>这位客户的 AI 档案暂时读取失败，可以稍后重试。</p><button className="primary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '重试中…' : '重试'}</button></div> : (loading || status === 'PROCESSING') && !understanding ? <p className="understanding-empty">正在读取该客户的咨询档案…</p> : !understanding ? <div className="sales-empty"><p>还没有整理这个客户的 AI 档案。</p><button className="primary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '整理中…' : '开始整理'}</button><span>{understandingStatusLabel(status)}</span></div> : <div className="consultation-grid">
-      <CurrentCoreIssuesModule issues={understanding.top_issues || []} gaps={understanding.knowledge_gaps || []} refs={refs} />
+      <CurrentCoreIssuesModule issues={understanding.top_issues || []} gaps={understanding.knowledge_gaps || []} refs={refs} allowProvisional={response?.meta?.promptVersion === 'understanding-v3-consult-directions'} />
       <ConsultationModule title="咨询切入点" hint="从具体处境开始" items={entryPoints} refs={refs} kind="entry" tone="entry" />
       <ConsultationModule title="服务注意事项" hint="可直接转成行动" items={(understanding.service_cautions || []).slice(0, 4)} refs={refs} tone="caution" />
       <ConsultationModule title="当前资源" items={strong(understanding.resources_and_strengths || []).slice(0, 3)} refs={refs} tone="resource" />
