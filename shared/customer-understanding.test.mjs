@@ -136,6 +136,21 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(local.next_conversation[0].suggested_entry).toContain('情感关系')
   })
 
+  it('keeps a confirmed consultation topic provisional until it states a concrete current problem or impact', () => {
+    const topicOnly = buildCustomerUnderstandingContext({ customer: { id: 'CUS-CONFIRMED-TOPIC', profileFields: {} }, evidenceItems: [
+      fact({ id: 'EVD-TOPIC', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '更多咨询情感问题', standardValue: '更多咨询情感问题' }),
+    ] })
+    const concreteIssue = buildCustomerUnderstandingContext({ customer: { id: 'CUS-CONCRETE-ISSUE', profileFields: {} }, evidenceItems: [
+      fact({ id: 'EVD-CONCRETE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '最近与伴侣频繁冲突，已经影响睡眠', standardValue: '最近与伴侣频繁冲突，已经影响睡眠' }),
+    ] })
+    expect(topicOnly.current_issue_candidates.evidence).toEqual([])
+    expect(topicOnly.current_issue_candidates.provisional).toEqual([expect.objectContaining({ title: '情感关系方面的咨询需求', evidence_ids: ['EVD-TOPIC'] })])
+    expect(createLocalCustomerUnderstanding(topicOnly).top_issues).toEqual([expect.objectContaining({ confidence: 'LOW', title: '情感关系方面的咨询需求' })])
+    expect(concreteIssue.current_issue_candidates.evidence).toEqual([expect.objectContaining({ evidence_ids: ['EVD-CONCRETE'] })])
+    expect(concreteIssue.current_issue_candidates.provisional).toEqual([])
+    expect(createLocalCustomerUnderstanding(concreteIssue).top_issues).toEqual([expect.objectContaining({ confidence: 'HIGH', evidence_ids: ['EVD-CONCRETE'] })])
+  })
+
   it('does not infer a consultation direction from relationship, family, or work background alone', () => {
     const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-BACKGROUND', profileFields: { marital_status: '离异', relationship_status: '有男朋友', occupation: '工作繁忙' }, notes: '已记录婚姻、家庭和职业背景。' }, evidenceItems: [] })
     expect(context.current_issue_candidates.provisional).toEqual([])
