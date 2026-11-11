@@ -1,7 +1,7 @@
 import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
-export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v1'
+export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v2-core-issues'
 export const CONTEXT_DENSITY_POLICY_VERSION = 'DENSITY_V1'
 export const UNDERSTANDING_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 export const UNDERSTANDING_CONFIDENCE = new Set(['LOW', 'MEDIUM', 'HIGH'])
@@ -10,6 +10,9 @@ export const DIAGNOSIS_PATTERN = /(人格障碍|抑郁症|焦虑症|双相|精�
 
 const SENSITIVE_FIELDS = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
 const EVIDENCE_ORDER = { FACT: 4, SELF_MEANING: 3, OBSERVATION: 2, HYPOTHESIS: 1 }
+const CURRENT_ISSUE_KINDS = new Set(['NEED', 'GOAL', 'CURRENT_STATE'])
+const CURRENT_ISSUE_FIELDS = new Set(['current_core_issue', 'current_goal', 'current_expectation', 'current_barriers'])
+const RESOLVED_ISSUE_PATTERN = /(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/
 const present = (value) => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
 const valueText = (value) => Array.isArray(value) ? value.join('、') : present(value) ? String(value) : ''
 const safeText = (value, limit = 240) => valueText(value).replace(/\s+/g, ' ').trim().slice(0, limit)
@@ -54,6 +57,43 @@ function scoreEvidence(item, { current = false } = {}) {
 
 function sortedEvidence(items, options = {}) {
   return [...items].sort((a, b) => scoreEvidence(b, options) - scoreEvidence(a, options) || String(b.occurredAt || '').localeCompare(String(a.occurredAt || '')) || a.id.localeCompare(b.id))
+}
+
+function isCurrentIssueEvidence(item) {
+  return item?.semanticKind !== 'EVENT' && (CURRENT_ISSUE_KINDS.has(item?.semanticKind) || CURRENT_ISSUE_FIELDS.has(item?.fieldKey)) && !RESOLVED_ISSUE_PATTERN.test(safeText(item?.displayText || item?.standardValue))
+}
+
+function currentIssuePriority(item) {
+  const explicitNeed = item?.semanticKind === 'NEED' || item?.fieldKey === 'current_core_issue'
+  const goal = item?.semanticKind === 'GOAL' || ['current_goal', 'current_expectation'].includes(item?.fieldKey)
+  const customerStatement = item?.sourcePerspective === 'CUSTOMER_FIRST_PARTY' || item?.evidenceType === 'SELF_MEANING'
+  return (explicitNeed ? 8 : goal ? 5 : 2) + (customerStatement ? 3 : 0) + scoreEvidence(item, { current: true })
+}
+
+function sortedCurrentIssueEvidence(items) {
+  return [...items].sort((a, b) => currentIssuePriority(b) - currentIssuePriority(a) || String(b.occurredAt || '').localeCompare(String(a.occurredAt || '')) || a.id.localeCompare(b.id))
+}
+
+function normalizeIssueText(value) {
+  return safeText(value, 280).toLowerCase().replace(/[\s，。、“”‘’：；、,.!?！？()（）\-]/g, '')
+}
+
+function issueTerms(value) {
+  const text = normalizeIssueText(value)
+  const terms = new Set()
+  for (let index = 0; index < text.length - 1; index += 1) terms.add(text.slice(index, index + 2))
+  return terms
+}
+
+function isSimilarIssue(left, right) {
+  const a = normalizeIssueText(left)
+  const b = normalizeIssueText(right)
+  if (!a || !b) return false
+  if (a === b || a.includes(b) || b.includes(a)) return true
+  const aTerms = issueTerms(a)
+  const bTerms = issueTerms(b)
+  const shared = [...aTerms].filter((term) => bTerms.has(term)).length
+  return shared / Math.max(aTerms.size, bTerms.size, 1) >= 0.72 || (shared >= 3 && shared / Math.min(aTerms.size, bTerms.size, 1) >= 0.5)
 }
 
 function profileDomains(customer) {
@@ -104,15 +144,17 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS')
   const hypotheses = evidenceItems.filter((item) => item.evidenceType === 'HYPOTHESIS' || item.reviewStatus !== 'CONFIRMED')
   const renderer = materializeCustomerProfile({ customer, evidenceItems })
+  const knownIds = new Set(confirmed.map((item) => item.id))
+  const conflictingEvidenceIds = new Set(conflicts.filter((item) => item.status === 'OPEN').flatMap((item) => [item.currentEvidenceId, item.newEvidenceId]).filter((id) => knownIds.has(id)))
   const currentEvidence = sortedEvidence(confirmed.filter((item) => item.semanticKind !== 'EVENT'), { current: true }).slice(0, 18)
   const events = sortedEvidence(confirmed.filter((item) => item.semanticKind === 'EVENT')).slice(0, 12)
-  const needs = sortedEvidence(confirmed.filter((item) => ['NEED', 'GOAL'].includes(item.semanticKind) || ['current_core_issue', 'current_goal', 'current_expectation', 'current_barriers'].includes(item.fieldKey)), { current: true }).slice(0, 8)
+  const currentIssueEvidence = sortedCurrentIssueEvidence(confirmed.filter((item) => isCurrentIssueEvidence(item) && !conflictingEvidenceIds.has(item.id))).slice(0, 24)
+  const needs = sortedCurrentIssueEvidence(confirmed.filter((item) => (item.semanticKind === 'NEED' || item.semanticKind === 'GOAL' || CURRENT_ISSUE_FIELDS.has(item.fieldKey)) && !conflictingEvidenceIds.has(item.id))).slice(0, 24)
   const selfMeanings = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'SELF_MEANING')).slice(0, 8)
   const observations = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'OBSERVATION')).slice(0, 8)
   const resources = sortedEvidence(confirmed.filter((item) => item.semanticKind === 'RESOURCE' || ['strengths', 'current_resources', 'support_system'].includes(item.fieldKey)), { current: true }).slice(0, 8)
   const density = classifyUnderstandingContextDensity({ profileCoverage: renderer.coverage.percentage, confirmedEvidenceCount: confirmed.length, sourceCount: sourceRecords.filter((item) => item.customerId === customer.id).length, knownDomainCount: renderer.coverage.domains.filter((item) => item.status === 'KNOWN').length, lifeEventCount: events.length })
-  const evidenceRefs = [...currentEvidence, ...events, ...needs, ...selfMeanings, ...observations, ...resources, ...hypotheses.slice(0, 5)].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).map((item) => evidenceRef(item, sourceRecords))
-  const knownIds = new Set(confirmed.map((item) => item.id))
+  const evidenceRefs = [...currentIssueEvidence, ...currentEvidence, ...events, ...needs, ...selfMeanings, ...observations, ...resources, ...hypotheses.slice(0, 5)].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).map((item) => evidenceRef(item, sourceRecords))
   const openConflictRefs = conflicts.filter((item) => item.status === 'OPEN').slice(0, 8).map((item) => ({ field_key: item.fieldKey, current_value: valueText(item.currentValue), proposed_value: valueText(item.newValue), evidence_ids: unique([item.currentEvidenceId, item.newEvidenceId]).filter((id) => knownIds.has(id)) }))
   const recordedContext = {
     notes: safeText(customer.notes, 1200),
@@ -133,6 +175,11 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     top_life_events: events.map((item) => ({ text: safeText(item.displayText), occurred_at: item.occurredAt || null, evidence_ids: [item.id] })),
     current_goals: needs.filter((item) => item.semanticKind === 'GOAL' || item.fieldKey === 'current_goal').map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     current_needs: contextNeeds,
+    current_issue_candidates: {
+      evidence: currentIssueEvidence.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id], source_perspective: item.sourcePerspective || null })),
+      explicit_snapshot_needs: [recordedContext.current_need, recordedContext.current_goal, recordedContext.help_expectation].filter(Boolean),
+      excluded_conflict_evidence_ids: [...conflictingEvidenceIds],
+    },
     recent_self_meanings: selfMeanings.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     important_observations: observations.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     resources: resources.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
@@ -181,6 +228,24 @@ const cleanInsight = (item, fallback = '待进一步确认') => {
     confidence: UNDERSTANDING_CONFIDENCE.has(item?.confidence) ? item.confidence : 'LOW',
     type: UNDERSTANDING_TYPES.has(item?.type) ? item.type : 'SYNTHESIS',
   }
+}
+
+export function applyCurrentIssuePolicy(value, { currentIssueEvidenceIds = [], explicitSnapshotNeeds = [] } = {}) {
+  const allowed = new Set(currentIssueEvidenceIds)
+  const directNeeds = explicitSnapshotNeeds.map((item) => safeText(item, 280)).filter(Boolean)
+  const selected = []
+  for (const issue of value?.top_issues || []) {
+    const title = issue?.title || issue?.text || ''
+    const evidenceIds = issue?.evidence_ids || []
+    const hasCurrentEvidence = evidenceIds.some((id) => allowed.has(id))
+    if (!normalizeIssueText(title) || RESOLVED_ISSUE_PATTERN.test(title) || issue?.type === 'WORKING_HYPOTHESIS') continue
+    if (evidenceIds.length && !hasCurrentEvidence) continue
+    if (!evidenceIds.length && !directNeeds.some((need) => isSimilarIssue(title, need))) continue
+    if (selected.some((existing) => isSimilarIssue(existing.title || existing.text, title))) continue
+    selected.push({ ...issue, confidence: evidenceIds.length ? issue.confidence : 'LOW', type: evidenceIds.length ? issue.type : 'SYNTHESIS' })
+    if (selected.length === 3) break
+  }
+  return { ...value, top_issues: selected }
 }
 
 export function normalizeCustomerUnderstanding(raw, { evidenceIds = [], now = new Date().toISOString() } = {}) {
@@ -245,9 +310,14 @@ export function createLocalCustomerUnderstanding(context) {
   const recorded = context.recorded_context || context.current_snapshot || {}
   const recordedNeeds = [recorded.current_need, recorded.current_goal, recorded.help_expectation].filter(Boolean).map((text) => ({ text: safeText(text), evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' }))
   const noteSignal = recorded.notes ? { text: `已录入资料：${safeText(recorded.notes, 220)}`, evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' } : null
-  const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text)), ...(noteSignal ? [noteSignal] : [])].slice(0, 3)
+  const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text))].slice(0, 3)
+  const oneLineSignals = [...usableNeeds, ...(noteSignal ? [noteSignal] : [])]
   const resources = refsFor(context.resources || [])
   const events = refsFor(context.top_life_events || [])
   const gaps = (context.coverage_gaps || []).slice(0, 4).map((text) => ({ text: `还需要了解${text}`, detail: '当前资料尚不足以形成稳定判断。', priority: 'MEDIUM', evidence_ids: [] }))
-  return normalizeCustomerUnderstanding({ generated_at: context.generated_at, one_line_understanding: { text: usableNeeds[0]?.text || '当前资料有限，先建立对客户处境的基本理解。', evidence_ids: usableNeeds[0]?.evidence_ids || [], confidence: usableNeeds[0]?.evidence_ids?.length ? 'HIGH' : 'LOW', type: usableNeeds[0]?.evidence_ids?.length ? 'FACT_BASED' : 'SYNTHESIS' }, top_issues: usableNeeds, current_life_phase: events[0] || null, current_needs: usableNeeds, core_blocks: [], resources_and_strengths: resources, key_tensions: [], knowledge_gaps: gaps, next_conversation: [{ text: '先确认客户最近最希望解决的一件具体事情', prompt: '最近最让你想优先处理的是什么？', evidence_ids: [] }], service_cautions: [{ text: '先确认再解释', detail: '资料不足时不把推测当成事实。', evidence_ids: [] }], meta: { overall_confidence: usableNeeds.length ? 'MEDIUM' : 'LOW', evidence_count: context.evidence_refs?.length || 0 } }, { evidenceIds: (context.evidence_refs || []).map((item) => item.evidence_id), now: context.generated_at })
+  const normalized = normalizeCustomerUnderstanding({ generated_at: context.generated_at, one_line_understanding: { text: oneLineSignals[0]?.text || '当前资料有限，先建立对客户处境的基本理解。', evidence_ids: oneLineSignals[0]?.evidence_ids || [], confidence: oneLineSignals[0]?.evidence_ids?.length ? 'HIGH' : 'LOW', type: oneLineSignals[0]?.evidence_ids?.length ? 'FACT_BASED' : 'SYNTHESIS' }, top_issues: usableNeeds, current_life_phase: events[0] || null, current_needs: usableNeeds, core_blocks: [], resources_and_strengths: resources, key_tensions: [], knowledge_gaps: gaps, next_conversation: [{ text: '先确认客户最近最希望解决的一件具体事情', prompt: '最近最让你想优先处理的是什么？', evidence_ids: [] }], service_cautions: [{ text: '先确认再解释', detail: '资料不足时不把推测当成事实。', evidence_ids: [] }], meta: { overall_confidence: usableNeeds.length ? 'MEDIUM' : 'LOW', evidence_count: context.evidence_refs?.length || 0 } }, { evidenceIds: (context.evidence_refs || []).map((item) => item.evidence_id), now: context.generated_at })
+  return applyCurrentIssuePolicy(normalized, {
+    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || context.current_needs || []).flatMap((item) => item.evidence_ids || []),
+    explicitSnapshotNeeds: context.current_issue_candidates?.explicit_snapshot_needs || recordedNeeds.map((item) => item.text),
+  })
 }
