@@ -74,7 +74,8 @@ export interface CustomerUnderstandingResponse { customerId: string; status: Sum
 export interface CustomerSalesUnderstandingResponse { customerId: string; status: SummaryStatus; salesUnderstanding: CustomerSalesUnderstandingV1 | null; meta: CustomerSalesUnderstandingMeta; historical_enrollments: Array<{ name: string; type: string; status: string; enrolled_at?: string | null; paid_at?: string | null; payment_status: string; amount_recorded?: number | null }>; service_history: Array<{ name: string; type: string; status: string; occurred_at?: string | null; summary: string }>; evidence_refs: CustomerUnderstandingResponse['evidence_refs']; context_summary: { density: string; evidence_count: number } }
 export interface SafetyAssessmentResponse { customerId: string; status: 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'; assessment: { risk_level: string; risk_confidence: string; service_gate: string; commercial_block: string; requires_human_review: boolean; requires_safety_check: boolean; recommended_escalation: string; critical_unknowns: string[]; service_cautions: string[]; next_action: string; safety_signals: Array<{ signal_type: string; subject_scope: string; polarity: string; recency: string; short_description: string }>; } | null; meta: Record<string, unknown>; context_summary: { density: string; safety_data_sufficiency: string; critical_unknowns: string[]; evidence_count: number }; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }> }
 export interface TeamSnapshotCustomerPreview { id: string; name: string; initials: string; need: string }
-export interface TeamSnapshot { mentor: Staff; customerCount: number; customerPreviews?: TeamSnapshotCustomerPreview[] }
+export interface TeamSnapshot { mentor: Staff; customerCount: number; duplicateCount?: number; accountIntegrity?: 'OK' | 'DUPLICATE'; customerPreviews?: TeamSnapshotCustomerPreview[] }
+export interface MentorAccountStatus { status: 'COMPLETED' | 'PARTIAL' | 'NOT_FOUND' | 'DUPLICATE'; phone: string; mentor?: Staff; credentialStatus?: string; mentorCount?: number; credentialCount?: number }
 export interface DashboardSnapshot { customerCount: number; monthNewCustomers: number; paidCustomers: number; mentorCount: number; recentCustomers: Customer[] }
 export interface BasicDashboardCourse { course_id: string; course_name: string; enrollment_count: number; percentage: number }
 export interface BasicDashboardOwner { staff_id: string; staff_name: string; role: string; customer_count: number }
@@ -188,6 +189,7 @@ export interface WorkbenchApi {
   confirmProfile(actorId: string, customerId: string, updates: ProfileUpdate[]): Promise<Customer>
   updateCustomerReferrer(actorId: string, customerId: string, referrerName: string): Promise<Customer | undefined>
   createMentor(actorId: string, input: MentorAccountInput): Promise<MentorAccountResult>
+  mentorAccountStatus(actorId: string, phone: string): Promise<MentorAccountStatus>
   updateMentor(actorId: string, mentorId: string, input: MentorAccountInput): Promise<Staff>
   deactivateMentor(actorId: string, mentorId: string): Promise<Staff>
   teamSnapshot(actorId: string, status?: StaffStatus): Promise<TeamSnapshot[]>
@@ -323,6 +325,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     confirmProfile: async (actorId, customerId, updates) => api.confirmProfile(actorId, customerId, updates),
     updateCustomerReferrer: async (actorId, customerId, referrerName) => api.updateCustomerReferrer(actorId, customerId, referrerName),
     createMentor: async (actorId, input) => api.createMentor(actorId, input),
+    mentorAccountStatus: async () => ({ status: 'NOT_FOUND', phone: '' }),
     updateMentor: async (actorId, mentorId, input) => api.updateMentor(actorId, mentorId, input),
     deactivateMentor: async (actorId, mentorId) => api.deactivateMentor(actorId, mentorId),
     teamSnapshot: async (actorId, status) => api.teamSnapshot(actorId, status),
@@ -513,7 +516,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     profileDraft: (actorId, customerId, text) => request<ProfileDraft>('/api/customers/' + encodeURIComponent(customerId) + '/profile/extract', actorId, { method: 'POST', body: JSON.stringify({ text }) }),
     confirmProfile: (actorId, customerId, updates) => request<Customer>('/api/customers/' + encodeURIComponent(customerId) + '/profile/confirm', actorId, { method: 'POST', body: JSON.stringify({ updates }) }),
     updateCustomerReferrer: (actorId, customerId, referrerName) => request<Customer>(`/api/customers/${encodeURIComponent(customerId)}/referrer`, actorId, { method: 'POST', body: JSON.stringify({ referrerName }) }),
-    createMentor: (actorId, input) => request<MentorAccountResult>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input), headers: { 'X-Idempotency-Key': `mentor-create-${input.phone.replace(/[\s-]/g, '')}` } }),
+    createMentor: (actorId, input) => request<MentorAccountResult>('/api/staff/mentors', actorId, { method: 'POST', body: JSON.stringify(input), headers: { 'X-Idempotency-Key': `mentor-create-${input.phone.replace(/[\s-]/g, '')}` } }, { softTimeoutMs: 8_000, hardTimeoutMs: 30_000 }),
+    mentorAccountStatus: (actorId, phone) => request<MentorAccountStatus>(`/api/staff/mentors/status?phone=${encodeURIComponent(phone)}`, actorId),
     updateMentor: (actorId, mentorId, input) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}`, actorId, { method: 'PATCH', body: JSON.stringify(input) }),
     deactivateMentor: (actorId, mentorId) => request<Staff>(`/api/staff/mentors/${encodeURIComponent(mentorId)}/deactivate`, actorId, { method: 'POST', body: '{}' }),
     teamSnapshot: (actorId, status) => request<TeamSnapshot[]>(`/api/staff/mentors${status ? `?status=${encodeURIComponent(status)}` : ''}`, actorId),

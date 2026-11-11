@@ -28,7 +28,7 @@ import { runtimeConfig } from './runtime-config'
 import { createResourceCache, type ResourceCache } from './app-data-cache'
 import { clearSessionSnapshots, readSessionSnapshot, writeSessionSnapshot } from './session-snapshots'
 import { sortProductsForSelection } from './product-order'
-import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
+import { buildMentorCopyText, insertMentorSnapshot, mentorAccountRecoveryMessage, publicMentorSummary, recoverMentorAccountStatus, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
 import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
@@ -1821,9 +1821,30 @@ function TeamPanel({ staffId, api, cache }: { staffId: string; api: WorkbenchApi
   }
   const save = async (input: { name: string; phone: string; initialPassword?: string }): Promise<MentorAccountResult> => {
     let result: MentorAccountResult
-    if (formMentor === 'create') result = await api.createMentor(staffId, input)
-    else if (formMentor) result = await api.updateMentor(staffId, formMentor.id, input)
-    else throw new Error('导师表单已关闭')
+    try {
+      if (formMentor === 'create') result = await api.createMentor(staffId, input)
+      else if (formMentor) result = await api.updateMentor(staffId, formMentor.id, input)
+      else throw new Error('导师表单已关闭')
+    } catch (error) {
+      if (formMentor === 'create' && (error as { code?: string })?.code === 'REQUEST_TIMEOUT') {
+        setFeedback('正在确认创建结果…')
+        const status = await recoverMentorAccountStatus(() => api.mentorAccountStatus(staffId, input.phone))
+        if (status.status === 'COMPLETED' && status.mentor) {
+          const confirmed = { mentor: status.mentor, customerCount: 0 }
+          const next = reconcileMentorSnapshot(teams || [], confirmed)
+          cache.set(cacheKey, next)
+          cache.invalidate(basicDashboardCacheKey(staffId))
+          cache.invalidate(dashboardCacheKey(staffId))
+          setFormMentor(null)
+          applyTeams(next)
+          refreshAfterMutation(confirmed)
+          setFeedback(mentorAccountRecoveryMessage(status.status))
+          return { ...status.mentor, accountCreateCommitted: true, createOutcome: 'ALREADY_EXISTS' }
+        }
+        throw Object.assign(new Error(mentorAccountRecoveryMessage(status.status)), { code: `ACCOUNT_${status.status}` })
+      }
+      throw error
+    }
     if (formMentor === 'create') {
       const mentor = publicMentorSummary(result)
       const optimistic = { mentor, customerCount: 0 }
@@ -1859,12 +1880,13 @@ function TeamPanel({ staffId, api, cache }: { staffId: string; api: WorkbenchApi
     <p className="panel-note">新增导师会生成一次性初始密码；首次登录后必须设置个人密码。</p>
     <div className="team-list">{teams.map((item) => <button type="button" key={item.mentor.id} className={'team-row ' + (selectedId === item.mentor.id ? 'selected' : '')} onClick={() => setSelectedId(item.mentor.id)}>
       <Avatar staff={item.mentor} size="sm" />
-      <span><strong>{item.mentor.name}</strong><small>{maskPhone(item.mentor.phone)} · 负责客户 {item.customerCount}</small></span>
+      <span><strong>{item.mentor.name}</strong><small>{maskPhone(item.mentor.phone)} · 负责客户 {item.customerCount}</small>{item.accountIntegrity === 'DUPLICATE' && <small className="form-error">存在重复人员记录，请核查</small>}</span>
       <span className="team-counts"><Badge tone={item.mentor.status === 'ACTIVE' ? 'green' : 'neutral'}>{item.mentor.status === 'ACTIVE' ? '在职' : '已停用'}</Badge><b>{item.customerCount}</b><small>负责客户</small></span>
     </button>)}</div>
     {selected && <section className="mentor-detail">
       <div className="mentor-detail-heading"><div><h3>{selected.mentor.name}</h3><p>{selected.mentor.phone} · {staffStatusLabel(selected.mentor.status)}</p></div><Badge tone={selected.mentor.status === 'ACTIVE' ? 'green' : 'neutral'}>{staffStatusLabel(selected.mentor.status)}</Badge></div>
       <p>负责客户 {selected.customerCount}</p>
+      {selected.accountIntegrity === 'DUPLICATE' && <p className="form-error">检测到 {selected.duplicateCount || 2} 条相同手机号的人员记录，未自动合并、删除或停用，请通过管理员核查入口处理。</p>}
       {(selected.customerPreviews || []).map((customer) => <div className="mini-customer" key={customer.id}><span>{customer.initials}</span><strong>{customer.name}</strong><small>{customer.need}</small></div>)}
       {selected.mentor.status === 'ACTIVE' ? <div className="mentor-actions"><button className="secondary-button small" type="button" onClick={() => void copyMentor(selected.mentor)}>复制账号</button>{temporaryCredential?.mentor.id === selected.mentor.id && temporaryCredential.password ? <button className="primary-button small" type="button" onClick={() => void copyMentor(selected.mentor, temporaryCredential.password)}>复制登录信息</button> : temporaryCredential?.mentor.id === selected.mentor.id && temporaryCredential.copied ? <span className="copy-success">已复制</span> : null}<button className="secondary-button small" type="button" onClick={() => setFormMentor(selected.mentor)}>编辑账号</button><button className="secondary-button small" type="button" onClick={() => setResetTarget(selected.mentor)}>重置密码</button><button className="secondary-button small danger-button" type="button" onClick={() => setDeactivateTarget(selected)}>停用账号</button></div> : <small className="mentor-readonly">该账号已停用，保留用于历史记录。</small>}
     </section>}
