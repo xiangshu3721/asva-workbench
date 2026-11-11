@@ -1,0 +1,58 @@
+# 复制到 .ai/tasks/<TASK_ID>/task.yaml；本文件是结构示例，不代表任务获批准
+protocol: XSH_AI_DEV_V1
+kind: task
+task_id: EXAMPLE-TASK-001
+spec_version: 1.0.0
+state: DRAFT
+approval:
+  user_confirmed: false
+  reference: ""
+project:
+  id: ASVA_WORKBENCH
+  repo: xiangshu3721/asva-workbench
+  base_ref: master
+  base_sha: null
+  verified_facts: []
+  assumptions: []
+intent:
+  user_goal: "【示例】让用户看见一次明确、可核查的业务改进"
+  observable_success: "【示例】在真实目标页面能看见持久化的正确结果"
+  non_goals:
+    - "不重构无关模块"
+scope:
+  allowed_paths:
+    - "src/"
+    - "server/"
+  forbidden_paths:
+    - ".github/workflows/"
+authorization:
+  production_deploy_allowed: false
+  production_write_allowed: false
+  merge_allowed: false
+requirements:
+  - id: R001
+    priority: must
+    scenario: "【示例】业务用户完成保存"
+    given: "【示例】用户已填写有效资料"
+    when: "【示例】保存成功"
+    then: "【示例】原文完整持久化且界面正确反馈"
+    constraints:
+      - "不得以模拟输出代替真实持久化"
+acceptance:
+  - id: AT001
+    requirement_ids:
+      - R001
+    method: integration
+    environment: staging
+    expected: "【示例】真实数据存储读回一致"
+    evidence_required:
+      - external_readback
+    release_blocking: true
+guardrails:
+  - "不得泄露真实个人信息或密钥"
+  - "未经批准不得上线"
+stop_conditions:
+  - "必须的隔离测试环境不可用"
+  - "需越过生产写入或部署授权"
+change_requests: []
+extensions: {}

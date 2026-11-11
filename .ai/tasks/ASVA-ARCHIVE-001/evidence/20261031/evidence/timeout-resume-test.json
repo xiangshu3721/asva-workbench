@@ -1,0 +1,117 @@
+{
+  "generatedAtAsiaShanghai": "2026-10-31T21:18:28",
+  "customerId": "CUS-db3032dea6f71877dc42",
+  "forceUsed": false,
+  "deployed": false,
+  "before": {
+    "sourceCount": 2,
+    "sources": [
+      {
+        "id": "SRC-d179313a2dda70c92736e93a",
+        "processingStatus": "COMPLETED",
+        "processingError": null,
+        "contentHash": "52503f0acd7e2af8571eacd7d577053ba76a93f5b650bc7bc0f1020500f0d651",
+        "notesPrefix": "AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE",
+        "lastBatchId": "EXT-162969c530012baac7953858",
+        "sourceType": "TEXT_INPUT"
+      },
+      {
+        "id": "SRC-b6d4994db33bad45f52aa33f",
+        "processingStatus": "UPLOADED",
+        "processingError": null,
+        "contentHash": "dabe7985069b646acd9a9e9451b8c1a70d5ae7f604d5361ce3e92b8cc9ab9da4",
+        "notesPrefix": "AUTO_PROFILE_ORGANIZE:HTTP_AUTO_ARCHIVE",
+        "lastBatchId": null,
+        "sourceType": "TEXT_INPUT"
+      }
+    ],
+    "evidenceCount": 6,
+    "proposalCount": 6,
+    "automaticProfilePending": null,
+    "physical": {
+      "current_core_issue": "不会写 PRD",
+      "current_goal": "梳理能力缺口与 90 天学习路径",
+      "current_expectation": "可执行的转行计划、作品集建议、面试准备节奏"
+    },
+    "metaLabels": {
+      "career_goal": {
+        "confirmed": false,
+        "verificationLabel": "AI整理·待核实",
+        "sourceRecordId": "SRC-d179313a2dda70c92736e93a"
+      },
+      "current_core_issue": {
+        "confirmed": false,
+        "verificationLabel": "AI整理·待核实",
+        "sourceRecordId": "SRC-d179313a2dda70c92736e93a"
+      },
+      "secondary_issues": {
+        "confirmed": false,
+        "verificationLabel": "AI整理·待核实",
+        "sourceRecordId": "SRC-d179313a2dda70c92736e93a"
+      },
+      "current_expectation": {
+        "confirmed": false,
+        "verificationLabel": "AI整理·待核实",
+        "sourceRecordId": "SRC-d179313a2dda70c92736e93a"
+      },
+      "current_goal": {
+        "confirmed": false,
+        "verificationLabel": "AI整理·待核实",
+        "sourceRecordId": "SRC-d179313a2dda70c92736e93a"
+      }
+    }
+  },
+  "secondSourceLocate": {
+    "id": "SRC-b6d4994db33bad45f52aa33f",
+    "processingStatus": "UPLOADED",
+    "processingError": null,
+    "contentHash": "dabe7985069b646acd9a9e9451b8c1a70d5ae7f604d5361ce3e92b8cc9ab9da4",
+    "notesPrefix": "AUTO_PROFILE_ORGANIZE:HTTP_AUTO_ARCHIVE",
+    "lastBatchId": null,
+    "sourceType": "TEXT_INPUT"
+  },
+  "resume": {
+    "durationMs": 4848,
+    "resultStatus": "FAILED",
+    "phase": "PROCESS_SOURCE",
+    "sourceId": "SRC-b6d4994db33bad45f52aa33f",
+    "reused": false,
+    "evidenceCount": null,
+    "proposalCount": null,
+    "error": null,
+    "errorCode": "ARCHIVE_FINALIZE_NO_EVIDENCE"
+  },
+  "after": {
+    "sourceCount": 2,
+    "sources": [
+      {
+        "id": "SRC-d179313a2dda70c92736e93a",
+        "processingStatus": "COMPLETED",
+        "processingError": null,
+        "contentHash": "52503f0acd7e2af8571eacd7d577053ba76a93f5b650bc7bc0f1020500f0d651",
+        "notesPrefix": "AUTO_PROFILE_ORGANIZE:CUSTOMER_SAVE",
+        "lastBatchId": "EXT-162969c530012baac7953858"
+      },
+      {
+        "id": "SRC-b6d4994db33bad45f52aa33f",
+        "processingStatus": "UPLOADED",
+        "processingError": null,
+        "contentHash": "dabe7985069b646acd9a9e9451b8c1a70d5ae7f604d5361ce3e92b8cc9ab9da4",
+        "notesPrefix": "AUTO_PROFILE_ORGANIZE:HTTP_AUTO_ARCHIVE",
+        "lastBatchId": null
+      }
+    ],
+    "evidenceCount": 6,
+    "proposalCount": 6
+  },
+  "deltas": {
+    "sourceDelta": 0,
+    "evidenceDelta": 0,
+    "proposalDelta": 0,
+    "newSourceIds": []
+  },
+  "modelCallsDuringResume": 0,
+  "modelCallSnippets": [],
+  "auditSnippets": [],
+  "okIdempotent": false
+}
