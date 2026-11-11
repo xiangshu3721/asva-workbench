@@ -1278,7 +1278,12 @@ function ConsultationModule({ title, hint, items, refs, kind = 'default', tone =
   return <section className={`consultation-module consultation-module-${kind} consultation-module-tone-${tone}`}><div className="consultation-module-heading"><h3>{title}</h3>{hint && <span>{hint}</span>}</div><div className="consultation-module-content"><div className="consultation-card-list">{items.map((item, index) => <ConsultationCard item={item} refs={refs} kind={kind} key={`${item.text}-${index}`} />)}</div></div></section>
 }
 function CurrentCoreIssuesModule({ issues, gaps, refs }: { issues: UnderstandingInsight[]; gaps: CustomerUnderstandingV1['knowledge_gaps']; refs: CustomerUnderstandingResponse['evidence_refs'] }) {
-  const [primary, ...related] = issues.slice(0, 3)
+  const resolvedPattern = /(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/
+  const verifiedIssues = issues.filter((issue) => issue.confidence !== 'LOW' && issue.evidence_ids?.length > 0 && issue.evidence_ids.every((id) => {
+    const evidence = refs.find((item) => item.evidence_id === id)
+    return Boolean(evidence && !resolvedPattern.test(`${evidence.display_text} ${evidence.excerpt}`))
+  }))
+  const [primary, ...related] = verifiedIssues.slice(0, 3)
   const primaryTitle = primary ? (primary.title || primary.text) : ''
   const relatedGaps = primary ? gaps.filter((gap) => {
     const extended = gap as typeof gap & { related_issue?: string; why_it_matters?: string }

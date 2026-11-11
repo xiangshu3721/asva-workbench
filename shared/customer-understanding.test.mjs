@@ -124,6 +124,22 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(createLocalCustomerUnderstanding(context).top_issues[0]).toMatchObject({ text: '最近项目交付反复拖延，影响收入', evidence_ids: ['EVD-ONE'] })
   })
 
+  it('does not turn goals, service expectations, or ordinary current states into core issues', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-NON-ISSUE', goal: '稳定作息', helpExpectation: '先找到能执行的一步', profileFields: {} }, evidenceItems: [
+      fact({ id: 'EVD-GOAL', semanticKind: 'GOAL', fieldKey: 'current_goal', displayText: '希望稳定作息', standardValue: '希望稳定作息' }),
+      fact({ id: 'EVD-EXPECTATION', semanticKind: 'NEED', fieldKey: 'current_expectation', displayText: '希望获得一个行动建议', standardValue: '希望获得一个行动建议' }),
+      fact({ id: 'EVD-STATE', semanticKind: 'CURRENT_STATE', fieldKey: 'sleep', displayText: '近期睡眠为六小时', standardValue: '近期睡眠为六小时' }),
+    ] })
+    expect(context.current_issue_candidates.evidence).toEqual([])
+    expect(createLocalCustomerUnderstanding(context).top_issues).toEqual([])
+  })
+
+  it('allows a confirmed current fact only when it states a concrete impact', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-IMPACT', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-IMPACT', semanticKind: 'CURRENT_STATE', fieldKey: 'sleep', displayText: '连续两周睡眠不足，白天无法完成工作', standardValue: '连续两周睡眠不足，白天无法完成工作' })] })
+    expect(context.current_issue_candidates.evidence.map((item) => item.evidence_ids[0])).toEqual(['EVD-IMPACT'])
+    expect(createLocalCustomerUnderstanding(context).top_issues[0]).toMatchObject({ evidence_ids: ['EVD-IMPACT'], confidence: 'HIGH' })
+  })
+
   it('ranks an explicit customer concern ahead of related current states', () => {
     const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-RANK', profileFields: {} }, evidenceItems: [
       fact({ id: 'EVD-STATE', fieldKey: 'sleep', displayText: '近期睡眠不稳', standardValue: '近期睡眠不稳', confidence: 0.7 }),
@@ -162,6 +178,15 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(filtered.top_issues.map((item) => item.title)).toEqual(['项目拖延影响收入', '伴侣沟通减少'])
   })
 
+  it('removes low-confidence and unverified references from both new and legacy issue output', () => {
+    const filtered = applyCurrentIssuePolicy({ top_issues: [
+      { title: '低可信度议题', text: '低可信度议题', evidence_ids: ['EVD-CURRENT'], confidence: 'LOW', type: 'SYNTHESIS' },
+      { title: '混合引用的当前困扰', text: '混合引用的当前困扰', evidence_ids: ['EVD-CURRENT', 'EVD-HISTORY', 'EVD-CONFLICT'], confidence: 'HIGH', type: 'FACT_BASED' },
+      { title: '仅历史资料的强结论', text: '仅历史资料的强结论', evidence_ids: ['EVD-HISTORY'], confidence: 'HIGH', type: 'FACT_BASED' },
+    ] }, { currentIssueEvidenceIds: ['EVD-CURRENT'] })
+    expect(filtered.top_issues).toEqual([expect.objectContaining({ title: '混合引用的当前困扰', evidence_ids: ['EVD-CURRENT'] })])
+  })
+
   it('changes the issue context and fingerprint when new current information arrives', () => {
     const before = buildCustomerUnderstandingContext({ customer: { id: 'CUS-UPDATE', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-BEFORE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '希望稳定作息', standardValue: '希望稳定作息' })] })
     const afterEvidence = fact({ id: 'EVD-AFTER', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '近期合同中断，优先处理收入安排', standardValue: '近期合同中断，优先处理收入安排', sourcePerspective: 'CUSTOMER_FIRST_PARTY', confidence: 0.99 })
@@ -182,5 +207,14 @@ describe('CustomerUnderstandingV1 contract', () => {
     const legacy = normalizeCustomerUnderstanding({ top_issues: [{ text: '工作压力增大', evidence_ids: ['EVD-1'], confidence: 'MEDIUM', type: 'SYNTHESIS' }], knowledge_gaps: [{ text: '近期现实影响' }] }, { evidenceIds: ['EVD-1'] })
     expect(legacy.top_issues[0].text).toBe('工作压力增大')
     expect(legacy.knowledge_gaps[0].text).toBe('近期现实影响')
+  })
+
+  it('keeps legacy high-confidence grounded issues but leaves legacy low-confidence issues empty', () => {
+    const legacy = normalizeCustomerUnderstanding({ top_issues: [
+      { text: '已确认的当前困扰', evidence_ids: ['EVD-1'], confidence: 'MEDIUM', type: 'FACT_BASED' },
+      { text: '待确认的旧议题', evidence_ids: ['EVD-1'], confidence: 'LOW', type: 'SYNTHESIS' },
+    ], knowledge_gaps: [{ text: '近期现实影响' }] }, { evidenceIds: ['EVD-1'] })
+    const filtered = applyCurrentIssuePolicy(legacy, { currentIssueEvidenceIds: ['EVD-1'] })
+    expect(filtered.top_issues).toEqual([expect.objectContaining({ text: '已确认的当前困扰', confidence: 'MEDIUM' })])
   })
 })
