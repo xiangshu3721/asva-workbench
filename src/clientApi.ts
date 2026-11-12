@@ -259,6 +259,9 @@ export const CLIENT_CUSTOMER_SAVE_TIMEOUT_MS = 8_000
 // operation. This is a hard ceiling, not a longer blocking wait.
 export const CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS = 30_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
+// The API has a 60s CloudBase ceiling. Leave a visible client-side margin so
+// a stalled refresh becomes a truthful failure state instead of an endless wait.
+export const CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS = 50_000
 const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
 
 function emitCustomerSaveState(operationId: string, status: CustomerMutationStateStatus, customerId?: string) {
@@ -367,6 +370,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     let payload: Record<string, any> | null = null
     const defaultTimeoutMs = path === '/api/sources' && method === 'POST'
       ? CLIENT_SOURCE_SAVE_TIMEOUT_MS
+      : /\/understanding\/refresh$/.test(path) && method === 'POST'
+        ? CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS
       : path === '/api/customers' && method === 'POST'
         ? CLIENT_CUSTOMER_SAVE_TIMEOUT_MS
         : CLIENT_DEFAULT_TIMEOUT_MS

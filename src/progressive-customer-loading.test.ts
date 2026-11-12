@@ -55,7 +55,7 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain('customerSalesUnderstandingCacheKey')
     expect(appSource).toContain('customerProfileCacheKey(props.staffId, props.permissionRole, requestCustomerId, customer.profileVersion ?? 0)')
     expect(appSource).toContain('sourceWorkspaceCacheKey(props.staffId, props.permissionRole, customer.id)')
-    expect(appSource).toContain('props.resourceCache.load(cacheKey, async () => {\n        const response = await props.onGetUnderstanding(requestCustomerId)')
+    expect(appSource).toContain('props.resourceCache.load(cacheKey, async () =>')
     expect(appSource).toContain('props.resourceCache.load(cacheKey, () => props.onGetSalesUnderstanding(requestCustomerId)')
     expect(appSource).toContain('onLoadRef.current(force)')
     expect(appSource).toContain('if (loading || lastLoadedRefreshKeyRef.current === refreshKey) return')

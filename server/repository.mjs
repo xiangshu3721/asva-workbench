@@ -47,6 +47,34 @@ export const customerIdForOperation = (operationId) => stableOperationId(operati
 export const partialEnrollmentFailureMessage = () => '客户已保存，但课程报名保存未完成，请重试。'
 const CUSTOMER_MUTATION_STATE_LIMIT = 20
 const CUSTOMER_MUTATION_STATUSES = new Set(['PROCESSING', 'PERSISTED', 'COMMITTED', 'UNKNOWN', 'FAILED'])
+// CloudBase allows 60s. End the synchronous refresh at 45s so the browser's
+// 50s request budget can receive a clear result instead of a platform timeout.
+export const CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS = 45_000
+export const CUSTOMER_UNDERSTANDING_FINAL_WRITE_RESERVE_MS = 8_000
+async function withinUnderstandingRefreshBudget(task, deadline, code) {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) throw Object.assign(new Error('咨询理解整理已超过本次等待预算。'), { code, status: 504 })
+  let timeout
+  try {
+    return await Promise.race([
+      Promise.resolve().then(task),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(Object.assign(new Error('咨询理解整理已超过本次等待预算。'), { code, status: 504 })), remainingMs) }),
+    ])
+  } finally { clearTimeout(timeout) }
+}
+function activeUnderstandingProcessing(meta = {}, timestamp = Date.now()) {
+  if (meta.status !== 'PROCESSING') return false
+  const expiresAt = Date.parse(meta.processingExpiresAt || '')
+  if (Number.isFinite(expiresAt)) return timestamp < expiresAt
+  const updatedAt = Date.parse(meta.updatedAt || '')
+  // Legacy records have no explicit lease. Their only valid writer was still
+  // bounded by the CloudBase 60s request ceiling, so do not retain a stale
+  // PROCESSING marker for the historical five-minute window.
+  return Number.isFinite(updatedAt) && timestamp - updatedAt < 60_000
+}
+function unknownUnderstandingStatusWrite(error) {
+  return Object.assign(new Error('咨询理解状态写入结果暂时无法确认，请稍后重试。'), { code: 'UNDERSTANDING_STATUS_WRITE_UNKNOWN', status: 503, cause: error })
+}
 const canonicalMutationValue = (value) => {
   if (Array.isArray(value)) return value.map(canonicalMutationValue)
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalMutationValue(value[key])]))
@@ -1050,8 +1078,36 @@ function evidenceWriteFields(item, source, sourceId) {
   return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: item.contentSource, information_nature: item.informationNature, verification_status: item.verificationStatus, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
 }
 
+function customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta = {}, understanding = customerRecord.understanding } = {}) {
+  const fingerprint = context.input_fingerprint
+  const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
+  const status = fresh ? 'FRESH' : activeUnderstandingProcessing(storedMeta) ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
+  const resolvedUnderstanding = understanding || createLocalCustomerUnderstanding(context)
+  const source = storedMeta.provider || (customerRecord.understanding ? 'DEEPSEEK' : 'STRUCTURED_FALLBACK')
+  return {
+    customerId,
+    status,
+    understanding: resolvedUnderstanding,
+    meta: {
+      ...storedMeta,
+      understandingId: storedMeta.understandingId || `UNDERSTANDING-${customerId}`,
+      customerId,
+      understandingVersion: CUSTOMER_UNDERSTANDING_VERSION,
+      status,
+      source,
+      inputFingerprint: storedMeta.inputFingerprint || fingerprint,
+      evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint,
+      sourceProfileVersion: customerRecord.profileVersion || 0,
+      profileVersion: customerRecord.profileVersion || 0,
+      promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION,
+    },
+    evidence_refs: context.evidence_refs,
+    context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density },
+  }
+}
+
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshTimers = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshTimers = new Map(); this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -1853,13 +1909,7 @@ export class FeishuRepository {
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
     const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, conflicts })
-    const fingerprint = context.input_fingerprint
-    const storedMeta = customerRecord.understandingMeta || {}
-    const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
-    const status = fresh ? 'FRESH' : storedMeta.status === 'PROCESSING' ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
-    const understanding = customerRecord.understanding || createLocalCustomerUnderstanding(context)
-    const source = customerRecord.understanding ? storedMeta.provider || 'DEEPSEEK' : 'STRUCTURED_FALLBACK'
-    return { customerId, status, understanding, meta: { ...storedMeta, understandingId: storedMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status, source, inputFingerprint: storedMeta.inputFingerprint || fingerprint, evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION }, evidence_refs: context.evidence_refs, context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density } }
+    return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: customerRecord.understandingMeta || {} })
   }
 
   scheduleCustomerUnderstandingRefresh(actorId, customerId) {
@@ -1875,12 +1925,25 @@ export class FeishuRepository {
   }
 
   async refreshCustomerUnderstanding(actorId, customerId, { force = false } = {}) {
-    return this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force }))
+    // Do not queue a second model run after a browser timeout or a rapid repeat
+    // click. A scoped read gives the caller the current PROCESSING/old result
+    // without sharing another actor's response.
+    if (this.understandingRefreshInFlight.has(customerId)) return this.getCustomerUnderstanding(actorId, customerId)
+    const request = this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force }))
+    this.understandingRefreshInFlight.set(customerId, request)
+    try { return await request } finally {
+      if (this.understandingRefreshInFlight.get(customerId) === request) this.understandingRefreshInFlight.delete(customerId)
+    }
   }
 
   async refreshCustomerUnderstandingUnsafe(actorId, customerId, { force = false } = {}) {
+    const startedAt = Date.now()
+    const deadline = startedAt + CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS
+    const generationDeadline = deadline - CUSTOMER_UNDERSTANDING_FINAL_WRITE_RESERVE_MS
     this.invalidateDatabaseCache()
-    const database = await this.load()
+    const database = await withinUnderstandingRefreshBudget(() => this.load(), deadline, 'UNDERSTANDING_SOURCE_READ_TIMEOUT')
+    const feishuReadMs = Date.now() - startedAt
+    if (database._dataFreshness === 'DELAYED') throw Object.assign(new Error('客户资料暂时无法读取，未使用旧资料重新整理。'), { code: 'UNDERSTANDING_SOURCE_READ_FAILED', status: 503 })
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     const row = database._rows.customers.find((item) => text(get('customers', item.fields, 'customer_id')) === customerId)
@@ -1890,32 +1953,48 @@ export class FeishuRepository {
     const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, conflicts })
     const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts })
     const currentMeta = customerRecord.understandingMeta || {}
-    const processingAge = currentMeta.updatedAt ? Date.now() - new Date(currentMeta.updatedAt).getTime() : Number.POSITIVE_INFINITY
-    if (!force && currentMeta.status === 'PROCESSING' && processingAge >= 0 && processingAge < 5 * 60 * 1000) return this.getCustomerUnderstanding(actorId, customerId)
-    if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) return this.getCustomerUnderstanding(actorId, customerId)
-    const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), payload: customerRecord.understanding || null }
+    if (activeUnderstandingProcessing(currentMeta)) return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta })
+    if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta })
+    const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), processingExpiresAt: new Date(generationDeadline).toISOString(), payload: customerRecord.understanding || null }
     const writeMeta = (meta) => updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { understanding: meta }) }), (latestCustomer) => latestCustomer.understandingMeta?.updatedAt === meta.updatedAt && latestCustomer.understandingMeta?.status === meta.status)
-    await writeMeta(processingMeta)
-    const startedAt = Date.now()
+    try {
+      await withinUnderstandingRefreshBudget(() => writeMeta(processingMeta), generationDeadline, 'UNDERSTANDING_METADATA_WRITE_TIMEOUT')
+    } catch (error) {
+      throw unknownUnderstandingStatusWrite(error)
+    }
+    let modelMs = 0
+    let result
+    let terminalMeta
+    let refreshError = null
     try {
       if (!config.deepseek.apiKey) throw Object.assign(new Error('DeepSeek 尚未配置'), { code: 'DEEPSEEK_UNAVAILABLE', status: 503 })
       const redactValues = [customerRecord.name, customerRecord.phone, customerRecord.wechat]
-      let result = await createCustomerUnderstanding({ context, redactValues })
-      let quality = qualityCheckCustomerUnderstanding(result, { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), openConflictFields: conflicts.filter((item) => item.status === 'OPEN').map((item) => item.fieldKey) })
-      if (!quality.ok) {
-        result = await createCustomerUnderstanding({ context, repair: true, redactValues })
-        quality = qualityCheckCustomerUnderstanding(result, { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), openConflictFields: conflicts.filter((item) => item.status === 'OPEN').map((item) => item.fieldKey) })
-      }
+      const modelStartedAt = Date.now()
+      result = await withinUnderstandingRefreshBudget(() => createCustomerUnderstanding({ context, redactValues }), generationDeadline, 'UNDERSTANDING_REFRESH_BUDGET_EXCEEDED')
+      modelMs = Date.now() - modelStartedAt
+      const quality = qualityCheckCustomerUnderstanding(result, { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), openConflictFields: conflicts.filter((item) => item.status === 'OPEN').map((item) => item.fieldKey) })
       if (!quality.ok) throw Object.assign(new Error('客户理解质量门禁未通过'), { code: 'UNDERSTANDING_QUALITY_FAILED', status: 502, quality })
-      const freshMeta = { ...processingMeta, status: 'FRESH', generatedAt: result.generated_at || now(), updatedAt: now(), durationMs: Date.now() - startedAt, evidenceCount: context.evidence_refs.length, quality, payload: result }
-      await writeMeta(freshMeta)
-      this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId)
-      return this.getCustomerUnderstanding(actorId, customerId)
+      terminalMeta = { ...processingMeta, status: 'FRESH', processingExpiresAt: null, generatedAt: result.generated_at || now(), updatedAt: now(), durationMs: Date.now() - startedAt, evidenceCount: context.evidence_refs.length, quality, payload: result }
     } catch (error) {
-      const failedMeta = { ...processingMeta, status: 'FAILED', updatedAt: now(), durationMs: Date.now() - startedAt, errorCode: error?.code || 'UNDERSTANDING_REFRESH_FAILED', payload: customerRecord.understanding || null }
-      await writeMeta(failedMeta).catch(() => {})
-      throw error
+      refreshError = error
+      result = customerRecord.understanding || createLocalCustomerUnderstanding(context)
+      terminalMeta = { ...processingMeta, status: 'FAILED', processingExpiresAt: null, provider: customerRecord.understanding ? processingMeta.provider : 'STRUCTURED_FALLBACK', updatedAt: now(), durationMs: Date.now() - startedAt, errorCode: error?.code || 'UNDERSTANDING_REFRESH_FAILED', payload: result }
     }
+    try {
+      await withinUnderstandingRefreshBudget(() => writeMeta(terminalMeta), deadline, 'UNDERSTANDING_METADATA_WRITE_TIMEOUT')
+    } catch (error) {
+      this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId, 'FAIL', 'UNDERSTANDING_STATUS_WRITE_UNKNOWN')
+      console.info('[ASVA_UNDERSTANDING_REFRESH]', JSON.stringify({ result: 'STATUS_WRITE_UNKNOWN', error_code: error?.code || 'UNDERSTANDING_METADATA_WRITE_TIMEOUT', feishu_read_ms: feishuReadMs, duration_ms: Date.now() - startedAt, evidence_count: context.evidence_refs.length }))
+      throw unknownUnderstandingStatusWrite(error)
+    }
+    if (refreshError) {
+      this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId, 'FAIL', terminalMeta.errorCode)
+      console.info('[ASVA_UNDERSTANDING_REFRESH]', JSON.stringify({ result: 'STRUCTURED_FALLBACK', error_code: terminalMeta.errorCode, feishu_read_ms: feishuReadMs, duration_ms: Date.now() - startedAt, evidence_count: context.evidence_refs.length }))
+      return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: terminalMeta, understanding: result })
+    }
+    this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId)
+    console.info('[ASVA_UNDERSTANDING_REFRESH]', JSON.stringify({ result: 'FRESH', feishu_read_ms: feishuReadMs, deepseek_ms: modelMs, duration_ms: Date.now() - startedAt, evidence_count: context.evidence_refs.length }))
+    return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: terminalMeta, understanding: result })
   }
 
   async getCustomerSalesUnderstanding(actorId, customerId) {
