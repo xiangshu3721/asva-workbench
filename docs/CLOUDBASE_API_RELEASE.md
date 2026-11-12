@@ -18,15 +18,23 @@
 
 本工作流使用 GitHub Environment，因此 GitHub 会签发上述 Environment subject；在该 Environment 中再将部署分支限制为 `master`，并配置审批人。工作流本身也会拒绝非 `master` 的运行。
 
-该角色只需要下列 CloudBase 权限，资源限定为生产环境 `root-journey-prod-d4d7pzd0a8f805`：
+固定使用的 CloudBase CLI `3.8.1` 实际通过 SCF API 执行这些命令：
 
-- `tcb:GetFunction`
-- `tcb:DownloadFunction`
-- `tcb:UpdateFunctionCode`
+- `tcb fn detail`：`scf:GetFunction`
+- `tcb fn code download`：`scf:GetFunctionAddress`
+- `tcb fn code update --deployMode cos`：`scf:GetFunction`、`scf:GetTempCosInfo`、`scf:UpdateFunctionCode`
+- 回滚前后远端代码哈希：同样通过 `tcb api scf GetFunctionAddress` 读取 `CodeSha256`
 
-`tcb fn code update --deployMode cos` 还可能需要同一环境范围内的 `tcb:GetTempCosInfo`，以取得一次性的上传凭据；它不等同于授予持久 COS 读写权限。首次 `verify` 不会调用该权限，首次 `deploy` 如明确报此 action 缺失，再仅添加它。
+因此角色只需要以下四项 SCF action：
 
-不要授予 `UpdateFunctionConfiguration`、触发器、路由、数据库、飞书或 Worker 权限。由于 CLI 的底层实现可能额外请求只读元数据，第一次 `verify` 如果返回明确的 CAM 缺失 action，只补充该只读 action，不授予全量预设策略。
+- `scf:GetFunction`
+- `scf:GetFunctionAddress`
+- `scf:GetTempCosInfo`
+- `scf:UpdateFunctionCode`
+
+`GetTempCosInfo` 只取得一次性上传凭据，不等同于授予持久 COS 读写权限。
+
+不要授予 `UpdateFunctionConfiguration`、触发器、路由、数据库、飞书或 Worker 权限。当前腾讯云 SCF CAM 表将上述更新 action 标为操作级权限，不能可靠限制到单个函数 ARN；因此策略只能收窄到这四个 action，`asva-api` 的单函数边界由工作流固定目标、`master` 限制及 Environment 审批共同强制。若需要 CAM 层的单函数物理隔离，应使用独立腾讯云账号/环境，而不是扩张该角色权限。
 
 在 GitHub 仓库创建受保护 Environment：`cloudbase-production`，设置审批人，并将部署分支限制为 `master`。为该 Environment 添加两个非敏感 Variables：
 
@@ -46,25 +54,26 @@ CAM 的 OIDC 配置保存的是 GitHub JWKS 公钥集；GitHub 轮换签名密�
     {
       "effect": "allow",
       "action": [
-        "name/tcb:GetFunction",
-        "name/tcb:DownloadFunction",
-        "name/tcb:UpdateFunctionCode"
+        "name/scf:GetFunction",
+        "name/scf:GetFunctionAddress",
+        "name/scf:GetTempCosInfo",
+        "name/scf:UpdateFunctionCode"
       ],
-      "resource": [
-        "qcs::tcb:ap-shanghai:uin/<UIN>:env/root-journey-prod-d4d7pzd0a8f805"
-      ]
+      "resource": "*"
     }
   ]
 }
 ```
 
+`<UIN>` 不需要写入这个操作级策略；保留在角色 ARN 中即可。不要把此限制误报为函数级资源限制。
+
 ## 运行方式
 
 在 Actions 中手动运行 **Release ASVA API (manual)**，且只能从 `master` 运行：
 
-1. 先选择 `verify`。它只交换临时身份、检查 `asva-api`、下载当前代码作为本次运行的回滚基线，并访问健康端点。
+1. 先选择 `verify`。它只交换临时身份、检查 `asva-api`、读取远端 `CodeSha256`、下载并验证 `$LATEST` 的可部署代码目录及内容清单、并访问健康端点（要求 `{ "ok": true }`）。
 2. 通过后，如已获发布授权，选择 `deploy` 并输入 `DEPLOY_ASVA_API`。工作流只执行 `tcb fn code update asva-api`。
 
-部署前会重新核验代码哈希，避免覆盖基线建立后发生的外部变更；部署后健康检查失败会立刻用本次下载的 `asva-api` 代码回滚。若回滚结果无法确认，工作流会失败并明确报告“状态未知”。
+部署前会重新核验远端 `CodeSha256`，避免覆盖基线建立后发生的外部变更；部署后健康检查失败会立刻用本次下载的 `asva-api` 代码回滚，并再次核验远端哈希已回到基线。若上传结果、回滚结果或哈希任一项无法确认，工作流会失败并明确报告“状态未知”。
 
 本工作流不执行 `npm run deploy:cloudbase:all`，不部署 `asva-ai-archive`，不创建触发器或 HTTP 路由，也不写入函数环境变量。
