@@ -136,8 +136,12 @@ async function readDetail(plan, runner = runTcb) {
   return { ...detail, ...codeAddress }
 }
 
+function cliResult(output) {
+  return output?.data && typeof output.data === 'object' && !Array.isArray(output.data) ? output.data : output
+}
+
 async function downloadRollbackBundle(plan, runner) {
-  const output = parseJsonOutput(await runner(plan.download), 'CloudBase function code download')
+  const output = cliResult(parseJsonOutput(await runner(plan.download), 'CloudBase function code download'))
   const expectedPath = plan.download.at(-2)
   if (output.message !== 'Code downloaded' || path.resolve(output.path || '') !== path.resolve(expectedPath) || output.version !== '$LATEST') {
     throw new Error('CloudBase function code download did not confirm the expected latest rollback bundle')
@@ -146,7 +150,7 @@ async function downloadRollbackBundle(plan, runner) {
 }
 
 async function updateCode(plan, runner, label) {
-  const output = parseJsonOutput(await runner(plan.update), label)
+  const output = cliResult(parseJsonOutput(await runner(plan.update), label))
   if (output.message !== 'Code updated') throw new Error(`${label} did not confirm code update`)
 }
 
