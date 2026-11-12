@@ -85,7 +85,9 @@ function consultationDirectionTitle(text) {
 function consultationDirection(text, evidenceIds = [], sourcePerspective = null) {
   const sourceText = safeText(text, 320)
   if (AI_SUMMARY_PREFIX_PATTERN.test(sourceText) || !CONSULTATION_TOPIC_PATTERN.test(sourceText) || RESOLVED_ISSUE_PATTERN.test(sourceText)) return null
-  return { text: sourceText, title: consultationDirectionTitle(sourceText), evidence_ids: evidenceIds, source_perspective: sourcePerspective, provisional: true }
+  const title = consultationDirectionTitle(sourceText)
+  // Unsourced or unverified notes supply a topic label, not a raw personal narrative.
+  return { text: evidenceIds.length ? sourceText : title, title, evidence_ids: evidenceIds, source_perspective: sourcePerspective, provisional: true }
 }
 
 function currentIssuePriority(item) {
