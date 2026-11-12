@@ -9,7 +9,7 @@ import { assembleCustomerContext, type AiBrief, type AiCoreSummary } from './cus
 import { createRuleOneLineUnderstanding, mergeOneLineCustomer, selectOneLineUnderstanding } from './one-line-understanding'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { humanizeEvidenceType, humanizeLevel, humanizeProcessingStatus, humanizeStrategy, humanizeTiming, sanitizeUserVisibleText } from './presentationCopy'
-import { clearAssistantHistory, GlobalAIAssistant } from './GlobalAIAssistant'
+import { clearAssistantHistory } from './GlobalAIAssistant'
 import { DebugPanel, ReleaseIndicator } from './DebugPanel'
 import { canStartCustomerSave } from './save-contract'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
@@ -518,7 +518,7 @@ function WorkbenchApp() {
   const customerPage = <CustomersPage key={`${activeStaff.id}:${staffSessionIdentity(activeStaff.id)}`} staff={activeStaff} database={database || emptyDirectoryDatabase(activeStaff)} directoryLoading={!database} dataReady={!identityLoading} directoryError={loadError} onDirectoryRetry={() => setRevision((value) => value + 1)} canSeeAll={canSeeAll} selectedCustomer={identityLoading ? undefined : selectedCustomer} resourceCache={dataCache} profileRefreshRevision={revision} onSelect={openCustomer} onGenerateBrief={generateBrief} onGenerateIntelligence={generateIntelligence} onRefreshCustomerSummary={refreshCustomerSummary} onGetUnderstanding={getCustomerUnderstanding} onRefreshUnderstanding={refreshCustomerUnderstanding} onGetSalesUnderstanding={getCustomerSalesUnderstanding} onRefreshSalesUnderstanding={refreshCustomerSalesUnderstanding} onGetSafetyAssessment={getCustomerSafetyAssessment} onRefreshSafetyAssessment={refreshCustomerSafetyAssessment} onSaveBrief={saveBrief} onSaveReferrer={saveReferrer} onGenerateProfile={generateProfile} onConfirmProfile={confirmProfile} onUpdateEnrollments={updateCustomerEnrollments} onLoadCustomerProfile={loadCustomerProfile} onSourceWorkspace={sourceWorkspace} onSourceStatus={sourceStatus} onCreateSource={createSource} onProcessSource={processSource} onReviewProposal={reviewProposal} onResolveConflict={resolveConflict} onOverrideServiceNecessity={overrideServiceNecessity} onAddCustomer={() => setManualCustomerOpen(true)} onAutoArchiveCustomer={() => {}} />
   const homePage = <HomePage staff={activeStaff} api={workbenchApi} cache={dataCache} cacheRevision={revision} dataReady={!identityLoading} onCustomers={(query = '') => navigate(`/customers${query}`)} />
   const mePage = <MePage staff={activeStaff} panel={mePanel} onPanel={setMePanel} api={workbenchApi} cache={dataCache} dataReady={!identityLoading} onLogout={() => { staffStorage.removeItem('asva-demo-staff-v2'); staffStorage.removeItem('asva-password-change-required'); clearAccessToken(); clearSessionSnapshots(); clearAssistantHistory(); dataCache.invalidatePrefix(''); setCurrentStaff(null); setDatabase(null); setMePanel('account'); setLoggedInStaffId(null); setMustChangePassword(false); setAuthRestoring(false) }} />
-  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{customerSaveToast && <div className={`customer-save-toast customer-save-toast-${customerSaveToast.tone}`} role="status" aria-live="polite">{customerSaveToast.text}</div>}<Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database?.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && database && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<GlobalAIAssistant key={staffSessionIdentity(activeStaff.id)} api={workbenchApi} staffId={activeStaff.id} storageScope={staffSessionIdentity(activeStaff.id)} customerId={selectedCustomerId ?? undefined} onCustomer={openCustomer} /><ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
+  return <div className="app-shell"><aside className="side-rail"><div className="brand-lockup app-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><div><strong>ASVA</strong><span>客户关怀系统</span></div></div><nav className="side-nav"><NavLink to="/home" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">今</span>首页</NavLink><NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive || view === 'customers' ? 'active' : ''}`}><span className="nav-marker">客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-marker">我</span>我的</NavLink></nav><div className="rail-bottom"><button className="profile-chip" onClick={() => navigate('/me')}><Avatar staff={activeStaff} size="sm" /><span><strong>{activeStaff.name}</strong><small>{roleName(activeStaff)}</small></span><span className="chevron">⌄</span></button></div></aside><main className="main-content"><header className="topbar"><div className="mobile-brand"><img className="brand-logo" src={`${import.meta.env.BASE_URL}assets/asva-logo.png`} alt="ASVA" /><span className="mobile-brand-copy"><strong>ASVA</strong><small>客户关怀系统</small></span></div><div className="topbar-right"><button className="avatar-button" aria-label="打开我的页面" onClick={() => navigate('/me')}><Avatar staff={activeStaff} /></button></div></header><div className="page-content">{customerSaveToast && <div className={`customer-save-toast customer-save-toast-${customerSaveToast.tone}`} role="status" aria-live="polite">{customerSaveToast.text}</div>}<Routes><Route path="/home" element={homePage} /><Route path="/customers" element={database?.customers[0] ? <Navigate to={`/customers/${encodeURIComponent(database.customers[0].id)}`} replace /> : customerPage} /><Route path="/customers/:customerId" element={customerPage} /><Route path="/customers/:customerId/archive" element={customerPage} /><Route path="/me" element={mePage} /><Route path="/" element={<Navigate to="/home" replace />} /><Route path="*" element={<Navigate to="/home" replace />} /></Routes></div></main><nav className="bottom-nav"><NavLink to="/home" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>今</span>首页</NavLink><NavLink to="/customers" className={() => `bottom-item ${view === 'customers' ? 'active' : ''}`}><span>客</span>客户</NavLink><NavLink to="/me" className={({ isActive }) => `bottom-item ${isActive ? 'active' : ''}`}><span>我</span>我的</NavLink></nav>{manualCustomerOpen && database && <ManualCustomerDialog database={database} onClose={() => setManualCustomerOpen(false)} onPreview={previewManualCustomer} onCreate={saveManualCustomer} onUpdate={updateExistingCustomer} onOpenCustomer={(id) => { setManualCustomerOpen(false); openCustomer(id) }} />}<ReleaseIndicator api={workbenchApi} onDebug={() => window.dispatchEvent(new Event('asva-debug-change'))} /><DebugPanel api={workbenchApi} staff={activeStaff} dataMode={dataMode} /></div>
 }
 
 function HomePage({ staff, api, cache, cacheRevision, dataReady, onCustomers }: { staff: Staff; api: WorkbenchApi; cache: ResourceCache; cacheRevision: number; dataReady: boolean; onCustomers: (query?: string) => void }) {
@@ -998,6 +998,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const activeCustomerIdRef = useRef(customer.id)
   const understandingSequenceRef = useRef(0)
+  const autoUnderstandingRefreshAttemptsRef = useRef(new Set<string>())
   const salesSequenceRef = useRef(0)
   const profileSequenceRef = useRef(0)
   if (activeCustomerIdRef.current !== customer.id) {
@@ -1024,15 +1025,38 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const profileLoading = Boolean(profileState?.loading)
   const understandingRefreshing = understandingRefreshingCustomerId === customer.id
   const salesRefreshing = salesRefreshingCustomerId === customer.id
+  const autoRefreshStaleUnderstanding = (response: CustomerUnderstandingResponse, requestCustomerId: string, requestSequence: number) => {
+    if (response.status !== 'STALE') return
+    const hasMeaningfulInput = Boolean(customer.notes?.trim() || customer.need?.trim() || customer.goal?.trim() || customer.helpExpectation?.trim() || (customer.supplementaryItems || []).length || response.context_summary?.evidence_count || Object.entries(customer.profileFields || {}).some(([key, value]) => !['grade', 'paid'].includes(key) && Boolean(value)))
+    if (!hasMeaningfulInput) return
+    const identity = response.meta.currentInputFingerprint || response.meta.inputFingerprint || String(customer.profileVersion || 0)
+    const attemptKey = `${requestCustomerId}:${identity}:${response.meta.promptVersion || ''}`
+    if (autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)) return
+    autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)
+    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
+    setUnderstandingRefreshingCustomerId(requestCustomerId)
+    void props.onRefreshUnderstanding(requestCustomerId, false).then((fresh) => {
+      props.resourceCache.set(cacheKey, fresh)
+      if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: fresh.customerId })) return
+      setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)), value: fresh, loading: false, error: '' } }))
+    }).catch((error: unknown) => {
+      if (activeCustomerIdRef.current !== requestCustomerId || understandingSequenceRef.current !== requestSequence) return
+      setUnderstandingByCustomerId((current) => current[requestCustomerId] ? { ...current, [requestCustomerId]: { ...current[requestCustomerId], loading: false, error: `重新整理失败：${error instanceof Error ? error.message : '请求未完成'}` } } : current)
+    }).finally(() => {
+      if (activeCustomerIdRef.current === requestCustomerId && understandingSequenceRef.current === requestSequence) setUnderstandingRefreshingCustomerId(null)
+    })
+  }
   const loadUnderstanding = async () => {
     const requestCustomerId = customer.id
     const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
     const current = understandingByCustomerId[requestCustomerId]
     const cached = props.resourceCache.get<CustomerUnderstandingResponse>(cacheKey)
     const cachedEntry = props.resourceCache.getEntry<CustomerUnderstandingResponse>(cacheKey)
-    const cachedFresh = Boolean(cachedEntry?.data !== undefined && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
+    const cachedFresh = Boolean(cachedEntry?.data !== undefined && cached?.meta.profileVersion === (customer.profileVersion ?? 0) && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
     if (cached && cachedFresh) {
+      const requestSequence = ++understandingSequenceRef.current
       setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, cached) }))
+      autoRefreshStaleUnderstanding(cached, requestCustomerId, requestSequence)
       logAppPerformance('CUSTOMER_UNDERSTANDING_CACHE_HIT', { hit: true })
       return
     }
@@ -1048,6 +1072,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       }, { ttlMs: DATABASE_TTL_MS })
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: result, loading: false, error: '' } }))
+      autoRefreshStaleUnderstanding(result, requestCustomerId, requestSequence)
       logAppPerformance('CUSTOMER_UNDERSTANDING_FETCH_MS', { duration_ms: Math.round(performance.now() - startedAt) })
     } catch (error) {
       if (activeCustomerIdRef.current !== requestCustomerId || understandingSequenceRef.current !== requestSequence) return
@@ -1172,7 +1197,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     if (next === 'consultation') void loadUnderstanding()
     else void loadSalesUnderstanding()
   }
-  useEffect(() => { void loadUnderstanding() }, [customer.id])
+  useEffect(() => { void loadUnderstanding() }, [customer.id, customer.profileVersion, customer.notes, customer.supplementaryItems?.length])
   const identityFacts = [customerProfileFact(customer, 'age') || (customer.profileFields?.birth_year ? `${customer.profileFields.birth_year}年生` : ''), customerProfileFact(customer, 'gender'), customerProfileFact(customer, 'city')].filter(Boolean)
   const relationOwner = customer.createdByName || database.staff.find((item) => item.id === customer.createdByStaffId)?.name || ''
   const referrer = customer.referrerName || customer.introducer || ''
