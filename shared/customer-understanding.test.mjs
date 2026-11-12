@@ -160,6 +160,13 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(context.current_issue_candidates.provisional).toEqual([])
   })
 
+  it('keeps a verified provisional direction even when the model returns no topic and a generic opening', () => {
+    const value = applyCurrentIssuePolicy({ top_issues: [], next_conversation: [{ text: '先弄清楚客户是谁', focus: '建立基本了解', suggested_entry: '可以说说最近的生活吗？', confidence: 'LOW', evidence_ids: [] }] }, { currentIssueCandidates: [{ title: '职业发展方面的咨询需求', evidence_ids: [], provisional: true }] })
+    expect(value.top_issues).toEqual([expect.objectContaining({ title: '职业发展方面的咨询需求', confidence: 'LOW' })])
+    expect(value.next_conversation[0].suggested_entry).toContain('职业发展')
+    expect(value.next_conversation[0].suggested_entry).not.toContain('客户是谁')
+  })
+
   it('keeps a confirmed consultation topic provisional until it states a concrete current problem or impact', () => {
     const topicOnly = buildCustomerUnderstandingContext({ customer: { id: 'CUS-CONFIRMED-TOPIC', profileFields: {} }, evidenceItems: [
       fact({ id: 'EVD-TOPIC', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '更多咨询情感问题', standardValue: '更多咨询情感问题' }),
