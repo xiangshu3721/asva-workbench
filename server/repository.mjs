@@ -1105,7 +1105,7 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
       promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION,
     },
     evidence_refs: context.evidence_refs,
-    context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density },
+    context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: context.evidence_refs.length, density: context.context_density, has_meaningful_input: Boolean(context.recorded_context?.notes || context.recorded_context?.current_need || context.recorded_context?.current_goal || context.recorded_context?.help_expectation || context.current_issue_candidates?.provisional?.length || context.current_issue_candidates?.evidence?.length || context.evidence_refs?.length || Object.entries(context.current_snapshot || {}).some(([key, value]) => !['grade', 'paid', 'source'].includes(key) && Boolean(value))) },
   }
 }
 
