@@ -199,7 +199,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
   const provisionalDirections = [
     ...provisionalTopicEvidence.map((item) => consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null)),
     ...[recordedContext.current_need, recordedContext.help_expectation, recordedContext.notes].map((text) => consultationDirection(text)),
-    ...(customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED' && item?.informationNature !== 'AI_INFERENCE').map((item) => consultationDirection(item.text, [], 'UNVERIFIED_RECORDED_CONTEXT')),
+    ...(customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED' && item?.informationNature !== 'AI_INFERENCE' && item?.source !== 'AI_INFERENCE').map((item) => consultationDirection(item.text, [], 'UNVERIFIED_RECORDED_CONTEXT')),
   ].filter(Boolean).filter((item, index, list) => list.findIndex((candidate) => candidate.title === item.title) === index).slice(0, 4)
   return {
     schema_version: CUSTOMER_UNDERSTANDING_VERSION,
