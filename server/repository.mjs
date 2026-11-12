@@ -1080,8 +1080,9 @@ function evidenceWriteFields(item, source, sourceId) {
 
 function customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta = {}, understanding = customerRecord.understanding } = {}) {
   const fingerprint = context.input_fingerprint
-  const fresh = storedMeta.status === 'FRESH' && storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
-  const status = fresh ? 'FRESH' : activeUnderstandingProcessing(storedMeta) ? 'PROCESSING' : storedMeta.status === 'FAILED' ? 'FAILED' : 'STALE'
+  const matchesCurrentRulesAndData = storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
+  const fresh = storedMeta.status === 'FRESH' && matchesCurrentRulesAndData
+  const status = fresh ? 'FRESH' : activeUnderstandingProcessing(storedMeta) ? 'PROCESSING' : storedMeta.status === 'FAILED' && matchesCurrentRulesAndData ? 'FAILED' : 'STALE'
   const resolvedUnderstanding = understanding || createLocalCustomerUnderstanding(context)
   const source = storedMeta.provider || (customerRecord.understanding ? 'DEEPSEEK' : 'STRUCTURED_FALLBACK')
   return {
@@ -1096,6 +1097,8 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
       status,
       source,
       inputFingerprint: storedMeta.inputFingerprint || fingerprint,
+      currentInputFingerprint: fingerprint,
+      storedPromptVersion: storedMeta.promptVersion || '',
       evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint,
       sourceProfileVersion: customerRecord.profileVersion || 0,
       profileVersion: customerRecord.profileVersion || 0,
@@ -1107,7 +1110,7 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshTimers = new Map(); this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -1912,17 +1915,9 @@ export class FeishuRepository {
     return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: customerRecord.understandingMeta || {} })
   }
 
-  scheduleCustomerUnderstandingRefresh(actorId, customerId) {
-    if (this.backgroundArchiveWorker) return
-    if (!config.deepseek.apiKey) return
-    const previous = this.understandingRefreshTimers.get(customerId)
-    if (previous) clearTimeout(previous)
-    const timer = setTimeout(() => {
-      this.understandingRefreshTimers.delete(customerId)
-      void this.refreshCustomerUnderstanding(actorId, customerId).catch((error) => this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId, 'FAIL', error instanceof Error ? error.code || error.message : 'UNDERSTANDING_REFRESH_FAILED'))
-    }, 30_000)
-    this.understandingRefreshTimers.set(customerId, timer)
-  }
+  // A serverless invocation cannot reliably own a delayed refresh. The UI
+  // observes a persisted STALE fingerprint and submits one non-force refresh
+  // on the next customer read; completed payloads are reused until inputs change.
 
   async refreshCustomerUnderstanding(actorId, customerId, { force = false } = {}) {
     // Do not queue a second model run after a browser timeout or a rapid repeat
@@ -3299,7 +3294,7 @@ export class FeishuRepository {
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)
       await this.markSafetyStale(source.customerId).catch((error) => this.audit('MARK_SAFETY_STALE', source.customerId, actorId, 'FAIL', error instanceof Error ? error.code || error.message : 'SAFETY_STALE_FAILED'))
-      this.scheduleCustomerUnderstandingRefresh(actorId, source.customerId)
+      // The next consultation read refreshes only if its input fingerprint changed.
       return this.sourceDetail(actorId, sourceId)
     } catch (error) {
       const failedAt = now()
