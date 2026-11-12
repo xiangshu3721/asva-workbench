@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, deployProduction, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
+import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, deployProduction, parseDeploymentTarget, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
 
 function validProductionValues() {
   const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'false' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'off' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
@@ -8,6 +8,13 @@ function validProductionValues() {
 }
 
 describe('CloudBase production deployment preflight', () => {
+  it('defaults legacy deployment entry to API only and requires an explicit all target', () => {
+    expect(parseDeploymentTarget([])).toBe('api')
+    expect(parseDeploymentTarget(['--target', 'worker'])).toBe('worker')
+    expect(parseDeploymentTarget(['--target', 'all'])).toBe('all')
+    expect(() => parseDeploymentTarget(['--target', 'unexpected'])).toThrow(/api、worker 或 all/)
+  })
+
   it('requires an explicit deployment env file before any CloudBase command can run', async () => {
     const previous = process.env.ASVA_DEPLOY_ENV_FILE
     delete process.env.ASVA_DEPLOY_ENV_FILE
