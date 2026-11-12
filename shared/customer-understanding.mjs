@@ -1,7 +1,7 @@
 import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
-export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v3-consult-directions'
+export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v4-provisional-context-cache'
 export const CONTEXT_DENSITY_POLICY_VERSION = 'DENSITY_V1'
 export const UNDERSTANDING_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 export const UNDERSTANDING_CONFIDENCE = new Set(['LOW', 'MEDIUM', 'HIGH'])
@@ -14,9 +14,10 @@ const CURRENT_ISSUE_FIELDS = new Set(['current_core_issue', 'current_goal', 'cur
 const RESOLVED_ISSUE_PATTERN = /(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/
 const EXPLICIT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|问题|无法|影响)/
 const CURRENT_IMPACT_PATTERN = /(影响|导致|无法|反复|持续|下降|中断|冲突|困难|拖延|失眠)/
-const CONSULTATION_TOPIC_PATTERN = /(咨询|想谈|想聊|需要帮助).{0,24}(情感|关系|婚姻|伴侣|家庭|亲子|职业|工作|睡眠|压力)/
+const CONSULTATION_TOPIC_PATTERN = /(咨询|想谈|想聊|需要帮助).{0,24}(情感|关系|婚姻|伴侣|家庭|亲子|职业|工作|睡眠|压力)|(?:关于|对于|围绕).{0,15}(?:目前|未来|现在)?(?:工作|职业|发展|情感|关系|家庭|亲子).{0,18}(?:探讨|讨论|交流|咨询)|(?:工作|职业|情感|关系).{0,12}(?:发展|方向).{0,12}(?:探讨|讨论|交流|咨询)/
 const CONCRETE_CURRENT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|无法|影响)/
 const PROVISIONAL_DIRECTION_DETAIL = '原始资料已提及该咨询主题，具体情况待客户确认。'
+const AI_SUMMARY_PREFIX_PATTERN = /^(?:AI|人工智能)\s*(?:总结|推测|分析|理解|生成|判断)\s*[：:]/i
 const AI_DERIVED_EVIDENCE_TYPES = new Set(['HYPOTHESIS', 'AI_INFERENCE'])
 const present = (value) => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
 const valueText = (value) => Array.isArray(value) ? value.join('、') : present(value) ? String(value) : ''
@@ -82,8 +83,8 @@ function consultationDirectionTitle(text) {
 }
 
 function consultationDirection(text, evidenceIds = [], sourcePerspective = null) {
-  const sourceText = safeText(text, 240)
-  if (!CONSULTATION_TOPIC_PATTERN.test(sourceText) || RESOLVED_ISSUE_PATTERN.test(sourceText)) return null
+  const sourceText = safeText(text, 320)
+  if (AI_SUMMARY_PREFIX_PATTERN.test(sourceText) || !CONSULTATION_TOPIC_PATTERN.test(sourceText) || RESOLVED_ISSUE_PATTERN.test(sourceText)) return null
   return { text: sourceText, title: consultationDirectionTitle(sourceText), evidence_ids: evidenceIds, source_perspective: sourcePerspective, provisional: true }
 }
 
@@ -155,6 +156,7 @@ export function understandingInputFingerprint({ customer = {}, evidenceItems = [
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
   const recordedContext = {
     notes: safeText(customer.notes, 1200),
+    supplementaryTopics: (customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED').map((item) => ({ id: item.id || '', text: safeText(item.text, 320), source: item.source || '', status: item.status || '', verificationStatus: item.verificationStatus || '' })).sort((a, b) => `${a.id}:${a.text}`.localeCompare(`${b.id}:${b.text}`)),
     need: safeText(customer.need, 300),
     goal: safeText(customer.goal, 300),
     helpExpectation: safeText(customer.helpExpectation, 300),
@@ -194,7 +196,8 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
   ].filter(Boolean).slice(0, 8)
   const provisionalDirections = [
     ...provisionalTopicEvidence.map((item) => consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null)),
-    ...[recordedContext.current_need, recordedContext.help_expectation].map((text) => consultationDirection(text)),
+    ...[recordedContext.current_need, recordedContext.help_expectation, recordedContext.notes].map((text) => consultationDirection(text)),
+    ...(customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED' && item?.informationNature !== 'AI_INFERENCE').map((item) => consultationDirection(item.text, [], 'UNVERIFIED_RECORDED_CONTEXT')),
   ].filter(Boolean).filter((item, index, list) => list.findIndex((candidate) => candidate.title === item.title) === index).slice(0, 4)
   return {
     schema_version: CUSTOMER_UNDERSTANDING_VERSION,
