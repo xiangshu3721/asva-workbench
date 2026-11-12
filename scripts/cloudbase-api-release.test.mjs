@@ -12,7 +12,8 @@ const unhealthy = () => new Response(JSON.stringify({ ok: false }), { status: 50
 const workflowSource = readFileSync(new URL('../.github/workflows/cloudbase-api-release.yml', import.meta.url), 'utf8')
 const releaseGuide = readFileSync(new URL('../docs/CLOUDBASE_API_RELEASE.md', import.meta.url), 'utf8')
 
-function simulatedRunner({ state, failCandidateUpdate = false, failRollbackUpdate = false }) {
+function simulatedRunner({ state, failCandidateUpdate = false, failRollbackUpdate = false, wrappedCodeResponses = false }) {
+  const codeResponse = (value) => JSON.stringify(wrappedCodeResponses ? { data: value } : value)
   return async (args) => {
     const command = args.join(' ')
     if (command.includes(' fn detail ')) return detail(state.remoteHash)
@@ -21,7 +22,7 @@ function simulatedRunner({ state, failCandidateUpdate = false, failRollbackUpdat
       const destination = args.at(-2)
       await mkdir(destination, { recursive: true })
       await writeFile(path.join(destination, 'index.js'), 'exports.main = () => ({ ok: true })\n')
-      return JSON.stringify({ message: 'Code downloaded', path: destination, version: '$LATEST' })
+      return codeResponse({ message: 'Code downloaded', path: destination, version: '$LATEST' })
     }
     if (command.includes(' fn code update ')) {
       const directory = args[args.indexOf('--dir') + 1]
@@ -32,7 +33,7 @@ function simulatedRunner({ state, failCandidateUpdate = false, failRollbackUpdat
         state.remoteHash = state.candidateHash
         if (failCandidateUpdate) throw new Error('deployment transport interrupted')
       }
-      return JSON.stringify({ message: 'Code updated' })
+      return codeResponse({ message: 'Code updated' })
     }
     throw new Error(`Unexpected command: ${command}`)
   }
@@ -92,6 +93,30 @@ describe('CloudBase API-only release plan', () => {
       const baseline = await preflight({ args: test.args, runner, fetchImpl: async () => healthy() })
       expect(baseline.api.remoteCodeSha256).toBe('baseline-sha')
       expect(baseline.rollbackBundle).toMatchObject({ entry: 'index.js', fileCount: 1 })
+      let healthCalls = 0
+      const fetchImpl = async () => (++healthCalls === 1 ? unhealthy() : healthy())
+      await expect(deploy({ args: test.args, runner, fetchImpl })).rejects.toThrow(/rollback completed/)
+      expect(test.state.remoteHash).toBe('baseline-sha')
+    } finally { await test.dispose() }
+  })
+
+  it('accepts the actual CloudBase CLI {data:{message,path,version}} download envelope during read-only verify', async () => {
+    const test = await fixture()
+    try {
+      const runner = simulatedRunner({ state: test.state, wrappedCodeResponses: true })
+      const baseline = await preflight({ args: test.args, runner, fetchImpl: async () => healthy() })
+      expect(baseline.api.remoteCodeSha256).toBe('baseline-sha')
+      expect(baseline.rollbackBundle).toMatchObject({ entry: 'index.js', fileCount: 1 })
+      expect(baseline.health).toMatchObject({ ok: true, httpStatus: 200 })
+      expect(test.state.remoteHash).toBe('baseline-sha')
+    } finally { await test.dispose() }
+  })
+
+  it('accepts nested update confirmations for deploy and rollback without changing the existing failure safeguards', async () => {
+    const test = await fixture()
+    try {
+      const runner = simulatedRunner({ state: test.state, wrappedCodeResponses: true })
+      await preflight({ args: test.args, runner, fetchImpl: async () => healthy() })
       let healthCalls = 0
       const fetchImpl = async () => (++healthCalls === 1 ? unhealthy() : healthy())
       await expect(deploy({ args: test.args, runner, fetchImpl })).rejects.toThrow(/rollback completed/)
