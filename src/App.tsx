@@ -1026,9 +1026,8 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const understandingRefreshing = understandingRefreshingCustomerId === customer.id
   const salesRefreshing = salesRefreshingCustomerId === customer.id
   const autoRefreshStaleUnderstanding = (response: CustomerUnderstandingResponse, requestCustomerId: string, requestSequence: number) => {
-    if (response.status !== 'STALE') return
-    const hasMeaningfulInput = Boolean(customer.notes?.trim() || customer.need?.trim() || customer.goal?.trim() || customer.helpExpectation?.trim() || (customer.supplementaryItems || []).length || response.context_summary?.evidence_count || Object.entries(customer.profileFields || {}).some(([key, value]) => !['grade', 'paid'].includes(key) && Boolean(value)))
-    if (!hasMeaningfulInput) return
+    if (response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache') return
+    if (response.context_summary?.has_meaningful_input !== true) return
     const identity = response.meta.currentInputFingerprint || response.meta.inputFingerprint || String(customer.profileVersion || 0)
     const attemptKey = `${requestCustomerId}:${identity}:${response.meta.promptVersion || ''}`
     if (autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)) return
