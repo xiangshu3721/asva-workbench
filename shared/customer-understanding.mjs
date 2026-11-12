@@ -293,8 +293,8 @@ export function applyCurrentIssuePolicy(value, { currentIssueEvidenceIds = [], c
   const entryPoints = [...(value?.next_conversation || [])]
   if (lead && !confirmed.length) {
     const topic = lead.title || lead.text
-    const topicWords = /(情感|关系)/.test(topic) ? /(情感|关系|伴侣|恋爱)/ : /(职业|工作|发展)/.test(topic) ? /(职业|工作|发展|方向)/ : /(家庭|亲子)/.test(topic) ? /(家庭|亲子|孩子)/ : /(睡眠|压力|身心)/.test(topic) ? /(睡眠|压力|状态|身心)/ : new RegExp(normalizeIssueText(topic).slice(0, 5))
-    const alreadySpecific = entryPoints.some((item) => topicWords.test([item.focus, item.text, item.suggested_entry].join(' ')))
+    const topicWords = /(情感|关系)/.test(topic) ? /(情感|关系|伴侣|恋爱)/ : /(职业|工作|发展)/.test(topic) ? /(职业|工作|发展|方向)/ : /(家庭|亲子)/.test(topic) ? /(家庭|亲子|孩子)/ : /(睡眠|压力|身心)/.test(topic) ? /(睡眠|压力|状态|身心)/ : null
+    const alreadySpecific = entryPoints.some((item) => { const candidate = [item.focus, item.text, item.suggested_entry].join(' '); return topicWords ? topicWords.test(candidate) : normalizeIssueText(candidate).includes(normalizeIssueText(topic).slice(0, 5)) })
     if (!alreadySpecific) {
       entryPoints.unshift(cleanInsight({
         text: `先确认${topic}的具体情境`, focus: `围绕${topic}了解客户最想优先处理的事情`,
