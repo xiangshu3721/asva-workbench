@@ -281,7 +281,30 @@ export function applyCurrentIssuePolicy(value, { currentIssueEvidenceIds = [], c
     if (issue?.type === 'WORKING_HYPOTHESIS' || !evidenceIds.length || confirmed.some((existing) => isSimilarIssue(existing.title || existing.text, title))) continue
     confirmed.push({ ...issue, evidence_ids: evidenceIds })
   }
-  return { ...value, top_issues: [...confirmed, ...directions].slice(0, 3) }
+  // Never drop an explicitly recorded consultation direction simply because
+  // the model omitted it. It remains LOW / pending verification, never a fact.
+  for (const candidate of provisional) {
+    if (confirmed.length + directions.length >= 3) break
+    if (confirmed.some((issue) => isSimilarIssue(issue.title || issue.text, candidate.title)) || directions.some((issue) => isSimilarIssue(issue.title || issue.text, candidate.title))) continue
+    directions.push(cleanInsight({ title: candidate.title, detail: PROVISIONAL_DIRECTION_DETAIL, evidence_ids: candidate.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS' }))
+  }
+  const topIssues = [...confirmed, ...directions].slice(0, 3)
+  const lead = topIssues[0]
+  const entryPoints = [...(value?.next_conversation || [])]
+  if (lead && !confirmed.length) {
+    const topic = lead.title || lead.text
+    const topicWords = /(情感|关系)/.test(topic) ? /(情感|关系|伴侣|恋爱)/ : /(职业|工作|发展)/.test(topic) ? /(职业|工作|发展|方向)/ : /(家庭|亲子)/.test(topic) ? /(家庭|亲子|孩子)/ : /(睡眠|压力|身心)/.test(topic) ? /(睡眠|压力|状态|身心)/ : new RegExp(normalizeIssueText(topic).slice(0, 5))
+    const alreadySpecific = entryPoints.some((item) => topicWords.test([item.focus, item.text, item.suggested_entry].join(' ')))
+    if (!alreadySpecific) {
+      entryPoints.unshift(cleanInsight({
+        text: `先确认${topic}的具体情境`, focus: `围绕${topic}了解客户最想优先处理的事情`,
+        why_now: '档案中已有咨询方向，但具体经历与影响尚未得到客户确认。',
+        suggested_entry: `你提到想聊${topic.replace('方面的咨询需求', '')}，现在最希望先谈的是哪件事？`,
+        evidence_ids: lead.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS',
+      }))
+    }
+  }
+  return { ...value, top_issues: topIssues, next_conversation: entryPoints.slice(0, 3) }
 }
 
 export function normalizeCustomerUnderstanding(raw, { evidenceIds = [], now = new Date().toISOString() } = {}) {
