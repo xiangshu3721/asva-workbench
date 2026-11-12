@@ -25,7 +25,10 @@
     "stage0:write-test": "node scripts/stage0-write-test.mjs",
     "build": "npm run build:meta && tsc -p tsconfig.json --noEmit && vite build",
     "build:cloudbase": "node scripts/build-cloudbase-function.mjs",
-    "deploy:cloudbase": "npm run build:meta && npm run build:cloudbase && node scripts/deploy-cloudbase.mjs",
+    "deploy:cloudbase": "npm run deploy:cloudbase:api",
+    "deploy:cloudbase:api": "node scripts/cloudbase-api-release.mjs",
+    "deploy:cloudbase:worker": "npm run build:meta && npm run build:cloudbase && node scripts/deploy-cloudbase.mjs --target worker",
+    "deploy:cloudbase:all": "npm run build:meta && npm run build:cloudbase && node scripts/deploy-cloudbase.mjs --target all",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
