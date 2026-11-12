@@ -75,13 +75,14 @@ describe('CloudBase API-only release plan', () => {
     await expect(checkHealth(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))).rejects.toThrow(/health check failed/)
   })
 
-  it('keeps GitHub Environment protection, OIDC subject, and the fixed API target aligned', () => {
+  it('keeps GitHub Environment protection, its API Key secret, and the fixed API target aligned', () => {
     expect(workflowSource).toContain("if: github.ref == 'refs/heads/master'")
     expect(workflowSource).toContain('environment: cloudbase-production')
-    expect(workflowSource).toContain('TENCENT_CLOUD_OIDC_PROVIDER_ID: ${{ vars.ASVA_TENCENT_CLOUD_OIDC_PROVIDER_ID }}')
-    expect(workflowSource).toContain('TENCENT_CLOUD_ROLE_ARN: ${{ vars.ASVA_TENCENT_CLOUD_ROLE_ARN }}')
-    expect(releaseGuide).toContain('repo:xiangshu3721/asva-workbench:environment:cloudbase-production')
-    expect(releaseGuide).toContain('`scf:UpdateFunctionCode`')
+    expect(workflowSource).toContain('TCB_CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}')
+    expect(workflowSource).toContain('tcb login --cloudbase-api-key "$TCB_CLOUDBASE_API_KEY" -e "$TCB_ENV_ID"')
+    expect(workflowSource).not.toMatch(/id-token|OIDC|STS|TENCENT_CLOUD_ROLE_ARN/)
+    expect(releaseGuide).toContain('`CLOUDBASE_API_KEY`')
+    expect(releaseGuide).toContain('tcb login --cloudbase-api-key <key> -e <envId>')
   })
 
   it('verifies an extracted rollback bundle with a content manifest and restores it after a failed health check', async () => {

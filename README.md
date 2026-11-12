@@ -59,7 +59,7 @@ https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.c
 npm run deploy:cloudbase
 ```
 
-`npm run deploy:cloudbase` 已改为安全拒绝本机直发，并明确指向 `asva-api` 的 GitHub Actions 手动 OIDC 工作流；它不会部署 Worker、触发器或修改函数环境变量。生产发布方式详见 [`docs/CLOUDBASE_API_RELEASE.md`](docs/CLOUDBASE_API_RELEASE.md)。
+`npm run deploy:cloudbase` 已改为安全拒绝本机直发，并明确指向 `asva-api` 的 GitHub Actions 手动环境级 API Key 工作流；它不会部署 Worker、触发器或修改函数环境变量。生产发布方式详见 [`docs/CLOUDBASE_API_RELEASE.md`](docs/CLOUDBASE_API_RELEASE.md)。
 
 需要单独发布 Worker 时，必须显式执行 `npm run deploy:cloudbase:worker`；旧的全量行为仅保留在显式的 `npm run deploy:cloudbase:all`，不得用于常规 API 发布。
 
