@@ -165,7 +165,15 @@ function runCapture(command, args, cwd) {
   })
 }
 
-export async function deployProduction() {
+export function parseDeploymentTarget(args = process.argv.slice(2)) {
+  const index = args.indexOf('--target')
+  const target = index < 0 ? 'api' : args[index + 1]
+  if (!['api', 'worker', 'all'].includes(target)) throw new Error('部署目标必须是 api、worker 或 all')
+  return target
+}
+
+export async function deployProduction({ target = parseDeploymentTarget() } = {}) {
+  if (!['api', 'worker', 'all'].includes(target)) throw new Error('部署目标必须是 api、worker 或 all')
   if (!process.env.ASVA_DEPLOY_ENV_FILE) throw new Error('生产部署必须显式设置 ASVA_DEPLOY_ENV_FILE，禁止回退到仓库默认配置')
   const envPath = path.resolve(process.env.ASVA_DEPLOY_ENV_FILE)
   const values = parseEnv(await readFile(envPath, 'utf8'))
@@ -179,59 +187,68 @@ export async function deployProduction() {
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'asva-cloudbase-'))
   try {
+    const deployApi = target === 'api' || target === 'all'
+    const deployWorker = target === 'worker' || target === 'all'
+    const functionConfig = []
+    if (deployApi) functionConfig.push({
+      name: functionName,
+      handler: 'index.main',
+      runtime: 'Nodejs20.19',
+      timeout: 60,
+      memorySize: 256,
+      envVariables,
+    })
+    if (deployWorker) functionConfig.push({
+      name: workerName,
+      handler: 'index.main',
+      runtime: 'Nodejs20.19',
+      timeout: 60,
+      memorySize: 256,
+      envVariables,
+    })
     await writeFile(path.join(tempDir, 'cloudbaserc.json'), JSON.stringify({
       envId,
       functionRoot: functionDir,
-      functions: [{
-        name: functionName,
-        handler: 'index.main',
-        runtime: 'Nodejs20.19',
-        timeout: 60,
-        memorySize: 256,
-        envVariables,
-      }, {
-        name: workerName,
-        handler: 'index.main',
-        runtime: 'Nodejs20.19',
-        timeout: 60,
-        memorySize: 256,
-        envVariables,
-      }],
+      functions: functionConfig,
     }, null, 2))
 
     const tcb = process.env.TCB_BIN || 'tcb'
     const functionsOutput = await runCapture(tcb, ['fn', 'list', '--env-id', envId, '--json'], root)
     const functionsJsonStart = functionsOutput.indexOf('{')
     const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
-    const hasExistingTarget = (functions.data || []).some((item) => item.name === functionName)
-    const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
-    if (hasExistingTarget) functionArgs.push('--force')
-    functionArgs.push('--json')
-    await run(tcb, functionArgs, tempDir)
+    if (deployApi) {
+      const hasExistingTarget = (functions.data || []).some((item) => item.name === functionName)
+      const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
+      if (hasExistingTarget) functionArgs.push('--force')
+      functionArgs.push('--json')
+      await run(tcb, functionArgs, tempDir)
 
-    const hasExistingWorker = (functions.data || []).some((item) => item.name === workerName)
-    const workerArgs = ['fn', 'deploy', workerName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
-    if (hasExistingWorker) workerArgs.push('--force')
-    workerArgs.push('--json')
-    await run(tcb, workerArgs, tempDir)
-    const workerDetailOutput = await runCapture(tcb, ['fn', 'detail', workerName, '--env-id', envId, '--json'], root)
-    const workerDetailJsonStart = workerDetailOutput.indexOf('{')
-    const workerDetail = workerDetailJsonStart >= 0 ? JSON.parse(workerDetailOutput.slice(workerDetailJsonStart)) : { data: {} }
-    const workerTriggers = workerDetail.data?.Triggers || []
-    const hasWorkerTrigger = workerTriggers.some((trigger) => trigger.TriggerName === workerTriggerName || trigger.triggerName === workerTriggerName || trigger.Name === workerTriggerName || trigger.name === workerTriggerName)
-    if (!hasWorkerTrigger) await run(tcb, ['fn', 'trigger', 'create', workerName, '--trigger-name', workerTriggerName, '--cron', workerCron, '--json'], tempDir)
+      const servicesOutput = await runCapture(tcb, ['service', 'list', '--env-id', envId, '--json'], root)
+      const servicesJsonStart = servicesOutput.indexOf('{')
+      const services = servicesJsonStart >= 0 ? JSON.parse(servicesOutput.slice(servicesJsonStart)) : { data: [] }
+      const hasService = (services.data || []).some((item) => item.path === `/${servicePath}` && item.name === functionName)
+      if (!hasService) await run(tcb, ['service', 'create', '--env-id', envId, '--service-path', servicePath, '--function', functionName, '--json'], tempDir)
+      console.log(`ASVA CloudBase API base: ${serviceUrl}`)
+    }
 
-    const servicesOutput = await runCapture(tcb, ['service', 'list', '--env-id', envId, '--json'], root)
-    const servicesJsonStart = servicesOutput.indexOf('{')
-    const services = servicesJsonStart >= 0 ? JSON.parse(servicesOutput.slice(servicesJsonStart)) : { data: [] }
-    const hasService = (services.data || []).some((item) => item.path === `/${servicePath}` && item.name === functionName)
-    if (!hasService) await run(tcb, ['service', 'create', '--env-id', envId, '--service-path', servicePath, '--function', functionName, '--json'], root)
-    console.log(`ASVA CloudBase API base: ${serviceUrl}`)
+    if (deployWorker) {
+      const hasExistingWorker = (functions.data || []).some((item) => item.name === workerName)
+      const workerArgs = ['fn', 'deploy', workerName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
+      if (hasExistingWorker) workerArgs.push('--force')
+      workerArgs.push('--json')
+      await run(tcb, workerArgs, tempDir)
+      const workerDetailOutput = await runCapture(tcb, ['fn', 'detail', workerName, '--env-id', envId, '--json'], root)
+      const workerDetailJsonStart = workerDetailOutput.indexOf('{')
+      const workerDetail = workerDetailJsonStart >= 0 ? JSON.parse(workerDetailOutput.slice(workerDetailJsonStart)) : { data: {} }
+      const workerTriggers = workerDetail.data?.Triggers || []
+      const hasWorkerTrigger = workerTriggers.some((trigger) => trigger.TriggerName === workerTriggerName || trigger.triggerName === workerTriggerName || trigger.Name === workerTriggerName || trigger.name === workerTriggerName)
+      if (!hasWorkerTrigger) await run(tcb, ['fn', 'trigger', 'create', workerName, '--trigger-name', workerTriggerName, '--cron', workerCron, '--json'], tempDir)
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  await deployProduction()
+  await deployProduction({ target: parseDeploymentTarget() })
 }
