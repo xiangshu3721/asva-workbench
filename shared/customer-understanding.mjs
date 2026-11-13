@@ -1,7 +1,7 @@
 import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
-export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v4-provisional-context-cache'
+export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v5-consultation-display-consistency'
 export const CONTEXT_DENSITY_POLICY_VERSION = 'DENSITY_V1'
 export const UNDERSTANDING_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 export const UNDERSTANDING_CONFIDENCE = new Set(['LOW', 'MEDIUM', 'HIGH'])

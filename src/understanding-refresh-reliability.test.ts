@@ -18,12 +18,13 @@ describe('consultation refresh client reliability', () => {
     await pending
   })
 
-  it('keeps the floating assistant removed and automatically refreshes stale v4 understanding at most once per data/version key', () => {
+  it('keeps the floating assistant removed and automatically refreshes stale current-rule understanding at most once per data/version key', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).not.toContain('<GlobalAIAssistant ')
     expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)')
     expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)')
-    expect(source).toContain("response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache'")
+    expect(source).toContain("response.status !== 'STALE' || response.meta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION")
+    expect(source).toContain('cached?.meta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION')
     expect(source).toContain('response.context_summary?.has_meaningful_input !== true')
     expect(source).toContain('props.onRefreshUnderstanding(requestCustomerId, false)')
   })
@@ -32,7 +33,11 @@ describe('consultation refresh client reliability', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).toContain("error: `读取咨询理解失败：${error instanceof Error ? error.message : '请求未完成'}`")
     expect(source).toContain("error: `重新整理失败：${error instanceof Error ? error.message : '请求未完成'}`")
-    expect(source).toContain('const understanding = response?.understanding || (understandingReadFailed ? fallback : undefined)')
+    expect(source).toContain('const storedUnderstanding = response?.understanding || (understandingReadFailed ? fallback : undefined)')
+    expect(source).toContain('const localConsultation = createLocalCustomerUnderstanding(buildCustomerUnderstandingContext({ customer: oneLineCustomer, evidenceItems: [] }))')
+    expect(source).toContain('const useRecordedDirection = localDirections.length > 0 && !hasVisibleStoredIssue')
+    expect(source).toContain('const visibleIssues = useRecordedDirection ? localDirections : (understanding?.top_issues || [])')
+    expect(source).toContain('const entryPoints = (useRecordedDirection ?')
     expect(source).toContain('重新整理未完成，当前保留上一次可用结果。')
     expect(source).toContain('AI 重新整理未完成，当前显示基于已录入资料的待确认结果。')
   })
