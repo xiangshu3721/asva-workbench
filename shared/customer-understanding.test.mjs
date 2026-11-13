@@ -136,6 +136,37 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(local.next_conversation[0].suggested_entry).toContain('情感关系')
   })
 
+  it('treats a legacy work-discussion note as a provisional topic, not an invented confirmed distress', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-LEGACY-WORK', notes: '从事幼教老师；已记录：对于目前工作的探讨，以及未来的发展。', profileFields: {} }, evidenceItems: [] })
+    expect(context.current_issue_candidates.evidence).toEqual([])
+    expect(context.current_issue_candidates.provisional).toEqual([expect.objectContaining({ title: '职业发展方面的咨询需求', evidence_ids: [] })])
+    const local = createLocalCustomerUnderstanding(context)
+    expect(local.top_issues[0]).toMatchObject({ title: '职业发展方面的咨询需求', confidence: 'LOW' })
+    expect(local.next_conversation[0].suggested_entry).toContain('职业发展')
+  })
+
+  it('uses an explicit consultation request in a pending AI-extracted supplementary item only as a provisional topic', () => {
+    const customer = { id: 'CUS-LEGACY-RELATION', profileFields: { marital_status: '离异', occupation: '作家村秘书长' }, supplementaryItems: [{ id: 'ITEM-1', text: '目前38岁，有一个男朋友，更多咨询情感问题。', source: 'AI_EXTRACTED', status: 'PENDING_REVIEW', verificationStatus: 'UNKNOWN' }] }
+    const context = buildCustomerUnderstandingContext({ customer, evidenceItems: [] })
+    expect(context.current_issue_candidates.evidence).toEqual([])
+    expect(context.current_issue_candidates.provisional).toEqual([expect.objectContaining({ title: '情感关系方面的咨询需求', evidence_ids: [] })])
+    expect(createLocalCustomerUnderstanding(context).top_issues[0]).toMatchObject({ title: '情感关系方面的咨询需求', confidence: 'LOW' })
+    const changed = { ...customer, supplementaryItems: [{ ...customer.supplementaryItems[0], text: '目前38岁，有一个男朋友，想谈职业发展。' }] }
+    expect(understandingInputFingerprint({ customer, evidenceItems: [] })).not.toBe(understandingInputFingerprint({ customer: changed, evidenceItems: [] }))
+  })
+
+  it('does not create a topic from pending AI inference or mere relationship demographics', () => {
+    const context = buildCustomerUnderstandingContext({ customer: { id: 'CUS-NO-ASSUMPTION', profileFields: { marital_status: '离异' }, supplementaryItems: [{ id: 'ITEM-2', text: 'AI 总结：更多咨询情感问题', informationNature: 'AI_INFERENCE', source: 'AI_EXTRACTED' }] }, evidenceItems: [] })
+    expect(context.current_issue_candidates.provisional).toEqual([])
+  })
+
+  it('keeps a verified provisional direction even when the model returns no topic and a generic opening', () => {
+    const value = applyCurrentIssuePolicy({ top_issues: [], next_conversation: [{ text: '先弄清楚客户是谁', focus: '建立基本了解', suggested_entry: '可以说说最近的生活吗？', confidence: 'LOW', evidence_ids: [] }] }, { currentIssueCandidates: [{ title: '职业发展方面的咨询需求', evidence_ids: [], provisional: true }] })
+    expect(value.top_issues).toEqual([expect.objectContaining({ title: '职业发展方面的咨询需求', confidence: 'LOW' })])
+    expect(value.next_conversation[0].suggested_entry).toContain('职业发展')
+    expect(value.next_conversation[0].suggested_entry).not.toContain('客户是谁')
+  })
+
   it('keeps a confirmed consultation topic provisional until it states a concrete current problem or impact', () => {
     const topicOnly = buildCustomerUnderstandingContext({ customer: { id: 'CUS-CONFIRMED-TOPIC', profileFields: {} }, evidenceItems: [
       fact({ id: 'EVD-TOPIC', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '更多咨询情感问题', standardValue: '更多咨询情感问题' }),

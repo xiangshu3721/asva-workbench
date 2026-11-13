@@ -56,6 +56,8 @@ export interface CustomerUnderstandingV1 {
 export interface CustomerUnderstandingMeta {
   status: SummaryStatus
   inputFingerprint?: string
+  currentInputFingerprint?: string
+  storedPromptVersion?: string
   profileVersion?: number
   promptVersion?: string
   provider?: string
@@ -258,6 +260,8 @@ export interface Customer {
   nextFollowupAt: string | null
   followupStatus: '待跟进' | '已完成'
   notes: string
+  /** Pending or confirmed supplementary profile notes are context, never confirmed issues by themselves. */
+  supplementaryItems?: Array<{ id?: string; text: string; source?: string; status?: string; reviewStatus?: string; verificationStatus?: string; informationNature?: string; sourceRecordId?: string }>
   /** The customer's current structured profile; persisted on the Customer record. */
   profileFields?: Record<string, ProfileValue>
   profileFieldMeta?: Record<string, ProfileFieldMeta>

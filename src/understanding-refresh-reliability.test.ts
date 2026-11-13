@@ -18,6 +18,16 @@ describe('consultation refresh client reliability', () => {
     await pending
   })
 
+  it('keeps the floating assistant removed and automatically refreshes stale v4 understanding at most once per data/version key', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    expect(source).not.toContain('<GlobalAIAssistant ')
+    expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)')
+    expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)')
+    expect(source).toContain("response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache'")
+    expect(source).toContain('response.context_summary?.has_meaningful_input !== true')
+    expect(source).toContain('props.onRefreshUnderstanding(requestCustomerId, false)')
+  })
+
   it('keeps a previous response visible and labels read versus refresh failures accurately', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).toContain("error: `读取咨询理解失败：${error instanceof Error ? error.message : '请求未完成'}`")
