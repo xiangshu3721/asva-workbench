@@ -7,6 +7,8 @@ import { createLocalRepository } from './repositories'
 import { clearPendingCustomerMutation, createHttpApi, createLocalAsyncApi, readPendingCustomerMutation, rememberPendingCustomerMutation, type BasicDashboard, type CustomerMutationResult, type CustomerProfileResponse, type CustomerSalesUnderstandingResponse, type CustomerUnderstandingResponse, type SafetyAssessmentResponse, type FeedbackDraftInput, type SourceRecord, type SourceSaveStatus, type SourceWorkspace, type WorkbenchApi } from './clientApi'
 import { assembleCustomerContext, type AiBrief, type AiCoreSummary } from './customer-ai'
 import { createRuleOneLineUnderstanding, mergeOneLineCustomer, selectOneLineUnderstanding } from './one-line-understanding'
+// @ts-expect-error Shared framework-neutral module has no TypeScript declaration.
+import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION } from '../shared/customer-understanding.mjs'
 import { displayProfileValue, PROFILE_SECTIONS, profileSourceLabel, profileUpdateLabel } from './profile'
 import { humanizeEvidenceType, humanizeLevel, humanizeProcessingStatus, humanizeStrategy, humanizeTiming, sanitizeUserVisibleText } from './presentationCopy'
 import { clearAssistantHistory } from './GlobalAIAssistant'
@@ -1026,7 +1028,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const understandingRefreshing = understandingRefreshingCustomerId === customer.id
   const salesRefreshing = salesRefreshingCustomerId === customer.id
   const autoRefreshStaleUnderstanding = (response: CustomerUnderstandingResponse, requestCustomerId: string, requestSequence: number) => {
-    if (response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache') return
+    if (response.status !== 'STALE' || response.meta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) return
     if (response.context_summary?.has_meaningful_input !== true) return
     const identity = response.meta.currentInputFingerprint || response.meta.inputFingerprint || String(customer.profileVersion || 0)
     const attemptKey = `${requestCustomerId}:${identity}:${response.meta.promptVersion || ''}`
@@ -1051,7 +1053,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const current = understandingByCustomerId[requestCustomerId]
     const cached = props.resourceCache.get<CustomerUnderstandingResponse>(cacheKey)
     const cachedEntry = props.resourceCache.getEntry<CustomerUnderstandingResponse>(cacheKey)
-    const cachedFresh = Boolean(cachedEntry?.data !== undefined && cached?.meta.profileVersion === (customer.profileVersion ?? 0) && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
+    const cachedFresh = Boolean(cachedEntry?.data !== undefined && cached?.meta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION && cached?.meta.profileVersion === (customer.profileVersion ?? 0) && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
     if (cached && cachedFresh) {
       const requestSequence = ++understandingSequenceRef.current
       setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, cached) }))
@@ -1213,6 +1215,9 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const panelSalesStatus = salesResponse?.status || (salesError ? 'FAILED' : customer.salesUnderstandingStatus || 'STALE')
   const oneLineCustomer = mergeOneLineCustomer(customer, profileResponse?.customerId === customer.id ? profileResponse : undefined)
   const localOneLine = createRuleOneLineUnderstanding(oneLineCustomer)
+  // The same current customer snapshot powers the header and a safe provisional
+  // consultation direction, so an old saved AI payload cannot hide explicit intent.
+  const localConsultation = createLocalCustomerUnderstanding(buildCustomerUnderstandingContext({ customer: oneLineCustomer, evidenceItems: [] })) as CustomerUnderstandingV1
   const oneLine = selectOneLineUnderstanding({ local: localOneLine, understanding: currentUnderstanding, meta: understandingResponse?.meta || oneLineCustomer.understandingMeta, clientSnapshotFingerprint: createRuleOneLineUnderstanding(customer).inputFingerprint })
   return <article className="customer-detail-page customer-detail-v2">
     <header className="customer-detail-header">
@@ -1222,7 +1227,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     </header>
     <CustomerUnderstandingOverview localSummary={oneLine} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => void refreshUnderstanding(true)} />
     <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
-    <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
+    <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} localConsultation={localConsultation} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
     <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onRefreshProfile={() => loadCustomerProfile(true)} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={sortProductsForSelection(database.products.filter(activeProductForManualEntry))} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
@@ -1354,17 +1359,21 @@ function SalesUnderstandingView({ customerId, response, fallback, status, error,
 function SalesCommercialCard({ title, value, explanation, signals, unknowns, evidenceIds, refs }: { title: string; value: string; explanation: string; signals: string[]; unknowns: string[]; evidenceIds: string[]; refs: CustomerUnderstandingResponse['evidence_refs'] }) {
   return <section className="sales-section sales-commercial"><div className="sales-commercial-heading"><h3>{sanitizeUserVisibleText(title)}</h3><strong>{sanitizeUserVisibleText(value)}</strong></div><p>{sanitizeUserVisibleText(explanation || '当前证据不足，暂不做商业判断。')}</p>{signals.length > 0 && <div><span>已有信号</span>{signals.map((item) => <small key={item}>• {sanitizeUserVisibleText(item)}</small>)}</div>}{unknowns.length > 0 && <div><span>待确认</span>{unknowns.map((item) => <small key={item}>• {sanitizeUserVisibleText(item)}</small>)}</div>}<UnderstandingEvidence ids={evidenceIds} refs={refs} /></section>
 }
-function CustomerUnderstandingPanel({ response, fallback, status, error, loading, refreshing, onRefresh, customerId, onGetSafety, onRefreshSafety, onSafetyResponse, view, onViewChange, salesResponse, salesFallback, salesStatus, salesError, salesLoading, salesRefreshing, onSalesRefresh, courses, canEditEnrollments, onEditEnrollments }: { response: CustomerUnderstandingResponse | null; fallback?: CustomerUnderstandingV1; status: string; error: string; loading: boolean; refreshing: boolean; onRefresh: () => void; customerId: string; onGetSafety: (customerId: string) => Promise<SafetyAssessmentResponse>; onRefreshSafety: (customerId: string, force?: boolean) => Promise<SafetyAssessmentResponse>; onSafetyResponse: (response: SafetyAssessmentResponse) => void; view: 'consultation' | 'sales'; onViewChange: (view: 'consultation' | 'sales') => void; salesResponse: CustomerSalesUnderstandingResponse | null; salesFallback?: CustomerSalesUnderstandingV1; salesStatus: string; salesError: string; salesLoading: boolean; salesRefreshing: boolean; onSalesRefresh: () => void; courses: Array<{ enrollment: Database['enrollments'][number]; product?: Product }>; canEditEnrollments: boolean; onEditEnrollments: () => void }) {
+function CustomerUnderstandingPanel({ response, fallback, localConsultation, status, error, loading, refreshing, onRefresh, customerId, onGetSafety, onRefreshSafety, onSafetyResponse, view, onViewChange, salesResponse, salesFallback, salesStatus, salesError, salesLoading, salesRefreshing, onSalesRefresh, courses, canEditEnrollments, onEditEnrollments }: { response: CustomerUnderstandingResponse | null; fallback?: CustomerUnderstandingV1; localConsultation: CustomerUnderstandingV1; status: string; error: string; loading: boolean; refreshing: boolean; onRefresh: () => void; customerId: string; onGetSafety: (customerId: string) => Promise<SafetyAssessmentResponse>; onRefreshSafety: (customerId: string, force?: boolean) => Promise<SafetyAssessmentResponse>; onSafetyResponse: (response: SafetyAssessmentResponse) => void; view: 'consultation' | 'sales'; onViewChange: (view: 'consultation' | 'sales') => void; salesResponse: CustomerSalesUnderstandingResponse | null; salesFallback?: CustomerSalesUnderstandingV1; salesStatus: string; salesError: string; salesLoading: boolean; salesRefreshing: boolean; onSalesRefresh: () => void; courses: Array<{ enrollment: Database['enrollments'][number]; product?: Product }>; canEditEnrollments: boolean; onEditEnrollments: () => void }) {
   const understandingReadFailed = Boolean(error) || status === 'FAILED'
   const refreshFailed = error.startsWith('重新整理失败：')
-  const understanding = response?.understanding || (understandingReadFailed ? fallback : undefined)
+  const storedUnderstanding = response?.understanding || (understandingReadFailed ? fallback : undefined)
+  const localDirections = (localConsultation.top_issues || []).filter((item) => item.confidence === 'LOW' && item.detail === '原始资料已提及该咨询主题，具体情况待客户确认。')
+  const useRecordedDirection = localDirections.length > 0 && !(storedUnderstanding?.top_issues || []).length
+  const understanding = storedUnderstanding || (localDirections.length ? localConsultation : undefined)
+  const visibleIssues = useRecordedDirection ? localDirections : (understanding?.top_issues || [])
   const salesReadFailed = Boolean(salesError) || salesStatus === 'FAILED'
   const sales = salesReadFailed ? salesFallback : undefined
   const refs = response?.evidence_refs || []
   const safeSalesResponse = salesResponse?.customerId === customerId ? salesResponse : null
   const salesRefs = safeSalesResponse?.evidence_refs || refs
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
-  const entryPoints = (understanding?.next_conversation || []).filter((item) => item.focus || item.suggested_entry || item.prompt).slice(0, 3)
+  const entryPoints = (useRecordedDirection ? [...(localConsultation.next_conversation || []), ...(understanding?.next_conversation || [])] : (understanding?.next_conversation || [])).filter((item) => item.focus || item.suggested_entry || item.prompt).slice(0, 3)
   const notice = status === 'FAILED'
     ? 'AI 重新整理未完成，当前显示基于已录入资料的待确认结果。'
     : status === 'PROCESSING'
@@ -1373,7 +1382,7 @@ function CustomerUnderstandingPanel({ response, fallback, status, error, loading
         ? (refreshFailed ? '重新整理未完成，当前保留上一次可用结果。' : '读取咨询理解失败，当前保留上一次可用结果。')
         : ''
   const consultationContent = (loading || status === 'PROCESSING') && !understanding ? <p className="understanding-empty">正在读取该客户的咨询档案…</p> : !understanding ? <div className="sales-empty"><p>{refreshFailed ? '重新整理未完成，暂时没有可用结果。' : error ? '咨询理解读取失败，可以稍后重试。' : '还没有整理这个客户的 AI 档案。'}</p><button className="primary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '整理中…' : error ? '重试' : '开始整理'}</button><span>{understandingStatusLabel(status)}</span></div> : <>{notice && <p className="understanding-read-warning">{notice}</p>}<div className="consultation-grid">
-      <CurrentCoreIssuesModule issues={understanding.top_issues || []} gaps={understanding.knowledge_gaps || []} refs={refs} />
+      <CurrentCoreIssuesModule issues={visibleIssues} gaps={understanding.knowledge_gaps || []} refs={refs} />
       <ConsultationModule title="咨询切入点" hint="从具体处境开始" items={entryPoints} refs={refs} kind="entry" tone="entry" />
       <ConsultationModule title="服务注意事项" hint="可直接转成行动" items={(understanding.service_cautions || []).slice(0, 4)} refs={refs} tone="caution" />
       <ConsultationModule title="当前资源" items={strong(understanding.resources_and_strengths || []).slice(0, 3)} refs={refs} tone="resource" />
