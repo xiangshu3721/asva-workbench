@@ -1364,12 +1364,14 @@ function CustomerUnderstandingPanel({ response, fallback, localConsultation, sta
   const refreshFailed = error.startsWith('重新整理失败：')
   const storedUnderstanding = response?.understanding || (understandingReadFailed ? fallback : undefined)
   const localDirections = (localConsultation.top_issues || []).filter((item) => item.confidence === 'LOW' && item.detail === '原始资料已提及该咨询主题，具体情况待客户确认。')
-  const useRecordedDirection = localDirections.length > 0 && !(storedUnderstanding?.top_issues || []).length
+  const refs = response?.evidence_refs || []
+  const recordedEvidenceValid = (issue: UnderstandingInsight) => Boolean(issue.evidence_ids?.length && issue.evidence_ids.every((id) => { const evidence = refs.find((item) => item.evidence_id === id); return evidence && !/(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/.test(`${evidence.display_text} ${evidence.excerpt}`) }))
+  const hasVisibleStoredIssue = (storedUnderstanding?.top_issues || []).some((item) => item.confidence === 'LOW' ? item.detail === '原始资料已提及该咨询主题，具体情况待客户确认。' && (!item.evidence_ids?.length || recordedEvidenceValid(item)) : recordedEvidenceValid(item))
+  const useRecordedDirection = localDirections.length > 0 && !hasVisibleStoredIssue
   const understanding = storedUnderstanding || (localDirections.length ? localConsultation : undefined)
   const visibleIssues = useRecordedDirection ? localDirections : (understanding?.top_issues || [])
   const salesReadFailed = Boolean(salesError) || salesStatus === 'FAILED'
   const sales = salesReadFailed ? salesFallback : undefined
-  const refs = response?.evidence_refs || []
   const safeSalesResponse = salesResponse?.customerId === customerId ? salesResponse : null
   const salesRefs = safeSalesResponse?.evidence_refs || refs
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
