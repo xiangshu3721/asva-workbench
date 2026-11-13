@@ -34,6 +34,7 @@ describe('consultation refresh client reliability', () => {
     expect(source).toContain("error: `读取咨询理解失败：${error instanceof Error ? error.message : '请求未完成'}`")
     expect(source).toContain("error: `重新整理失败：${error instanceof Error ? error.message : '请求未完成'}`")
     expect(source).toContain('const storedUnderstanding = response?.understanding || (understandingReadFailed ? fallback : undefined)')
+    expect(source).toContain('const localConsultation = createLocalCustomerUnderstanding(buildCustomerUnderstandingContext({ customer: oneLineCustomer, evidenceItems: [] }))')
     expect(source).toContain('const useRecordedDirection = localDirections.length > 0 && !hasVisibleStoredIssue')
     expect(source).toContain('const visibleIssues = useRecordedDirection ? localDirections : (understanding?.top_issues || [])')
     expect(source).toContain('const entryPoints = (useRecordedDirection ?')
