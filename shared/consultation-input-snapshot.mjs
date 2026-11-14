@@ -1,5 +1,5 @@
 const SENSITIVE_FIELDS = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
-const CURRENT_EVIDENCE_KINDS = new Set(['PROFILE_FIELD', 'CURRENT_STATE', 'RELATIONSHIP', 'RESOURCE', 'NEED', 'GOAL', 'PREFERENCE'])
+const CURRENT_EVIDENCE_KINDS = new Set(['PROFILE_FIELD', 'CURRENT_STATE', 'RELATIONSHIP', 'RESOURCE', 'NEED', 'PREFERENCE'])
 
 export const CONSULTATION_INPUT_SNAPSHOT_VERSION = 'consultation-input-v1'
 
@@ -27,9 +27,12 @@ function verificationStatus({ confirmed, reviewStatus, verificationStatus, sourc
 }
 
 function temporalStatus(item = {}) {
-  if (item.temporalType === 'HISTORICAL' || item.semanticKind === 'EVENT') return 'HISTORICAL'
-  if (item.temporalType === 'CURRENT' || CURRENT_EVIDENCE_KINDS.has(item.semanticKind)) return 'CURRENT'
-  if (item.temporalType === 'FUTURE_PLAN' || item.semanticKind === 'GOAL') return 'FUTURE'
+  if (item.temporalType === 'HISTORICAL') return 'HISTORICAL'
+  if (item.temporalType === 'CURRENT' || item.temporalType === 'RECENT') return 'CURRENT'
+  if (item.temporalType === 'FUTURE_PLAN') return 'FUTURE'
+  if (item.semanticKind === 'EVENT') return 'HISTORICAL'
+  if (item.semanticKind === 'GOAL') return 'FUTURE'
+  if (CURRENT_EVIDENCE_KINDS.has(item.semanticKind)) return 'CURRENT'
   return 'UNKNOWN'
 }
 
@@ -56,7 +59,7 @@ function sourceRecord(source) {
     processing_status: source.processingStatus || 'UNKNOWN',
     source_role: source.sourceRole || null,
     service_record_id: source.serviceRecordId || null,
-    verification_status: source.processingStatus === 'COMPLETED' ? 'HUMAN_VERIFIED' : 'UNKNOWN',
+    verification_status: source.verificationStatus || source.privacyMeta?.verification || 'UNKNOWN',
   }
 }
 
@@ -95,7 +98,7 @@ function communicationRecord(session) {
     next_step: safeText(session.nextStep, 360),
     recorded_at: session.date || null,
     temporal_status: 'HISTORICAL',
-    verification_status: 'HUMAN_VERIFIED',
+    verification_status: session.mentorConfirmed === true ? 'HUMAN_VERIFIED' : 'UNKNOWN',
   }
 }
 
@@ -136,6 +139,7 @@ export function buildConsultationInputSnapshot({ customer = {}, sessions = [], s
   const evidence = scopedEvidence.map((item) => evidenceRecord(item, sourceById))
   const currentEvidence = evidence.filter((item) => item.temporal_status === 'CURRENT')
   const historicalEvidence = evidence.filter((item) => item.temporal_status === 'HISTORICAL')
+  const futureEvidence = evidence.filter((item) => item.temporal_status === 'FUTURE')
   const communications = scopedSessions.sort((left, right) => String(right.date || '').localeCompare(String(left.date || ''))).map(communicationRecord)
   const snapshot = {
     schema_version: CONSULTATION_INPUT_SNAPSHOT_VERSION,
@@ -154,6 +158,9 @@ export function buildConsultationInputSnapshot({ customer = {}, sessions = [], s
       communications,
       evidence: historicalEvidence,
     },
+    future: {
+      evidence: futureEvidence,
+    },
     sources: scopedSources.map(sourceRecord),
     all_evidence: evidence,
     open_conflicts: conflicts.filter((item) => item?.customerId === customerId && item.status === 'OPEN').map((item) => ({ field_key: item.fieldKey || null, current_value: stableValue(item.currentValue), proposed_value: stableValue(item.newValue), current_evidence_id: item.currentEvidenceId || null, new_evidence_id: item.newEvidenceId || null })),
@@ -163,6 +170,7 @@ export function buildConsultationInputSnapshot({ customer = {}, sessions = [], s
     profile_version: snapshot.profile_version,
     current: snapshot.current,
     historical: snapshot.historical,
+    future: snapshot.future,
     sources: snapshot.sources,
     open_conflicts: snapshot.open_conflicts,
   }

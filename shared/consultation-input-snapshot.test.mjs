@@ -29,7 +29,8 @@ describe('consultation input snapshot', () => {
     expect(snapshot.current.profile_fields).toMatchObject({ occupation: '设计师', current_core_issue: '最近工作压力很大' })
     expect(snapshot.current.notes).toMatchObject({ source: 'CUSTOMER_NOTES', recorded_at: '2026-11-08T00:00:00.000Z' })
     expect(snapshot.current.supplementary[0]).toMatchObject({ supplementary_id: 'SUP-1', verification_status: 'UNVERIFIED' })
-    expect(snapshot.historical.communications[0]).toMatchObject({ service_record_id: 'SRV-1', source: 'SERVICE_RECORD', recorded_at: '2026-11-09T00:00:00.000Z', verification_status: 'HUMAN_VERIFIED' })
+    expect(snapshot.sources[0]).toMatchObject({ source_id: 'SRC-1', processing_status: 'COMPLETED', verification_status: 'UNKNOWN' })
+    expect(snapshot.historical.communications[0]).toMatchObject({ service_record_id: 'SRV-1', source: 'SERVICE_RECORD', recorded_at: '2026-11-09T00:00:00.000Z', verification_status: 'UNKNOWN' })
     expect(snapshot.current.evidence[0]).toMatchObject({ evidence_id: 'EVD-1', source_id: 'SRC-1', source_title: '客户资料', source_excerpt: '我最近工作压力很大', verification_status: 'HUMAN_VERIFIED', occurred_at: '2026-11-10T00:00:00.000Z' })
   })
 
@@ -46,6 +47,27 @@ describe('consultation input snapshot', () => {
 
     expect(snapshot.current.evidence.map((item) => item.evidence_id)).toEqual(['EVD-1'])
     expect(snapshot.historical.evidence).toEqual([expect.objectContaining({ evidence_id: 'EVD-OLD', temporal_status: 'HISTORICAL', verification_status: 'UNVERIFIED', occurred_at: '2024-06-01T00:00:00.000Z' })])
+  })
+
+  it('prioritizes explicit time metadata and keeps an unqualified goal future', () => {
+    const snapshot = buildConsultationInputSnapshot({
+      customer: { id: 'CUS-1', profileFields: {} },
+      evidenceItems: [
+        evidence({ id: 'EVD-FUTURE', semanticKind: 'GOAL', displayText: '希望明年转型', sourceExcerpt: '希望明年转型', temporalType: 'UNKNOWN' }),
+        evidence({ id: 'EVD-EXPLICIT-HISTORY', semanticKind: 'GOAL', displayText: '已经完成转型', sourceExcerpt: '已经完成转型', temporalType: 'HISTORICAL' }),
+        evidence({ id: 'EVD-EXPLICIT-CURRENT', semanticKind: 'EVENT', displayText: '当前正在转型', sourceExcerpt: '当前正在转型', temporalType: 'CURRENT' }),
+      ],
+    })
+
+    expect(snapshot.future.evidence).toEqual([expect.objectContaining({ evidence_id: 'EVD-FUTURE', temporal_status: 'FUTURE' })])
+    expect(snapshot.historical.evidence).toEqual([expect.objectContaining({ evidence_id: 'EVD-EXPLICIT-HISTORY', temporal_status: 'HISTORICAL' })])
+    expect(snapshot.current.evidence).toEqual([expect.objectContaining({ evidence_id: 'EVD-EXPLICIT-CURRENT', temporal_status: 'CURRENT' })])
+  })
+
+  it('marks a service record human-verified only when the existing confirmation flag is true', () => {
+    const snapshot = buildConsultationInputSnapshot({ customer: { id: 'CUS-1' }, sessions: [session(), session({ id: 'SRV-2', date: '2026-11-10T00:00:00.000Z', mentorConfirmed: true })] })
+
+    expect(snapshot.historical.communications.map((item) => [item.service_record_id, item.verification_status])).toEqual([['SRV-2', 'HUMAN_VERIFIED'], ['SRV-1', 'UNKNOWN']])
   })
 
   it('uses the same normalization for legacy fields and structured profile fields', () => {
