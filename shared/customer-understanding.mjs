@@ -1,4 +1,5 @@
-import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
+import { materializeCustomerProfile } from './profile-materialization.mjs'
+import { buildConsultationInputSnapshot } from './consultation-input-snapshot.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
 export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v4-provisional-context-cache'
@@ -23,18 +24,6 @@ const present = (value) => value !== null && value !== undefined && value !== ''
 const valueText = (value) => Array.isArray(value) ? value.join('、') : present(value) ? String(value) : ''
 const safeText = (value, limit = 240) => valueText(value).replace(/\s+/g, ' ').trim().slice(0, limit)
 const unique = (items) => [...new Set(items.filter(Boolean))]
-
-function stableValue(value) {
-  if (Array.isArray(value)) return value.map(stableValue)
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableValue(item)]))
-  return value
-}
-
-function hashText(value) {
-  let hash = 2166136261
-  for (const character of String(value)) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619) }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
 
 function evidenceRef(item, sourceRecords) {
   const source = sourceRecords.find((record) => record.id === item.sourceId)
@@ -153,21 +142,13 @@ export function applyUnderstandingDensityPolicy(value, density = {}) {
   }
 }
 
-export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [] } = {}) {
-  const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS').map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey || '', value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((a, b) => a.id.localeCompare(b.id))
-  const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
-  const recordedContext = {
-    notes: safeText(customer.notes, 1200),
-    supplementaryTopics: (customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED').map((item) => ({ id: item.id || '', text: safeText(item.text, 320), source: item.source || '', status: item.status || '', verificationStatus: item.verificationStatus || '' })).sort((a, b) => `${a.id}:${a.text}`.localeCompare(`${b.id}:${b.text}`)),
-    need: safeText(customer.need, 300),
-    goal: safeText(customer.goal, 300),
-    helpExpectation: safeText(customer.helpExpectation, 300),
-    source: safeText(customer.source, 160),
-  }
-  return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts }))
+export function understandingInputFingerprint({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], now = new Date().toISOString() } = {}) {
+  const snapshot = buildConsultationInputSnapshot({ customer, sourceRecords, sessions, evidenceItems, conflicts, now })
+  return snapshot.input_fingerprint
 }
 
-export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], conflicts = [], now = new Date().toISOString() } = {}) {
+export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], now = new Date().toISOString() } = {}) {
+  const consultationInputSnapshot = buildConsultationInputSnapshot({ customer, evidenceItems, sourceRecords, sessions, conflicts, now })
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS')
   const hypotheses = evidenceItems.filter((item) => item.evidenceType === 'HYPOTHESIS' || item.reviewStatus !== 'CONFIRMED')
   const renderer = materializeCustomerProfile({ customer, evidenceItems })
@@ -221,10 +202,12 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     coverage_gaps: renderer.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name),
     evidence_refs: evidenceRefs,
     recorded_context: recordedContext,
-    source_summaries: sourceRecords.filter((item) => item.customerId === customer.id).slice(0, 8).map((item) => ({ source_id: item.id, title: safeText(item.title || '资料记录', 80), source_type: safeText(item.sourceType, 80), occurred_at: item.occurredAt || null })),
+    source_summaries: consultationInputSnapshot.sources.slice(0, 8).map((item) => ({ source_id: item.source_id, title: item.title, source_type: item.source_type, occurred_at: item.occurred_at })),
+    communication_records: consultationInputSnapshot.historical.communications,
+    consultation_input_snapshot: consultationInputSnapshot,
     working_hypotheses: hypotheses.filter((item) => item.evidenceType === 'HYPOTHESIS').slice(0, 5).map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     context_density: density,
-    input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts }),
+    input_fingerprint: consultationInputSnapshot.input_fingerprint,
   }
 }
 

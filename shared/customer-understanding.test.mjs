@@ -286,7 +286,7 @@ describe('CustomerUnderstandingV1 contract', () => {
 
   it('changes the issue context and fingerprint when new current information arrives', () => {
     const before = buildCustomerUnderstandingContext({ customer: { id: 'CUS-UPDATE', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-BEFORE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '希望稳定作息', standardValue: '希望稳定作息' })] })
-    const afterEvidence = fact({ id: 'EVD-AFTER', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '近期合同中断，优先处理收入安排', standardValue: '近期合同中断，优先处理收入安排', sourcePerspective: 'CUSTOMER_FIRST_PARTY', confidence: 0.99 })
+    const afterEvidence = fact({ id: 'EVD-AFTER', customerId: 'CUS-UPDATE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '近期合同中断，优先处理收入安排', standardValue: '近期合同中断，优先处理收入安排', sourcePerspective: 'CUSTOMER_FIRST_PARTY', confidence: 0.99 })
     const after = buildCustomerUnderstandingContext({ customer: { id: 'CUS-UPDATE', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-BEFORE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '希望稳定作息', standardValue: '希望稳定作息' }), afterEvidence] })
     expect(after.input_fingerprint).not.toBe(before.input_fingerprint)
     expect(createLocalCustomerUnderstanding(after).top_issues[0].text).toBe('近期合同中断，优先处理收入安排')

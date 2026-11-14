@@ -1531,6 +1531,7 @@ export class FeishuRepository {
     }))
     const [appointmentRows, customerRows, serviceRows, staffRows, productRows, enrollmentRows, profileChangeRows, sourceRows, evidenceRows, proposalRows, conflictRows] = rows
     const customers = customerRows.map(customer)
+    const sessions = serviceRows.map(service)
     const sourceRecords = sourceRows.map(sourceRecord)
     const allEvidenceItems = evidenceRows.map(evidenceItem)
     const evidenceItems = allEvidenceItems.filter((item) => {
@@ -1544,14 +1545,15 @@ export class FeishuRepository {
     const conflicts = conflictRows.map(conflictRecord).filter((item) => activeEvidenceIds.has(item.newEvidenceId) || activeEvidenceIds.has(item.currentEvidenceId))
     for (const item of customers) {
       const customerEvidence = evidenceItems.filter((evidence) => evidence.customerId === item.id)
+      const customerSessions = sessions.filter((session) => session.customerId === item.id)
       const profileEvidence = profileMaterializationEvidence({ evidenceItems: customerEvidence, sourceRecords, customer: item, actor: { permissionRole: 'ADMIN' } })
       item.profileMaterialization = materializeCustomerProfile({ customer: item, evidenceItems: profileEvidence, summaryMeta: item.aiSummaryMeta })
-      const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, conflicts: conflicts.filter((conflict) => conflict.customerId === item.id) })
+      const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, sourceRecords, sessions: customerSessions, conflicts: conflicts.filter((conflict) => conflict.customerId === item.id) })
       if (!item.understandingMeta || item.understandingMeta.inputFingerprint !== currentFingerprint || item.understandingMeta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) item.understandingStatus = 'STALE'
     }
     if (config.appEnv === 'development') console.info('[ASVA_PERF_DASHBOARD_READ]', JSON.stringify({ external_request_count: entries.filter(([, tableId]) => Boolean(tableId)).length, parallel: true, table_durations_ms: tableDurations }))
     return {
-      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions: serviceRows.map(service), followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange), sourceRecords, evidenceItems, profileUpdateProposals: proposals, evidenceConflicts: conflicts,
+      staff: staffRows.map(staff), customers, appointments: appointmentRows.map(appointment), sessions, followups: [], products: productRows.map(product), enrollments: enrollmentRows.map(enrollment), profileChanges: profileChangeRows.map(profileChange), sourceRecords, evidenceItems, profileUpdateProposals: proposals, evidenceConflicts: conflicts,
       _missingRepositories: config.feishu.tables.enrollments ? [] : ['EnrollmentRepository'],
       _allEvidenceItems: allEvidenceItems,
       _rows: { appointments: appointmentRows, customers: customerRows, services: serviceRows, staff: staffRows, products: productRows, enrollments: enrollmentRows, profileChanges: profileChangeRows, sourceRecords: sourceRows, evidenceItems: evidenceRows, profileUpdateProposals: proposalRows, evidenceConflicts: conflictRows },
@@ -1911,7 +1913,7 @@ export class FeishuRepository {
     if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
-    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, conflicts })
+    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts })
     return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: customerRecord.understandingMeta || {} })
   }
 
@@ -1945,7 +1947,7 @@ export class FeishuRepository {
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
-    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, conflicts })
+    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts })
     const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts })
     const currentMeta = customerRecord.understandingMeta || {}
     if (activeUnderstandingProcessing(currentMeta)) return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta })
