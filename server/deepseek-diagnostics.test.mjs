@@ -72,6 +72,7 @@ describe('DeepSeek processing diagnostics', () => {
         evidence_refs: [{ evidence_id: 'EVD-1', display_text: '必要摘要', excerpt: '必要摘录', occurred_at: null, evidence_type: 'FACT', source_perspective: 'CUSTOMER_FIRST_PARTY' }],
         consultation_input_snapshot: { current: { notes: { text: 'RAW_SNAPSHOT_NOTE_13800138000' } }, all_evidence: [{ source_excerpt: 'RAW_EVIDENCE_EXCERPT' }] },
         communication_records: [{ source_text: 'RAW_SERVICE_RECORD' }],
+        consultation_topics: { topics: [{ excerpt: 'RAW_TOPIC_SOURCE_RECORD_12345678901' }] },
         context_density: { classification: 'SPARSE' },
       },
       redactValues: ['13800138000'],
@@ -85,6 +86,8 @@ describe('DeepSeek processing diagnostics', () => {
     expect(serialized).not.toContain('RAW_SNAPSHOT_NOTE_13800138000')
     expect(serialized).not.toContain('RAW_EVIDENCE_EXCERPT')
     expect(serialized).not.toContain('RAW_SERVICE_RECORD')
+    expect(serialized).not.toContain('consultation_topics')
+    expect(serialized).not.toContain('RAW_TOPIC_SOURCE_RECORD_12345678901')
     expect(serialized).not.toContain('13800138000')
   })
 

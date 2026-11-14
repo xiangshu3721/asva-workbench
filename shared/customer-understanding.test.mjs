@@ -344,3 +344,19 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(filtered.top_issues).toEqual([expect.objectContaining({ text: '已确认的当前困扰', confidence: 'MEDIUM' })])
   })
 })
+
+
+describe('stage 2 consultation topic bridge', () => {
+  it('makes reusable signals available without changing the v4 AI freshness key', () => {
+    const person = { id: 'CUS-TOPIC-BRIDGE', profileVersion: 2, notes: '更多咨询情感问题', profileFields: {} }
+    const beforeFingerprint = understandingInputFingerprint({ customer: person, evidenceItems: [] })
+    const context = buildCustomerUnderstandingContext({ customer: person, evidenceItems: [] })
+    expect(context.consultation_topics).toMatchObject({
+      customer_id: 'CUS-TOPIC-BRIDGE',
+      status: 'HAS_SIGNALS',
+      topics: [expect.objectContaining({ title: '亲密关系方面的咨询方向', kind: 'PROVISIONAL_DIRECTION' })],
+    })
+    expect(context.input_fingerprint).toBe(beforeFingerprint)
+    expect(context.consultation_input_snapshot.input_fingerprint).toBe(context.consultation_topics.source_fingerprint)
+  })
+})
