@@ -47,6 +47,13 @@ describe('consultation topic signals v1', () => {
     expect(result.topics).toEqual([])
   })
 
+  it('does not promote historical, resolved, or third-party statements into current concerns', () => {
+    expect(read({ customer: { notes: '去年工作压力很大。' } }).topics).toEqual([])
+    expect(read({ customer: { notes: '我现在不再焦虑了。' } }).topics).toEqual([])
+    expect(read({ customer: { profileFields: { current_core_issue: '客户最近工作压力很大' }, profileFieldMeta: { current_core_issue: { source: 'MENTOR_OBSERVATION' } } } }).topics).toEqual([])
+    expect(read({ customer: { supplementaryItems: [{ id: 'S-THIRD', text: '客户最近工作压力很大', source: 'THIRD_PARTY_REPORTED' }] } }).topics).toEqual([])
+  })
+
   it('never promotes AI inference, unapproved hypotheses or mentor speculation', () => {
     const result = read({ customer: { supplementaryItems: [
       { id: 'S1', text: 'AI 总结：客户存在情感焦虑', source: 'AI_INFERENCE' },
@@ -66,6 +73,36 @@ describe('consultation topic signals v1', () => {
     ] })
     expect(result.topics).toEqual([expect.objectContaining({ kind: 'EXPLICIT_CONCERN', evidence_ids: ['EV-1'] })])
     expect(JSON.stringify(result)).not.toContain('EV-2')
+  })
+
+  it('keeps Evidence source text and verification with its own customer only', () => {
+    const result = read({ evidenceItems: [
+      evidence({ id: 'EV-RAW', sourceId: 'SRC-RAW', displayText: '工作压力', sourceExcerpt: '客户原话：最近工作压力很大' }),
+      evidence({ id: 'EV-OTHER', customerId: 'CUS-OTHER', sourceId: 'SRC-OTHER', displayText: '和伴侣持续争吵', sourceExcerpt: '其他客户原话：和伴侣持续争吵' }),
+    ] })
+    expect(result.topics).toEqual([expect.objectContaining({ source: 'EVIDENCE', source_ref: 'SRC-RAW', evidence_ids: ['EV-RAW'], excerpt: '客户原话：最近工作压力很大', verification_status: 'HUMAN_VERIFIED' })])
+    expect(JSON.stringify(result)).not.toContain('CUS-OTHER')
+    expect(JSON.stringify(result)).not.toContain('其他客户原话')
+  })
+
+  it('keeps legacy and new customer signals isolated across profile, Evidence, and supplementary sources', () => {
+    const legacy = read({ customer: { id: 'CUS-LEGACY', notes: '最近工作压力很大，想聊职业发展。' }, evidenceItems: [
+      evidence({ id: 'EV-LEGACY', customerId: 'CUS-LEGACY', displayText: '和伴侣总是争吵', sourceExcerpt: '旧客户原话：和伴侣总是争吵' }),
+    ] })
+    const newcomer = read({ customer: { id: 'CUS-NEW', profileFields: { current_core_issue: '最近睡不着很焦虑' }, profileFieldMeta: { current_core_issue: { source: 'CUSTOMER_DIRECT', confirmed: true } }, supplementaryItems: [{ id: 'S-NEW', text: '更多咨询情感问题', source: 'AI_EXTRACTED', verificationStatus: 'UNVERIFIED' }] }, evidenceItems: [
+      evidence({ id: 'EV-NEW', customerId: 'CUS-NEW', displayText: '和伴侣总是争吵', sourceExcerpt: '新客户原话：和伴侣总是争吵' }),
+      evidence({ id: 'EV-LEGACY', customerId: 'CUS-LEGACY', displayText: '和伴侣总是争吵', sourceExcerpt: '旧客户原话：和伴侣总是争吵' }),
+    ] })
+    expect(legacy).toMatchObject({ customer_id: 'CUS-LEGACY', status: 'HAS_SIGNALS' })
+    expect(legacy.topics).toEqual(expect.arrayContaining([expect.objectContaining({ evidence_ids: ['EV-LEGACY'], excerpt: '旧客户原话：和伴侣总是争吵' })]))
+    expect(newcomer).toMatchObject({ customer_id: 'CUS-NEW', status: 'HAS_SIGNALS' })
+    expect(newcomer.topics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'PROFILE_FIELD', verification_status: 'HUMAN_VERIFIED' }),
+      expect.objectContaining({ evidence_ids: ['EV-NEW'], excerpt: '新客户原话：和伴侣总是争吵' }),
+      expect.objectContaining({ source: 'SUPPLEMENTARY', kind: 'PROVISIONAL_DIRECTION', verification_status: 'UNVERIFIED' }),
+    ]))
+    expect(JSON.stringify(newcomer)).not.toContain('EV-LEGACY')
+    expect(JSON.stringify(newcomer)).not.toContain('旧客户原话')
   })
 
   it('excludes conflicting and historical Evidence from current topics', () => {
