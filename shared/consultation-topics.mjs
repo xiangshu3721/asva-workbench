@@ -8,6 +8,7 @@ const REQUEST = /(想|希望|需要|计划|更多|优先|打算|准备|考虑|�
 const NO_REQUEST = /(不想|并不想|没有想|不需要|无需|没有必要).{0,12}(咨询|聊|谈|帮助)|(?:没有|并无|不存在|不觉得|并不)(?:.{0,5})(?:困扰|问题|压力|冲突|困难)/
 const RESOLVED = /(已(?:经)?(?:解决|缓解|恢复|过去|走出)|不再(?:困扰|需要|影响)|已经没事|现在(?:已经)?没问题)/
 const HISTORICAL = /^(?:以前|过去|曾经|多年前|[一二三四五六七八九十\d]+年前)/
+const THIRD_PARTY_HYPOTHESIS = /^(?:导师|咨询师|朋友|家人|我觉得她|我认为她|我猜|猜测|推测|可能|估计|似乎).{0,20}(?:认为|觉得|推测|存在|缺乏|压力|关系)/
 const AI_CLAIM = /^(?:AI|人工智能)\s*(?:总结|推测|分析|理解|生成|判断)\s*[：:]/
 const DOMAINS = [
   ['亲密关系', /(情感|感情|伴侣|婚姻|夫妻|恋爱|亲密关系|恋人|男朋友|女朋友)/],
@@ -30,13 +31,12 @@ function directs(text) {
   return REQUEST.test(text) && !NO_REQUEST.test(text) && !RESOLVED.test(text) && !HISTORICAL.test(text)
 }
 function classifyText(text, candidate) {
-  if (!text || AI_CLAIM.test(text) || !safeSource(candidate)) return []
+  if (!text || AI_CLAIM.test(text) || THIRD_PARTY_HYPOTHESIS.test(text) || !safeSource(candidate)) return []
   if (!concerns(text) && !directs(text)) return []
   const domains = DOMAINS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name)
   // Concerns are not split by topic words: "work pressure affects sleep" is one
   // reported difficulty, not two independently established difficulties.
-  const kind = concerns(text) && (candidate.issue_field === true || candidate.explicit_direct === true)
-    ? 'EXPLICIT_CONCERN' : 'PROVISIONAL_DIRECTION'
+  const kind = concerns(text) ? 'EXPLICIT_CONCERN' : 'PROVISIONAL_DIRECTION'
   const titles = kind === 'EXPLICIT_CONCERN' ? [clean(text, 100)] :
     domains.length ? domains.map((domain) => `${domain}方面的咨询方向`) : [clean(text, 100)]
   return titles.map((title) => ({
