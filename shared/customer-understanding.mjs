@@ -1,5 +1,6 @@
 import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
 import { buildConsultationInputSnapshot } from './consultation-input-snapshot.mjs'
+import { buildConsultationTopics } from './consultation-topics.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
 export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v4-provisional-context-cache'
@@ -229,6 +230,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     source_summaries: consultationInputSnapshot.sources.slice(0, 8).map((item) => ({ source_id: item.source_id, title: item.title, source_type: item.source_type, occurred_at: item.occurred_at })),
     communication_records: consultationInputSnapshot.historical.communications,
     consultation_input_snapshot: consultationInputSnapshot,
+    consultation_topics: buildConsultationTopics(consultationInputSnapshot),
     working_hypotheses: hypotheses.filter((item) => item.evidenceType === 'HYPOTHESIS').slice(0, 5).map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     context_density: density,
     input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts }),
