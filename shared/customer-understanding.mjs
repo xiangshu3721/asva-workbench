@@ -1,4 +1,4 @@
-import { materializeCustomerProfile } from './profile-materialization.mjs'
+import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
 import { buildConsultationInputSnapshot } from './consultation-input-snapshot.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
@@ -24,6 +24,18 @@ const present = (value) => value !== null && value !== undefined && value !== ''
 const valueText = (value) => Array.isArray(value) ? value.join('、') : present(value) ? String(value) : ''
 const safeText = (value, limit = 240) => valueText(value).replace(/\s+/g, ' ').trim().slice(0, limit)
 const unique = (items) => [...new Set(items.filter(Boolean))]
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableValue(item)]))
+  return value
+}
+
+function hashText(value) {
+  let hash = 2166136261
+  for (const character of String(value)) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619) }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
 
 function evidenceRef(item, sourceRecords) {
   const source = sourceRecords.find((record) => record.id === item.sourceId)
@@ -142,9 +154,21 @@ export function applyUnderstandingDensityPolicy(value, density = {}) {
   }
 }
 
-export function understandingInputFingerprint({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], now = new Date().toISOString() } = {}) {
-  const snapshot = buildConsultationInputSnapshot({ customer, sourceRecords, sessions, evidenceItems, conflicts, now })
-  return snapshot.input_fingerprint
+// Keep the v4 cache key stable while the consultation snapshot is introduced.
+// Its independent fingerprint remains on consultation_input_snapshot and is not
+// a freshness signal for the saved _understanding in this phase.
+export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [] } = {}) {
+  const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS').map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey || '', value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((a, b) => a.id.localeCompare(b.id))
+  const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
+  const recordedContext = {
+    notes: safeText(customer.notes, 1200),
+    supplementaryTopics: (customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED').map((item) => ({ id: item.id || '', text: safeText(item.text, 320), source: item.source || '', status: item.status || '', verificationStatus: item.verificationStatus || '' })).sort((a, b) => `${a.id}:${a.text}`.localeCompare(`${b.id}:${b.text}`)),
+    need: safeText(customer.need, 300),
+    goal: safeText(customer.goal, 300),
+    helpExpectation: safeText(customer.helpExpectation, 300),
+    source: safeText(customer.source, 160),
+  }
+  return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts }))
 }
 
 export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], now = new Date().toISOString() } = {}) {
@@ -207,7 +231,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     consultation_input_snapshot: consultationInputSnapshot,
     working_hypotheses: hypotheses.filter((item) => item.evidenceType === 'HYPOTHESIS').slice(0, 5).map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     context_density: density,
-    input_fingerprint: consultationInputSnapshot.input_fingerprint,
+    input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts }),
   }
 }
 
