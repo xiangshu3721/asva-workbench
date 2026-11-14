@@ -11,6 +11,7 @@ const { config } = await import('./config.mjs')
 const { fields } = await import('./field-mapping.mjs')
 const { CUSTOMER_UNDERSTANDING_TIMEOUT_MS } = await import('./deepseek.mjs')
 const { CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS, FeishuRepository } = await import('./repository.mjs')
+const { CUSTOMER_UNDERSTANDING_PROMPT_VERSION, understandingInputFingerprint } = await import('../shared/customer-understanding.mjs')
 
 const originalDeepseek = { ...config.deepseek }
 const validUnderstanding = () => ({
@@ -173,5 +174,34 @@ describe('consultation understanding refresh reliability', () => {
     await expect(first).resolves.toMatchObject({ status: 'FRESH' })
     await expect(second).resolves.toHaveProperty('customerId', 'CUS-1')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps two legacy caches fresh without AI calls when snapshot-only records change, while a changed managed field is stale', async () => {
+    const repository = createRepository()
+    const legacyCustomers = [
+      { id: 'CUS-LEGACY-A', name: '旧客户A', phone: '', wechat: '', profileVersion: 4, profileFields: {}, profileFieldMeta: {}, notes: '职业转型', need: '理清工作方向', goal: '', helpExpectation: '' },
+      { id: 'CUS-LEGACY-B', name: '旧客户B', phone: '', wechat: '', profileVersion: 2, profileFields: {}, profileFieldMeta: {}, notes: '家庭沟通', need: '改善家庭沟通', goal: '', helpExpectation: '' },
+    ]
+    const newCustomer = { id: 'CUS-NEW-C', name: '新客户C', phone: '', wechat: '', profileVersion: 0, profileFields: {}, profileFieldMeta: {}, notes: '新客户资料', need: '', goal: '', helpExpectation: '' }
+    for (const customer of legacyCustomers) {
+      customer.understanding = validUnderstanding()
+      customer.understandingMeta = { status: 'FRESH', inputFingerprint: understandingInputFingerprint({ customer, evidenceItems: [], conflicts: [] }), promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK' }
+    }
+    repository._testDatabase.customers = [...legacyCustomers, newCustomer]
+    repository._testDatabase.sessions = [{ id: 'SRV-A', customerId: 'CUS-LEGACY-A', date: '2026-11-01', note: '新增服务记录' }]
+    repository._testDatabase.sourceRecords = [{ id: 'SRC-A', customerId: 'CUS-LEGACY-A', title: '新增资料', sourceType: 'NOTE', processingStatus: 'COMPLETED' }]
+    repository._testDatabase._rows.customers = repository._testDatabase.customers.map((customer) => ({ record_id: `rec-${customer.id}`, fields: fields('customers', { customer_id: customer.id, nickname: customer.name }) }))
+    const fetchMock = vi.fn(async () => response(validUnderstanding()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(repository.getCustomerUnderstanding('STAFF-1', 'CUS-LEGACY-A')).resolves.toMatchObject({ status: 'FRESH' })
+    await expect(repository.getCustomerUnderstanding('STAFF-1', 'CUS-LEGACY-B')).resolves.toMatchObject({ status: 'FRESH' })
+    await expect(repository.getCustomerUnderstanding('STAFF-1', 'CUS-NEW-C')).resolves.toMatchObject({ status: 'STALE' })
+    await repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-LEGACY-A')
+    await repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-LEGACY-A')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    repository._testDatabase.customers[0] = { ...repository._testDatabase.customers[0], need: '已明确的新需求' }
+    await expect(repository.getCustomerUnderstanding('STAFF-1', 'CUS-LEGACY-A')).resolves.toMatchObject({ status: 'STALE' })
   })
 })

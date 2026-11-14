@@ -46,6 +46,35 @@ describe('CustomerUnderstandingV1 contract', () => {
     expect(understandingInputFingerprint({ customer, evidenceItems: [fact()] })).not.toBe(understandingInputFingerprint({ customer, evidenceItems: [fact({ id: 'EVD-2' })] }))
   })
 
+  it('keeps v4 understanding fingerprints stable while snapshot-only records change', () => {
+    const customers = [
+      { id: 'CUS-LEGACY-A', profileVersion: 4, notes: '旧客户A：关注职业转型', need: '理清工作方向', goal: '完成转型计划', helpExpectation: '先确定下周行动', source: '转介绍', profileFields: { occupation: '设计师' }, supplementaryItems: [{ id: 'SUP-A', text: '已参加首次沟通', source: 'MANUAL', status: 'ACTIVE', verificationStatus: 'HUMAN_VERIFIED' }] },
+      { id: 'CUS-LEGACY-B', profileVersion: 2, notes: '旧客户B：最近家庭沟通压力增加', need: '改善家庭沟通', goal: '安排一次家庭讨论', helpExpectation: '找到沟通切入点', source: '老客户转介', profileFields: { city: '上海' }, supplementaryItems: [] },
+      { id: 'CUS-NEW-C', profileVersion: 0, notes: '新客户资料', need: '', goal: '', helpExpectation: '', source: '线上报名', profileFields: {} },
+    ]
+    const evidenceItems = [
+      fact({ id: 'EVD-A', customerId: 'CUS-LEGACY-A', standardValue: { plan: '完成转型计划' }, occurredAt: '2026-10-01' }),
+      fact({ id: 'EVD-B', customerId: 'CUS-LEGACY-B', evidenceType: 'SELF_MEANING', semanticKind: 'NEED', fieldKey: 'current_core_issue', standardValue: '改善家庭沟通', occurredAt: '2026-10-02' }),
+    ]
+    const sourceRecords = [{ id: 'SRC-A', customerId: 'CUS-LEGACY-A', title: '新增资料', sourceType: 'NOTE', processingStatus: 'COMPLETED' }]
+    const sessions = [{ id: 'SRV-A', customerId: 'CUS-LEGACY-A', date: '2026-11-01', note: '新增服务记录' }]
+    const expected = { 'CUS-LEGACY-A': '94db8d1a', 'CUS-LEGACY-B': '9b8a33be', 'CUS-NEW-C': '32920e15' }
+
+    for (const item of customers) {
+      const scopedEvidence = evidenceItems.filter((evidence) => evidence.customerId === item.id)
+      const legacyFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: scopedEvidence, sourceRecords, sessions })
+      const context = buildCustomerUnderstandingContext({ customer: item, evidenceItems: scopedEvidence, sourceRecords, sessions })
+      expect(legacyFingerprint).toBe(expected[item.id])
+      expect(context.input_fingerprint).toBe(legacyFingerprint)
+    }
+
+    const before = buildCustomerUnderstandingContext({ customer: customers[0], evidenceItems: [evidenceItems[0]], sourceRecords, sessions })
+    const after = buildCustomerUnderstandingContext({ customer: customers[0], evidenceItems: [evidenceItems[0]], sourceRecords: [...sourceRecords, { id: 'SRC-A-2', customerId: 'CUS-LEGACY-A', title: '另一份资料', sourceType: 'NOTE', processingStatus: 'PENDING' }], sessions })
+    expect(after.consultation_input_snapshot.input_fingerprint).not.toBe(before.consultation_input_snapshot.input_fingerprint)
+    expect(after.input_fingerprint).toBe(before.input_fingerprint)
+    expect(understandingInputFingerprint({ customer: { ...customers[0], need: '已明确的新需求' }, evidenceItems: [evidenceItems[0]] })).not.toBe(before.input_fingerprint)
+  })
+
   it('includes recorded customer notes and needs in the understanding context and fingerprint', () => {
     const withNotes = { ...customer, notes: '最近睡眠变差，希望先理清工作安排。', need: '降低工作压力', goal: '恢复稳定节奏', helpExpectation: '先找到一小步' }
     const context = buildCustomerUnderstandingContext({ customer: withNotes, evidenceItems: [] })
@@ -286,7 +315,7 @@ describe('CustomerUnderstandingV1 contract', () => {
 
   it('changes the issue context and fingerprint when new current information arrives', () => {
     const before = buildCustomerUnderstandingContext({ customer: { id: 'CUS-UPDATE', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-BEFORE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '希望稳定作息', standardValue: '希望稳定作息' })] })
-    const afterEvidence = fact({ id: 'EVD-AFTER', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '近期合同中断，优先处理收入安排', standardValue: '近期合同中断，优先处理收入安排', sourcePerspective: 'CUSTOMER_FIRST_PARTY', confidence: 0.99 })
+    const afterEvidence = fact({ id: 'EVD-AFTER', customerId: 'CUS-UPDATE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '近期合同中断，优先处理收入安排', standardValue: '近期合同中断，优先处理收入安排', sourcePerspective: 'CUSTOMER_FIRST_PARTY', confidence: 0.99 })
     const after = buildCustomerUnderstandingContext({ customer: { id: 'CUS-UPDATE', profileFields: {} }, evidenceItems: [fact({ id: 'EVD-BEFORE', semanticKind: 'NEED', fieldKey: 'current_core_issue', displayText: '希望稳定作息', standardValue: '希望稳定作息' }), afterEvidence] })
     expect(after.input_fingerprint).not.toBe(before.input_fingerprint)
     expect(createLocalCustomerUnderstanding(after).top_issues[0].text).toBe('近期合同中断，优先处理收入安排')

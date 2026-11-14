@@ -1060,7 +1060,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       return
     }
     const requestSequence = ++understandingSequenceRef.current
-    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer).inputFingerprint
+    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer, sessions).inputFingerprint
     const startedAt = performance.now()
     const previous = current?.value || cached || null
     setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, previous, true) }))
@@ -1158,7 +1158,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const requestCustomerId = customer.id
     const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
     const requestSequence = ++understandingSequenceRef.current
-    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer).inputFingerprint
+    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer, sessions).inputFingerprint
     setUnderstandingRefreshingCustomerId(requestCustomerId)
     try {
       const refreshed = await props.onRefreshUnderstanding(requestCustomerId, force)
@@ -1212,8 +1212,8 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const panelUnderstandingError = understandingError
   const panelSalesStatus = salesResponse?.status || (salesError ? 'FAILED' : customer.salesUnderstandingStatus || 'STALE')
   const oneLineCustomer = mergeOneLineCustomer(customer, profileResponse?.customerId === customer.id ? profileResponse : undefined)
-  const localOneLine = createRuleOneLineUnderstanding(oneLineCustomer)
-  const oneLine = selectOneLineUnderstanding({ local: localOneLine, understanding: currentUnderstanding, meta: understandingResponse?.meta || oneLineCustomer.understandingMeta, clientSnapshotFingerprint: createRuleOneLineUnderstanding(customer).inputFingerprint })
+  const localOneLine = createRuleOneLineUnderstanding(oneLineCustomer, sessions)
+  const oneLine = selectOneLineUnderstanding({ local: localOneLine, understanding: currentUnderstanding, meta: understandingResponse?.meta || oneLineCustomer.understandingMeta, clientSnapshotFingerprint: createRuleOneLineUnderstanding(customer, sessions).inputFingerprint })
   return <article className="customer-detail-page customer-detail-v2">
     <header className="customer-detail-header">
       <div className="customer-detail-identity"><span className="customer-detail-avatar">{customer.initials}</span><div><div className="customer-detail-name-row"><h1>{customer.name}</h1><button className="primary-button small customer-profile-update-button" type="button" onClick={openSourceComposer}>更新客户档案</button></div>{headerOverviewFacts.length > 0 && <div className="customer-overview-facts">{headerOverviewFacts.map((fact) => <span key={fact}>{fact}</span>)}</div>}</div></div>

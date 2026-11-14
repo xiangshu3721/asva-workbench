@@ -1,10 +1,11 @@
-import type { Customer, ProfileValue } from './domain'
+import type { Customer, ProfileValue, ServiceSession } from './domain'
 
-// Keep this range aligned with shared/customer-understanding.mjs. The frontend
-// only has the customer/profile snapshot here, so it deliberately passes no
-// evidence rows or open conflicts.
+// The frontend has the customer/profile snapshot and service records here; raw
+// Evidence is deliberately left to the scoped server consultation read.
 // @ts-expect-error The shared .mjs module is bundled by Vite and executed by Node on the server.
 import { understandingInputFingerprint } from '../shared/customer-understanding.mjs'
+// @ts-expect-error Shared framework-neutral module has no TypeScript declaration.
+import { buildConsultationInputSnapshot } from '../shared/consultation-input-snapshot.mjs'
 
 type ProfileMeta = { source?: string; confirmed?: boolean }
 
@@ -92,11 +93,12 @@ function noteSummary(value: string) {
   return result.length > 90 ? `${result.slice(0, 89)}…` : result
 }
 
-function recordedContext(customer: OneLineCustomerData) {
+function recordedContext(snapshot: ReturnType<typeof buildConsultationInputSnapshot>) {
+  const values = Object.fromEntries(snapshot.current.recorded_fields.map((item: { field: string; value: unknown }) => [item.field, item.value]))
   return [
-    ['need', '当前关注', customer.need],
-    ['goal', '目前希望', customer.goal],
-    ['helpExpectation', '期待获得', customer.helpExpectation],
+    ['need', '当前关注', values.need],
+    ['goal', '目前希望', values.goal],
+    ['helpExpectation', '期待获得', values.help_expectation],
   ] as const
 }
 
@@ -131,20 +133,9 @@ function buildSourceNotice(customer: OneLineCustomerData, usedFields: string[], 
   return parts.join(' ')
 }
 
-function buildFingerprintCustomer(customer: OneLineCustomerData) {
-  return {
-    id: customer.id,
-    source: customer.source,
-    notes: customer.notes,
-    need: customer.need,
-    goal: customer.goal,
-    helpExpectation: customer.helpExpectation,
-    profileFields: customer.profileFields || {},
-    profileVersion: customer.profileVersion || 0,
-  }
-}
-export function createRuleOneLineUnderstanding(customer: OneLineCustomerData): OneLineUnderstanding {
-  const fields = customer.profileFields || {}
+export function createRuleOneLineUnderstanding(customer: OneLineCustomerData, sessions: ServiceSession[] = []): OneLineUnderstanding {
+  const inputSnapshot = buildConsultationInputSnapshot({ customer, sessions })
+  const fields = inputSnapshot.current.profile_fields
   const usedFields: string[] = []
   const core: string[] = []
   const addCore = (field: string, label: string, raw: ProfileValue | string | undefined) => {
@@ -155,7 +146,7 @@ export function createRuleOneLineUnderstanding(customer: OneLineCustomerData): O
     core.push(phrase)
   }
   for (const [field, label] of SUMMARY_FIELDS) addCore(field, label, fields[field])
-  for (const [field, label, raw] of recordedContext(customer)) {
+  for (const [field, label, raw] of recordedContext(inputSnapshot)) {
     const value = cleanClause(valueText(raw))
     if (!value) continue
     usedFields.push(field)
@@ -170,7 +161,7 @@ export function createRuleOneLineUnderstanding(customer: OneLineCustomerData): O
     identity.push(format(value))
   }
 
-  const note = customer.notes ? noteSummary(customer.notes) : ''
+  const note = inputSnapshot.current.notes?.text ? noteSummary(inputSnapshot.current.notes.text) : ''
   if (note) usedFields.push('notes')
   const visibleParts = [...core.slice(0, 2), ...identity.slice(0, 3)]
   if (!visibleParts.length && note) visibleParts.push(`已记录：${note}`)
@@ -185,7 +176,7 @@ export function createRuleOneLineUnderstanding(customer: OneLineCustomerData): O
     : visibleParts.length === 1 && /[。！？]$/.test(visibleParts[0]) ? visibleParts[0] : `${visibleParts.join('；')}。`
   return {
     text: text.slice(0, 220),
-    inputFingerprint: understandingInputFingerprint({ customer: buildFingerprintCustomer(customer), evidenceItems: [] }),
+    inputFingerprint: understandingInputFingerprint({ customer, sessions, evidenceItems: [] }),
     profileVersion: customer.profileVersion || 0,
     source: 'RULE',
     evidenceIds: [],

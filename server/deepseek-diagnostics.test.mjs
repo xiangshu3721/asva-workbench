@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./config.mjs', () => ({ config: { appEnv: 'test', deepseek: { apiKey: 'synthetic-test-key', model: 'legacy-model', evidenceModel: 'deepseek-flash', baseUrl: 'https://api.deepseek.com' } } }))
 
-const { classifyDeepSeekResponse, createEvidenceCandidates, EVIDENCE_EXTRACT_TIMEOUT_MS, EVIDENCE_EXTRACT_MAX_ATTEMPTS } = await import('./deepseek.mjs')
+const { classifyDeepSeekResponse, createCustomerUnderstanding, createEvidenceCandidates, EVIDENCE_EXTRACT_TIMEOUT_MS, EVIDENCE_EXTRACT_MAX_ATTEMPTS } = await import('./deepseek.mjs')
 
 describe('DeepSeek processing diagnostics', () => {
   it('keeps Evidence extraction within the CloudBase request budget', () => {
@@ -60,6 +60,32 @@ describe('DeepSeek processing diagnostics', () => {
     expect(promptInput.writable_customer_fields.find((item) => item.key === 'current_expectation').boundary).toContain('从导师或服务中获得')
     expect(promptInput.writable_customer_fields.find((item) => item.key === 'support_system').boundary).toContain('不要重复同一条原文')
     expect(body.messages.find((message) => message.role === 'system').content).toContain('工作地点没有独立物理字段时field_key留空')
+  })
+
+  it('does not send the full consultation snapshot or raw service text to CustomerUnderstanding', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ knowledge_gaps: [{ question: '待确认事项' }] }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await createCustomerUnderstanding({
+      context: {
+        current_snapshot: { occupation: '设计师' },
+        current_issue_candidates: { evidence: [], provisional: [] },
+        evidence_refs: [{ evidence_id: 'EVD-1', display_text: '必要摘要', excerpt: '必要摘录', occurred_at: null, evidence_type: 'FACT', source_perspective: 'CUSTOMER_FIRST_PARTY' }],
+        consultation_input_snapshot: { current: { notes: { text: 'RAW_SNAPSHOT_NOTE_13800138000' } }, all_evidence: [{ source_excerpt: 'RAW_EVIDENCE_EXCERPT' }] },
+        communication_records: [{ source_text: 'RAW_SERVICE_RECORD' }],
+        context_density: { classification: 'SPARSE' },
+      },
+      redactValues: ['13800138000'],
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const promptInput = JSON.parse(body.messages.find((message) => message.role === 'user').content)
+    const serialized = JSON.stringify(promptInput)
+    expect(promptInput.current_snapshot).toEqual({ occupation: '设计师' })
+    expect(promptInput.evidence_refs).toEqual([expect.objectContaining({ evidence_ref: 'E1', display_text: '必要摘要', excerpt: '必要摘录' })])
+    expect(serialized).not.toContain('consultation_input_snapshot')
+    expect(serialized).not.toContain('RAW_SNAPSHOT_NOTE_13800138000')
+    expect(serialized).not.toContain('RAW_EVIDENCE_EXCERPT')
+    expect(serialized).not.toContain('RAW_SERVICE_RECORD')
+    expect(serialized).not.toContain('13800138000')
   })
 
   it('clears a model-misclassified work location before evidence normalization', async () => {
