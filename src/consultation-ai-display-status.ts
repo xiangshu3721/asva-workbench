@@ -11,10 +11,10 @@ export function consultationAiDisplayStatus(
 ): ConsultationAiDisplayStatus {
   const refreshFailed = error.startsWith('重新整理失败：')
   const readFailed = Boolean(error) && !refreshFailed
-  const label = status === 'FAILED' ? 'AI 理解未完成'
-    : refreshFailed ? 'AI 更新未完成'
-      : readFailed ? 'AI 读取未完成'
-        : status === 'PROCESSING' ? 'AI 理解整理中'
+  const label = status === 'PROCESSING' ? 'AI 理解整理中'
+    : status === 'FAILED' ? 'AI 理解未完成'
+      : refreshFailed ? 'AI 更新未完成'
+        : readFailed ? 'AI 读取未完成'
           : status === 'STALE' ? 'AI 理解待更新'
             : status === 'FRESH' ? 'AI 理解已整理'
               : 'AI 理解状态待确认'
