@@ -19,6 +19,8 @@ import { releasesMatch } from './release-meta'
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
 import { canCommitCustomerResponse, createCustomerScopedState, isCustomerScopedStateFor, type CustomerScopedState } from './customer-switch-safety'
 import { UNASSIGNED_OWNER_FILTER, filterCustomerDirectory, ownerFilterStaffOptions, type OwnerFilterValue } from './customer-directory-filter'
+import { customerDirectoryConcernPreview } from './customer-directory-concern-preview'
+import { consultationAiDisplayStatus } from './consultation-ai-display-status'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { PASSWORD_POLICY_CODES, PASSWORD_POLICY_MESSAGES, validatePassword } from '../shared/password-policy.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
@@ -700,7 +702,7 @@ function CustomersPage({ staff, database, directoryLoading, dataReady, directory
                         {customer.name}
                         {tags.length > 0 && <span className="customer-list-tags">{tags.map((tag) => <em key={tag}>{tag}</em>)}</span>}
                       </strong>
-                      <span>{customer.need || '尚未记录当前困扰'}</span>
+                      <span>{sanitizeUserVisibleText(customerDirectoryConcernPreview(customer))}</span>
                       <small>{helper}</small>
                     </span>
                     <span className="list-chevron">›</span>
@@ -1378,13 +1380,8 @@ function CustomerUnderstandingPanel({ response, fallback, fallbackTopics, status
   const salesRefs = safeSalesResponse?.evidence_refs || refs
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
   const entryPoints = consultationView.entryPoints
-  const notice = status === 'FAILED'
-    ? 'AI 重新整理未完成，当前显示基于已录入资料的待确认结果。'
-    : status === 'PROCESSING'
-      ? '正在重新整理，当前显示上一次可用结果。'
-      : error
-        ? (refreshFailed ? '重新整理未完成，当前保留上一次可用结果。' : '读取咨询理解失败，当前保留上一次可用结果。')
-        : ''
+  const consultationStatus = consultationAiDisplayStatus(status, error, consultationView.state === 'HAS_SIGNALS')
+  const notice = consultationStatus.notice
   const hasPanelMaterial = Boolean(understanding) || consultationView.state !== 'UNAVAILABLE'
   const consultationContent = (loading || status === 'PROCESSING') && !hasPanelMaterial ? <p className="understanding-empty">正在读取该客户的咨询档案…</p> : !hasPanelMaterial ? <div className="sales-empty"><p>{refreshFailed ? '重新整理未完成，暂时没有可用结果。' : error ? '咨询理解读取失败，可以稍后重试。' : '还没有整理这个客户的 AI 档案。'}</p><button className="primary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '整理中…' : error ? '重试' : '开始整理'}</button><span>{understandingStatusLabel(status)}</span></div> : <>{notice && <p className="understanding-read-warning">{notice}</p>}<div className="consultation-grid">
       <CurrentCoreIssuesModule issues={consultationView.issues} state={consultationView.state} refs={refs} />
@@ -1392,7 +1389,7 @@ function CustomerUnderstandingPanel({ response, fallback, fallbackTopics, status
       <ConsultationModule title="服务注意事项" hint="可直接转成行动" items={(understanding?.service_cautions || []).slice(0, 4)} refs={refs} tone="caution" />
       <ConsultationModule title="当前资源" items={strong(understanding?.resources_and_strengths || []).slice(0, 3)} refs={refs} tone="resource" />
     </div></>
-  return <section className={`customer-detail-section understanding-panel ${view === 'sales' ? 'sales-view' : 'consultation-view'}`}><div className="customer-view-tabs" role="tablist" aria-label="客户理解视角"><button type="button" className={view === 'consultation' ? 'active' : ''} role="tab" aria-selected={view === 'consultation'} onClick={() => onViewChange('consultation')}>咨询视角</button><button type="button" className={view === 'sales' ? 'active' : ''} role="tab" aria-selected={view === 'sales'} onClick={() => onViewChange('sales')}>销售视角</button></div><div className="understanding-heading-actions"><span className={`understanding-status understanding-status-${(view === 'sales' ? salesStatus : status).toLowerCase()}`}>{understandingStatusLabel(view === 'sales' ? salesStatus : status)}</span><button className="secondary-button small" type="button" disabled={view === 'sales' ? salesRefreshing : refreshing} onClick={view === 'sales' ? onSalesRefresh : onRefresh}>{(view === 'sales' ? salesRefreshing : refreshing) ? '整理中…' : '重新整理'}</button></div>{view === 'sales' ? <SalesUnderstandingView customerId={customerId} response={safeSalesResponse} fallback={sales} status={salesStatus} error={salesError} loading={salesLoading} refreshing={salesRefreshing} onRefresh={onSalesRefresh} refs={salesRefs} courses={courses} canEditEnrollments={canEditEnrollments} onEditEnrollments={onEditEnrollments} /> : consultationContent}</section>
+  return <section className={`customer-detail-section understanding-panel ${view === 'sales' ? 'sales-view' : 'consultation-view'}`}><div className="customer-view-tabs" role="tablist" aria-label="客户理解视角"><button type="button" className={view === 'consultation' ? 'active' : ''} role="tab" aria-selected={view === 'consultation'} onClick={() => onViewChange('consultation')}>咨询视角</button><button type="button" className={view === 'sales' ? 'active' : ''} role="tab" aria-selected={view === 'sales'} onClick={() => onViewChange('sales')}>销售视角</button></div><div className="understanding-heading-actions"><span className={`understanding-status understanding-status-${(view === 'sales' ? salesStatus : status).toLowerCase()}`}>{view === 'sales' ? understandingStatusLabel(salesStatus) : consultationStatus.label}</span><button className="secondary-button small" type="button" disabled={view === 'sales' ? salesRefreshing : refreshing} onClick={view === 'sales' ? onSalesRefresh : onRefresh}>{(view === 'sales' ? salesRefreshing : refreshing) ? '整理中…' : '重新整理'}</button></div>{view === 'sales' ? <SalesUnderstandingView customerId={customerId} response={safeSalesResponse} fallback={sales} status={salesStatus} error={salesError} loading={salesLoading} refreshing={salesRefreshing} onRefresh={onSalesRefresh} refs={salesRefs} courses={courses} canEditEnrollments={canEditEnrollments} onEditEnrollments={onEditEnrollments} /> : consultationContent}</section>
 }
 
 function DetailMetric({ label, value, note }: { label: string; value: string; note?: string }) { return <div className="detail-metric"><span>{label}</span><strong>{value}</strong>{note && <small>{note}</small>}</div> }
