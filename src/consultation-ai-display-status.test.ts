@@ -27,6 +27,15 @@ describe('consultation AI status copy', () => {
     expect(consultationAiDisplayStatus('STALE', '读取咨询理解失败：网络超时', true).notice).toContain('读取失败')
   })
 
+  it('does not label the previous AI version as freshly updated when a new refresh or read failed', () => {
+    const update = consultationAiDisplayStatus('FRESH', '重新整理失败：网络超时', true)
+    expect(update.label).toBe('AI 更新未完成')
+    expect(update.notice).toContain('更新未完成')
+    const read = consultationAiDisplayStatus('FRESH', '读取咨询理解失败：网络中断', true)
+    expect(read.label).toBe('AI 读取未完成')
+    expect(read.notice).toContain('读取失败')
+  })
+
   it('does not show a redundant warning for a fresh or merely stale AI understanding', () => {
     expect(consultationAiDisplayStatus('FRESH', '', true)).toEqual({ label: 'AI 理解已整理', notice: '' })
     expect(consultationAiDisplayStatus('STALE', '', true)).toEqual({ label: 'AI 理解待更新', notice: '' })
