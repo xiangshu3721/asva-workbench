@@ -119,6 +119,27 @@ describe('consultation understanding refresh reliability', () => {
     expect(repository.load).toHaveBeenCalledTimes(1)
   })
 
+  it('applies Stage 6A confidence boundary before persisting a successful AI result', async () => {
+    const repository = createRepository()
+    const ungrounded = validUnderstanding()
+    ungrounded.one_line_understanding = { text: '客户一定缺乏自我价值', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: [] }
+    ungrounded.current_needs = [{ need: '客户需要立即辞职', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: [] }]
+    ungrounded.working_hypotheses = [{ text: '客户可能害怕改变', confidence: 'HIGH', type: 'WORKING_HYPOTHESIS', evidence_ids: [] }]
+    ungrounded.meta.overall_confidence = 'HIGH'
+    const fetchMock = vi.fn(async () => response(ungrounded))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1', { force: true })
+
+    expect(result.status).toBe('FRESH')
+    expect(result.understanding.one_line_understanding).toMatchObject({ confidence: 'LOW', type: 'SYNTHESIS', text: '客户一定缺乏自我价值' })
+    expect(result.understanding.current_needs[0]).toMatchObject({ confidence: 'LOW', type: 'SYNTHESIS' })
+    expect(result.understanding.working_hypotheses[0]).toMatchObject({ confidence: 'LOW', type: 'WORKING_HYPOTHESIS' })
+    expect(result.understanding.meta.overall_confidence).toBe('LOW')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(updateRecordMock).toHaveBeenCalledTimes(2)
+  })
+
   it('returns a structured fallback when DeepSeek is unavailable instead of an empty result', async () => {
     const repository = createRepository()
     vi.stubGlobal('fetch', vi.fn(async () => response({}, 503)))
