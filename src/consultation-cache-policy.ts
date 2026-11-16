@@ -37,3 +37,18 @@ export function consultationCacheDecision({
     forceRead: Boolean(cached && !snapshotMatches),
   }
 }
+
+/** While an old request is loading, render current local source signals
+ * instead of stale server topics. Server Evidence still wins once its
+ * response has been tagged with this exact client snapshot.
+ */
+export function currentConsultationTopics<T extends { customer_id: string; source_fingerprint: string | null }>(
+  response: { customerId: string; meta?: { consultationClientFingerprint?: string }; consultation_topics?: T } | null | undefined,
+  local: T,
+): T {
+  return response?.customerId === local.customer_id
+    && response.meta?.consultationClientFingerprint === local.source_fingerprint
+    && response.consultation_topics?.customer_id === local.customer_id
+    ? response.consultation_topics
+    : local
+}
