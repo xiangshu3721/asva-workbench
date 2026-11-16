@@ -1,0 +1,38 @@
+# ASVA 项目背景适配层。此文件用于快速接手，不是生产真值数据库。
+protocol: XSH_AI_DEV_V1
+project_id: ASVA_WORKBENCH
+repository: xiangshu3721/asva-workbench
+default_branch: master
+business_goal: "导师工作台：客户资料、智能整理和服务辅助"
+code_map:
+  frontend: "src/"
+  frontend_api_client: "src/clientApi.ts"
+  http_router: "server/index.mjs"
+  backend_repository: "server/repository.mjs"
+  feishu_gateway: "server/feishu.mjs"
+  feishu_field_mapping: "server/field-mapping.mjs"
+  llm: "server/deepseek.mjs"
+  tests: "server/、src/ 下测试文件"
+environments:
+  production_deploy_allowed_by_default: false
+  production_write_allowed_by_default: false
+  staging_required_for_real_integration: true
+  github_pages:
+    workflow: ".github/workflows/deploy-pages.yml"
+    warning: "master push 自动触发 Pages，文档合并也可能触发发布工作流"
+  notes: "环境变量与密钥必须从实时配置只读核验，不在此存放凭证"
+known_current_work:
+  issue: "新增客户 AI 自动归档轻量两阶段"
+  active_pr: "https://github.com/xiangshu3721/asva-workbench/pull/56"
+  status_as_of: "2026-10-31"
+  status: "隔离环境Source/Evidence/Proposal已实证；Customers自动字段和超时/前端生产验证尚未完成；不得当作已上线"
+verify_on_each_handoff:
+  - "当前 default branch 和生产真实部署 SHA"
+  - "PR #56 是否更新、合并或废弃"
+  - "CloudBase、飞书表格 ID、权限和生产环境隔离"
+  - "Pages 是否仍在master push时自动部署"
+  - "真实现有业务和版本，与 README 中历史描述是否一致"
+do_not_store_here:
+  - "密钥、token、密码"
+  - "客户真实个人资料或未脱敏日志"
+  - "无法核实的生产配置事实"

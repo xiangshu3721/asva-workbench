@@ -1,0 +1,230 @@
+{
+  "generatedAtAsiaShanghai": "2026-10-31T21:18:06+08:00",
+  "tip": "beaf2692bfdfadafeee42ccd0a4b140a4f0bedfa",
+  "customerId": "CUS-db3032dea6f71877dc42",
+  "operationId": "ASVA-ISOLATION-PR56-FINAL-RERUN-20261031203124_51a2b5",
+  "forceUsed": false,
+  "phases": [
+    {
+      "phase": "SAVE",
+      "httpStatus": null,
+      "durationMs": 4450,
+      "ok": true,
+      "customerId": "CUS-db3032dea6f71877dc42",
+      "operationId": "ASVA-ISOLATION-PR56-FINAL-RERUN-20261031203124_51a2b5",
+      "note": "isolation script called repository.createCustomer (not CloudBase HTTP); wall-clock from timings"
+    },
+    {
+      "phase": "EXTRACT",
+      "status": "PROCESSING",
+      "durationMs": 44943,
+      "customerId": "CUS-db3032dea6f71877dc42",
+      "sourceId": "SRC-d179313a2dda70c92736e93a",
+      "batchId": "EXT-162969c530012baac7953858",
+      "operationId": "ASVA-ISOLATION-PR56-FINAL-RERUN-20261031203124_51a2b5"
+    },
+    {
+      "phase": "FINALIZE",
+      "status": "COMPLETED",
+      "durationMs": 52299,
+      "customerId": "CUS-db3032dea6f71877dc42",
+      "sourceId": "SRC-d179313a2dda70c92736e93a",
+      "batchId": "EXT-162969c530012baac7953858",
+      "evidenceCount": 6,
+      "proposalCount": 6,
+      "automaticProfileStatus": "COMPLETED"
+    },
+    {
+      "phase": "FINALIZE2",
+      "status": "FAILED",
+      "phaseDetail": "PROCESS_SOURCE",
+      "durationMs": 12105,
+      "customerId": "CUS-db3032dea6f71877dc42",
+      "note": "non-force re-finalize; produced second Source FAIL (see diagnosis)"
+    }
+  ],
+  "deepseekCalls": [
+    {
+      "operation": "evidence.extract",
+      "model": "deepseek-flash",
+      "attempt": 1,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "output_length": 2606,
+      "duration_ms": 3521
+    },
+    {
+      "operation": "unknown",
+      "model": "deepseek-chat",
+      "attempt": 1,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "output_length": 3227,
+      "duration_ms": 8417
+    }
+  ],
+  "selectedAuditAndSourceWrites": [
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "customer.create",
+      "operation_id": "CUS-db3032dea6f71877dc42",
+      "customer_id": "CUS-db3032dea6f71877dc42",
+      "request_id": "20261031203126B813C7F9295B88C462CB",
+      "latency_ms": 2991,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "SAVE",
+      "operation": "customer.create",
+      "operation_id": "ASVA-ISOLATION-PR56-FINAL-RERUN-20261031203124_51a2b5",
+      "result": "SUCCESS",
+      "phase": "DONE",
+      "commit_mode": "ASYNC",
+      "customer_save_total_ms": 4449,
+      "identity_resolution_ms": 1445,
+      "customer_write_ms": 2991,
+      "write_ack_ms": 2991,
+      "readback_ms": 0,
+      "enrollment_write_ms": 0,
+      "profile_change_ms": 0,
+      "ai_ms": 0,
+      "other_ms": 13
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.create",
+      "operation_id": "SRC-d179313a2dda70c92736e93a",
+      "customer_id": "CUS-db3032dea6f71877dc42",
+      "request_id": "20261031203133F2CE481BB63EDB5891A4",
+      "latency_ms": 2974,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.privacy.classify",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "20261031203136EC9C0E407E4A6BB83F97",
+      "latency_ms": 2021,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.processing.start",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "20261031203142B4EC3FC37CB80B7CAA81",
+      "latency_ms": 1651,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.processing.activate",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "20261031203204B813C7F9295B88C46E07",
+      "latency_ms": 1977,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.processing.extract_ready",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "20261031203209B826FBEB6CEC52A4FC18",
+      "latency_ms": 2008,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "AUDIT",
+      "operation": "PROCESS_SOURCE_EXTRACT",
+      "target_id": "SRC-d179313a2dda70c92736e93a",
+      "operator_id": "staff-admin-owner-001",
+      "result": "EXTRACT_READY",
+      "error_code": "OPERATION_FAILED",
+      "timestamp": "2026-10-31T12:32:12.567Z"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.processing.start",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "2026103120321862416A44BAF1955939BE",
+      "latency_ms": 2001,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.processing.activate",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "202610312032212FA3AEE5FBF9CC640018",
+      "latency_ms": 1969,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.processing.completed",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "202610312032587A3BF987D79D257A7C58",
+      "latency_ms": 1913,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "AUDIT",
+      "operation": "PROCESS_SOURCE",
+      "target_id": "SRC-d179313a2dda70c92736e93a",
+      "operator_id": "staff-admin-owner-001",
+      "result": "SUCCESS",
+      "timestamp": "2026-10-31T12:33:00.013Z"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.create",
+      "operation_id": "SRC-b6d4994db33bad45f52aa33f",
+      "customer_id": "CUS-db3032dea6f71877dc42",
+      "request_id": "202610312033145B77997646CC24AE2FD8",
+      "latency_ms": 2899,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "FEISHU_WRITE",
+      "operation": "source.privacy.classify",
+      "operation_id": null,
+      "customer_id": "",
+      "request_id": "20261031203316CED171C3F913038B8DF1",
+      "latency_ms": 2081,
+      "result": "SUCCESS"
+    },
+    {
+      "channel": "AUDIT",
+      "operation": "HTTP_AUTO_ARCHIVE_PROCESS",
+      "target_id": "SRC-b6d4994db33bad45f52aa33f",
+      "operator_id": "staff-admin-owner-001",
+      "result": "FAIL",
+      "error_code": "OPERATION_FAILED",
+      "timestamp": "2026-10-31T12:33:23.082Z"
+    },
+    {
+      "channel": "AUDIT",
+      "operation": "REFRESH_CUSTOMER_UNDERSTANDING",
+      "target_id": "CUS-db3032dea6f71877dc42",
+      "operator_id": "staff-admin-owner-001",
+      "result": "SUCCESS",
+      "timestamp": "2026-10-31T12:33:52.447Z"
+    }
+  ],
+  "secondSourceFail": {
+    "sourceId": "SRC-b6d4994db33bad45f52aa33f",
+    "customerId": "CUS-db3032dea6f71877dc42",
+    "operation": "HTTP_AUTO_ARCHIVE_PROCESS",
+    "result": "FAIL",
+    "error_code": "OPERATION_FAILED",
+    "actor": "staff-admin-owner-001",
+    "timestampUtc": "2026-10-31T12:33:23.082Z",
+    "precedingSourceCreateRequestId": "202610312033145B77997646CC24AE2FD8",
+    "trigger": "FINALIZE2 non-force runCustomerAutoArchive after main COMPLETED"
+  },
+  "desensitization": "notes/rawText/secrets removed; synthetic customer only"
+}

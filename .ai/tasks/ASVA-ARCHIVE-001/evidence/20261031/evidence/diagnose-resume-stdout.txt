@@ -1,0 +1,32 @@
+[ASVA_FEISHU_WRITE] {"request_id":"20261031211835A8B1527563C77564045D","operation":"update_record","client_token":null,"table":"tblFKkM7fPTqi8Zx","attempt":1,"latency_ms":863,"result":"SUCCESS"}
+[ASVA_AUDIT] {"operation":"HTTP_AUTO_ARCHIVE_PROCESS","target_id":"SRC-b6d4994db33bad45f52aa33f","operator_id":"staff-admin-owner-001","result":"FAIL","error_code":"OPERATION_FAILED","timestamp":"2026-10-31T13:18:36.571Z"}
+{
+  "ok": true,
+  "resume": {
+    "durationMs": 4848,
+    "resultStatus": "FAILED",
+    "phase": "PROCESS_SOURCE",
+    "sourceId": "SRC-b6d4994db33bad45f52aa33f",
+    "reused": false,
+    "evidenceCount": null,
+    "proposalCount": null,
+    "error": null,
+    "errorCode": "ARCHIVE_FINALIZE_NO_EVIDENCE"
+  },
+  "deltas": {
+    "sourceDelta": 0,
+    "evidenceDelta": 0,
+    "proposalDelta": 0,
+    "newSourceIds": []
+  },
+  "modelCalls": 0,
+  "second": {
+    "id": "SRC-b6d4994db33bad45f52aa33f",
+    "processingStatus": "UPLOADED",
+    "processingError": null,
+    "contentHash": "dabe7985069b646acd9a9e9451b8c1a70d5ae7f604d5361ce3e92b8cc9ab9da4",
+    "notesPrefix": "AUTO_PROFILE_ORGANIZE:HTTP_AUTO_ARCHIVE",
+    "lastBatchId": null,
+    "sourceType": "TEXT_INPUT"
+  }
+}

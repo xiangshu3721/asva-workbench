@@ -1,0 +1,9 @@
+{
+  "SAVE_CUSTOMER_MS": 4450,
+  "EXTRACT_MS": 44943,
+  "FINALIZE_MS": 52299,
+  "FINALIZE2_MS": 12105,
+  "AI_TOTAL_MS": 97242,
+  "acceptance_saveMsUnder8s": true,
+  "source": "isolation-summary-rerun.json timings (Asia/Shanghai run ~2026-10-31 20:31-20:33)"
+}

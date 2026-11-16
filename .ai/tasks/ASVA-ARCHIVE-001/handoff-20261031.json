@@ -1,0 +1,89 @@
+{
+  "protocol": "XSH_AI_DEV_V1",
+  "record_type": "code_and_release_handoff",
+  "task_id": "ASVA-ARCHIVE-001",
+  "task_spec_version": "1.0.0",
+  "task_spec_sha256": "7ac6dd4a02d3dde23301d2db3f5825c370cdf4c2d76deed603ef725d99f6741a",
+  "recorded_date": "2026-10-31",
+  "producer": "ChatGPT / GitHub connected source verification",
+  "intended_next_executor": "Codex (not Grok Bot)",
+  "business_candidate": {
+    "repository": "xiangshu3721/asva-workbench",
+    "pull_request": 56,
+    "branch": "fix/two-phase-new-customer-archive-20261031",
+    "exact_commit_sha": "8dd445020d9aa9f2be327458331b83f7411ca5e5",
+    "pr_draft": true,
+    "pr_mergeable": false,
+    "source_verification": "COMMIT_AND_PR_HEAD_MATCHED",
+    "changed_files_in_pr": 30,
+    "latest_commit_files": [
+      "server/index.mjs",
+      "server/repository.mjs",
+      "server/two-phase-http-auto-archive.test.mjs",
+      "src/App.tsx",
+      "src/clientApi.ts"
+    ],
+    "code_features_verified": [
+      "POST /api/customers saves Customers separately from AI extraction",
+      "POST /api/customers/:id/auto-archive extraction",
+      "POST /api/customers/:id/auto-archive/finalize accepts pinned sourceId",
+      "finalize path prevents creation of a new Source and model extraction; regression unit tests included",
+      "frontend passes extracted sourceId to finalize, shows success toast and pending-review profile"
+    ]
+  },
+  "executor_claims_not_independently_verified": {
+    "report_source": "User-provided final Grok Bot completion summary in 2026-10-31 chat (no final raw evidence attachment in this turn)",
+    "result_state": "COMPLETE",
+    "ready_for_release": true,
+    "acceptance_results": "AT001–AT010 reported PASS by prior executor",
+    "test_counts": {
+      "targeted_vitest": 10,
+      "passed": 10
+    },
+    "synthetic_customer": "CUS-718ec371500b59b29cdb",
+    "primary_source": "SRC-d51785e454b4ae6b8d1513df",
+    "claimed_real_feishu_and_deepseek": true,
+    "claimed_browser_e2e": true,
+    "claimed_idempotent_finalize": true,
+    "claimed_zero_release_blockers": true,
+    "browser_auth_for_test": "temporary AUTH_MODE=ADMIN_CODE, not part of commit"
+  },
+  "independent_evidence": {
+    "latest_commit_review": "SOURCE_DIFF_INSPECTED",
+    "latest_commit_github_actions_runs": 0,
+    "latest_executor_raw_evidence_for_exact_commit": "NOT_AVAILABLE_IN_CONNECTED_GITHUB_AT_RECORD_TIME",
+    "previous_20261031_evidence": ".ai/tasks/ASVA-ARCHIVE-001/evidence/20261031/",
+    "previous_20261031_status": "BLOCKED (superseded as execution report; retained historically)",
+    "production_live_runtime_identity": "NOT_INDEPENDENTLY_VERIFIED"
+  },
+  "release": {
+    "user_authorization": "User explicitly requested production publication and Codex handoff on 2026-10-31",
+    "production_backend_previous_reported_sha": "115b163",
+    "github_master_sha_at_review": "efc96a6cd6daa0ec37f845a5a3729f4c5f872d0a",
+    "production_backend_deployment": "NOT_PERFORMED",
+    "production_frontend_deployment": "NOT_PERFORMED",
+    "merge_of_pr56": "NOT_PERFORMED",
+    "reason": "PR#56 has merge conflicts; GitHub master push publishes Pages only. CloudBase asva-api deployment requires separately authenticated Tencent Cloud CLI and production config; no authenticated CloudBase session is accessible to this assistant.",
+    "github_pages_workflow": ".github/workflows/deploy-pages.yml",
+    "cloudbase_deploy_script": "scripts/deploy-cloudbase.mjs",
+    "required_sequence": [
+      "Confirm current production backup and exact active backend/frontend versions",
+      "Resolve/avoid PR56 conflicts and isolate intended release code",
+      "Validate production env without displaying secrets; test exact release SHA",
+      "Deploy backend asva-api first and verify route health/authentication",
+      "Publish matching frontend Pages only once backend verified",
+      "Controlled smoke and immediate rollback on any failure",
+      "Publish deployed SHA, timestamps, health and screenshot evidence as a new independent receipt"
+    ]
+  },
+  "current_status": "RELEASE_HANDOFF_CREATED_DEPLOYMENT_PENDING",
+  "ready_for_production_use": false,
+  "prohibited_actions": [
+    "No changes to actual customer data outside approved synthetic tests",
+    "Do not force-merge PR#56 or push master solely to trigger Pages while API remains old",
+    "Do not treat executor-reported test PASS as proof of live production deployment",
+    "Do not expose credentials or customer private content"
+  ],
+  "next_actor": "Codex",
+  "next_action": "Use CODEX_HANDOFF.md and task.yaml to complete deployment via the user's authorized CloudBase CLI session; write independently observed release receipt and leave user-facing production status accurate"
+}
