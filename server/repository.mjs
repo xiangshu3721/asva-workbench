@@ -1928,20 +1928,38 @@ export class FeishuRepository {
     // click. A scoped read gives the caller the current PROCESSING/old result
     // without sharing another actor's response.
     if (this.understandingRefreshInFlight.has(customerId)) return this.getCustomerUnderstanding(actorId, customerId)
-    const request = this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force }))
+    const queuedAt = Date.now()
+    const request = this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force, queuedAt }))
     this.understandingRefreshInFlight.set(customerId, request)
     try { return await request } finally {
       if (this.understandingRefreshInFlight.get(customerId) === request) this.understandingRefreshInFlight.delete(customerId)
     }
   }
 
-  async refreshCustomerUnderstandingUnsafe(actorId, customerId, { force = false } = {}) {
+  async refreshCustomerUnderstandingUnsafe(actorId, customerId, { force = false, queuedAt = null } = {}) {
     const startedAt = Date.now()
+    // Scalar timings only: no customer ID, actor, evidence, prompt, or model payload.
+    // Null means a stage never ran, not that it took zero milliseconds.
+    const stages = {
+      queue_wait_ms: Number.isFinite(queuedAt) ? Math.max(0, startedAt - queuedAt) : null,
+      feishu_read_ms: null,
+      processing_write_ms: null,
+      deepseek_ms: null,
+      terminal_write_ms: null,
+      result: 'INCOMPLETE',
+    }
+    try {
     const deadline = startedAt + CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS
     const generationDeadline = deadline - CUSTOMER_UNDERSTANDING_FINAL_WRITE_RESERVE_MS
     this.invalidateDatabaseCache()
-    const database = await withinUnderstandingRefreshBudget(() => this.load(), deadline, 'UNDERSTANDING_SOURCE_READ_TIMEOUT')
-    const feishuReadMs = Date.now() - startedAt
+    const sourceReadStartedAt = Date.now()
+    let database
+    try {
+      database = await withinUnderstandingRefreshBudget(() => this.load(), deadline, 'UNDERSTANDING_SOURCE_READ_TIMEOUT')
+    } finally {
+      stages.feishu_read_ms = Date.now() - sourceReadStartedAt
+    }
+    const feishuReadMs = stages.feishu_read_ms
     if (database._dataFreshness === 'DELAYED') throw Object.assign(new Error('客户资料暂时无法读取，未使用旧资料重新整理。'), { code: 'UNDERSTANDING_SOURCE_READ_FAILED', status: 503 })
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
@@ -1952,14 +1970,18 @@ export class FeishuRepository {
     const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts })
     const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts })
     const currentMeta = customerRecord.understandingMeta || {}
-    if (activeUnderstandingProcessing(currentMeta)) return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta })
-    if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta })
+    if (activeUnderstandingProcessing(currentMeta)) { stages.result = 'REUSED_PROCESSING'; return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta }) }
+    if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) { stages.result = 'REUSED_FRESH'; return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta }) }
     const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), processingExpiresAt: new Date(generationDeadline).toISOString(), payload: customerRecord.understanding || null }
     const writeMeta = (meta) => updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { understanding: meta }) }), (latestCustomer) => latestCustomer.understandingMeta?.updatedAt === meta.updatedAt && latestCustomer.understandingMeta?.status === meta.status)
+    const processingWriteStartedAt = Date.now()
     try {
       await withinUnderstandingRefreshBudget(() => writeMeta(processingMeta), generationDeadline, 'UNDERSTANDING_METADATA_WRITE_TIMEOUT')
     } catch (error) {
+      stages.result = 'STATUS_WRITE_UNKNOWN'
       throw unknownUnderstandingStatusWrite(error)
+    } finally {
+      stages.processing_write_ms = Date.now() - processingWriteStartedAt
     }
     let modelMs = 0
     let result
@@ -1969,8 +1991,12 @@ export class FeishuRepository {
       if (!config.deepseek.apiKey) throw Object.assign(new Error('DeepSeek 尚未配置'), { code: 'DEEPSEEK_UNAVAILABLE', status: 503 })
       const redactValues = [customerRecord.name, customerRecord.phone, customerRecord.wechat]
       const modelStartedAt = Date.now()
-      result = await withinUnderstandingRefreshBudget(() => createCustomerUnderstanding({ context, redactValues }), generationDeadline, 'UNDERSTANDING_REFRESH_BUDGET_EXCEEDED')
-      modelMs = Date.now() - modelStartedAt
+      try {
+        result = await withinUnderstandingRefreshBudget(() => createCustomerUnderstanding({ context, redactValues }), generationDeadline, 'UNDERSTANDING_REFRESH_BUDGET_EXCEEDED')
+      } finally {
+        modelMs = Date.now() - modelStartedAt
+        stages.deepseek_ms = modelMs
+      }
       const quality = qualityCheckCustomerUnderstanding(result, { evidenceIds: context.evidence_refs.map((item) => item.evidence_id), openConflictFields: conflicts.filter((item) => item.status === 'OPEN').map((item) => item.fieldKey) })
       if (!quality.ok) throw Object.assign(new Error('客户理解质量门禁未通过'), { code: 'UNDERSTANDING_QUALITY_FAILED', status: 502, quality })
       terminalMeta = { ...processingMeta, status: 'FRESH', processingExpiresAt: null, generatedAt: result.generated_at || now(), updatedAt: now(), durationMs: Date.now() - startedAt, evidenceCount: context.evidence_refs.length, quality, payload: result }
@@ -1979,21 +2005,30 @@ export class FeishuRepository {
       result = customerRecord.understanding || createLocalCustomerUnderstanding(context)
       terminalMeta = { ...processingMeta, status: 'FAILED', processingExpiresAt: null, provider: customerRecord.understanding ? processingMeta.provider : 'STRUCTURED_FALLBACK', updatedAt: now(), durationMs: Date.now() - startedAt, errorCode: error?.code || 'UNDERSTANDING_REFRESH_FAILED', payload: result }
     }
+    const terminalWriteStartedAt = Date.now()
     try {
       await withinUnderstandingRefreshBudget(() => writeMeta(terminalMeta), deadline, 'UNDERSTANDING_METADATA_WRITE_TIMEOUT')
     } catch (error) {
+      stages.result = 'STATUS_WRITE_UNKNOWN'
       this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId, 'FAIL', 'UNDERSTANDING_STATUS_WRITE_UNKNOWN')
       console.info('[ASVA_UNDERSTANDING_REFRESH]', JSON.stringify({ result: 'STATUS_WRITE_UNKNOWN', error_code: error?.code || 'UNDERSTANDING_METADATA_WRITE_TIMEOUT', feishu_read_ms: feishuReadMs, duration_ms: Date.now() - startedAt, evidence_count: context.evidence_refs.length }))
       throw unknownUnderstandingStatusWrite(error)
+    } finally {
+      stages.terminal_write_ms = Date.now() - terminalWriteStartedAt
     }
     if (refreshError) {
+      stages.result = 'STRUCTURED_FALLBACK'
       this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId, 'FAIL', terminalMeta.errorCode)
       console.info('[ASVA_UNDERSTANDING_REFRESH]', JSON.stringify({ result: 'STRUCTURED_FALLBACK', error_code: terminalMeta.errorCode, feishu_read_ms: feishuReadMs, duration_ms: Date.now() - startedAt, evidence_count: context.evidence_refs.length }))
       return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: terminalMeta, understanding: result })
     }
+    stages.result = 'FRESH'
     this.audit('REFRESH_CUSTOMER_UNDERSTANDING', customerId, actorId)
     console.info('[ASVA_UNDERSTANDING_REFRESH]', JSON.stringify({ result: 'FRESH', feishu_read_ms: feishuReadMs, deepseek_ms: modelMs, duration_ms: Date.now() - startedAt, evidence_count: context.evidence_refs.length }))
     return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: terminalMeta, understanding: result })
+    } finally {
+      console.info('[ASVA_UNDERSTANDING_STAGE_MS]', JSON.stringify({ ...stages, execution_ms: Date.now() - startedAt }))
+    }
   }
 
   async getCustomerSalesUnderstanding(actorId, customerId) {

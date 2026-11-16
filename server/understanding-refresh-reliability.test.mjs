@@ -25,6 +25,13 @@ function response(content, status = 200) {
   return new Response(JSON.stringify(status === 200 ? { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(content) } }] } : { error: { message: 'synthetic upstream failure' } }), { status, headers: { 'content-type': 'application/json' } })
 }
 
+
+function stageLogs(spy) {
+  return spy.mock.calls
+    .filter(([prefix]) => prefix === '[ASVA_UNDERSTANDING_STAGE_MS]')
+    .map(([, payload]) => JSON.parse(payload))
+}
+
 function createWorkspace() {
   const customer = { id: 'CUS-1', name: '合成客户', phone: '', wechat: '', profileVersion: 1, profileFields: {}, profileFieldMeta: {}, notes: '', need: '', goal: '', helpExpectation: '' }
   return {
@@ -135,6 +142,7 @@ describe('consultation understanding refresh reliability', () => {
 
   it('times out the model inside the CloudBase budget and still returns a fallback', async () => {
     vi.useFakeTimers()
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
     const repository = createRepository()
     vi.stubGlobal('fetch', vi.fn((_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))))
 
@@ -143,6 +151,13 @@ describe('consultation understanding refresh reliability', () => {
     const result = await pending
 
     expect(result).toMatchObject({ status: 'FAILED', meta: { errorCode: 'DEEPSEEK_TIMEOUT', source: 'STRUCTURED_FALLBACK' } })
+    expect(stageLogs(log)).toEqual([
+      expect.objectContaining({
+        result: 'STRUCTURED_FALLBACK',
+        deepseek_ms: CUSTOMER_UNDERSTANDING_TIMEOUT_MS,
+        terminal_write_ms: expect.any(Number),
+      }),
+    ])
   })
 
   it('ends a slow Feishu read inside the server budget without starting a model call', async () => {
@@ -173,6 +188,7 @@ describe('consultation understanding refresh reliability', () => {
 
   it('does not issue a competing terminal write when the processing write times out with an unknown result', async () => {
     vi.useFakeTimers()
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
     const repository = createRepository({ updateDelayMs: () => CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -183,6 +199,16 @@ describe('consultation understanding refresh reliability', () => {
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(updateRecordMock).toHaveBeenCalledTimes(1)
+    expect(stageLogs(log)).toEqual([
+      expect.objectContaining({
+        result: 'STATUS_WRITE_UNKNOWN',
+        queue_wait_ms: expect.any(Number),
+        feishu_read_ms: expect.any(Number),
+        processing_write_ms: expect.any(Number),
+        deepseek_ms: null,
+        terminal_write_ms: null,
+      }),
+    ])
   })
 
   it('does not let an expired processing lease block a later refresh', async () => {
@@ -193,6 +219,37 @@ describe('consultation understanding refresh reliability', () => {
 
     await expect(repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1', { force: true })).resolves.toMatchObject({ status: 'FRESH' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks cache and active-processing early returns without inventing later stage timings', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
+    for (const [status, expectedResult] of [['FRESH', 'REUSED_FRESH'], ['PROCESSING', 'REUSED_PROCESSING']]) {
+      const repository = createRepository()
+      const customer = repository._testDatabase.customers[0]
+      customer.understanding = validUnderstanding()
+      customer.understandingMeta = {
+        status,
+        inputFingerprint: understandingInputFingerprint({ customer, evidenceItems: [], conflicts: [] }),
+        promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION,
+        ...(status === 'PROCESSING' ? { processingExpiresAt: new Date(Date.now() + 60_000).toISOString() } : {}),
+      }
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const before = stageLogs(log).length
+
+      await expect(repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1')).resolves.toMatchObject({ status })
+      expect(stageLogs(log).slice(before)).toEqual([
+        expect.objectContaining({
+          result: expectedResult,
+          feishu_read_ms: expect.any(Number),
+          processing_write_ms: null,
+          deepseek_ms: null,
+          terminal_write_ms: null,
+        }),
+      ])
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(updateRecordMock).not.toHaveBeenCalled()
+    }
   })
 
   it('coalesces a repeated refresh into a scoped read instead of starting a second AI call', async () => {
@@ -238,4 +295,74 @@ describe('consultation understanding refresh reliability', () => {
     repository._testDatabase.customers[0] = { ...repository._testDatabase.customers[0], need: '已明确的新需求' }
     await expect(repository.getCustomerUnderstanding('STAFF-1', 'CUS-LEGACY-A')).resolves.toMatchObject({ status: 'STALE' })
   })
+  it('logs only anonymous scalar timings for successful refresh without extra API work', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const repository = createRepository()
+    const fetchMock = vi.fn(async () => response(validUnderstanding()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1', { force: true })
+    expect(result.status).toBe('FRESH')
+
+    const metrics = stageLogs(log)
+    expect(metrics).toHaveLength(1)
+    expect(metrics[0]).toMatchObject({
+      result: 'FRESH',
+      queue_wait_ms: expect.any(Number),
+      feishu_read_ms: expect.any(Number),
+      processing_write_ms: expect.any(Number),
+      deepseek_ms: expect.any(Number),
+      terminal_write_ms: expect.any(Number),
+      execution_ms: expect.any(Number),
+    })
+    expect(Object.keys(metrics[0]).sort()).toEqual([
+      'deepseek_ms', 'execution_ms', 'feishu_read_ms', 'processing_write_ms',
+      'queue_wait_ms', 'result', 'terminal_write_ms',
+    ].sort())
+    expect(JSON.stringify(metrics)).not.toMatch(/CUS-1|STAFF-1|合成客户|rec-customer|synthetic-test-key/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(updateRecordMock).toHaveBeenCalledTimes(2)
+    expect(getRecordMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('records model duration on a fallback without pretending the AI succeeded', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const repository = createRepository()
+    vi.stubGlobal('fetch', vi.fn(async () => response({}, 503)))
+
+    const result = await repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1', { force: true })
+    expect(result.status).toBe('FAILED')
+    expect(stageLogs(log)).toEqual([
+      expect.objectContaining({
+        result: 'STRUCTURED_FALLBACK',
+        feishu_read_ms: expect.any(Number),
+        processing_write_ms: expect.any(Number),
+        deepseek_ms: expect.any(Number),
+        terminal_write_ms: expect.any(Number),
+      }),
+    ])
+  })
+
+  it('emits a partial stage record when the initial read fails before any writes or AI calls', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const repository = createRepository()
+    repository.load = vi.fn(async () => { throw Object.assign(new Error('synthetic read failed'), { code: 'SYNTHETIC_READ_FAILED' }) })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1', { force: true })).rejects.toMatchObject({ code: 'SYNTHETIC_READ_FAILED' })
+    const metrics = stageLogs(log)
+    expect(metrics).toHaveLength(1)
+    expect(metrics[0]).toMatchObject({
+      result: 'INCOMPLETE',
+      queue_wait_ms: expect.any(Number),
+      feishu_read_ms: expect.any(Number),
+      processing_write_ms: null,
+      deepseek_ms: null,
+      terminal_write_ms: null,
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(updateRecordMock).not.toHaveBeenCalled()
+  })
+
 })
