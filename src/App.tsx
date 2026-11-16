@@ -1193,6 +1193,10 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const requestSequence = ++understandingSequenceRef.current
     const clientSnapshotFingerprint = currentOneLineFingerprint
     setUnderstandingRefreshingCustomerId(requestCustomerId)
+    setUnderstandingByCustomerId((current) => {
+      const existing = current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)
+      return { ...current, [requestCustomerId]: { ...existing, error: '' } }
+    })
     try {
       const refreshed = await runConsultationRefresh(requestCustomerId, force)
       const result = { ...refreshed, meta: { ...refreshed.meta, clientSnapshotFingerprint, consultationClientFingerprint: currentConsultationFingerprint } }
