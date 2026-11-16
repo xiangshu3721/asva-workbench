@@ -1,0 +1,50 @@
+name: ASVA consultation latency (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      window:
+        description: Query recent matching anonymized timing entries only; no client AI requests.
+        type: choice
+        required: true
+        default: 1d
+        options: [6h, 1d]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asva-understanding-latency-readonly
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: cloudbase-production
+    timeout-minutes: 8
+    env:
+      TCB_ENV_ID: root-journey-prod-d4d7pzd0a8f805
+      TCB_CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}
+      LATENCY_WINDOW: ${{ inputs.window }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pinned CloudBase CLI (same version as API release)
+        run: npm install --global @cloudbase/cli@3.8.1
+
+      - name: Login to fixed production environment without exposing output
+        shell: bash
+        run: |
+          set +x
+          if ! tcb login --cloudbase-api-key "$TCB_CLOUDBASE_API_KEY" -e "$TCB_ENV_ID" --json >/dev/null 2>&1; then
+            echo 'BLOCKED: CloudBase authentication not available (details suppressed).'
+            exit 1
+          fi
+
+      - name: Read and aggregate anonymized consultation stage timings
+        run: node scripts/collect-understanding-latency.mjs
