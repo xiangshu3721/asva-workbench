@@ -87,15 +87,36 @@ export function latencyReport(items, { window = '1d', truncated = false, pages =
   const counts = Object.fromEntries([...ALLOWED_RESULTS].map((s) => [s, 0]))
   for (const item of items) { if (ALLOWED_RESULTS.has(item.result)) counts[item.result] += 1 }
   // Reused or early-returned requests cannot prove model or write latency.
+  // Keep successful and fallback requests separate: they have different paths.
+  const fresh = items.filter((item) => item.result === 'FRESH')
+  const fallbacks = items.filter((item) => item.result === 'STRUCTURED_FALLBACK')
   const generated = items.filter((item) => item.result === 'FRESH' || item.result === 'STRUCTURED_FALLBACK')
   const status = generated.length >= 10 && !truncated ? 'MEASURED' : 'INSUFFICIENT_DATA'
   return {
     status, query_window: window, observed_metric_entries: items.length,
-    generation_sample_count: generated.length, pages_queried: pages, truncated,
-    result_counts: counts, metrics: metricsFor(generated),
+    generation_sample_count: generated.length, fresh_sample_count: fresh.length, fallback_sample_count: fallbacks.length, pages_queried: pages, truncated,
+    result_counts: counts, metrics: metricsFor(fresh), fallback_metrics: metricsFor(fallbacks),
     metrics_by_result: Object.fromEntries([...ALLOWED_RESULTS].map((key) => [key, metricsFor(items.filter((item) => item.result === key))])),
-    note: 'Metrics above cover actual generated/fallback requests only; metrics_by_result separates reuse and failures. No matches does not mean zero business calls. P90 requires >=10 non-null samples. No client round-trip measured.',
+    note: 'metrics covers FRESH only; fallback_metrics and metrics_by_result stay separate. Reused or early-returned requests cannot prove model or write latency. No matches does not mean zero business calls. P90 requires >=10 non-null samples per result. No client round-trip measured.',
   }
+}
+
+export function collectLogPages(readPage, { maxPages = MAX_PAGES } = {}) {
+  const collected = []
+  const seenCursors = new Set()
+  let context = null
+  let pages = 0
+  let truncated = false
+  do {
+    if (context && seenCursors.has(context)) { truncated = true; break }
+    if (context) seenCursors.add(context)
+    const page = parseLogPage(readPage(context))
+    collected.push(...page.items)
+    pages += 1
+    context = page.cursor
+    truncated = Boolean(context && pages >= maxPages)
+  } while (context && pages < maxPages)
+  return { items: collected, pages, truncated }
 }
 
 function printReport(report) {
@@ -103,31 +124,22 @@ function printReport(report) {
   process.stdout.write(`${text}\n`)
   if (process.env.GITHUB_STEP_SUMMARY) {
     const rows = Object.entries(report.metrics || {}).map(([key, val]) => `| ${key} | ${val.n} | ${val.p50_ms ?? 'unknown'} | ${val.p90_ms ?? 'unknown'} |`).join('\n')
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## ASVA consultation latency: ${report.status}\n\nTime range: ${report.query_window || 'unknown'}; matching metric entries: ${report.observed_metric_entries ?? 'unknown'}; truncated: ${report.truncated ?? 'unknown'}\n\n| Stage | Non-null N | P50 ms | P90 ms |\n| --- | ---: | ---: | ---: |\n${rows}\n\nThis summary contains aggregate scalar timings only. No raw logs stored.\n`)
+    const resultRows = Object.entries(report.result_counts || {}).map(([key, count]) => `| ${key} | ${count} |`).join('\n')
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## ASVA consultation latency: ${report.status}\n\nTime range: ${report.query_window || 'unknown'}; matching metric entries: ${report.observed_metric_entries ?? 'unknown'}; fresh: ${report.fresh_sample_count ?? 'unknown'}; fallback: ${report.fallback_sample_count ?? 'unknown'}; truncated: ${report.truncated ?? 'unknown'}\n\n| Result | N |\n| --- | ---: |\n${resultRows}\n\n### FRESH timings only\n\n| Stage | Non-null N | P50 ms | P90 ms |\n| --- | ---: | ---: | ---: |\n${rows}\n\nThis summary contains aggregate scalar timings only. No raw logs stored.\n`)
   }
 }
 
 export function runReadOnlySample({ window = '1d', envId = process.env.TCB_ENV_ID } = {}) {
   if (envId !== ENV_ID || !['6h', '1d'].includes(window)) throw new Error('DIAGNOSTIC_TARGET_REJECTED')
-  const collected = []
-  let context = null
-  let pages = 0
-  let truncated = false
-  do {
+  const collected = collectLogPages((context) => {
     const args = ['logs', 'search', '-e', ENV_ID, '-q', QUERY, '-t', window, '-l', String(PAGE_SIZE), '--sort', 'desc', '--json']
     if (context) args.push('--context', context)
-    let output
     try {
       // Capture output privately. Never echo CLI output or stderr in Actions.
-      output = execFileSync('tcb', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, CI: 'true' } })
+      return execFileSync('tcb', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 45000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, CI: 'true' } })
     } catch { throw new Error('LOG_QUERY_UNAVAILABLE') }
-    const page = parseLogPage(output)
-    collected.push(...page.items)
-    pages += 1
-    context = page.cursor
-    truncated = Boolean(context && pages >= MAX_PAGES)
-  } while (context && pages < MAX_PAGES)
-  return latencyReport(collected, { window, pages, truncated })
+  })
+  return latencyReport(collected.items, { window, pages: collected.pages, truncated: collected.truncated })
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
