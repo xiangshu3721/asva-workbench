@@ -60,4 +60,18 @@ describe('consultation refresh in-flight deduplication', () => {
     pending.resolve('A')
     await expect(one).resolves.toBe('A')
   })
+
+  it('never shares a pending promise between staff accounts or permission roles', async () => {
+    const gate = createConsultationRefreshFlight<string>()
+    const pending = deferred<string>()
+    const requestA = vi.fn(() => pending.promise)
+    const requestB = vi.fn().mockResolvedValue('OTHER_SCOPE')
+    const admin = gate.run('STAFF-A:ADMIN:CUS-A:source-1', requestA)
+    const otherAccount = gate.run('STAFF-B:ADMIN:CUS-A:source-1', requestB)
+    const otherRole = gate.run('STAFF-A:MENTOR:CUS-A:source-1', requestB)
+    await expect(Promise.all([otherAccount, otherRole])).resolves.toEqual(['OTHER_SCOPE', 'OTHER_SCOPE'])
+    expect(requestB).toHaveBeenCalledTimes(2)
+    pending.resolve('ADMIN')
+    await expect(admin).resolves.toBe('ADMIN')
+  })
 })

@@ -1035,7 +1035,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const understandingRefreshing = understandingRefreshingCustomerId === customer.id
   const salesRefreshing = salesRefreshingCustomerId === customer.id
   const runConsultationRefresh = (requestCustomerId: string, force: boolean) => {
-    const flightKey = `${requestCustomerId}:${currentConsultationFingerprint}`
+    const flightKey = `${customerResourceScope(props.staffId, props.permissionRole)}:${requestCustomerId}:${currentConsultationFingerprint}`
     return understandingRefreshFlightRef.current.run(flightKey, async () => {
       const startedAt = performance.now()
       try {
