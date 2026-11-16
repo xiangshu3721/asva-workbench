@@ -32,7 +32,7 @@ describe('consultation refresh client reliability', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).toContain('const currentConsultationFingerprint = localConsultationTopics.source_fingerprint || currentOneLineFingerprint')
     expect(source).toContain('client-${clientFingerprint}')
-    expect(source).toContain("useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint])")
+    expect(source).toContain("useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint, props.profileRefreshRevision])")
     expect(source).toContain('force: cacheDecision.forceRead')
     expect(source).toContain('consultationClientFingerprint: currentConsultationFingerprint')
     expect(source).toContain('clientSnapshotFingerprint: currentOneLineFingerprint')
