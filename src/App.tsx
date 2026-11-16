@@ -1389,7 +1389,8 @@ function CustomerUnderstandingPanel({ response, fallback, fallbackTopics, status
   const salesReadFailed = Boolean(salesError) || salesStatus === 'FAILED'
   const sales = salesReadFailed ? salesFallback : undefined
   const refs = scopedResponse?.evidence_refs || []
-  const consultationView = buildConsultationPanelView(customerId, scopedResponse?.consultation_topics || fallbackTopics)
+  const currentResponseTopics = scopedResponse?.meta?.consultationClientFingerprint === fallbackTopics.source_fingerprint ? scopedResponse?.consultation_topics : undefined
+  const consultationView = buildConsultationPanelView(customerId, currentResponseTopics || fallbackTopics)
   const safeSalesResponse = salesResponse?.customerId === customerId ? salesResponse : null
   const salesRefs = safeSalesResponse?.evidence_refs || refs
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
