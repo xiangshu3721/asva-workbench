@@ -50,6 +50,17 @@ describe('production read-only consultation timing parser', () => {
     expect(latencyReport(samples, { truncated: true }).status).toBe('INSUFFICIENT_DATA')
   })
 
+  it('does not combine cache reuse samples with actual generation latency', () => {
+    const reused = Array.from({ length: 10 }, () => valid({ result: 'REUSED_FRESH', processing_write_ms: null, deepseek_ms: null, terminal_write_ms: null }))
+    const report = latencyReport([...reused, valid()])
+    expect(report.observed_metric_entries).toBe(11)
+    expect(report.generation_sample_count).toBe(1)
+    expect(report.status).toBe('INSUFFICIENT_DATA')
+    expect(report.metrics.deepseek_ms.n).toBe(1)
+    expect(report.metrics_by_result.REUSED_FRESH.deepseek_ms.n).toBe(0)
+    expect(report.result_counts.REUSED_FRESH).toBe(10)
+  })
+
   it('rejects unknown JSON shapes rather than claiming no samples', () => {
     expect(() => parseLogPage(JSON.stringify({ message: 'anything including sensitive text' }))).toThrow('LOG_RESPONSE_UNKNOWN_SHAPE')
     expect(() => parseLogPage('unparseable secret payload')).toThrow('LOG_RESPONSE_NOT_JSON')
