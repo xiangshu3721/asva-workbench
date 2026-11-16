@@ -73,17 +73,29 @@ export function parseLogPage(output) {
   return { items, cursor }
 }
 
-export function latencyReport(items, { window = '1d', truncated = false, pages = 1 } = {}) {
-  const status = items.length >= 10 && !truncated ? 'MEASURED' : 'INSUFFICIENT_DATA'
-  const counts = Object.fromEntries([...ALLOWED_RESULTS].map((s) => [s, 0]))
+function metricsFor(items) {
   const metrics = {}
-  for (const item of items) { if (ALLOWED_RESULTS.has(item.result)) counts[item.result] += 1 }
   for (const field of METRICS) {
     const values = items.map((item) => item[field]).filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((a, b) => a - b)
     const rank = (p) => values.length ? values[Math.max(0, Math.ceil(values.length * p) - 1)] : null
     metrics[field] = { n: values.length, p50_ms: rank(0.5), p90_ms: values.length >= 10 ? rank(0.9) : null }
   }
-  return { status, query_window: window, observed_metric_entries: items.length, pages_queried: pages, truncated, result_counts: counts, metrics, note: 'Only matching anonymized metric entries observed; no matches does not mean zero business calls. P90 requires >=10 non-null samples. No client round-trip measured.' }
+  return metrics
+}
+
+export function latencyReport(items, { window = '1d', truncated = false, pages = 1 } = {}) {
+  const counts = Object.fromEntries([...ALLOWED_RESULTS].map((s) => [s, 0]))
+  for (const item of items) { if (ALLOWED_RESULTS.has(item.result)) counts[item.result] += 1 }
+  // Reused or early-returned requests cannot prove model or write latency.
+  const generated = items.filter((item) => item.result === 'FRESH' || item.result === 'STRUCTURED_FALLBACK')
+  const status = generated.length >= 10 && !truncated ? 'MEASURED' : 'INSUFFICIENT_DATA'
+  return {
+    status, query_window: window, observed_metric_entries: items.length,
+    generation_sample_count: generated.length, pages_queried: pages, truncated,
+    result_counts: counts, metrics: metricsFor(generated),
+    metrics_by_result: Object.fromEntries([...ALLOWED_RESULTS].map((key) => [key, metricsFor(items.filter((item) => item.result === key))])),
+    note: 'Metrics above cover actual generated/fallback requests only; metrics_by_result separates reuse and failures. No matches does not mean zero business calls. P90 requires >=10 non-null samples. No client round-trip measured.',
+  }
 }
 
 function printReport(report) {
