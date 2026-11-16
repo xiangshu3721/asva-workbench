@@ -52,6 +52,8 @@ const fixtures: Fixture[] = [
   { id: 'S6C-17', title: 'resolved historical concern and old service record', customer: { notes: '之前与伴侣争吵严重，但目前已经解决，不需要咨询。' }, sessions: [{ customerId: 'S6C-17', id: 'SESS-OLD', date: '2024-01-01', note: '当时与伴侣争吵很严重' }], expected: 'INSUFFICIENT_INFORMATION' },
   { id: 'S6C-18', title: 'long evidence excerpt is not repeated in opening', evidenceItems: [{ ...directEvidence('S6C-18'), sourceExcerpt: '最近工作压力很大，工作节奏乱。'.repeat(9) + '仅供资料末尾参考' }], expected: 'HAS_SIGNALS', kind: 'EXPLICIT_CONCERN', subject: '工作压力', excerptMarkerMustNotAppear: '仅供资料末尾参考' },
   { id: 'S6C-19', title: 'foreign customer evidence is not inherited', evidenceItems: [directEvidence('SOMEONE-ELSE', 'EV-FOREIGN')], expected: 'INSUFFICIENT_INFORMATION' },
+  { id: 'S6C-20', title: 'current work concern stays when relationship issue is resolved in same sentence', customer: { notes: '最近工作压力很大，但伴侣争吵已经解决。' }, expected: 'HAS_SIGNALS', kind: 'EXPLICIT_CONCERN', subject: '工作压力', issueCount: 1 },
+  { id: 'S6C-21', title: 'current work concern after historical relationship clause', customer: { notes: '去年与伴侣争吵很严重，最近工作压力很大。' }, expected: 'HAS_SIGNALS', kind: 'EXPLICIT_CONCERN', subject: '工作压力', issueCount: 1 },
 ]
 
 function runFixture(fixture: Fixture) {
