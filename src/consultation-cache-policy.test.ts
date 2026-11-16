@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Customer, ServiceSession } from './domain'
 import { buildLocalConsultationTopics } from './clientApi'
 import { createRuleOneLineUnderstanding } from './one-line-understanding'
-import { consultationCacheDecision, type ConsultationCacheResponse } from './consultation-cache-policy'
+import { consultationCacheDecision, currentConsultationTopics, type ConsultationCacheResponse } from './consultation-cache-policy'
 
 const customer = (overrides: Partial<Customer> = {}) => ({
   id: 'CUS-CACHE', name: '合成客户', notes: '想聊职业发展', need: '', goal: '',
@@ -79,5 +79,44 @@ describe('stage 4 consultation cache freshness contract', () => {
 
   it('allows a missing cache to load without force', () => {
     expect(decide(customer(), null)).toEqual({ reuse: false, forceRead: false })
+  })
+})
+
+describe('stage 4 topic selection during cache turnover', () => {
+  it('uses server Evidence-based topics only for a matching current client snapshot', () => {
+    const c = customer()
+    const local = buildLocalConsultationTopics(c)
+    const server = {
+      ...local,
+      topics: [{ ...local.topics[0], title: '服务器确认的咨询线索', source: 'EVIDENCE', evidence_ids: ['EVD-1'] }],
+    }
+    const response = {
+      customerId: c.id,
+      meta: { consultationClientFingerprint: local.source_fingerprint || '' },
+      consultation_topics: server,
+    }
+    expect(currentConsultationTopics(response, local)).toBe(server)
+  })
+
+  it('shows current local topics while the response belongs to older notes or another customer', () => {
+    const before = customer()
+    const current = customer({ notes: '最近经济压力很大' })
+    const local = buildLocalConsultationTopics(current)
+    const old = buildLocalConsultationTopics(before)
+    const oldResponse = { customerId: before.id, meta: { consultationClientFingerprint: old.source_fingerprint || '' }, consultation_topics: old }
+    expect(currentConsultationTopics(oldResponse, local)).toBe(local)
+    expect(currentConsultationTopics({ ...oldResponse, customerId: 'CUS-OTHER' }, local)).toBe(local)
+    expect(currentConsultationTopics(null, local)).toBe(local)
+  })
+
+  it('never trusts a mismatched server topic customerId, even with a matching client fingerprint', () => {
+    const c = customer()
+    const local = buildLocalConsultationTopics(c)
+    const server = { ...local, customer_id: 'CUS-OTHER' }
+    expect(currentConsultationTopics({
+      customerId: c.id,
+      meta: { consultationClientFingerprint: local.source_fingerprint || '' },
+      consultation_topics: server,
+    }, local)).toBe(local)
   })
 })
