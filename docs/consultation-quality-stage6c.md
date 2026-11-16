@@ -4,7 +4,7 @@
 
 ## 1. 测试范围与不能证明的事
 
-自动 Golden Set：`src/consultation-quality-golden.test.ts`，使用 **19 个虚构客户场景 + 3 个跨客户/确定性合约断言**。从 `buildConsultationInputSnapshot` → `buildConsultationTopics` → `buildConsultationPanelView` 全程验证**实际 H5 所展示**的主题和开场建议。
+自动 Golden Set：`src/consultation-quality-golden.test.ts`，使用 **21 个虚构客户场景 + 3 个跨客户/确定性合约断言**。从 `buildConsultationInputSnapshot` → `buildConsultationTopics` → `buildConsultationPanelView` 全程验证**实际 H5 所展示**的主题和开场建议。
 
 自动检查：有明确诉求时对应议题、只有方向时保持初步方向、目标/背景不伪装为困扰、已解决历史/否认/第三方观察/AI 推断不升级、未决冲突不强行择边、跨客户证据不串用、来源 ID 可追溯、开场不预设心理原因、长文本不重复全文、重复输入结果稳定。
 
@@ -41,7 +41,7 @@
 
 ## 5. 本轮交付边界
 
-- 本 PR 仅新建离线测试与评估协议，不修改线上文案/算法/数据，不重新部署 API、Worker 或 Pages。
+- 本 PR 除离线测试与评估协议外，还修复了 `shared/consultation-topics.mjs` 中句级否定/已解决的误判：仅在能辨认独立当前议题且与历史/已解决议题属不同领域时保留，否则保守排除。**这是线上共享业务逻辑改动，验收通过后需要独立核实前端 Pages 与 CloudBase API 发布范围，不能冒充测试专用变更。**
 - 不使用真实客户姓名、电话、微信、原始录音、可识别具体经历或隐私材料。
 - 真正的模型生成质量需要经批准的脱敏案例离线对照；工作流不得为凑样本自动对生产客户调用模型。
 - 自动测试如果失败，先保留失败证据（仅合成数据），单独提出最小修复，不临时放宽评估标准来“刷 PASS”。
