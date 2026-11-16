@@ -28,6 +28,27 @@ describe('consultation refresh client reliability', () => {
     expect(source).toContain('props.onRefreshUnderstanding(requestCustomerId, false)')
   })
 
+  it('keys consultation cache by current source fingerprint, refreshes on client changes, and protects previous AI fingerprint', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    expect(source).toContain('const currentConsultationFingerprint = localConsultationTopics.source_fingerprint || currentOneLineFingerprint')
+    expect(source).toContain('client-${clientFingerprint}')
+    expect(source).toContain("useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint])")
+    expect(source).toContain('force: cacheDecision.forceRead')
+    expect(source).toContain('consultationClientFingerprint: currentConsultationFingerprint')
+    expect(source).toContain('clientSnapshotFingerprint: currentOneLineFingerprint')
+    expect(source).toContain('currentConsultationTopics(scopedResponse, fallbackTopics)')
+  })
+
+  it('rejects late refresh responses before they can replace the current cached consultation response', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const autoRefresh = source.slice(source.indexOf('const autoRefreshStaleUnderstanding ='), source.indexOf('const loadUnderstanding ='))
+    const manualRefresh = source.slice(source.indexOf('const refreshUnderstanding = async'), source.indexOf('const refreshSalesUnderstanding = async'))
+    expect(autoRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeGreaterThan(-1)
+    expect(autoRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeLessThan(autoRefresh.indexOf('props.resourceCache.set(cacheKey, result)'))
+    expect(manualRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeGreaterThan(-1)
+    expect(manualRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeLessThan(manualRefresh.indexOf('props.resourceCache.set(cacheKey, result)'))
+  })
+
   it('keeps a previous response visible and labels read versus refresh failures accurately', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).toContain("error: `读取咨询理解失败：${error instanceof Error ? error.message : '请求未完成'}`")
