@@ -5,7 +5,7 @@ export interface ConsultationCacheResponse {
   customerId: string
   meta?: {
     profileVersion?: number
-    clientSnapshotFingerprint?: string
+    consultationClientFingerprint?: string
   }
 }
 
@@ -14,19 +14,19 @@ export interface ConsultationCacheCheck {
   cachedAt?: number
   customerId: string
   profileVersion: number
-  clientSnapshotFingerprint: string
+  consultationClientFingerprint: string
   now: number
   ttlMs: number
 }
 
 export function consultationCacheDecision({
-  cached, cachedAt, customerId, profileVersion, clientSnapshotFingerprint, now, ttlMs,
+  cached, cachedAt, customerId, profileVersion, consultationClientFingerprint, now, ttlMs,
 }: ConsultationCacheCheck): { reuse: boolean; forceRead: boolean } {
   const snapshotMatches = Boolean(
     cached
     && cached.customerId === customerId
     && (cached.meta?.profileVersion ?? 0) === profileVersion
-    && cached.meta?.clientSnapshotFingerprint === clientSnapshotFingerprint,
+    && cached.meta?.consultationClientFingerprint === consultationClientFingerprint,
   )
   const withinTtl = typeof cachedAt === 'number' && Number.isFinite(cachedAt) && cachedAt > 0
     && now >= cachedAt && now - cachedAt < ttlMs
