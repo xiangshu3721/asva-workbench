@@ -1213,7 +1213,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     if (next === 'consultation') void loadUnderstanding()
     else void loadSalesUnderstanding()
   }
-  useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint])
+  useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint, props.profileRefreshRevision])
   const identityFacts = [customerProfileFact(customer, 'age') || (customer.profileFields?.birth_year ? `${customer.profileFields.birth_year}年生` : ''), customerProfileFact(customer, 'gender'), customerProfileFact(customer, 'city')].filter(Boolean)
   const relationOwner = customer.createdByName || database.staff.find((item) => item.id === customer.createdByStaffId)?.name || ''
   const referrer = customer.referrerName || customer.introducer || ''
