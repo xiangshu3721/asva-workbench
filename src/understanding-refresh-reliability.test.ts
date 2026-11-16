@@ -25,7 +25,7 @@ describe('consultation refresh client reliability', () => {
     expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)')
     expect(source).toContain("response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache'")
     expect(source).toContain('response.context_summary?.has_meaningful_input !== true')
-    expect(source).toContain('props.onRefreshUnderstanding(requestCustomerId, false)')
+    expect(source).toContain('runConsultationRefresh(requestCustomerId, false)')
   })
 
   it('keys consultation cache by current source fingerprint, refreshes on client changes, and protects previous AI fingerprint', () => {
