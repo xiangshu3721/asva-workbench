@@ -34,7 +34,7 @@ import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconci
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
 import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
 import { buildConsultationPanelView, type ConsultationIssueCard, type ConsultationPanelState } from './consultation-panel-view'
-import { consultationCacheDecision } from './consultation-cache-policy'
+import { consultationCacheDecision, currentConsultationTopics } from './consultation-cache-policy'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { validateCustomerContacts } from '../shared/customer-foundation.mjs'
 const repository = createLocalRepository()
@@ -1389,8 +1389,7 @@ function CustomerUnderstandingPanel({ response, fallback, fallbackTopics, status
   const salesReadFailed = Boolean(salesError) || salesStatus === 'FAILED'
   const sales = salesReadFailed ? salesFallback : undefined
   const refs = scopedResponse?.evidence_refs || []
-  const currentResponseTopics = scopedResponse?.meta?.consultationClientFingerprint === fallbackTopics.source_fingerprint ? scopedResponse?.consultation_topics : undefined
-  const consultationView = buildConsultationPanelView(customerId, currentResponseTopics || fallbackTopics)
+  const consultationView = buildConsultationPanelView(customerId, currentConsultationTopics(scopedResponse, fallbackTopics))
   const safeSalesResponse = salesResponse?.customerId === customerId ? salesResponse : null
   const salesRefs = safeSalesResponse?.evidence_refs || refs
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
