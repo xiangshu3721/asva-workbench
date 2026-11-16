@@ -66,6 +66,40 @@ afterEach(() => {
 })
 
 describe('consultation understanding refresh reliability', () => {
+  it('returns fresh scoped consultation topics without a DeepSeek call on ordinary read', async () => {
+    const repository = createRepository()
+    repository._testDatabase.customers[0].need = '更多咨询情感问题'
+    const second = { ...repository._testDatabase.customers[0], id: 'CUS-2', need: '', notes: '', profileFields: {} }
+    repository._testDatabase.customers.push(second)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = await repository.getCustomerUnderstanding('STAFF-1', 'CUS-1')
+    const another = await repository.getCustomerUnderstanding('STAFF-1', 'CUS-2')
+
+    expect(first.consultation_topics).toMatchObject({
+      customer_id: 'CUS-1', status: 'HAS_SIGNALS',
+      topics: [expect.objectContaining({ kind: 'PROVISIONAL_DIRECTION', title: '亲密关系方面的咨询方向' })],
+    })
+    expect(another.consultation_topics).toMatchObject({ customer_id: 'CUS-2', status: 'INSUFFICIENT_INFORMATION', topics: [] })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not mistake an old stored AI issue for the current consultation signal', async () => {
+    const repository = createRepository()
+    const customer = repository._testDatabase.customers[0]
+    customer.need = '更多咨询情感问题'
+    customer.understanding = { ...validUnderstanding(), top_issues: [{ text: '旧工作压力', title: '旧工作压力', evidence_ids: [], confidence: 'HIGH', type: 'SYNTHESIS' }] }
+    customer.understandingMeta = { status: 'STALE', inputFingerprint: 'old-fingerprint', promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION }
+    vi.stubGlobal('fetch', vi.fn())
+
+    const response = await repository.getCustomerUnderstanding('STAFF-1', 'CUS-1')
+    expect(response.understanding.top_issues[0].title).toBe('旧工作压力')
+    expect(response.consultation_topics.topics[0]).toMatchObject({ title: '亲密关系方面的咨询方向', kind: 'PROVISIONAL_DIRECTION' })
+    expect(response.status).toBe('STALE')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('returns a fresh result after one model call and does not perform a second full read', async () => {
     const repository = createRepository()
     const fetchMock = vi.fn(async () => response(validUnderstanding()))
