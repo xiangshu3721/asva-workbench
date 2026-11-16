@@ -373,14 +373,17 @@ export async function createCustomerUnderstanding(input) {
     if (!value || typeof value !== 'object') return value
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
   }
-  const currentIssueSafe = applyUnderstandingDensityPolicy(applyCurrentIssuePolicy(restoreEvidenceIds(normalized), {
-    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || []).flatMap((item) => item.evidence_ids || []),
-    currentIssueCandidates: context.current_issue_candidates?.provisional || [],
-  }), context.context_density)
   // Pending, hypothetical, or AI-derived refs cannot substantiate a strong claim.
   const confirmedEvidenceIds = evidenceRefs
     .filter((item) => item.review_status === 'CONFIRMED' && !['HYPOTHESIS', 'AI_INFERENCE'].includes(item.evidence_type))
     .map((item) => item.evidence_id)
+  const confirmedEvidenceIdSet = new Set(confirmedEvidenceIds)
+  const currentIssueSafe = applyUnderstandingDensityPolicy(applyCurrentIssuePolicy(restoreEvidenceIds(normalized), {
+    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || [])
+      .flatMap((item) => item.evidence_ids || [])
+      .filter((id) => confirmedEvidenceIdSet.has(id)),
+    currentIssueCandidates: context.current_issue_candidates?.provisional || [],
+  }), context.context_density)
   return applyUnderstandingGroundingPolicy(currentIssueSafe, { confirmedEvidenceIds })
 }
 
