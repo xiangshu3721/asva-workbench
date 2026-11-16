@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, ServiceSession, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -74,6 +74,10 @@ export function normalizeDatabaseDto(value: unknown): Database {
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
+export function buildLocalConsultationTopics(customer: Customer, sessions: ServiceSession[] = []): ConsultationTopicsResponse {
+  return buildConsultationTopics(buildConsultationInputSnapshot({ customer, sessions })) as ConsultationTopicsResponse
+}
+
 export interface ConsultationTopicSignal {
   title: string
   kind: 'EXPLICIT_CONCERN' | 'PROVISIONAL_DIRECTION'
@@ -312,7 +316,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
   const localUnderstanding = async (actorId: string, customerId: string): Promise<CustomerUnderstandingResponse> => {
     const customer = await api.customer(actorId, customerId)
     const context = { generated_at: new Date().toISOString(), current_needs: customer?.need ? [{ text: customer.need, evidence_ids: [] }] : [], resources: customer?.profileFields?.current_resources ? [{ text: String(customer.profileFields.current_resources), evidence_ids: [] }] : [], top_life_events: [], coverage_gaps: customer?.profileMaterialization?.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name) || ['当前资料'], evidence_refs: [] }
-    const topics = buildConsultationTopics(buildConsultationInputSnapshot({ customer: customer || { id: customerId } })) as ConsultationTopicsResponse
+    const topics = customer ? buildLocalConsultationTopics(customer) : buildConsultationTopics(buildConsultationInputSnapshot({ customer: { id: customerId } })) as ConsultationTopicsResponse
     return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, consultation_topics: topics, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
   }
   const localSalesUnderstanding = async (actorId: string, customerId: string): Promise<CustomerSalesUnderstandingResponse> => {
