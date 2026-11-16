@@ -57,6 +57,8 @@ export interface CustomerUnderstandingMeta {
   status: SummaryStatus
   inputFingerprint?: string
   currentInputFingerprint?: string
+  clientSnapshotFingerprint?: string
+  consultationClientFingerprint?: string
   storedPromptVersion?: string
   profileVersion?: number
   promptVersion?: string
