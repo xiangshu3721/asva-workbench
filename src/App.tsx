@@ -34,6 +34,7 @@ import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconci
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
 import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
 import { buildConsultationPanelView, type ConsultationIssueCard, type ConsultationPanelState } from './consultation-panel-view'
+import { consultationCacheDecision } from './consultation-cache-policy'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { validateCustomerContacts } from '../shared/customer-foundation.mjs'
 const repository = createLocalRepository()
@@ -108,7 +109,7 @@ const basicDashboardSnapshotKey = (staffId: string) => `asva:session:dashboard:$
 const mentorSnapshotKey = (staffId: string) => `asva:session:mentors:${staffSessionIdentity(staffId)}:all`
 const customerDetailCacheKey = (staffId: string, customerId: string) => `customer-detail:${staffSessionIdentity(staffId)}:${customerId}`
 const customerResourceScope = (staffId: string, permissionRole: string) => `${staffSessionIdentity(staffId)}:${permissionRole || 'UNKNOWN'}`
-const customerUnderstandingCacheKey = (staffId: string, permissionRole: string, customerId: string) => `customer-understanding:${customerResourceScope(staffId, permissionRole)}:${customerId}`
+const customerUnderstandingCacheKey = (staffId: string, permissionRole: string, customerId: string, clientFingerprint: string) => `customer-understanding:${customerResourceScope(staffId, permissionRole)}:${customerId}:client-${clientFingerprint}`
 const customerSalesUnderstandingCacheKey = (staffId: string, permissionRole: string, customerId: string) => `customer-sales-understanding:${customerResourceScope(staffId, permissionRole)}:${customerId}`
 const customerProfileCacheKey = (staffId: string, permissionRole: string, customerId: string, dataVersion = 0) => `customer-profile:${customerResourceScope(staffId, permissionRole)}:${customerId}:v${dataVersion}`
 const sourceWorkspaceCacheKey = (staffId: string, permissionRole: string, customerId: string) => `source-workspace:${customerResourceScope(staffId, permissionRole)}:${customerId}`
@@ -976,6 +977,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }, [customer.id, customer.notes, customer.automaticProfilePending?.contentHash, customer.automaticProfilePending?.reason, customer.automaticProfileAutoResume, props.onAutoArchiveCustomer])
   const appointments = database.appointments.filter((item) => item.customerId === customer.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const sessions = database.sessions.filter((item) => item.customerId === customer.id).sort((a, b) => b.date.localeCompare(a.date))
+  const currentConsultationFingerprint = createRuleOneLineUnderstanding(customer, sessions).inputFingerprint
   const enrollments = database.enrollments.filter((item) => item.customerId === customer.id && item.status !== 'CANCELLED')
   const courses = enrollments.map((item) => ({ enrollment: item, product: database.products.find((product) => product.id === item.productId) })).filter((item) => item.product)
   const latestProfileChanges = database.profileChanges.filter((item) => item.customerId === customer.id).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
@@ -1035,12 +1037,13 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const attemptKey = `${requestCustomerId}:${identity}:${response.meta.promptVersion || ''}`
     if (autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)) return
     autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)
-    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
+    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId, currentConsultationFingerprint)
     setUnderstandingRefreshingCustomerId(requestCustomerId)
     void props.onRefreshUnderstanding(requestCustomerId, false).then((fresh) => {
-      props.resourceCache.set(cacheKey, fresh)
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: fresh.customerId })) return
-      setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)), value: fresh, loading: false, error: '' } }))
+      const result = { ...fresh, meta: { ...fresh.meta, clientSnapshotFingerprint: currentConsultationFingerprint } }
+      props.resourceCache.set(cacheKey, result)
+      setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)), value: result, loading: false, error: '' } }))
     }).catch((error: unknown) => {
       if (activeCustomerIdRef.current !== requestCustomerId || understandingSequenceRef.current !== requestSequence) return
       setUnderstandingByCustomerId((current) => current[requestCustomerId] ? { ...current, [requestCustomerId]: { ...current[requestCustomerId], loading: false, error: `重新整理失败：${error instanceof Error ? error.message : '请求未完成'}` } } : current)
@@ -1050,11 +1053,20 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const loadUnderstanding = async () => {
     const requestCustomerId = customer.id
-    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
+    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId, currentConsultationFingerprint)
     const current = understandingByCustomerId[requestCustomerId]
     const cached = props.resourceCache.get<CustomerUnderstandingResponse>(cacheKey)
     const cachedEntry = props.resourceCache.getEntry<CustomerUnderstandingResponse>(cacheKey)
-    const cachedFresh = Boolean(cachedEntry?.data !== undefined && cached?.meta.profileVersion === (customer.profileVersion ?? 0) && Date.now() - cachedEntry.updatedAt < DATABASE_TTL_MS)
+    const cacheDecision = consultationCacheDecision({
+      cached,
+      cachedAt: cachedEntry?.updatedAt,
+      customerId: requestCustomerId,
+      profileVersion: customer.profileVersion ?? 0,
+      clientSnapshotFingerprint: currentConsultationFingerprint,
+      now: Date.now(),
+      ttlMs: DATABASE_TTL_MS,
+    })
+    const cachedFresh = cacheDecision.reuse
     if (cached && cachedFresh) {
       const requestSequence = ++understandingSequenceRef.current
       setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, cached) }))
@@ -1063,7 +1075,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       return
     }
     const requestSequence = ++understandingSequenceRef.current
-    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer, sessions).inputFingerprint
+    const clientSnapshotFingerprint = currentConsultationFingerprint
     const startedAt = performance.now()
     const previous = current?.value || cached || null
     setUnderstandingByCustomerId((state) => ({ ...state, [requestCustomerId]: createCustomerScopedState(requestCustomerId, previous, true) }))
@@ -1071,7 +1083,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       const result = await props.resourceCache.load(cacheKey, async () => {
         const response = await props.onGetUnderstanding(requestCustomerId)
         return { ...response, meta: { ...response.meta, clientSnapshotFingerprint } }
-      }, { ttlMs: DATABASE_TTL_MS })
+      }, { ttlMs: DATABASE_TTL_MS, force: cacheDecision.forceRead })
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: result, loading: false, error: '' } }))
       autoRefreshStaleUnderstanding(result, requestCustomerId, requestSequence)
@@ -1159,15 +1171,15 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const refreshUnderstanding = async (force = false) => {
     const requestCustomerId = customer.id
-    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId)
+    const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId, currentConsultationFingerprint)
     const requestSequence = ++understandingSequenceRef.current
-    const clientSnapshotFingerprint = createRuleOneLineUnderstanding(customer, sessions).inputFingerprint
+    const clientSnapshotFingerprint = currentConsultationFingerprint
     setUnderstandingRefreshingCustomerId(requestCustomerId)
     try {
       const refreshed = await props.onRefreshUnderstanding(requestCustomerId, force)
       const result = { ...refreshed, meta: { ...refreshed.meta, clientSnapshotFingerprint } }
-      props.resourceCache.set(cacheKey, result)
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
+      props.resourceCache.set(cacheKey, result)
       setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...(current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)), value: result, loading: false, error: '' } }))
     } catch (error) {
       if (activeCustomerIdRef.current === requestCustomerId && understandingSequenceRef.current === requestSequence) setUnderstandingByCustomerId((current) => current[requestCustomerId] ? { ...current, [requestCustomerId]: { ...current[requestCustomerId], loading: false, error: `重新整理失败：${error instanceof Error ? error.message : '请求未完成'}` } } : current)
@@ -1199,7 +1211,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     if (next === 'consultation') void loadUnderstanding()
     else void loadSalesUnderstanding()
   }
-  useEffect(() => { void loadUnderstanding() }, [customer.id, customer.profileVersion, customer.notes, customer.supplementaryItems?.length])
+  useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint])
   const identityFacts = [customerProfileFact(customer, 'age') || (customer.profileFields?.birth_year ? `${customer.profileFields.birth_year}年生` : ''), customerProfileFact(customer, 'gender'), customerProfileFact(customer, 'city')].filter(Boolean)
   const relationOwner = customer.createdByName || database.staff.find((item) => item.id === customer.createdByStaffId)?.name || ''
   const referrer = customer.referrerName || customer.introducer || ''
@@ -1217,7 +1229,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const oneLineCustomer = mergeOneLineCustomer(customer, profileResponse?.customerId === customer.id ? profileResponse : undefined)
   const fallbackConsultationTopics = buildLocalConsultationTopics(customer, sessions)
   const localOneLine = createRuleOneLineUnderstanding(oneLineCustomer, sessions)
-  const oneLine = selectOneLineUnderstanding({ local: localOneLine, understanding: currentUnderstanding, meta: understandingResponse?.meta || oneLineCustomer.understandingMeta, clientSnapshotFingerprint: createRuleOneLineUnderstanding(customer, sessions).inputFingerprint })
+  const oneLine = selectOneLineUnderstanding({ local: localOneLine, understanding: currentUnderstanding, meta: understandingResponse?.meta || oneLineCustomer.understandingMeta, clientSnapshotFingerprint: currentConsultationFingerprint })
   return <article className="customer-detail-page customer-detail-v2">
     <header className="customer-detail-header">
       <div className="customer-detail-identity"><span className="customer-detail-avatar">{customer.initials}</span><div><div className="customer-detail-name-row"><h1>{customer.name}</h1><button className="primary-button small customer-profile-update-button" type="button" onClick={openSourceComposer}>更新客户档案</button></div>{headerOverviewFacts.length > 0 && <div className="customer-overview-facts">{headerOverviewFacts.map((fact) => <span key={fact}>{fact}</span>)}</div>}</div></div>
