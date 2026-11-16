@@ -35,6 +35,7 @@ import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, ty
 import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
 import { buildConsultationPanelView, type ConsultationIssueCard, type ConsultationPanelState } from './consultation-panel-view'
 import { consultationCacheDecision, currentConsultationTopics } from './consultation-cache-policy'
+import { createConsultationRefreshFlight } from './consultation-refresh-flight'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { validateCustomerContacts } from '../shared/customer-foundation.mjs'
 const repository = createLocalRepository()
@@ -1006,6 +1007,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const activeCustomerIdRef = useRef(customer.id)
   const understandingSequenceRef = useRef(0)
   const autoUnderstandingRefreshAttemptsRef = useRef(new Set<string>())
+  const understandingRefreshFlightRef = useRef(createConsultationRefreshFlight<CustomerUnderstandingResponse>())
   const salesSequenceRef = useRef(0)
   const profileSequenceRef = useRef(0)
   if (activeCustomerIdRef.current !== customer.id) {
@@ -1032,6 +1034,20 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   const profileLoading = Boolean(profileState?.loading)
   const understandingRefreshing = understandingRefreshingCustomerId === customer.id
   const salesRefreshing = salesRefreshingCustomerId === customer.id
+  const runConsultationRefresh = (requestCustomerId: string, force: boolean) => {
+    const flightKey = `${customerResourceScope(props.staffId, props.permissionRole)}:${requestCustomerId}:${currentConsultationFingerprint}`
+    return understandingRefreshFlightRef.current.run(flightKey, async () => {
+      const startedAt = performance.now()
+      try {
+        const result = await props.onRefreshUnderstanding(requestCustomerId, force)
+        logAppPerformance('CUSTOMER_UNDERSTANDING_REFRESH_MS', { duration_ms: Math.round(performance.now() - startedAt), result: result.status, force })
+        return result
+      } catch (error) {
+        logAppPerformance('CUSTOMER_UNDERSTANDING_REFRESH_MS', { duration_ms: Math.round(performance.now() - startedAt), result: 'ERROR', force })
+        throw error
+      }
+    })
+  }
   const autoRefreshStaleUnderstanding = (response: CustomerUnderstandingResponse, requestCustomerId: string, requestSequence: number) => {
     if (response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache') return
     if (response.context_summary?.has_meaningful_input !== true) return
@@ -1041,7 +1057,7 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)
     const cacheKey = customerUnderstandingCacheKey(props.staffId, props.permissionRole, requestCustomerId, currentConsultationFingerprint)
     setUnderstandingRefreshingCustomerId(requestCustomerId)
-    void props.onRefreshUnderstanding(requestCustomerId, false).then((fresh) => {
+    void runConsultationRefresh(requestCustomerId, false).then((fresh) => {
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: fresh.customerId })) return
       const result = { ...fresh, meta: { ...fresh.meta, clientSnapshotFingerprint: currentOneLineFingerprint, consultationClientFingerprint: currentConsultationFingerprint } }
       props.resourceCache.set(cacheKey, result)
@@ -1177,8 +1193,12 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     const requestSequence = ++understandingSequenceRef.current
     const clientSnapshotFingerprint = currentOneLineFingerprint
     setUnderstandingRefreshingCustomerId(requestCustomerId)
+    setUnderstandingByCustomerId((current) => {
+      const existing = current[requestCustomerId] || createCustomerScopedState<CustomerUnderstandingResponse>(requestCustomerId)
+      return { ...current, [requestCustomerId]: { ...existing, error: '' } }
+    })
     try {
-      const refreshed = await props.onRefreshUnderstanding(requestCustomerId, force)
+      const refreshed = await runConsultationRefresh(requestCustomerId, force)
       const result = { ...refreshed, meta: { ...refreshed.meta, clientSnapshotFingerprint, consultationClientFingerprint: currentConsultationFingerprint } }
       if (!canCommitCustomerResponse({ requestCustomerId, activeCustomerId: activeCustomerIdRef.current, requestSequence, activeSequence: understandingSequenceRef.current, responseCustomerId: result.customerId })) return
       props.resourceCache.set(cacheKey, result)
@@ -1238,9 +1258,9 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
       <section className="customer-relationship-block"><div className="customer-relation-facts"><div><span>联系方式</span><strong>{customer.phone ? maskPhone(customer.phone) : customer.wechat ? `微信 ${customer.wechat}` : '—'}</strong>{customer.phone && customer.wechat && <small>微信 {customer.wechat}</small>}</div><div><span>介绍人</span><strong>{referrer || '—'}</strong></div><div><span>创建人</span><strong>{relationOwner || '—'}</strong></div><div><span>已报名课程</span><strong>{courseNames.length ? courseNames.join('、') : '—'}</strong></div></div></section>
       <section className="customer-service-block"><div className={`customer-service-facts ${sessions[0] ? '' : 'customer-service-facts-without-session'}`}>{sessions[0] && <div><span>最近服务</span><strong>{friendlyDetailDate(sessions[0].date).split(' ')[0] || '暂无'}</strong></div>}<div className="customer-service-suggestion"><span>当前建议</span><strong>{serviceSuggestion}</strong></div><div><span>最近更新</span><strong>{recentUpdate || '—'}</strong></div></div></section>
     </header>
-    <CustomerUnderstandingOverview localSummary={oneLine} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => void refreshUnderstanding(true)} />
+    <CustomerUnderstandingOverview localSummary={oneLine} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => { void refreshUnderstanding(true).catch(() => { /* error already shown in consultation state */ }) }} />
     <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
-    <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} fallbackTopics={fallbackConsultationTopics} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => refreshUnderstanding(true)} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
+    <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} fallbackTopics={fallbackConsultationTopics} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => { void refreshUnderstanding(true).catch(() => { /* error already shown in consultation state */ }) }} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
     <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onRefreshProfile={() => loadCustomerProfile(true)} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={sortProductsForSelection(database.products.filter(activeProductForManualEntry))} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
