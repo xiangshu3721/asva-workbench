@@ -12,9 +12,14 @@ const preview = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').tri
  */
 export function customerDirectoryConcernPreview(customer: Customer): string {
   const recordedNeed = preview(customer.need)
-  if (recordedNeed) return recordedNeed
-
   const topics = buildLocalConsultationTopics(customer).topics
+  const hasCurrentRecordedNeed = recordedNeed && topics.some((topic) =>
+    (topic.source === 'PROFILE_FIELD' || topic.source === 'RECORDED_FIELD')
+    && topic.kind === 'EXPLICIT_CONCERN'
+    && topic.title === recordedNeed,
+  )
+  if (hasCurrentRecordedNeed) return recordedNeed
+
   const lead = topics[0]
   if (lead?.kind === 'EXPLICIT_CONCERN') return '已记录困扰线索 · 查看详情'
   if (lead?.kind === 'PROVISIONAL_DIRECTION') {

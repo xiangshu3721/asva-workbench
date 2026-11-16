@@ -32,6 +32,14 @@ describe('directory concern preview remains conservative', () => {
     expect(output).toBe('经济压力')
   })
 
+  it('only preserves need text when the same current consultation signal supports it', () => {
+    expect(customerDirectoryConcernPreview(customer({ need: '过去工作压力很大，现在已经解决。' }))).toBe('查看详情中的咨询线索')
+    expect(customerDirectoryConcernPreview(customer({
+      need: 'AI 总结：客户有关系焦虑',
+      profileFieldMeta: { current_core_issue: { source: 'AI_INFERENCE', confidence: 0.7, confirmed: false, updatedAt: '2026-11-16' } },
+    }))).toBe('查看详情中的咨询线索')
+  })
+
   it('does not display resolved history or AI speculation as a new current concern', () => {
     const resolved = customerDirectoryConcernPreview(customer({ notes: '过去工作压力很大，现在已经解决。' }))
     const conjecture = customerDirectoryConcernPreview(customer({ notes: 'AI 总结：有亲密关系问题' }))
