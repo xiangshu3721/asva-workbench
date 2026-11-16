@@ -52,6 +52,23 @@ describe('consultation topic signals v1', () => {
     expect(result.topics).toEqual([expect.objectContaining({ kind: 'EXPLICIT_CONCERN', title: expect.stringContaining('工作压力') })])
   })
 
+  it('keeps a different current concern when relationship distress is resolved in the same sentence', () => {
+    const result = read({ customer: { notes: '最近工作压力很大，但伴侣争吵已经解决。' } })
+    expect(result.topics).toEqual([expect.objectContaining({ kind: 'EXPLICIT_CONCERN', title: expect.stringContaining('工作压力') })])
+    expect(JSON.stringify(result.topics)).not.toContain('伴侣争吵')
+  })
+
+  it('keeps a current concern after a historical different-domain clause', () => {
+    const result = read({ customer: { notes: '去年与伴侣争吵很严重，最近工作压力很大。' } })
+    expect(result.topics).toEqual([expect.objectContaining({ kind: 'EXPLICIT_CONCERN', title: expect.stringContaining('工作压力') })])
+    expect(JSON.stringify(result.topics)).not.toContain('与伴侣争吵')
+  })
+
+  it('does not resurrect a resolved same-domain concern or an unscoped refusal', () => {
+    expect(read({ customer: { notes: '最近与伴侣争吵很严重，但已经解决。' } }).topics).toEqual([])
+    expect(read({ customer: { notes: '最近工作压力很大，但不需要咨询。' } }).topics).toEqual([])
+  })
+
   it('does not promote historical, resolved, or third-party statements into current concerns', () => {
     expect(read({ customer: { notes: '去年工作压力很大。' } }).topics).toEqual([])
     expect(read({ customer: { notes: '我现在不再焦虑了。' } }).topics).toEqual([])
