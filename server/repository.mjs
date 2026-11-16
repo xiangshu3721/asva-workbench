@@ -1978,6 +1978,7 @@ export class FeishuRepository {
     try {
       await withinUnderstandingRefreshBudget(() => writeMeta(processingMeta), generationDeadline, 'UNDERSTANDING_METADATA_WRITE_TIMEOUT')
     } catch (error) {
+      stages.result = 'STATUS_WRITE_UNKNOWN'
       throw unknownUnderstandingStatusWrite(error)
     } finally {
       stages.processing_write_ms = Date.now() - processingWriteStartedAt

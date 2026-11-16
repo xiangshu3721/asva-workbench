@@ -142,6 +142,7 @@ describe('consultation understanding refresh reliability', () => {
 
   it('times out the model inside the CloudBase budget and still returns a fallback', async () => {
     vi.useFakeTimers()
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
     const repository = createRepository()
     vi.stubGlobal('fetch', vi.fn((_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))))
 
@@ -150,6 +151,13 @@ describe('consultation understanding refresh reliability', () => {
     const result = await pending
 
     expect(result).toMatchObject({ status: 'FAILED', meta: { errorCode: 'DEEPSEEK_TIMEOUT', source: 'STRUCTURED_FALLBACK' } })
+    expect(stageLogs(log)).toEqual([
+      expect.objectContaining({
+        result: 'STRUCTURED_FALLBACK',
+        deepseek_ms: CUSTOMER_UNDERSTANDING_TIMEOUT_MS,
+        terminal_write_ms: expect.any(Number),
+      }),
+    ])
   })
 
   it('ends a slow Feishu read inside the server budget without starting a model call', async () => {
@@ -180,6 +188,7 @@ describe('consultation understanding refresh reliability', () => {
 
   it('does not issue a competing terminal write when the processing write times out with an unknown result', async () => {
     vi.useFakeTimers()
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
     const repository = createRepository({ updateDelayMs: () => CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -190,6 +199,16 @@ describe('consultation understanding refresh reliability', () => {
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(updateRecordMock).toHaveBeenCalledTimes(1)
+    expect(stageLogs(log)).toEqual([
+      expect.objectContaining({
+        result: 'STATUS_WRITE_UNKNOWN',
+        queue_wait_ms: expect.any(Number),
+        feishu_read_ms: expect.any(Number),
+        processing_write_ms: expect.any(Number),
+        deepseek_ms: null,
+        terminal_write_ms: null,
+      }),
+    ])
   })
 
   it('does not let an expired processing lease block a later refresh', async () => {
@@ -200,6 +219,37 @@ describe('consultation understanding refresh reliability', () => {
 
     await expect(repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1', { force: true })).resolves.toMatchObject({ status: 'FRESH' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks cache and active-processing early returns without inventing later stage timings', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {})
+    for (const [status, expectedResult] of [['FRESH', 'REUSED_FRESH'], ['PROCESSING', 'REUSED_PROCESSING']]) {
+      const repository = createRepository()
+      const customer = repository._testDatabase.customers[0]
+      customer.understanding = validUnderstanding()
+      customer.understandingMeta = {
+        status,
+        inputFingerprint: understandingInputFingerprint({ customer, evidenceItems: [], conflicts: [] }),
+        promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION,
+        ...(status === 'PROCESSING' ? { processingExpiresAt: new Date(Date.now() + 60_000).toISOString() } : {}),
+      }
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const before = stageLogs(log).length
+
+      await expect(repository.refreshCustomerUnderstanding('STAFF-1', 'CUS-1')).resolves.toMatchObject({ status })
+      expect(stageLogs(log).slice(before)).toEqual([
+        expect.objectContaining({
+          result: expectedResult,
+          feishu_read_ms: expect.any(Number),
+          processing_write_ms: null,
+          deepseek_ms: null,
+          terminal_write_ms: null,
+        }),
+      ])
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(updateRecordMock).not.toHaveBeenCalled()
+    }
   })
 
   it('coalesces a repeated refresh into a scoped read instead of starting a second AI call', async () => {

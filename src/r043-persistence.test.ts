@@ -21,7 +21,8 @@ describe('R043 customer archive and understanding persistence', () => {
 
   it('serializes derived metadata writes per customer to prevent lost updates', () => {
     expect(repositorySource).toContain('this.understandingRefreshInFlight = new Map()')
-    expect(repositorySource).toContain("const request = this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force }))")
+    expect(repositorySource).toContain('const queuedAt = Date.now()')
+    expect(repositorySource).toContain("const request = this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force, queuedAt }))")
     expect(repositorySource).toContain("return this.customerWriteQueue.run(customerId, () => this.refreshCustomerSalesUnderstandingUnsafe(actorId, customerId, { force }))")
     expect(repositorySource).toContain("return this.customerWriteQueue.run(customerId, () => this.refreshCustomerSafetyAssessmentUnsafe(actorId, customerId, { force }))")
   })
