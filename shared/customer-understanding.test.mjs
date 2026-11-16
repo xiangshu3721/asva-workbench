@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyCurrentIssuePolicy, buildCustomerUnderstandingContext, classifyUnderstandingContextDensity, createLocalCustomerUnderstanding, normalizeCustomerUnderstanding, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from './customer-understanding.mjs'
+import { applyCurrentIssuePolicy, applyUnderstandingGroundingPolicy, buildCustomerUnderstandingContext, classifyUnderstandingContextDensity, createLocalCustomerUnderstanding, normalizeCustomerUnderstanding, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from './customer-understanding.mjs'
 
 const customer = { id: 'CUS-1', profileVersion: 2, need: '最近工作节奏很乱', helpExpectation: '先找到能执行的一步', profileFields: { city: '杭州', occupation: '自由职业', current_goal: '稳定作息', phone: '15000000000' } }
 const fact = (overrides = {}) => ({ id: 'EVD-1', sourceId: 'SRC-1', customerId: 'CUS-1', evidenceType: 'FACT', semanticKind: 'CURRENT_STATE', fieldKey: 'current_goal', standardValue: '稳定作息', displayText: '目前希望稳定作息', sourceExcerpt: '我希望先稳定作息', confidence: 0.9, reviewStatus: 'CONFIRMED', ...overrides })
@@ -345,6 +345,87 @@ describe('CustomerUnderstandingV1 contract', () => {
   })
 })
 
+
+describe('Stage 6A evidence-grounded confidence boundary', () => {
+  it('demotes unsupported strong insights without throwing away recorded narrative or changing the input', () => {
+    const original = {
+      one_line_understanding: { text: '可能需要重新认识自己的选择', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: [] },
+      current_life_phase: { text: '处于转型期', confidence: 'MEDIUM', type: 'SELF_MEANING_BASED', evidence_ids: [] },
+      current_needs: [{ text: '希望理清方向', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: [] }],
+      core_blocks: [{ text: '暂待核实的模式', confidence: 'HIGH', type: 'SYNTHESIS', evidence_ids: [] }],
+      resources_and_strengths: [], key_tensions: [],
+      next_conversation: [{ suggested_entry: '这周想先谈什么？', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: [] }],
+      service_cautions: [{ text: '先确认再解释', confidence: 'MEDIUM', type: 'SYNTHESIS', evidence_ids: [] }],
+      working_hypotheses: [],
+      meta: { overall_confidence: 'HIGH', evidence_count: 0 },
+    }
+    const adjusted = applyUnderstandingGroundingPolicy(original, { confirmedEvidenceIds: [] })
+    expect(adjusted.one_line_understanding).toMatchObject({ text: original.one_line_understanding.text, confidence: 'LOW', type: 'SYNTHESIS' })
+    expect(adjusted.current_life_phase).toMatchObject({ confidence: 'LOW', type: 'SYNTHESIS' })
+    expect(adjusted.current_needs[0]).toMatchObject({ confidence: 'LOW', type: 'SYNTHESIS' })
+    expect(adjusted.core_blocks[0].confidence).toBe('LOW')
+    expect(adjusted.next_conversation[0]).toMatchObject({ suggested_entry: '这周想先谈什么？', confidence: 'LOW', type: 'SYNTHESIS' })
+    expect(adjusted.service_cautions[0].confidence).toBe('LOW')
+    expect(adjusted.meta.overall_confidence).toBe('LOW')
+    expect(original.one_line_understanding.confidence).toBe('HIGH')
+    expect(original.meta.overall_confidence).toBe('HIGH')
+  })
+
+  it('preserves HIGH/MEDIUM evidence-based insights and a justified overall confidence', () => {
+    const original = {
+      one_line_understanding: { text: '客户明确表达近期项目压力', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: ['EVD-CONFIRMED'] },
+      current_life_phase: null,
+      top_issues: [{ text: '项目交付反复拖延，影响收入', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: ['EVD-CONFIRMED'] }],
+      current_needs: [{ text: '希望重新排期', confidence: 'MEDIUM', type: 'SELF_MEANING_BASED', evidence_ids: ['EVD-CONFIRMED'] }],
+      next_conversation: [],
+      service_cautions: [],
+      working_hypotheses: [],
+      meta: { overall_confidence: 'HIGH', evidence_count: 1 },
+    }
+    const adjusted = applyUnderstandingGroundingPolicy(original, { confirmedEvidenceIds: ['EVD-CONFIRMED'] })
+    expect(adjusted.one_line_understanding.confidence).toBe('HIGH')
+    expect(adjusted.one_line_understanding.type).toBe('FACT_BASED')
+    expect(adjusted.current_needs[0]).toMatchObject({ confidence: 'MEDIUM', type: 'SELF_MEANING_BASED' })
+    expect(adjusted.top_issues).toEqual(original.top_issues)
+    expect(adjusted.meta.overall_confidence).toBe('HIGH')
+  })
+
+  it('does not let a hypothesis citation justify a verified claim or become a diagnosis', () => {
+    const original = {
+      one_line_understanding: { text: '客户可能担心被拒绝', confidence: 'HIGH', type: 'FACT_BASED', evidence_ids: ['EVD-HYPOTHESIS'] },
+      top_issues: [],
+      working_hypotheses: [{ text: '可能回避表达', evidence_ids: ['EVD-HYPOTHESIS'], confidence: 'HIGH', type: 'FACT_BASED' }],
+      meta: { overall_confidence: 'HIGH' },
+    }
+    const adjusted = applyUnderstandingGroundingPolicy(original, { confirmedEvidenceIds: [] })
+    expect(adjusted.one_line_understanding).toMatchObject({ confidence: 'LOW', type: 'SYNTHESIS' })
+    expect(adjusted.working_hypotheses[0]).toMatchObject({ confidence: 'LOW', type: 'WORKING_HYPOTHESIS' })
+    expect(adjusted.meta.overall_confidence).toBe('LOW')
+  })
+
+  it('keeps a provisional consultation direction separate from unsupported claims', () => {
+    const provisional = { title: '情感关系方面的咨询需求', confidence: 'LOW', evidence_ids: [], type: 'SYNTHESIS' }
+    const original = { top_issues: [provisional], next_conversation: [{ suggested_entry: '你想先聊情感关系中的哪件事？', confidence: 'LOW', evidence_ids: [] }] }
+    const adjusted = applyUnderstandingGroundingPolicy(original)
+    expect(adjusted.top_issues).toEqual([provisional])
+    expect(adjusted.next_conversation[0].suggested_entry).toContain('哪件事')
+    expect(adjusted.meta.overall_confidence).toBe('LOW')
+  })
+
+  it('marks confirmed versus unreviewed evidence in context without changing legacy fingerprint', () => {
+    const data = { customer: { id: 'CUS-STAGE6-A', profileFields: {} }, evidenceItems: [
+      fact({ id: 'EVD-C', customerId: 'CUS-STAGE6-A', reviewStatus: 'CONFIRMED' }),
+      fact({ id: 'EVD-P', customerId: 'CUS-STAGE6-A', reviewStatus: 'PENDING_REVIEW' }),
+      fact({ id: 'EVD-H', customerId: 'CUS-STAGE6-A', evidenceType: 'HYPOTHESIS', reviewStatus: 'CONFIRMED' }),
+    ] }
+    const before = understandingInputFingerprint(data)
+    const context = buildCustomerUnderstandingContext(data)
+    expect(context.evidence_refs.find((item) => item.evidence_id === 'EVD-C').review_status).toBe('CONFIRMED')
+    expect(context.evidence_refs.find((item) => item.evidence_id === 'EVD-P').review_status).toBe('PENDING_REVIEW')
+    expect(context.evidence_refs.find((item) => item.evidence_id === 'EVD-H').review_status).toBe('CONFIRMED')
+    expect(understandingInputFingerprint(data)).toBe(before)
+  })
+})
 
 describe('stage 2 consultation topic bridge', () => {
   it('makes reusable signals available without changing the v4 AI freshness key', () => {
