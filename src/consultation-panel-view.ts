@@ -33,15 +33,21 @@ function safeText(value: unknown, limit = 120): string {
 }
 function topicEntry(topic: ConsultationTopicSignal): UnderstandingInsight {
   const subject = safeText(topic.title.replace(/方面的咨询方向$/, ''), 40)
-  const excerpt = safeText(topic.excerpt || topic.title, 52)
+  // Quote only a brief, already-selected source signal; never infer a motive,
+  // diagnosis, or conflict from a mere consultation direction.
+  const excerpt = safeText(topic.excerpt || topic.title, 44)
   const explicit = topic.kind === 'EXPLICIT_CONCERN'
   return {
-    text: explicit ? `了解“${safeText(topic.title, 55)}”的具体处境` : `了解${subject}的具体咨询需求`,
-    focus: explicit ? `围绕已记录的困扰，确认客户当下最希望处理的部分` : `确认${subject}方面最想讨论的具体事情`,
-    why_now: explicit ? '资料记录了相关困扰，当前影响及处理顺序仍需与客户确认。' : '资料只记录了咨询方向，尚未明确具体困扰。',
+    text: explicit ? `确认“${safeText(topic.title, 55)}”的具体情境` : `澄清${subject}的实际咨询期待`,
+    focus: explicit
+      ? '从一次具体经历核对当前处境和实际影响，再由客户确定先谈什么'
+      : `先了解客户希望在${subject}方面谈什么，不预设已有困扰`,
+    why_now: explicit
+      ? '资料中已有相关困扰记录，但现在的情境、影响和优先级仍需客户确认。'
+      : '目前只知道咨询方向，不应推断客户的心理原因或具体矛盾。',
     suggested_entry: explicit
-      ? `之前记录里提到“${excerpt}”，这件事最近最让你在意的是什么？`
-      : `之前资料里提到了${subject}方面的咨询，你最近最想先谈哪件事？`,
+      ? `资料里记录了“${excerpt}”，能说说最近一次与这件事有关的具体情况吗？`
+      : `资料里提到了${subject}这个方向，你现在最想从哪件具体事情聊起？`,
     evidence_ids: [...(topic.evidence_ids || [])],
     confidence: 'LOW',
     type: 'SYNTHESIS',

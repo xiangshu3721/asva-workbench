@@ -94,6 +94,47 @@ describe('stage 3 consultation panel consistency', () => {
     expect(view.entryPoints[0].confidence).toBe('LOW')
   })
 
+  it('opens from a concrete recorded experience rather than inventing psychological causes', () => {
+    const view = buildConsultationPanelView('CUS-1', result([signal({
+      kind: 'EXPLICIT_CONCERN', title: '与伴侣争吵后情绪很低落',
+      excerpt: '与伴侣争吵后情绪很低落', source: 'NOTES',
+      verification_status: 'UNKNOWN', specific_problem_known: true,
+    })]))
+    const entry = view.entryPoints[0]
+    expect(entry.focus).toContain('一次具体经历')
+    expect(entry.why_now).toContain('仍需客户确认')
+    expect(entry.suggested_entry).toContain('资料里记录了')
+    expect(entry.suggested_entry).toContain('与伴侣争吵')
+    expect(entry.suggested_entry).toContain('具体情况')
+    expect(entry.suggested_entry).not.toMatch(/你说过|缺乏安全感|依恋|被抛弃|原生家庭|心理创伤/)
+    expect(entry.confidence).toBe('LOW')
+  })
+
+  it('asks what the client wants to discuss when only a direction is recorded', () => {
+    const view = buildConsultationPanelView('CUS-1', result([signal({
+      title: '职业与发展方面的咨询方向', excerpt: '更多咨询工作发展问题',
+      evidence_ids: [], verification_status: 'UNVERIFIED',
+    })]))
+    expect(view.issues[0].kind).toBe('PROVISIONAL_DIRECTION')
+    expect(view.entryPoints[0]).toMatchObject({ evidence_ids: [], confidence: 'LOW' })
+    expect(view.entryPoints[0].focus).toContain('不预设已有困扰')
+    expect(view.entryPoints[0].suggested_entry).toContain('职业与发展')
+    expect(view.entryPoints[0].suggested_entry).toContain('哪件具体事情')
+    expect(view.entryPoints[0].suggested_entry).not.toMatch(/职业焦虑|对老板不满|关系矛盾|工作压力大/)
+  })
+
+  it('does not expand a long source excerpt into a lengthy quoted prompt', () => {
+    const suffix = '这一段长背景不能完整出现在开场白中'
+    const view = buildConsultationPanelView('CUS-1', result([signal({
+      kind: 'EXPLICIT_CONCERN', title: '最近的项目交付反复拖延',
+      excerpt: '最近的项目交付反复拖延，工作节奏很乱。'.repeat(5) + suffix,
+      source: 'RECORDED_FIELD',
+    })]))
+    expect(view.entryPoints[0].suggested_entry).toContain('最近的项目交付')
+    expect(view.entryPoints[0].suggested_entry).not.toContain(suffix)
+    expect(view.issues[0].excerpt).toContain(suffix)
+  })
+
   it('is pure and stable for unchanged responses', () => {
     const input = result([signal()])
     const frozen = JSON.stringify(input)
