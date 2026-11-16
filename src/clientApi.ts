@@ -317,7 +317,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     const customer = await api.customer(actorId, customerId)
     const context = { generated_at: new Date().toISOString(), current_needs: customer?.need ? [{ text: customer.need, evidence_ids: [] }] : [], resources: customer?.profileFields?.current_resources ? [{ text: String(customer.profileFields.current_resources), evidence_ids: [] }] : [], top_life_events: [], coverage_gaps: customer?.profileMaterialization?.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name) || ['当前资料'], evidence_refs: [] }
     const topics = customer ? buildLocalConsultationTopics(customer) : buildConsultationTopics(buildConsultationInputSnapshot({ customer: { id: customerId } })) as ConsultationTopicsResponse
-    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, consultation_topics: topics, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
+    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, consultation_topics: topics, meta: { status: 'FRESH', promptVersion: 'understanding-v1', profileVersion: customer?.profileVersion ?? 0 }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
   }
   const localSalesUnderstanding = async (actorId: string, customerId: string): Promise<CustomerSalesUnderstandingResponse> => {
     const database = await api.dashboard(actorId)

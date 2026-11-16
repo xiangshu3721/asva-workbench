@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createLocalApi } from './api'
+import { createLocalAsyncApi } from './clientApi'
 import { seedDatabase } from './data'
 import type { FeedbackInput } from './domain'
 import { createLocalRepository } from './repositories'
@@ -15,6 +16,13 @@ function setupStorage() {
 beforeEach(() => setupStorage())
 
 describe('V0.3 appointment workflow and permissions', () => {
+  it('keeps mock consultation responses reusable for the current profile version', async () => {
+    const local = createLocalApi(createLocalRepository())
+    const customer = local.dashboard('staff-admin').customers[0]
+    const response = await createLocalAsyncApi(local).getCustomerUnderstanding('staff-admin', customer.id)
+    expect(response.meta.profileVersion).toBe(customer.profileVersion)
+  })
+
   it('opens the demo as the default administrator account', () => {
     const api = createLocalApi(createLocalRepository())
     const account = api.login('15021512537', '888888')
