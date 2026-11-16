@@ -47,6 +47,11 @@ describe('consultation topic signals v1', () => {
     expect(result.topics).toEqual([])
   })
 
+  it('does not promote a resolved concern but retains a later current concern', () => {
+    const result = read({ customer: { notes: '之前与伴侣争吵严重，但目前已经解决。最近工作压力很大。' } })
+    expect(result.topics).toEqual([expect.objectContaining({ kind: 'EXPLICIT_CONCERN', title: expect.stringContaining('工作压力') })])
+  })
+
   it('does not promote historical, resolved, or third-party statements into current concerns', () => {
     expect(read({ customer: { notes: '去年工作压力很大。' } }).topics).toEqual([])
     expect(read({ customer: { notes: '我现在不再焦虑了。' } }).topics).toEqual([])

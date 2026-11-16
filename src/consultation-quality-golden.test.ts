@@ -49,7 +49,7 @@ const fixtures: Fixture[] = [
   { id: 'S6C-14', title: 'unverified extracted intent stays provisional', customer: { supplementaryItems: [{ id: 'SUP-U', text: '有男朋友，更多咨询情感问题', source: 'AI_EXTRACTED', verificationStatus: 'UNVERIFIED' }] }, expected: 'HAS_SIGNALS', kind: 'PROVISIONAL_DIRECTION', subject: '亲密关系' },
   { id: 'S6C-15', title: 'confirmed first-party evidence', evidenceItems: [directEvidence('S6C-15')], expected: 'HAS_SIGNALS', kind: 'EXPLICIT_CONCERN', subject: '工作压力' },
   { id: 'S6C-16', title: 'unresolved evidence conflict', evidenceItems: [directEvidence('S6C-16', 'EV-CONFLICT')], conflicts: [{ customerId: 'S6C-16', status: 'OPEN', fieldKey: 'current_core_issue', currentEvidenceId: 'EV-CONFLICT', newEvidenceId: 'EV-NEW' }], expected: 'INSUFFICIENT_INFORMATION' },
-  { id: 'S6C-17', title: 'old service record', sessions: [{ customerId: 'S6C-17', id: 'SESS-OLD', date: '2024-01-01', note: '当时与伴侣争吵很严重' }], expected: 'INSUFFICIENT_INFORMATION' },
+  { id: 'S6C-17', title: 'resolved historical concern and old service record', customer: { notes: '之前与伴侣争吵严重，但目前已经解决，不需要咨询。' }, sessions: [{ customerId: 'S6C-17', id: 'SESS-OLD', date: '2024-01-01', note: '当时与伴侣争吵很严重' }], expected: 'INSUFFICIENT_INFORMATION' },
   { id: 'S6C-18', title: 'long evidence excerpt is not repeated in opening', evidenceItems: [{ ...directEvidence('S6C-18'), sourceExcerpt: '最近工作压力很大，工作节奏乱。'.repeat(9) + '仅供资料末尾参考' }], expected: 'HAS_SIGNALS', kind: 'EXPLICIT_CONCERN', subject: '工作压力', excerptMarkerMustNotAppear: '仅供资料末尾参考' },
   { id: 'S6C-19', title: 'foreign customer evidence is not inherited', evidenceItems: [directEvidence('SOMEONE-ELSE', 'EV-FOREIGN')], expected: 'INSUFFICIENT_INFORMATION' },
 ]

@@ -18,7 +18,8 @@ const DOMAINS = [
   ['生活与成长', /(生活|自我|成长|方向感|人生)/],
 ]
 const clean = (value, length = 180) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, length)
-const pieces = (value) => clean(value, 1400).split(/[。；;！？!?\n，,]+/).map((item) => clean(item, 180)).filter(Boolean).slice(0, 20)
+const sentences = (value) => clean(value, 1400).split(/[。；;！？!?\n]+/).map((item) => clean(item, 360)).filter(Boolean).slice(0, 20)
+const pieces = (sentence) => clean(sentence, 360).split(/[，,]+/).map((item) => clean(item, 180)).filter(Boolean)
 const hasHumanVerification = (status) => status === 'HUMAN_VERIFIED'
 function safeSource(candidate) {
   const marker = String(candidate.information_nature || candidate.source || '').toUpperCase()
@@ -84,12 +85,17 @@ export function buildConsultationTopics(snapshot = {}) {
   const topics = []
   const seen = new Set()
   for (const candidate of candidateRecords(snapshot)) {
-    for (const clause of pieces(candidate.text)) {
-      for (const topic of classifyText(clause, candidate)) {
-        const key = `${topic.kind}:${topic.title}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        topics.push(topic)
+    for (const sentence of sentences(candidate.text)) {
+      // A resolved or explicitly declined sentence must not leak its earlier
+      // comma-separated concern clause into the current-topic view.
+      if (NO_REQUEST.test(sentence) || RESOLVED.test(sentence) || HISTORICAL.test(sentence)) continue
+      for (const clause of pieces(sentence)) {
+        for (const topic of classifyText(clause, candidate)) {
+          const key = `${topic.kind}:${topic.title}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          topics.push(topic)
+        }
       }
     }
   }
