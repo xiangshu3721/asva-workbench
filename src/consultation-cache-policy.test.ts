@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Customer, ServiceSession } from './domain'
 import { buildLocalConsultationTopics } from './clientApi'
 import { createRuleOneLineUnderstanding } from './one-line-understanding'
-import { consultationCacheDecision, currentConsultationTopics, type ConsultationCacheResponse } from './consultation-cache-policy'
+import { consultationCacheDecision, currentConsultationTopics, type ConsultationCacheCheck, type ConsultationCacheResponse } from './consultation-cache-policy'
 
 const customer = (overrides: Partial<Customer> = {}) => ({
   id: 'CUS-CACHE', name: '合成客户', notes: '想聊职业发展', need: '', goal: '',
@@ -18,7 +18,7 @@ const cached = (c: Customer, overrides: Partial<NonNullable<ConsultationCacheRes
   meta: { profileVersion: c.profileVersion ?? 0, consultationClientFingerprint: fingerprint(c), ...overrides },
 })
 
-function decide(c: Customer, entry: ConsultationCacheResponse | null, updates: Record<string, unknown> = {}) {
+function decide(c: Customer, entry: ConsultationCacheResponse | null, updates: Partial<ConsultationCacheCheck> = {}) {
   return consultationCacheDecision({
     cached: entry, cachedAt: 1000, customerId: c.id, profileVersion: c.profileVersion ?? 0,
     consultationClientFingerprint: fingerprint(c), now: 1010, ttlMs: 45_000,
