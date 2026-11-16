@@ -20,6 +20,24 @@ const DOMAINS = [
 const clean = (value, length = 180) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, length)
 const sentences = (value) => clean(value, 1400).split(/[。；;！？!?\n]+/).map((item) => clean(item, 360)).filter(Boolean).slice(0, 20)
 const pieces = (sentence) => clean(sentence, 360).split(/[，,]+/).map((item) => clean(item, 180)).filter(Boolean)
+const CURRENT_MARKER = /(最近|近期|现在|目前|这段时间|当前|仍然|依然|持续|一直|这周|本周|当下)/
+
+// With a resolved/refused/historical clause, retain only independently
+// current concerns in an explicitly different domain. If the status is
+// ambiguous or global, conservatively return no topics for that sentence.
+function currentIndependentPieces(sentence) {
+  const clauses = pieces(sentence)
+  if (!NO_REQUEST.test(sentence) && !RESOLVED.test(sentence) && !HISTORICAL.test(sentence)) return clauses
+  const closed = clauses.filter((clause) => NO_REQUEST.test(clause) || RESOLVED.test(clause) || HISTORICAL.test(clause))
+  if (!closed.length) return []
+  const closedDomains = new Set(closed.flatMap((clause) => DOMAINS.filter(([, match]) => match.test(clause)).map(([name]) => name)))
+  if (!closedDomains.size) return []
+  return clauses.filter((clause) => {
+    if (NO_REQUEST.test(clause) || RESOLVED.test(clause) || HISTORICAL.test(clause) || !CURRENT_MARKER.test(clause)) return false
+    const currentDomains = DOMAINS.filter(([, match]) => match.test(clause)).map(([name]) => name)
+    return currentDomains.length > 0 && currentDomains.every((name) => !closedDomains.has(name))
+  })
+}
 const hasHumanVerification = (status) => status === 'HUMAN_VERIFIED'
 function safeSource(candidate) {
   const marker = String(candidate.information_nature || candidate.source || '').toUpperCase()
@@ -86,10 +104,9 @@ export function buildConsultationTopics(snapshot = {}) {
   const seen = new Set()
   for (const candidate of candidateRecords(snapshot)) {
     for (const sentence of sentences(candidate.text)) {
-      // A resolved or explicitly declined sentence must not leak its earlier
-      // comma-separated concern clause into the current-topic view.
-      if (NO_REQUEST.test(sentence) || RESOLVED.test(sentence) || HISTORICAL.test(sentence)) continue
-      for (const clause of pieces(sentence)) {
+      // Closure applies to its scope, not necessarily an independent
+      // still-current concern elsewhere in the same sentence.
+      for (const clause of currentIndependentPieces(sentence)) {
         for (const topic of classifyText(clause, candidate)) {
           const key = `${topic.kind}:${topic.title}`
           if (seen.has(key)) continue
