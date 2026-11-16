@@ -31,6 +31,7 @@ import { sortProductsForSelection } from './product-order'
 import { buildMentorCopyText, insertMentorSnapshot, publicMentorSummary, reconcileMentorSnapshot, type TemporaryMentorCredential } from './mentor-account-ux'
 import { isSourceSavePending, shouldStartSourceAi, transitionSourceSaveState, type SourceSaveState } from './save-reliability'
 import { AUTO_PROFILE_REFRESH_INTERVAL_MS, AUTO_PROFILE_REFRESH_MAX_ATTEMPTS, automaticProfileStatusMessage, countProfileVerificationItems, isAutomaticProfileInProgress } from './customer-profile-status'
+import { buildConsultationPanelView, type ConsultationIssueCard, type ConsultationPanelState } from './consultation-panel-view'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { validateCustomerContacts } from '../shared/customer-foundation.mjs'
 const repository = createLocalRepository()
@@ -1295,33 +1296,42 @@ function ConsultationCard({ item, refs, kind = 'default' }: { item: Understandin
   const detail = sanitizeUserVisibleText(kind === 'entry' ? item.why_now || item.detail : item.detail || item.description)
   const fullText = detail || title
   const shouldCollapse = fullText.length > 150
-  return <article className={`consultation-card consultation-card-${kind}`}><strong>{title}</strong>{detail && (shouldCollapse ? <details className="consultation-card-more"><summary>了解这件事</summary><p>{detail}</p></details> : <p>{detail}</p>)}{kind === 'entry' && item.suggested_entry && <div className="consultation-entry"><span>可以这样开始</span><p>“{sanitizeUserVisibleText(item.suggested_entry)}”</p></div>}<span className="understanding-confidence">{item.confidence === 'HIGH' ? '把握较高' : item.confidence === 'MEDIUM' ? '把握中等' : '待进一步确认'}</span><UnderstandingEvidence ids={item.evidence_ids} refs={refs} /></article>
+  return <article className={`consultation-card consultation-card-${kind}`}><strong>{title}</strong>{detail && (shouldCollapse ? <details className="consultation-card-more"><summary>了解这件事</summary><p>{detail}</p></details> : <p>{detail}</p>)}{kind === 'entry' && item.suggested_entry && <div className="consultation-entry"><span>可以这样开始</span><p>“{sanitizeUserVisibleText(item.suggested_entry)}”</p></div>}<span className="understanding-confidence">{item.confidence === 'HIGH' ? '把握较高' : item.confidence === 'MEDIUM' ? '把握中等' : '待进一步确认'}</span>{item.evidence_ids?.length > 0 && <UnderstandingEvidence ids={item.evidence_ids} refs={refs} />}</article>
 }
 function ConsultationModule({ title, hint, items, refs, kind = 'default', tone = 'core' }: { title: string; hint?: string; items: UnderstandingInsight[]; refs: CustomerUnderstandingResponse['evidence_refs']; kind?: 'default' | 'entry' | 'question'; tone?: 'core' | 'entry' | 'question' | 'caution' | 'resource' }) {
   if (!items.length) return null
   return <section className={`consultation-module consultation-module-${kind} consultation-module-tone-${tone}`}><div className="consultation-module-heading"><h3>{title}</h3>{hint && <span>{hint}</span>}</div><div className="consultation-module-content"><div className="consultation-card-list">{items.map((item, index) => <ConsultationCard item={item} refs={refs} kind={kind} key={`${item.text}-${index}`} />)}</div></div></section>
 }
-function CurrentCoreIssuesModule({ issues, gaps, refs }: { issues: UnderstandingInsight[]; gaps: CustomerUnderstandingV1['knowledge_gaps']; refs: CustomerUnderstandingResponse['evidence_refs'] }) {
-  const resolvedPattern = /(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/
-  const provisionalDirectionDetail = '原始资料已提及该咨询主题，具体情况待客户确认。'
-  const hasValidEvidence = (issue: UnderstandingInsight) => issue.evidence_ids?.length > 0 && issue.evidence_ids.every((id) => {
-    const evidence = refs.find((item) => item.evidence_id === id)
-    return Boolean(evidence && !resolvedPattern.test(`${evidence.display_text} ${evidence.excerpt}`))
-  })
-  const verifiedIssues = issues.filter((issue) => issue.confidence !== 'LOW' && hasValidEvidence(issue))
-  const provisionalDirections = issues.filter((issue) => issue.confidence === 'LOW' && issue.detail === provisionalDirectionDetail && (!issue.evidence_ids?.length || hasValidEvidence(issue)))
-  const [primary, ...related] = verifiedIssues.slice(0, 3)
-  const [direction, ...additionalDirections] = provisionalDirections.slice(0, 2)
-  const lead = primary || direction
-  const leadIsDirection = !primary && Boolean(direction)
-  const leadTitle = lead ? (lead.title || lead.text) : ''
-  const relatedGaps = lead ? gaps.filter((gap) => {
-    const extended = gap as typeof gap & { related_issue?: string; why_it_matters?: string }
-    const relatedIssue = extended.related_issue || ''
-    return Boolean(relatedIssue && (relatedIssue.includes(leadTitle) || leadTitle.includes(relatedIssue)))
-  }).slice(0, 3) : []
-  const leadDetail = lead ? (lead.why_it_matters || lead.detail || lead.description) : ''
-  return <section className="consultation-module consultation-module-tone-core"><div className="consultation-module-heading"><h3>当前核心议题</h3><span>首要 1 项，关联最多 2 项</span></div><div className="consultation-module-content">{!lead ? <p className="understanding-empty">当前资料不足，尚不能确认核心议题；可先核实客户最近最希望处理的具体问题及现实影响。</p> : <div className="consultation-card-list"><article className="consultation-card"><span className="understanding-field-label">{leadIsDirection ? '初步咨询方向 · 待客户确认' : '首要议题'}</span><strong>{sanitizeUserVisibleText(leadTitle)}</strong>{leadDetail && <><span className="understanding-field-label">{leadIsDirection ? '已知线索' : '具体表现与现实影响'}</span><p>{sanitizeUserVisibleText(leadDetail)}</p></>}{leadIsDirection ? <small className="understanding-confidence">原始资料已提及，待客户确认具体情况</small> : <span className="understanding-confidence">{lead.confidence === 'HIGH' ? '把握较高' : '把握中等'}</span>}{lead.evidence_ids.length > 0 && <UnderstandingEvidence ids={lead.evidence_ids} refs={refs} />}</article>{related.length > 0 && <div className="consultation-card"><span className="understanding-field-label">关联议题</span>{related.map((item, index) => <div key={`${item.text}-${index}`}><strong>{sanitizeUserVisibleText(item.title || item.text)}</strong>{(item.why_it_matters || item.detail || item.description) && <p>{sanitizeUserVisibleText(item.why_it_matters || item.detail || item.description || '')}</p>}<UnderstandingEvidence ids={item.evidence_ids} refs={refs} /></div>)}</div>}{(primary ? provisionalDirections : additionalDirections).length > 0 && <div className="consultation-card"><span className="understanding-field-label">初步咨询方向 · 待客户确认</span>{(primary ? provisionalDirections : additionalDirections).map((item, index) => <div key={`${item.text}-${index}`}><strong>{sanitizeUserVisibleText(item.title || item.text)}</strong>{(item.why_it_matters || item.detail || item.description) && <p>{sanitizeUserVisibleText(item.why_it_matters || item.detail || item.description || '')}</p>}{item.evidence_ids.length > 0 && <UnderstandingEvidence ids={item.evidence_ids} refs={refs} />}</div>)}</div>}{relatedGaps.length > 0 && <div className="consultation-card"><span className="understanding-field-label">待确认</span>{relatedGaps.map((gap, index) => <p key={`${gap.text}-${index}`}>{sanitizeUserVisibleText(gap.text)}</p>)}</div>}</div>}</div></section>
+function CurrentCoreIssuesModule({ issues, state, refs }: { issues: ConsultationIssueCard[]; state: ConsultationPanelState; refs: CustomerUnderstandingResponse['evidence_refs'] }) {
+  const [lead, ...related] = issues
+  const emptyMessage = state === 'UNAVAILABLE'
+    ? '统一咨询线索尚未读取，当前不采用旧 AI 推断来确认核心议题；请核对客户资料。'
+    : '当前资料尚未明确咨询困扰或方向；可先询问客户最近最希望获得的支持。'
+  const evidence = (item: ConsultationIssueCard) => item.evidenceIds.length > 0 ? <UnderstandingEvidence ids={item.evidenceIds} refs={refs} /> : null
+  const source = (item: ConsultationIssueCard) => <small className="understanding-confidence">来源：{sanitizeUserVisibleText(item.sourceLabel)} · {item.verificationLabel}</small>
+  return <section className="consultation-module consultation-module-tone-core">
+    <div className="consultation-module-heading"><h3>当前核心议题</h3><span>首要 1 项，关联最多 2 项</span></div>
+    <div className="consultation-module-content">
+      {!lead ? <p className="understanding-empty">{emptyMessage}</p> : <div className="consultation-card-list">
+        <article className="consultation-card">
+          <span className="understanding-field-label">{lead.kind === 'EXPLICIT_CONCERN' ? '已记录的当前困扰 · 具体情况以客户确认为准' : '初步咨询方向 · 待客户确认'}</span>
+          <strong>{sanitizeUserVisibleText(lead.title)}</strong>
+          {lead.excerpt && lead.excerpt !== lead.title && <p>{sanitizeUserVisibleText(lead.excerpt)}</p>}
+          {source(lead)}
+          {evidence(lead)}
+        </article>
+        {related.length > 0 && <div className="consultation-card">
+          <span className="understanding-field-label">关联线索</span>
+          {related.map((item, index) => <div key={`${item.kind}-${item.title}-${index}`}>
+            <strong>{sanitizeUserVisibleText(item.title)}</strong>
+            {item.excerpt && item.excerpt !== item.title && <p>{sanitizeUserVisibleText(item.excerpt)}</p>}
+            {source(item)}
+            {evidence(item)}
+          </div>)}
+        </div>}
+      </div>}
+    </div>
+  </section>
 }
 function salesStrategyLabel(strategy: string) { return humanizeStrategy(strategy) }
 function salesTimingLabel(timing: string) { return humanizeTiming(timing) }
@@ -1357,14 +1367,16 @@ function SalesCommercialCard({ title, value, explanation, signals, unknowns, evi
 function CustomerUnderstandingPanel({ response, fallback, status, error, loading, refreshing, onRefresh, customerId, onGetSafety, onRefreshSafety, onSafetyResponse, view, onViewChange, salesResponse, salesFallback, salesStatus, salesError, salesLoading, salesRefreshing, onSalesRefresh, courses, canEditEnrollments, onEditEnrollments }: { response: CustomerUnderstandingResponse | null; fallback?: CustomerUnderstandingV1; status: string; error: string; loading: boolean; refreshing: boolean; onRefresh: () => void; customerId: string; onGetSafety: (customerId: string) => Promise<SafetyAssessmentResponse>; onRefreshSafety: (customerId: string, force?: boolean) => Promise<SafetyAssessmentResponse>; onSafetyResponse: (response: SafetyAssessmentResponse) => void; view: 'consultation' | 'sales'; onViewChange: (view: 'consultation' | 'sales') => void; salesResponse: CustomerSalesUnderstandingResponse | null; salesFallback?: CustomerSalesUnderstandingV1; salesStatus: string; salesError: string; salesLoading: boolean; salesRefreshing: boolean; onSalesRefresh: () => void; courses: Array<{ enrollment: Database['enrollments'][number]; product?: Product }>; canEditEnrollments: boolean; onEditEnrollments: () => void }) {
   const understandingReadFailed = Boolean(error) || status === 'FAILED'
   const refreshFailed = error.startsWith('重新整理失败：')
-  const understanding = response?.understanding || (understandingReadFailed ? fallback : undefined)
+  const scopedResponse = response?.customerId === customerId ? response : null
+  const understanding = scopedResponse?.understanding || (understandingReadFailed ? fallback : undefined)
   const salesReadFailed = Boolean(salesError) || salesStatus === 'FAILED'
   const sales = salesReadFailed ? salesFallback : undefined
-  const refs = response?.evidence_refs || []
+  const refs = scopedResponse?.evidence_refs || []
+  const consultationView = buildConsultationPanelView(customerId, scopedResponse?.consultation_topics)
   const safeSalesResponse = salesResponse?.customerId === customerId ? salesResponse : null
   const salesRefs = safeSalesResponse?.evidence_refs || refs
   const strong = <T extends { confidence: string }>(items: T[]) => items.filter((item) => item.confidence !== 'LOW')
-  const entryPoints = (understanding?.next_conversation || []).filter((item) => item.focus || item.suggested_entry || item.prompt).slice(0, 3)
+  const entryPoints = consultationView.entryPoints
   const notice = status === 'FAILED'
     ? 'AI 重新整理未完成，当前显示基于已录入资料的待确认结果。'
     : status === 'PROCESSING'
@@ -1373,7 +1385,7 @@ function CustomerUnderstandingPanel({ response, fallback, status, error, loading
         ? (refreshFailed ? '重新整理未完成，当前保留上一次可用结果。' : '读取咨询理解失败，当前保留上一次可用结果。')
         : ''
   const consultationContent = (loading || status === 'PROCESSING') && !understanding ? <p className="understanding-empty">正在读取该客户的咨询档案…</p> : !understanding ? <div className="sales-empty"><p>{refreshFailed ? '重新整理未完成，暂时没有可用结果。' : error ? '咨询理解读取失败，可以稍后重试。' : '还没有整理这个客户的 AI 档案。'}</p><button className="primary-button small" type="button" disabled={refreshing} onClick={onRefresh}>{refreshing ? '整理中…' : error ? '重试' : '开始整理'}</button><span>{understandingStatusLabel(status)}</span></div> : <>{notice && <p className="understanding-read-warning">{notice}</p>}<div className="consultation-grid">
-      <CurrentCoreIssuesModule issues={understanding.top_issues || []} gaps={understanding.knowledge_gaps || []} refs={refs} />
+      <CurrentCoreIssuesModule issues={consultationView.issues} state={consultationView.state} refs={refs} />
       <ConsultationModule title="咨询切入点" hint="从具体处境开始" items={entryPoints} refs={refs} kind="entry" tone="entry" />
       <ConsultationModule title="服务注意事项" hint="可直接转成行动" items={(understanding.service_cautions || []).slice(0, 4)} refs={refs} tone="caution" />
       <ConsultationModule title="当前资源" items={strong(understanding.resources_and_strengths || []).slice(0, 3)} refs={refs} tone="resource" />
