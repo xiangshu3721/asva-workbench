@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, ServiceSession, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -6,6 +6,10 @@ import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSumm
 import { buildBasicDashboard } from '../shared/basic-dashboard.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { createLocalCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { buildConsultationInputSnapshot } from '../shared/consultation-input-snapshot.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { buildConsultationTopics } from '../shared/consultation-topics.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, historicalSalesRecords } from '../shared/customer-sales-understanding.mjs'
 import { readAccessToken, writeAccessToken } from './auth-storage'
@@ -70,7 +74,31 @@ export function normalizeDatabaseDto(value: unknown): Database {
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
-export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number; has_meaningful_input?: boolean } }
+export function buildLocalConsultationTopics(customer: Customer, sessions: ServiceSession[] = []): ConsultationTopicsResponse {
+  return buildConsultationTopics(buildConsultationInputSnapshot({ customer, sessions })) as ConsultationTopicsResponse
+}
+
+export interface ConsultationTopicSignal {
+  title: string
+  kind: 'EXPLICIT_CONCERN' | 'PROVISIONAL_DIRECTION'
+  verification_status: string
+  source: string
+  source_ref?: string | null
+  evidence_ids: string[]
+  excerpt: string
+  recorded_at?: string | null
+  temporal_status: string
+  specific_problem_known: boolean
+  unknowns?: string[]
+}
+export interface ConsultationTopicsResponse {
+  schema_version: string
+  customer_id: string
+  source_fingerprint: string | null
+  status: 'HAS_SIGNALS' | 'INSUFFICIENT_INFORMATION'
+  topics: ConsultationTopicSignal[]
+}
+export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; consultation_topics?: ConsultationTopicsResponse; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number; has_meaningful_input?: boolean } }
 export interface CustomerSalesUnderstandingResponse { customerId: string; status: SummaryStatus; salesUnderstanding: CustomerSalesUnderstandingV1 | null; meta: CustomerSalesUnderstandingMeta; historical_enrollments: Array<{ name: string; type: string; status: string; enrolled_at?: string | null; paid_at?: string | null; payment_status: string; amount_recorded?: number | null }>; service_history: Array<{ name: string; type: string; status: string; occurred_at?: string | null; summary: string }>; evidence_refs: CustomerUnderstandingResponse['evidence_refs']; context_summary: { density: string; evidence_count: number } }
 export interface SafetyAssessmentResponse { customerId: string; status: 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'; assessment: { risk_level: string; risk_confidence: string; service_gate: string; commercial_block: string; requires_human_review: boolean; requires_safety_check: boolean; recommended_escalation: string; critical_unknowns: string[]; service_cautions: string[]; next_action: string; safety_signals: Array<{ signal_type: string; subject_scope: string; polarity: string; recency: string; short_description: string }>; } | null; meta: Record<string, unknown>; context_summary: { density: string; safety_data_sufficiency: string; critical_unknowns: string[]; evidence_count: number }; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }> }
 export interface TeamSnapshotCustomerPreview { id: string; name: string; initials: string; need: string }
@@ -288,7 +316,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
   const localUnderstanding = async (actorId: string, customerId: string): Promise<CustomerUnderstandingResponse> => {
     const customer = await api.customer(actorId, customerId)
     const context = { generated_at: new Date().toISOString(), current_needs: customer?.need ? [{ text: customer.need, evidence_ids: [] }] : [], resources: customer?.profileFields?.current_resources ? [{ text: String(customer.profileFields.current_resources), evidence_ids: [] }] : [], top_life_events: [], coverage_gaps: customer?.profileMaterialization?.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name) || ['当前资料'], evidence_refs: [] }
-    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
+    const topics = customer ? buildLocalConsultationTopics(customer) : buildConsultationTopics(buildConsultationInputSnapshot({ customer: { id: customerId } })) as ConsultationTopicsResponse
+    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, consultation_topics: topics, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
   }
   const localSalesUnderstanding = async (actorId: string, customerId: string): Promise<CustomerSalesUnderstandingResponse> => {
     const database = await api.dashboard(actorId)
