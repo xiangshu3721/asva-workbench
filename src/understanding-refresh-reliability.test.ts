@@ -49,6 +49,27 @@ describe('consultation refresh client reliability', () => {
     expect(manualRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeLessThan(manualRefresh.indexOf('props.resourceCache.set(cacheKey, result)'))
   })
 
+  it('coalesces simultaneous consultation refresh requests and logs only the actual network request', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const start = source.indexOf('const runConsultationRefresh =')
+    const end = source.indexOf('const autoRefreshStaleUnderstanding =')
+    const refresh = source.slice(start, end)
+    expect(refresh).toContain('understandingRefreshFlightRef.current.run(flightKey')
+    expect(refresh).toContain('CUSTOMER_UNDERSTANDING_REFRESH_MS')
+    expect(refresh).toContain("result: 'ERROR'")
+    const auto = source.slice(end, source.indexOf('const loadUnderstanding ='))
+    const manual = source.slice(source.indexOf('const refreshUnderstanding = async'), source.indexOf('const refreshSalesUnderstanding = async'))
+    expect(auto).toContain('runConsultationRefresh(requestCustomerId, false)')
+    expect(manual).toContain('runConsultationRefresh(requestCustomerId, force)')
+    expect(manual).toContain("error: ''")
+  })
+
+  it('handles refresh errors from both buttons without unhandled rejections', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const handled = source.match(/onRefresh=\{\(\) => \{ void refreshUnderstanding\(true\)\.catch\(\(\) => \{/g)
+    expect(handled).toHaveLength(2)
+  })
+
   it('keeps a previous response visible and labels read versus refresh failures accurately', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).toContain("error: `读取咨询理解失败：${error instanceof Error ? error.message : '请求未完成'}`")
