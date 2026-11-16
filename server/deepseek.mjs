@@ -1,6 +1,6 @@
 import { config } from './config.mjs'
 import { BUSINESS_GLOSSARY, DIMENSION_REGISTRY, ENTITY_REGISTRY, METRIC_REGISTRY } from '../shared/semantic-engine.mjs'
-import { applyCurrentIssuePolicy, applyUnderstandingDensityPolicy, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+import { applyCurrentIssuePolicy, applyUnderstandingDensityPolicy, applyUnderstandingGroundingPolicy, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
 import { CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { SAFETY_EXPLICITNESS, SAFETY_POLARITIES, SAFETY_RECENCY, SAFETY_SCOPES, SAFETY_SIGNAL_TYPES, normalizeSafetySignal } from '../shared/safety-contract.mjs'
 import { canonicalProfileFieldCatalog } from '../shared/canonical-profile-facts.mjs'
@@ -373,10 +373,18 @@ export async function createCustomerUnderstanding(input) {
     if (!value || typeof value !== 'object') return value
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
   }
-  return applyUnderstandingDensityPolicy(applyCurrentIssuePolicy(restoreEvidenceIds(normalized), {
-    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || []).flatMap((item) => item.evidence_ids || []),
+  // Pending, hypothetical, or AI-derived refs cannot substantiate a strong claim.
+  const confirmedEvidenceIds = evidenceRefs
+    .filter((item) => item.review_status === 'CONFIRMED' && !['HYPOTHESIS', 'AI_INFERENCE'].includes(item.evidence_type))
+    .map((item) => item.evidence_id)
+  const confirmedEvidenceIdSet = new Set(confirmedEvidenceIds)
+  const currentIssueSafe = applyUnderstandingDensityPolicy(applyCurrentIssuePolicy(restoreEvidenceIds(normalized), {
+    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || [])
+      .flatMap((item) => item.evidence_ids || [])
+      .filter((id) => confirmedEvidenceIdSet.has(id)),
     currentIssueCandidates: context.current_issue_candidates?.provisional || [],
   }), context.context_density)
+  return applyUnderstandingGroundingPolicy(currentIssueSafe, { confirmedEvidenceIds })
 }
 
 export async function createCustomerSalesUnderstanding(input) {

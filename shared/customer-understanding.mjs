@@ -48,6 +48,7 @@ function evidenceRef(item, sourceRecords) {
     excerpt: safeText(item.sourceExcerpt || item.displayText, 220),
     occurred_at: item.occurredAt || null,
     evidence_type: item.evidenceType,
+    review_status: item.reviewStatus || null,
     source_perspective: item.sourcePerspective || source?.sourcePerspective || (item.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'),
     content_source: item.contentSource || null,
     information_nature: item.informationNature || null,
@@ -345,6 +346,45 @@ export function normalizeCustomerUnderstanding(raw, { evidenceIds = [], now = ne
   normalized.knowledge_gaps = normalized.knowledge_gaps.map(filterRefs)
   normalized.meta.invalid_evidence_refs = unique(invalidEvidenceRefs)
   return normalized
+}
+
+// Stage 6A: preserve the model's useful narrative, but never present a
+// statement as verified solely because the model assigned HIGH/MEDIUM.
+// Only confirmed, non-AI-derived Evidence may justify stronger confidence.
+// This applies to new generations; it does not rewrite persisted snapshots.
+export function applyUnderstandingGroundingPolicy(value, { confirmedEvidenceIds = [] } = {}) {
+  if (!value || typeof value !== 'object') return value
+  const strongIds = new Set(confirmedEvidenceIds.filter(Boolean).map(String))
+  const grounded = (item) => Array.isArray(item?.evidence_ids) && item.evidence_ids.some((id) => strongIds.has(String(id)))
+  const calibrate = (item, { hypothesis = false } = {}) => {
+    if (!item) return item
+    if (hypothesis || item.type === 'WORKING_HYPOTHESIS') return { ...item, confidence: 'LOW', type: 'WORKING_HYPOTHESIS' }
+    if (grounded(item)) return item
+    return {
+      ...item,
+      confidence: 'LOW',
+      type: ['FACT_BASED', 'SELF_MEANING_BASED'].includes(item.type) ? 'SYNTHESIS' : item.type,
+    }
+  }
+  const result = {
+    ...value,
+    one_line_understanding: calibrate(value.one_line_understanding),
+    current_life_phase: calibrate(value.current_life_phase),
+  }
+  for (const key of ['current_needs', 'core_blocks', 'resources_and_strengths', 'key_tensions', 'next_conversation', 'service_cautions']) {
+    result[key] = (value[key] || []).map((item) => calibrate(item))
+  }
+  result.working_hypotheses = (value.working_hypotheses || []).map((item) => calibrate(item, { hypothesis: true }))
+  // top_issues already passes a separate, more restrictive current-issue
+  // policy, including provisional directions; do not change its semantics.
+  const substantive = [
+    result.one_line_understanding, result.current_life_phase,
+    ...(result.top_issues || []),
+    ...['current_needs', 'core_blocks', 'resources_and_strengths', 'key_tensions'].flatMap((key) => result[key] || []),
+  ]
+  const hasConfirmedClaim = substantive.some((item) => item && item.confidence !== 'LOW' && grounded(item) && item.type !== 'WORKING_HYPOTHESIS')
+  result.meta = { ...(value.meta || {}), overall_confidence: hasConfirmedClaim ? value.meta?.overall_confidence || 'LOW' : 'LOW' }
+  return result
 }
 
 function walkStrings(value, callback) {
