@@ -36,6 +36,13 @@ describe('consultation AI status copy', () => {
     expect(read.notice).toContain('读取失败')
   })
 
+  it('keeps PROCESSING label and message aligned even if a prior error string remains', () => {
+    const result = consultationAiDisplayStatus('PROCESSING', '重新整理失败：较早的错误', true)
+    expect(result.label).toBe('AI 理解整理中')
+    expect(result.notice).toContain('正在整理')
+    expect(result.notice).not.toContain('更新未完成')
+  })
+
   it('does not show a redundant warning for a fresh or merely stale AI understanding', () => {
     expect(consultationAiDisplayStatus('FRESH', '', true)).toEqual({ label: 'AI 理解已整理', notice: '' })
     expect(consultationAiDisplayStatus('STALE', '', true)).toEqual({ label: 'AI 理解待更新', notice: '' })
