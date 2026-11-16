@@ -13,7 +13,7 @@ const customer = (overrides: Partial<Customer> = {}) => ({
 const fingerprint = (c: Customer, sessions: ServiceSession[] = []) =>
   buildLocalConsultationTopics(c, sessions).source_fingerprint || ''
 
-const cached = (c: Customer, overrides: Partial<ConsultationCacheResponse['meta']> = {}): ConsultationCacheResponse => ({
+const cached = (c: Customer, overrides: Partial<NonNullable<ConsultationCacheResponse['meta']>> = {}): ConsultationCacheResponse => ({
   customerId: c.id,
   meta: { profileVersion: c.profileVersion ?? 0, consultationClientFingerprint: fingerprint(c), ...overrides },
 })
