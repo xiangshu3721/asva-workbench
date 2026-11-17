@@ -2,10 +2,11 @@
 // No network I/O, no DB writes, and never log or expose a share bearer secret.
 // Caller must keep parsed credentials server-side and use a FIXED provider API.
 // Keep these bounds aligned with mindtest-web's reader and report service.
-// Accepting a shorter credential here would let ASVA preview a link that the
-// provider itself will refuse to read.
-const SHARE_LINK = /^https:\/\/xiangshu3721\.github\.io\/mindtest-web\/r\/#(rpt_[A-Za-z0-9_-]{16,64})\.([A-Za-z0-9_-]{22,128})$/
-const REPORT_ID = /^rpt_[A-Za-z0-9_-]{16,64}$/
+// mindtest-web/js/cloud-client.js uses randomToken(8) => 11-char ID suffix and
+// randomToken(12) => 16-char secret; buildShareUrl strips the rpt_ prefix.
+// Older links or manually copied links can contain the rpt_ prefix.
+const SHARE_LINK = /^https:\/\/xiangshu3721\.github\.io\/mindtest-web\/r\/#(?:rpt_)?([A-Za-z0-9_-]{11,64})\.([A-Za-z0-9_-]{16,128})$/
+const REPORT_ID = /^rpt_[A-Za-z0-9_-]{11,64}$/
 const STAR_VERSION = 'star-words-31-v1'
 // The provider accepts only these 31 published Star words. Keep the preview
 // contract equally strict so a malformed provider response cannot introduce
@@ -26,7 +27,7 @@ export function parseStarShareUrl(input) {
   if (typeof input !== 'string' || input.length > 512) throw fail('ASSESSMENT_LINK_INVALID')
   const matched = SHARE_LINK.exec(input.trim())
   if (!matched) throw fail('ASSESSMENT_LINK_INVALID')
-  const reportId = matched[1]
+  const reportId = 'rpt_' + matched[1]
   if (!REPORT_ID.test(reportId)) throw fail('ASSESSMENT_LINK_INVALID')
   return { provider: 'mindtest-web', reportId, linkSecret: matched[2] }
 }
