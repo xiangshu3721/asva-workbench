@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PRODUCTION_REQUIRED_KEYS, buildProductionEnvVariables, deployProduction, parseDeploymentTarget, parseEnv, validateProductionEnv } from './deploy-cloudbase.mjs'
+import { PRODUCTION_REQUIRED_KEYS, WORKER_MEMORY_MB, buildProductionEnvVariables, buildWorkerEnvVariables, deployProduction, parseDeploymentTarget, parseEnv, validateProductionEnv, workerRestorePolicy } from './deploy-cloudbase.mjs'
 
 function validProductionValues() {
   const values = Object.fromEntries(PRODUCTION_REQUIRED_KEYS.map((key) => [key, key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING' ? 'false' : key === 'FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE' ? 'off' : key === 'AUTH_MODE' ? 'PASSWORD' : key === 'APP_ENV' || key === 'DATA_MODE' ? 'production' : `value-${key}`]))
@@ -78,5 +78,28 @@ describe('CloudBase production deployment preflight', () => {
     expect(env.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT).toBe('')
     expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY).toBe('false')
     expect(env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS).toBe('')
+  })
+
+  it('writes the Worker-specific kill switch as false for ordinary deployments', () => {
+    const values = validProductionValues()
+    const env = buildWorkerEnvVariables(values, { releaseCounter: 48, releasePatch: 7, gitCommit: 'candidate', gitBranch: 'feature/smart-profile-v1', buildTime: 'now' })
+    expect(env.AUTOMATIC_ARCHIVE_WORKER_ENABLED).toBe('false')
+    expect(WORKER_MEMORY_MB).toBe(1024)
+  })
+
+  it('never restores a timer unless runtime enablement and a separate approval are both explicit', () => {
+    const values = validProductionValues()
+    expect(workerRestorePolicy(values, ['--target', 'worker'])).toEqual({ workerRuntimeEnabled: false, restoreTimer: false })
+    expect(() => workerRestorePolicy(values, ['--restore-worker-timer'])).toThrow(/--enable-archive-worker/)
+
+    values.ASVA_DEPLOY_MODE = 'production'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING = 'true'
+    values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE = 'production'
+    values.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT = '2026-11-18T12:00:00.000Z'
+    values.AUTOMATIC_ARCHIVE_WORKER_ENABLED = 'true'
+    expect(() => workerRestorePolicy(values, ['--enable-archive-worker', '--restore-worker-timer'])).toThrow(/ASVA_WORKER_TIMER_RESTORE_APPROVED/)
+
+    values.ASVA_WORKER_TIMER_RESTORE_APPROVED = 'true'
+    expect(workerRestorePolicy(values, ['--enable-archive-worker', '--restore-worker-timer'])).toEqual({ workerRuntimeEnabled: true, restoreTimer: true })
   })
 })

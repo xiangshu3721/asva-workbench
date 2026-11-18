@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { config } from './config.mjs'
 import { FeishuRepository } from './repository.mjs'
+import { main as runAutomaticArchiveWorker } from './automatic-archive-worker.mjs'
 import { contentHash } from '../shared/evidence-contract.mjs'
 
 describe('automatic archive timer worker', () => {
@@ -13,11 +14,21 @@ describe('automatic archive timer worker', () => {
   const originalTables = { ...config.feishu.tables }
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     config.features.automaticProfileArchiving = original.enabled
     config.features.automaticProfileArchivingMode = original.mode
     config.features.automaticProfileArchivingCanary = original.canary
     config.features.automaticProfileCanaryCustomerIds = original.allowlist
     Object.assign(config.feishu.tables, originalTables)
+  })
+
+  it('is closed by default unless the worker-specific kill switch is explicitly enabled', async () => {
+    vi.stubEnv('AUTOMATIC_ARCHIVE_WORKER_ENABLED', '')
+
+    await expect(runAutomaticArchiveWorker()).resolves.toMatchObject({
+      status: 'DISABLED',
+      reason: 'WORKER_KILL_SWITCH',
+    })
   })
 
   const rich = (value) => [{ type: 'text', text: String(value) }]
