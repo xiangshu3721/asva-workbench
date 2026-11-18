@@ -28,6 +28,23 @@ describe('Stage 1A star-only assessment import contract', () => {
     })
   })
 
+  it('accepts the exact link emitted by mindtest-web buildShareUrl and createSubmissionIds', () => {
+    // Actual provider: 8 random bytes => 11 chars; 12 bytes => 16 chars;
+    // buildShareUrl removes rpt_ from the URL fragment.
+    const emittedReportId = 'rpt_abcdefghijk'
+    const emittedSecret = 'abcdefghijklmnop'
+    const url = base + '#abcdefghijk.' + emittedSecret
+    expect(parseStarShareUrl(url)).toEqual({
+      provider: 'mindtest-web',
+      reportId: emittedReportId,
+      linkSecret: emittedSecret,
+    })
+    expect(parseStarShareUrl(base + '#' + emittedReportId + '.' + emittedSecret).reportId).toBe(emittedReportId)
+    expect(normalizeStarReportPreview({ ...report(), reportId: emittedReportId }, emittedReportId).reportId).toBe(emittedReportId)
+    expect(() => parseStarShareUrl(base + '#abcdefghij.' + emittedSecret)).toThrow()
+    expect(() => parseStarShareUrl(base + '#abcdefghijk.' + emittedSecret.slice(0, 15))).toThrow()
+  })
+
   it('accepts the prefixed report ID only in the approved origin/path', () => {
     expect(parseStarShareUrl(base + '#' + reportId + '.' + secret).reportId).toBe(reportId)
     for (const input of [
@@ -35,8 +52,8 @@ describe('Stage 1A star-only assessment import contract', () => {
       'https://evil.example/mindtest-web/r/#' + reportId + '.' + secret,
       'https://xiangshu3721.github.io/mindtest-web/r.evil/#' + reportId + '.' + secret,
       'https://xiangshu3721.github.io/mindtest-web/r/?test=1#' + reportId + '.' + secret,
-      'https://xiangshu3721.github.io/mindtest-web/r/#abcdefghijklmnop.' + secret,
-      'https://xiangshu3721.github.io/mindtest-web/r/#' + reportId + '.' + secret.slice(0, 21),
+      'https://xiangshu3721.github.io/mindtest-web/r/#abcdefghij.' + secret,
+      'https://xiangshu3721.github.io/mindtest-web/r/#' + reportId + '.' + secret.slice(0, 15),
       'https://xiangshu3721.github.io/mindtest-web/r/#' + reportId + '.short',
       'https://xiangshu3721.github.io@evil.example/mindtest-web/r/#' + reportId + '.' + secret,
       'https://xiangshu3721.github.io/mindtest-web/r/../../admin#' + reportId + '.' + secret,
