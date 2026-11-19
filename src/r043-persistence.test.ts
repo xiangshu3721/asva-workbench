@@ -25,8 +25,10 @@ describe('R043 customer archive and understanding persistence', () => {
     expect(repositorySource).toContain("return this.customerWriteQueue.run(customerId, () => this.refreshCustomerSafetyAssessmentUnsafe(actorId, customerId, { force }))")
   })
 
-  it('does not automatically retry a stale processing source after remount', () => {
-    expect(appSource).toContain("if (source.processingStatus === 'UPLOADED')")
+  it('does not start AI processing while loading or remounting a source workspace', () => {
+    expect(appSource).not.toContain("mergeProcessed(await onProcess(source.id))")
+    expect(appSource).toContain("void onProcess(source.id, 'AUTO')")
+    expect(appSource).toContain("mergeProcessed(await onProcess(sourceId, 'MANUAL'))")
     expect(appSource).toContain('const stale = isStaleProcessing(source)')
     expect(appSource).toContain("sourceProcessingPresentation(source.processingStatus, source.processingError || '', stale)")
   })

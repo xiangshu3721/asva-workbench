@@ -35,6 +35,10 @@ const productionTableIds = new Set(['tblUrXu4ivBGJ7zV', 'tblFKkM7fPTqi8Zx', 'tbl
 const stagingRequiredTableKeys = ['customers', 'staff', 'profileChanges', 'sourceRecords', 'evidenceItems', 'profileUpdateProposals', 'evidenceConflicts']
 const automaticProfileArchivingMode = value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE', 'off').toLowerCase()
 const automaticProfileArchivingEnabledAt = value('AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
+const onDemandAiMaxChars = Math.min(4000, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CHARS', '4000')) || 4000))
+const onDemandAiTimeoutMs = Math.min(45_000, Math.max(1_000, Number(value('ON_DEMAND_AI_TIMEOUT_MS', '45000')) || 45_000))
+const onDemandAiMaxTokens = Math.min(2048, Math.max(256, Number(value('ON_DEMAND_AI_MAX_TOKENS', '2048')) || 2048))
+const onDemandAiDailyLimit = Math.min(100, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -66,6 +70,16 @@ export const config = {
     automaticProfileArchivingEnabledAt,
     automaticProfileArchivingCanary: value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY', 'false') === 'true',
     automaticProfileCanaryCustomerIds,
+    // This is intentionally independent from the retired automatic archive
+    // switch. It gates only an explicit, single-source HTTP request.
+    onDemandAiProcessing: value('FEATURE_ON_DEMAND_AI_PROCESSING', 'false') === 'true',
+    // Auto-triggering is deliberately a second, fail-closed switch. It must
+    // stay false until a function-specific platform rate/quota guard exists.
+    onDemandAiAutoTrigger: value('FEATURE_ON_DEMAND_AI_AUTO_TRIGGER', 'false') === 'true',
+    onDemandAiMaxChars,
+    onDemandAiTimeoutMs,
+    onDemandAiMaxTokens,
+    onDemandAiDailyLimit,
   },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),

@@ -156,6 +156,11 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guard(request), await readBody(request)), requestId)
   const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
   if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guard(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
+  const onDemandSourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/on-demand-process$/)
+  if (request.method === 'POST' && onDemandSourceProcess) {
+    const body = await readBody(request)
+    return send(request, response, 200, await repository.processSourceOnDemand(await guard(request), decodeURIComponent(onDemandSourceProcess[1]), { trigger: body.trigger === 'AUTO' ? 'AUTO' : 'MANUAL' }), requestId)
+  }
   const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
   if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
   const sourceStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/source-status$/)

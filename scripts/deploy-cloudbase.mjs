@@ -74,6 +74,7 @@ export function validateProductionEnv(values, envPath = '') {
     if (!automaticProfileEnabledAt || Number.isNaN(Date.parse(automaticProfileEnabledAt))) throw new Error('production 自动归档部署必须设置有效的 AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
     if (canaryEnabled || canaryCustomerIds.length) throw new Error('production 自动归档部署不得携带 Canary 配置')
   }
+  if (values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true') throw new Error('按需 AI 自动触发需要先验证函数专用的硬性配额或限频；当前发布必须保持 FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false')
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
   if (missing.length) throw new Error(`生产部署配置缺少必填变量：${missing.join(', ')}`)
@@ -129,6 +130,14 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT: values.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT || '',
     FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY: values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY || 'false',
     AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS: values.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS || '',
+    // Always make the new one-shot endpoint fail closed on a normal deploy.
+    // Enabling it requires an explicit reviewed production configuration change.
+    FEATURE_ON_DEMAND_AI_PROCESSING: values.FEATURE_ON_DEMAND_AI_PROCESSING || 'false',
+    FEATURE_ON_DEMAND_AI_AUTO_TRIGGER: values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER || 'false',
+    ON_DEMAND_AI_MAX_CHARS: values.ON_DEMAND_AI_MAX_CHARS || '4000',
+    ON_DEMAND_AI_MAX_TOKENS: values.ON_DEMAND_AI_MAX_TOKENS || '2048',
+    ON_DEMAND_AI_TIMEOUT_MS: values.ON_DEMAND_AI_TIMEOUT_MS || '45000',
+    ON_DEMAND_AI_DAILY_LIMIT: values.ON_DEMAND_AI_DAILY_LIMIT || '0',
     ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
     ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
     CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',
