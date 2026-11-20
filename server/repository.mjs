@@ -24,6 +24,7 @@ import { processingErrorMessage } from '../shared/source-processing-state.mjs'
 import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
+import { AiBudgetGuardError, createAiBudgetGuard, operationIdForSource } from './ai-budget-guard.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 export function readFeishuRichText(value) {
@@ -1112,7 +1113,7 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.onDemandAiUsage = { day: '', count: 0 }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords, aiBudgetGuard = createAiBudgetGuard(config.features) } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.aiBudgetGuard = aiBudgetGuard; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -2843,10 +2844,9 @@ export class FeishuRepository {
   }
   async processSourceOnDemand(actorId, sourceId, { trigger = 'MANUAL' } = {}) {
     if (!config.features.onDemandAiProcessing) throw Object.assign(new Error('按需 AI 整理尚未开启'), { code: 'ON_DEMAND_AI_DISABLED', status: 409 })
-    // There is no verified cross-instance daily hard quota in the current
-    // CloudBase setup. Keep save-triggered AI unavailable even if a stale
-    // environment variable is edited manually; only explicit manual use may
-    // enter this route while the platform control is still pending.
+    // This manual-only release deliberately keeps AUTO hard-closed even when
+    // a variable is edited prematurely. Auto-triggering is a later canary
+    // release after the durable guard has passed a real authorized run.
     if (trigger === 'AUTO') throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
     if (!config.features.onDemandAiDailyLimit) throw Object.assign(new Error('按需 AI 每日额度尚未配置'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REQUIRED', status: 409 })
     const database = await this.load()
@@ -2855,14 +2855,53 @@ export class FeishuRepository {
     if (!source) throw Object.assign(new Error('资料不存在'), { code: 'SOURCE_NOT_FOUND', status: 404 })
     if (String(source.rawText || '').length > config.features.onDemandAiMaxChars) throw Object.assign(new Error(`资料超过单次整理上限（${config.features.onDemandAiMaxChars} 字）`), { code: 'ON_DEMAND_AI_INPUT_TOO_LARGE', status: 413 })
     if (['COMPLETED', 'REVIEW_REQUIRED', 'PROCESSING'].includes(source.processingStatus)) return this.sourceDetail(actorId, sourceId)
-    const day = new Date().toISOString().slice(0, 10)
-    if (this.onDemandAiUsage.day !== day) this.onDemandAiUsage = { day, count: 0 }
-    if (this.onDemandAiUsage.count >= config.features.onDemandAiDailyLimit) throw Object.assign(new Error('今日按需 AI 整理额度已用完'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', status: 429 })
-    // This is deliberately only a process-local fuse. It is never treated as
-    // a cross-instance daily hard limit, so AUTO remains disabled by default.
-    this.onDemandAiUsage.count += 1
-    this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'PENDING', `SOFT_DAILY_COUNT_${this.onDemandAiUsage.count}`)
-    return this.processSource(actorId, sourceId, { onDemand: true })
+    const operationId = operationIdForSource(source)
+    const reservationResult = await this.aiBudgetGuard.reserve({
+      operationId,
+      sourceId,
+      sourceVersion: String(source.contentHash || operationId),
+      actorId,
+      dailyLimit: config.features.onDemandAiDailyLimit,
+      maxConcurrent: config.features.onDemandAiMaxConcurrent,
+    })
+    const reservation = reservationResult?.reservation
+    if (reservationResult?.duplicate) {
+      this.audit('PROCESS_SOURCE_ON_DEMAND_DUPLICATE', sourceId, actorId, 'DUPLICATE')
+      if (reservation?.status === 'SUCCEEDED') return this.sourceDetail(actorId, sourceId)
+      throw Object.assign(new Error('该资料的 AI 整理已发起或已结束，不能自动重复调用。'), { code: 'ON_DEMAND_AI_DUPLICATE_OPERATION', status: 409 })
+    }
+    if (!reservation) throw new AiBudgetGuardError('AI 额度预留结果无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
+    try {
+      // Persist ATTEMPTED before touching Feishu/model. If this transition or
+      // its finalization becomes unknown, the reservation stays consumed and
+      // blocks another model call rather than risk a duplicate charge.
+      await this.aiBudgetGuard.markAttempted(reservation)
+      this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'ATTEMPTED')
+      const result = await this.processSource(actorId, sourceId, { onDemand: true })
+      await this.aiBudgetGuard.complete(reservation, { status: 'SUCCEEDED' })
+      this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'SUCCESS')
+      return result
+    } catch (error) {
+      try {
+        // Any known terminal failure frees only concurrency. It never returns
+        // the daily reservation and never initiates a retry.
+        await this.aiBudgetGuard.complete(reservation, { status: 'FAILED' })
+      } catch (completionError) {
+        this.audit('PROCESS_SOURCE_ON_DEMAND_FINALIZATION', sourceId, actorId, 'UNKNOWN', completionError.code || 'AI_BUDGET_FINALIZATION_UNKNOWN')
+        throw completionError
+      }
+      this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'FAILED', error.code || 'ON_DEMAND_AI_FAILED')
+      throw error
+    }
+  }
+  async onDemandAiControl(actorId) {
+    await this.staff(actorId)
+    return this.aiBudgetGuard.control()
+  }
+  async setOnDemandAiControl(actorId, mode) {
+    const account = await this.staff(actorId)
+    if (account.permissionRole !== 'ADMIN') throw Object.assign(new Error('只有 ADMIN 可以变更 AI 紧急暂停状态'), { code: 'ADMIN_REQUIRED', status: 403 })
+    return this.aiBudgetGuard.setControl({ mode, actorId })
   }
   async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false } = {}) {
     this.invalidateDatabaseCache()

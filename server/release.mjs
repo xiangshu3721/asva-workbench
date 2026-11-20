@@ -37,5 +37,7 @@ export function featureFlags() {
     onDemandAiProcessing: process.env.FEATURE_ON_DEMAND_AI_PROCESSING === 'true',
     onDemandAiAutoTrigger: process.env.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true',
     onDemandAiDailyLimit: Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0),
+    onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(process.env.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
+    onDemandAiBudgetStoreConfigured: Boolean(String(process.env.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()),
   }
 }

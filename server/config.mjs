@@ -39,6 +39,8 @@ const onDemandAiMaxChars = Math.min(4000, Math.max(1, Number(value('ON_DEMAND_AI
 const onDemandAiTimeoutMs = Math.min(45_000, Math.max(1_000, Number(value('ON_DEMAND_AI_TIMEOUT_MS', '45000')) || 45_000))
 const onDemandAiMaxTokens = Math.min(2048, Math.max(256, Number(value('ON_DEMAND_AI_MAX_TOKENS', '2048')) || 2048))
 const onDemandAiDailyLimit = Math.min(100, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
+const onDemandAiMaxConcurrent = Math.min(1, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CONCURRENT', '1')) || 1))
+const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -80,6 +82,11 @@ export const config = {
     onDemandAiTimeoutMs,
     onDemandAiMaxTokens,
     onDemandAiDailyLimit,
+    // A missing collection is deliberately not given a default. The API must
+    // fail closed until a real CloudBase NoSQL collection is provisioned and
+    // read back by an approved production release.
+    onDemandAiBudgetCollection,
+    onDemandAiMaxConcurrent,
   },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),
