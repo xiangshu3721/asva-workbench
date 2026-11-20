@@ -1,0 +1,73 @@
+name: Release ASVA API (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Verify credentials, target, rollback baseline, and health; deploy requires explicit confirmation.
+        type: choice
+        required: true
+        default: verify
+        options: [verify, deploy]
+      confirm:
+        description: Type DEPLOY_ASVA_API only when operation is deploy.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asva-api-production-release
+  cancel-in-progress: false
+
+jobs:
+  release-api:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: cloudbase-production
+    env:
+      TCB_ENV_ID: root-journey-prod-d4d7pzd0a8f805
+      TCB_CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pinned CloudBase CLI
+        run: npm install --global @cloudbase/cli@3.8.1
+
+      - name: Log in to the fixed CloudBase environment
+        run: tcb login --cloudbase-api-key "$TCB_CLOUDBASE_API_KEY" -e "$TCB_ENV_ID" --json >/dev/null
+
+      - name: Verify identity, production target, rollback baseline, and current health
+        run: node scripts/cloudbase-api-release.mjs preflight --backup-dir "$RUNNER_TEMP/asva-api-baseline" --env-id "$TCB_ENV_ID"
+
+      - name: Build API bundle
+        if: inputs.operation == 'deploy'
+        run: npm run build:meta && npm run build:cloudbase
+
+      - name: Require explicit deployment confirmation
+        if: inputs.operation == 'deploy'
+        run: test "${{ inputs.confirm }}" = "DEPLOY_ASVA_API"
+
+      - name: Deploy asva-api code only and verify health
+        if: inputs.operation == 'deploy'
+        run: node scripts/cloudbase-api-release.mjs deploy --backup-dir "$RUNNER_TEMP/asva-api-baseline" --candidate-dir cloudbase/functions/asva-api --env-id "$TCB_ENV_ID"
+
+      - name: Publish non-sensitive release summary
+        if: always()
+        run: |
+          {
+            echo '## ASVA API release'
+            echo '- Operation: ${{ inputs.operation }}'
+            echo '- Target: asva-api only'
+            echo '- Environment: production'
+            echo '- Worker, triggers, routes, and environment variables: not modified'
+          } >> "$GITHUB_STEP_SUMMARY"

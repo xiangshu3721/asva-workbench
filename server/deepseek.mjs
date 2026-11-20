@@ -1,6 +1,6 @@
 import { config } from './config.mjs'
 import { BUSINESS_GLOSSARY, DIMENSION_REGISTRY, ENTITY_REGISTRY, METRIC_REGISTRY } from '../shared/semantic-engine.mjs'
-import { applyUnderstandingDensityPolicy, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+import { applyCurrentIssuePolicy, applyUnderstandingDensityPolicy, applyUnderstandingGroundingPolicy, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerUnderstanding } from '../shared/customer-understanding.mjs'
 import { CUSTOMER_SALES_UNDERSTANDING_PROMPT_VERSION, normalizeCustomerSalesUnderstanding } from '../shared/customer-sales-understanding.mjs'
 import { SAFETY_EXPLICITNESS, SAFETY_POLARITIES, SAFETY_RECENCY, SAFETY_SCOPES, SAFETY_SIGNAL_TYPES, normalizeSafetySignal } from '../shared/safety-contract.mjs'
 import { canonicalProfileFieldCatalog } from '../shared/canonical-profile-facts.mjs'
@@ -10,18 +10,30 @@ export class DeepSeekUnavailableError extends Error {
   code = 'DEEPSEEK_UNAVAILABLE'
 }
 
-export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJson = false, emptyContent = false } = {}) {
+const DEEPSEEK_TRANSIENT_PROVIDER_CODES = new Set(['SERVER', 'SERVICE_UNAVAILABLE_ERROR', 'SERVICE_UNAVAILABLE', 'TEMPORARILY_UNAVAILABLE', 'OVERLOADED', 'BUSY'])
+const DEEPSEEK_TRANSIENT_PROVIDER_MESSAGES = /service\s+is\s+too\s+busy|temporarily\s+unavailable|server\s+error|overload|try\s+again/i
+
+export function classifyDeepSeekResponse({ status = 0, aborted = false, invalidJson = false, emptyContent = false, providerError = null } = {}) {
   if (aborted) return 'DEEPSEEK_TIMEOUT'
   if (invalidJson || emptyContent) return 'DEEPSEEK_INVALID_RESPONSE'
   if (status === 429) return 'DEEPSEEK_RATE_LIMIT'
+  const providerCode = String(providerError?.code || '').trim().toUpperCase()
+  const providerType = String(providerError?.type || '').trim().toUpperCase()
+  const providerMessage = String(providerError?.message || '')
+  if (status === 430 || DEEPSEEK_TRANSIENT_PROVIDER_CODES.has(providerCode) || DEEPSEEK_TRANSIENT_PROVIDER_CODES.has(providerType) || DEEPSEEK_TRANSIENT_PROVIDER_MESSAGES.test(providerMessage)) return 'DEEPSEEK_UPSTREAM_OVERLOADED'
   if (status === 408 || status >= 500) return 'DEEPSEEK_UNAVAILABLE'
   return 'DEEPSEEK_INVALID_RESPONSE'
 }
 
 export const HUMAN_LANGUAGE_RULE = '最终面向导师和管理员展示的解释必须使用自然、直接的中文；不要输出内部英文枚举、字段名、代码、Schema 名称、版本号、系统状态标识或调试信息。遇到信息不足时直接说“待确认”“资料还不够”，不要把内部值原样写进解释。'
 
-const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_RATE_LIMIT'])
+const RETRYABLE_DEEPSEEK_CODES = new Set(['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_UPSTREAM_OVERLOADED', 'DEEPSEEK_INVALID_RESPONSE', 'DEEPSEEK_RATE_LIMIT'])
 // DEEPSEEK_OUTPUT_TRUNCATED is non-transient (same max_tokens → same truncation); do not burn extra attempts.
+export const EVIDENCE_EXTRACT_TIMEOUT_MS = 25_000
+export const EVIDENCE_EXTRACT_MAX_ATTEMPTS = 1
+// Keep a complete consultation refresh below the 60s CloudBase function
+// ceiling after the Feishu read/write budget has been reserved.
+export const CUSTOMER_UNDERSTANDING_TIMEOUT_MS = 22_000
 
 async function callDeepSeek(messages, temperature = 0.2, options = {}) {
   if (!config.deepseek.apiKey) throw new DeepSeekUnavailableError('DeepSeek 尚未配置')
@@ -58,8 +70,18 @@ async function callDeepSeek(messages, temperature = 0.2, options = {}) {
       if (response.ok) throw Object.assign(new Error('DeepSeek 返回内容不是有效 JSON'), { code: classifyDeepSeekResponse({ invalidJson: true }), status: 502 })
     }
     if (!response.ok) {
-      const code = classifyDeepSeekResponse({ status: response.status })
-      throw Object.assign(new Error(payload?.error?.message || `DeepSeek HTTP ${response.status}`), { code, status: response.status })
+      const providerError = payload?.error && typeof payload.error === 'object' ? payload.error : {}
+      const code = classifyDeepSeekResponse({ status: response.status, providerError })
+      throw Object.assign(new Error(providerError.message || `DeepSeek HTTP ${response.status}`), {
+        code,
+        status: response.status,
+        httpStatus: response.status,
+        providerType: typeof providerError.type === 'string' ? providerError.type.slice(0, 80) : undefined,
+        providerCode: typeof providerError.code === 'string' ? providerError.code.slice(0, 80) : undefined,
+        providerMessage: typeof providerError.message === 'string' ? providerError.message.slice(0, 160) : undefined,
+        providerRequestId: typeof payload?.request_id === 'string' ? payload.request_id.slice(0, 120) : typeof providerError.request_id === 'string' ? providerError.request_id.slice(0, 120) : undefined,
+        retryAfter: response.headers.get('retry-after')?.slice(0, 80) || undefined,
+      })
     }
     const choice = payload?.choices?.[0]
     const finishReason = choice?.finish_reason || ''
@@ -75,6 +97,20 @@ async function callDeepSeek(messages, temperature = 0.2, options = {}) {
       : error instanceof DeepSeekUnavailableError || error?.code
         ? error
         : new DeepSeekUnavailableError(error instanceof Error ? error.message : 'DeepSeek 请求失败')
+    console.warn('[ASVA_DEEPSEEK_FAILURE]', JSON.stringify({
+      operation: options.operation || 'unknown',
+      model,
+      attempt,
+      retry_count: attempt - 1,
+      http_status: lastError?.httpStatus || lastError?.status || undefined,
+      error_code: lastError?.code || 'DEEPSEEK_UNAVAILABLE',
+      error_type: lastError?.providerType,
+      provider_code: lastError?.providerCode,
+      provider_message: lastError?.providerMessage,
+      request_id: lastError?.providerRequestId,
+      retry_after: lastError?.retryAfter,
+      duration_ms: Date.now() - startedAt,
+    }))
     if (attempt >= maxAttempts || !RETRYABLE_DEEPSEEK_CODES.has(lastError?.code)) throw lastError
   } finally {
     clearTimeout(timeout)
@@ -135,6 +171,26 @@ function profileValue(value) {
   return null
 }
 
+function clearWorkLocationAsCity(item) {
+  if (!item || typeof item !== 'object') return item
+  const fieldKey = String(item.field_key || '').trim().toLowerCase()
+  if (!['city', 'current_city', 'current_location', 'current_residence'].includes(fieldKey)) return item
+  const excerpt = String(item.source_excerpt || '')
+  const workWords = /工作|上班|办公|通勤/
+  const residenceWords = /住在|居住|现居|生活在|定居|搬到|所在城市/
+  if (!workWords.test(excerpt) || residenceWords.test(excerpt)) return item
+  return { ...item, field_key: '', semantic_kind: 'EVENT' }
+}
+
+function removeExactFamilySupportDuplicate(items) {
+  const familyItems = items.filter((item) => String(item?.field_key || '').trim() === 'family_support_level')
+  if (!familyItems.length) return items
+  return items.filter((item) => {
+    if (String(item?.field_key || '').trim() !== 'support_system') return true
+    return !familyItems.some((family) => String(family.value || '').trim() === String(item.value || '').trim() && String(family.source_excerpt || '').trim() === String(item.source_excerpt || '').trim())
+  })
+}
+
 export async function createProfileDraft(input) {
   const raw = await callDeepSeek([
     { role: 'system', content: '你是 ASVA 客户画像整理助手。只根据导师提供的原话提取事实，不补全、不诊断、不虚构人格。严格返回 JSON：{"updates":[{"field":"字段英文名","value":"值","source":"MENTOR_OBSERVATION|AI_INFERENCE","confidence":0.0}]}。只允许使用给定字段名。无法确定的信息不要输出。只有明确标注为推测的内容才能使用 AI_INFERENCE，且不能把推测写成事实。' },
@@ -174,31 +230,26 @@ export async function createEvidenceCandidates(input) {
     ...(storageFieldKey === 'living_status' ? { boundary: '居住方式或状态，不是城市名' } : {}),
     ...(storageFieldKey === 'occupation' ? { boundary: '仅当前明确职业；过去职业标为历史事件，未来职业意向填career_goal' } : {}),
     ...(storageFieldKey === 'career_goal' ? { boundary: '职业或事业方向的当前目标，不是已经发生的职业事实' } : {}),
-    ...(storageFieldKey === 'current_goal' ? { boundary: '客户当前明确希望实现的总体目标' } : {}),
-    ...(storageFieldKey === 'current_core_issue' ? { boundary: '客户目前明确存在的核心困扰或需求' } : {}),
+    ...(storageFieldKey === 'current_core_issue' ? { boundary: '客户目前明确存在的核心困扰或需求；不是客户想达到的结果，也不是对服务的期待' } : {}),
+    ...(storageFieldKey === 'current_goal' ? { boundary: '客户当前明确希望实现的结果或行动目标；不是当前困扰，也不是对导师/服务的期待' } : {}),
+    ...(storageFieldKey === 'current_expectation' ? { boundary: '客户明确期待从导师或服务中获得的帮助、支持或结果；不是问题本身，也不是客户要自行实现的目标' } : {}),
+    ...(storageFieldKey === 'relationship_conflicts' ? { boundary: '关系中的具体冲突或困难；关系状态本身填relationship_status' } : {}),
+    ...(storageFieldKey === 'support_system' ? { boundary: '客户可获得的整体支持网络或资源；仅有家庭支持时优先填family_support_level，不要重复同一条原文' } : {}),
+    ...(storageFieldKey === 'family_support_level' ? { boundary: '家庭成员提供支持的程度或性质；不要与support_system重复同一条原文' } : {}),
+    ...(storageFieldKey === 'emotion_expression' ? { boundary: '客户明确表达的情绪或情绪表达方式；不做诊断、不推断稳定人格特征' } : {}),
+    ...(storageFieldKey === 'sleep' ? { boundary: '客户明确描述的睡眠情况；不推断睡眠障碍或未提及的频率' } : {}),
   }))
   const promptInput = JSON.stringify({ source_text: sourceText, source_role: input.sourceRole || 'UNKNOWN', source_perspective: input.sourcePerspective || 'UNKNOWN', dialogue_context: input.dialogueContext || null, provenance_rule: 'source_role and uploaded_by are legacy context only; never infer who spoke from the uploader', writable_customer_fields: fieldCatalog, current_snapshot: input.current || {} })
   input.onDiagnostics?.({ source_char_count: sourceText.length, prompt_char_count: promptInput.length, token_estimate: Math.ceil(promptInput.length / 2) })
   const raw = await callDeepSeek([
-    { role: 'system', content: '你是 ASVA 资料整理助手。仅根据 source_text 提取可回溯的原子信息，不总结、不诊断、不补全、不把推测写成事实。必须返回 JSON 对象：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"writable_customer_fields中的英文key或空","value":"尽量保留原文可直接核对的原子值","display_text":"简短中文展示","source_excerpt":"原文短摘录","occurred_at":"原文明确时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0},"speaker_id":"A|B|C|空","subject_scope":"CURRENT_CUSTOMER|MENTOR_SELF|OTHER_PARTICIPANT|UNKNOWN","content_source":"CUSTOMER_DIRECT|STAFF_TRANSCRIBED_CUSTOMER|MENTOR_REPORTED|MENTOR_OBSERVATION|THIRD_PARTY_REPORTED|UNKNOWN|MIXED","information_nature":"OBJECTIVE_RECORD|PERSONAL_STATEMENT|REPORTED_SPEECH|BEHAVIOR_OBSERVATION|SUBJECTIVE_JUDGMENT|AI_INFERENCE|UNKNOWN","verification_status":"UNKNOWN|SOURCE_SUPPORTED|HUMAN_VERIFIED|CONFLICTED"}]}。字段规则：只能使用用户消息中writable_customer_fields列出的key并严格遵守meaning/boundary；明确事实能匹配现有字段时必须优先输出准确field_key，只有确实无法归类时才留空；不得创造近义英文key。逐条拆分年龄、性别、工作地点、关系状态、关系困扰、情绪、睡眠、当前问题和目标。来源、人物归属和性质必须由原文决定，不能依赖uploaded_by/source_role，不能仅凭第一人称或引号推断客户身份。对话资料必须区分实际说话人和被提及的人；无法判断时使用UNKNOWN，只有subject_scope=CURRENT_CUSTOMER才可进入档案。STAFF_REPORTED不得写成客户原话；导师观察与主观判断分开；第三方陈述保留不确定性。工作地点没有独立物理字段时field_key留空，绝不能写入现居地city；当前职业只提取原文明确职业；过去职业使用EVENT且不能覆盖当前职业；“想做某事业”归入career_goal而不是occupation。当前状态、历史事件和未来目标必须分开。保留原文依据和待核实状态；AI不得输出HUMAN_VERIFIED。禁止心理诊断、无依据频率、数量、经济状态或背景。' },
+    { role: 'system', content: '你是 ASVA 资料整理助手。仅根据 source_text 提取可回溯的原子信息，不总结、不诊断、不补全、不把推测写成事实。必须返回 JSON 对象：{"items":[{"evidence_type":"FACT|SELF_MEANING|OBSERVATION|HYPOTHESIS","semantic_kind":"PROFILE_FIELD|CURRENT_STATE|EVENT|RELATIONSHIP|RESOURCE|NEED|GOAL|PREFERENCE|OTHER","field_key":"writable_customer_fields中的英文key或空","value":"尽量保留原文可直接核对的原子值","display_text":"简短中文展示","source_excerpt":"原文短摘录","occurred_at":"原文明确时间或空","confidence":0.0,"locator":{"char_start":0,"char_end":0,"paragraph_index":0},"speaker_id":"A|B|C|空","subject_scope":"CURRENT_CUSTOMER|MENTOR_SELF|OTHER_PARTICIPANT|UNKNOWN","content_source":"CUSTOMER_DIRECT|STAFF_TRANSCRIBED_CUSTOMER|MENTOR_REPORTED|MENTOR_OBSERVATION|THIRD_PARTY_REPORTED|UNKNOWN|MIXED","information_nature":"OBJECTIVE_RECORD|PERSONAL_STATEMENT|REPORTED_SPEECH|BEHAVIOR_OBSERVATION|SUBJECTIVE_JUDGMENT|AI_INFERENCE|UNKNOWN","verification_status":"UNKNOWN|SOURCE_SUPPORTED|HUMAN_VERIFIED|CONFLICTED"}]}。字段规则：只能使用用户消息中writable_customer_fields列出的key并严格遵守meaning/boundary；明确事实能匹配现有字段时必须优先输出准确field_key，只有确实无法归类时才留空；不得创造近义英文key。逐条拆分年龄、性别、工作地点、关系状态、关系困扰、情绪、睡眠、当前问题和目标。三个重点字段必须严格区分：current_core_issue是当前困扰/需要解决的问题，current_goal是客户想实现的目标或行动，current_expectation是客户希望从导师/服务中获得的帮助；同一原句同时包含多种语义时拆成多个有各自原文依据的Evidence。关系状态与关系冲突分别写relationship_status和relationship_conflicts，明确情绪写emotion_expression，睡眠情况写sleep。来源、人物归属和性质必须由原文决定，不能依赖uploaded_by/source_role，不能仅凭第一人称或引号推断客户身份。对话资料必须区分实际说话人和被提及的人；无法判断时使用UNKNOWN，只有subject_scope=CURRENT_CUSTOMER才可进入档案。STAFF_REPORTED不得写成客户原话；导师观察与主观判断分开；第三方陈述保留不确定性。工作地点没有独立物理字段时field_key留空，绝不能写入现居地city；当前职业只提取原文明确职业；过去职业使用EVENT且不能覆盖当前职业；“想做某事业”归入career_goal而不是occupation。当前状态、历史事件和未来目标必须分开。保留原文依据和待核实状态；AI不得输出HUMAN_VERIFIED。禁止心理诊断、无依据频率、数量、经济状态或背景。' },
+    { role: 'system', content: '补充边界：明确的“想/希望/考虑/打算”是客户自己的意向陈述，不是 AI 推测；除非模型补写了原文没有的内容，否则不要使用 HYPOTHESIS。工作地点原文含“工作/上班/办公/通勤”但没有居住语义时，city 必须留空。同一原文同一含义只输出一次；仅有家庭支持时使用family_support_level，不要再复制到support_system。' },
     { role: 'user', content: promptInput },
-  ], 0, {
-    model: config.deepseek.evidenceModel,
-    operation: input.operation || 'evidence.extract',
-    // The normal/manual path preserves its existing policy. The on-demand
-    // entrypoint passes maxAttempts: 1 explicitly: it must never retry a
-    // model request on the server.
-    timeoutMs: input.timeoutMs || 45_000,
-    maxAttempts: input.maxAttempts || 2,
-    maxTokens: input.maxTokens || 4096,
-    thinking: { type: 'disabled' },
-    responseFormat: { type: 'json_object' },
-    requireJson: true,
-  })
+  ], 0, { model: config.deepseek.evidenceModel, operation: input.operation || 'evidence.extract', timeoutMs: input.timeoutMs ?? EVIDENCE_EXTRACT_TIMEOUT_MS, maxAttempts: input.maxAttempts ?? EVIDENCE_EXTRACT_MAX_ATTEMPTS, maxTokens: input.maxTokens ?? 4096, thinking: { type: 'disabled' }, responseFormat: { type: 'json_object' }, requireJson: true })
   const parsed = parseJson(raw)
   if (!parsed) throw Object.assign(new Error('资料整理模型返回内容无法解析为 JSON'), { code: 'JSON_PARSE_FAILED', status: 502 })
   if (!Array.isArray(parsed.items)) throw Object.assign(new Error('资料整理模型返回 JSON 缺少 items 数组'), { code: 'SCHEMA_VALIDATION_FAILED', status: 502 })
-  const items = parsed.items
+  const items = removeExactFamilySupportDuplicate(parsed.items.map(clearWorkLocationAsCity))
   const explicitDate = sourceText.match(/(\d{4})年(\d{1,2})月(\d{1,2})日出生/)
   if (explicitDate && !items.some((item) => item?.field_key === 'birth_date')) {
     const value = `${explicitDate[1]}-${String(explicitDate[2]).padStart(2, '0')}-${String(explicitDate[3]).padStart(2, '0')}`
@@ -307,21 +358,33 @@ export async function createCustomerUnderstanding(input) {
     if (!value || typeof value !== 'object') return value
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactDirectIdentifiers(item)]))
   }
-  const llmContext = redactDirectIdentifiers(replaceEvidenceIds({ ...context, evidence_refs: evidenceRefs.map((item, index) => ({ evidence_ref: `E${index + 1}`, display_text: item.display_text, excerpt: item.excerpt, occurred_at: item.occurred_at, evidence_type: item.evidence_type, source_perspective: item.source_perspective })) }))
+  const { consultation_input_snapshot: _consultationInputSnapshot, consultation_topics: _consultationTopics, communication_records: _communicationRecords, ...modelContext } = context
+  const llmContext = redactDirectIdentifiers(replaceEvidenceIds({ ...modelContext, evidence_refs: evidenceRefs.map((item, index) => ({ evidence_ref: `E${index + 1}`, display_text: item.display_text, excerpt: item.excerpt, occurred_at: item.occurred_at, evidence_type: item.evidence_type, source_perspective: item.source_perspective })) }))
   const densityInstruction = context.context_density?.classification === 'SPARSE' ? '当前资料密度为 SPARSE：输出必须明显短于 MEDIUM；top_issues 最多2项、core_blocks最多1项、resources_and_strengths最多2项、key_tensions必须为空、working_hypotheses最多1项；知识缺口要比解释更突出。没有证据支持的模块请返回空数组，不要为了填满模块而推断。' : ''
-  const system = '你是 ASVA 的 CustomerUnderstandingV1 结构化整理引擎，prompt_version=' + CUSTOMER_UNDERSTANDING_PROMPT_VERSION + '。只根据提供的结构化客户快照、已确认 Evidence 摘要和匿名 evidence_ref 工作，不读取或要求原始全文。禁止输出姓名、手机号、微信号、诊断、人格类型、疾病判断、销售结论。current_snapshot 是当前信息，top_life_events 是历史经历，不能把历史当当前。open_conflicts 中的值必须作为未决不确定性处理，不能选一边写成确定事实。资料不足必须写入 knowledge_gaps。必须严格返回一个 JSON 对象，不能包裹其它字段、不能 Markdown。严格字段与数组项结构如下：one_line_understanding={text,detail,evidence_ids,confidence,type}；top_issues=[{title,why_it_matters,evidence_ids,confidence,type}]最多3项；current_life_phase={title,description,supporting_events,evidence_ids,confidence,type}或null；current_needs=[{need,level:"EXPLICIT"|"INFERRED",evidence_ids,confidence,type}]最多5项；core_blocks=[{pattern,trigger,current_cost,evidence_ids,confidence,type}]；resources_and_strengths=[{resource,why_it_matters,evidence_ids,confidence,type}]；key_tensions=[{side_a,side_b,description,evidence_ids,confidence,type}]；knowledge_gaps=[{question,why_it_matters,related_issue,priority,evidence_ids}]至少1项只要存在合理未知；next_conversation=[{focus,why_now,suggested_entry,evidence_ids,confidence,type}]最多3项；service_cautions=[{caution,why,avoid,prefer,evidence_ids,confidence,type}]；working_hypotheses=[{text,evidence_ids,confidence:"LOW",type:"WORKING_HYPOTHESIS"}]；meta={overall_confidence,evidence_count}。所有引用只填写 evidence_ref（例如 E1），不要猜测其它引用；没有依据时 confidence 必须为 LOW。' + densityInstruction + (input?.repair === true ? '这是一次修复调用：上一版未通过证据或安全门禁，请重新生成完整 JSON，删除所有无法由 evidence_ref 支持的强结论和诊断词，并保留至少一个具体 knowledge_gaps。' : '')
+  const system = '你是 ASVA 的 CustomerUnderstandingV1 结构化整理引擎，prompt_version=' + CUSTOMER_UNDERSTANDING_PROMPT_VERSION + '。只根据提供的结构化客户快照、已确认 Evidence 摘要和匿名 evidence_ref 工作，不读取或要求原始全文。禁止输出姓名、手机号、微信号、诊断、人格类型、疾病判断、销售结论。current_snapshot 是当前信息，top_life_events 是历史经历，不能把历史当当前。open_conflicts 中的值必须作为未决不确定性处理，不能选一边写成确定事实。资料不足必须写入 knowledge_gaps。top_issues 有两种合法输出：第一，已确认核心议题，必须来自 current_issue_candidates.evidence，使用 MEDIUM/HIGH 并逐项引用足以支撑该条的 evidence_ref；目标、服务期待或普通当前状态不能自动等同核心困扰。第二，初步咨询方向，仅可来自 current_issue_candidates.provisional 中已经明确提及的咨询主题，使用 LOW，title 必须沿用该候选的主题归纳并在 why_it_matters 写明“待客户确认”；不得补充心理原因、关系冲突或现实影响。初步方向可以没有 evidence_ref，但绝不能来自旧 AI 摘要或婚姻、家庭、职业等背景推断；第三方转述与未核实记录最多只能形成初步方向，不能升级为已确认议题。按客户主动诉求、现实影响、当前时效、议题关联和证据可靠性排序；最多一个首要议题、两个关联议题；同义或高度相近内容只保留一项。历史事件、已解决问题、open_conflicts 涉及的证据、working_hypotheses、仅有未确认 AI 推断都不能写进 top_issues。咨询切入点必须优先围绕已有的已确认议题或初步咨询方向提出自然、具体、开放的问题；没有明确方向才可问泛化的当前处境。每项 top_issues 必须写明问题是什么（title）和为什么当前值得关注（why_it_matters）；若没有任一候选则 top_issues 返回空数组，并把紧密相关的未知写入 knowledge_gaps，related_issue 填对应 title。不得把客户表达、导师观察和 AI 推断混为事实。必须严格返回一个 JSON 对象，不能包裹其它字段、不能 Markdown。严格字段与数组项结构如下：one_line_understanding={text,detail,evidence_ids,confidence,type}；top_issues=[{title,why_it_matters,evidence_ids,confidence,type}]最多3项；current_life_phase={title,description,supporting_events,evidence_ids,confidence,type}或null；current_needs=[{need,level:"EXPLICIT"|"INFERRED",evidence_ids,confidence,type}]最多5项；core_blocks=[{pattern,trigger,current_cost,evidence_ids,confidence,type}]；resources_and_strengths=[{resource,why_it_matters,evidence_ids,confidence,type}]；key_tensions=[{side_a,side_b,description,evidence_ids,confidence,type}]；knowledge_gaps=[{question,why_it_matters,related_issue,priority,evidence_ids}]至少1项只要存在合理未知；next_conversation=[{focus,why_now,suggested_entry,evidence_ids,confidence,type}]最多3项；service_cautions=[{caution,why,avoid,prefer,evidence_ids,confidence,type}]；working_hypotheses=[{text,evidence_ids,confidence:"LOW",type:"WORKING_HYPOTHESIS"}]；meta={overall_confidence,evidence_count}。所有引用只填写 evidence_ref（例如 E1），不要猜测其它引用；没有依据时 confidence 必须为 LOW。' + densityInstruction + (input?.repair === true ? '这是一次修复调用：上一版未通过证据或安全门禁，请重新生成完整 JSON，删除所有无法由 evidence_ref 支持的强结论和诊断词，并保留至少一个具体 knowledge_gaps。' : '')
   const raw = await callDeepSeek([
     { role: 'system', content: system },
     { role: 'system', content: '模块分工必须互不替代：core_blocks 只写可观察的行为或现实循环；key_tensions 只写两个同时存在、彼此拉扯的方向，并填写 side_a 与 side_b；next_conversation 只写下一次具体探索方向，必须包含 focus、why_now、suggested_entry，suggested_entry 要像导师可以直接说给客户的一句话，最多 1 至 2 个开场问题；working_hypotheses 只写尚未证实的解释可能，保持 LOW 把握。不要把同一段内容在这四个模块中重复复述。' },
     { role: 'user', content: JSON.stringify(llmContext) },
-  ], 0.15)
+  ], 0.15, { operation: 'customer_understanding', timeoutMs: CUSTOMER_UNDERSTANDING_TIMEOUT_MS, maxAttempts: 1, responseFormat: { type: 'json_object' }, requireJson: true })
   const normalized = normalizeCustomerUnderstanding(parseJson(raw), { evidenceIds: [...aliasToId.keys()], now: new Date().toISOString() })
   const restoreEvidenceIds = (value) => {
     if (Array.isArray(value)) return value.map(restoreEvidenceIds)
     if (!value || typeof value !== 'object') return value
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'evidence_ids' && Array.isArray(item) ? item.map((id) => aliasToId.get(id) || id) : restoreEvidenceIds(item)]))
   }
-  return applyUnderstandingDensityPolicy(restoreEvidenceIds(normalized), context.context_density)
+  // Pending, hypothetical, or AI-derived refs cannot substantiate a strong claim.
+  const confirmedEvidenceIds = evidenceRefs
+    .filter((item) => item.review_status === 'CONFIRMED' && !['HYPOTHESIS', 'AI_INFERENCE'].includes(item.evidence_type))
+    .map((item) => item.evidence_id)
+  const confirmedEvidenceIdSet = new Set(confirmedEvidenceIds)
+  const currentIssueSafe = applyUnderstandingDensityPolicy(applyCurrentIssuePolicy(restoreEvidenceIds(normalized), {
+    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || [])
+      .flatMap((item) => item.evidence_ids || [])
+      .filter((id) => confirmedEvidenceIdSet.has(id)),
+    currentIssueCandidates: context.current_issue_candidates?.provisional || [],
+  }), context.context_density)
+  return applyUnderstandingGroundingPolicy(currentIssueSafe, { confirmedEvidenceIds })
 }
 
 export async function createCustomerSalesUnderstanding(input) {

@@ -14,21 +14,22 @@ describe('R043 customer archive and understanding persistence', () => {
   })
 
   it('restores persisted consultation understanding with a read on customer mount', () => {
-    expect(appSource).toContain('useEffect(() => { void loadUnderstanding() }, [customer.id])')
-    expect(appSource).toContain('const result = await props.resourceCache.load(cacheKey, () => props.onGetUnderstanding(requestCustomerId)')
+    expect(appSource).toContain('useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint, props.profileRefreshRevision])')
+    expect(appSource).toContain('const result = await props.resourceCache.load(cacheKey, async () =>')
     expect(appSource).not.toContain("setUnderstandingByCustomerId((current) => ({ ...current, [requestCustomerId]: { ...current[requestCustomerId], value: undefined")
   })
 
   it('serializes derived metadata writes per customer to prevent lost updates', () => {
-    expect(repositorySource).toContain("return this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force }))")
+    expect(repositorySource).toContain('this.understandingRefreshInFlight = new Map()')
+    expect(repositorySource).toContain('const queuedAt = Date.now()')
+    expect(repositorySource).toContain("const request = this.customerWriteQueue.run(customerId, () => this.refreshCustomerUnderstandingUnsafe(actorId, customerId, { force, queuedAt }))")
     expect(repositorySource).toContain("return this.customerWriteQueue.run(customerId, () => this.refreshCustomerSalesUnderstandingUnsafe(actorId, customerId, { force }))")
     expect(repositorySource).toContain("return this.customerWriteQueue.run(customerId, () => this.refreshCustomerSafetyAssessmentUnsafe(actorId, customerId, { force }))")
   })
 
-  it('does not start AI processing while loading or remounting a source workspace', () => {
-    expect(appSource).not.toContain("mergeProcessed(await onProcess(source.id))")
-    expect(appSource).toContain("void onProcess(source.id, 'AUTO')")
-    expect(appSource).toContain("mergeProcessed(await onProcess(sourceId, 'MANUAL'))")
+  it('does not automatically process a stale source after remount', () => {
+    expect(appSource).toContain('void load()')
+    expect(appSource).not.toContain("onProcess(source.id)")
     expect(appSource).toContain('const stale = isStaleProcessing(source)')
     expect(appSource).toContain("sourceProcessingPresentation(source.processingStatus, source.processingError || '', stale)")
   })

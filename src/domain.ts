@@ -56,6 +56,10 @@ export interface CustomerUnderstandingV1 {
 export interface CustomerUnderstandingMeta {
   status: SummaryStatus
   inputFingerprint?: string
+  currentInputFingerprint?: string
+  clientSnapshotFingerprint?: string
+  consultationClientFingerprint?: string
+  storedPromptVersion?: string
   profileVersion?: number
   promptVersion?: string
   provider?: string
@@ -258,6 +262,8 @@ export interface Customer {
   nextFollowupAt: string | null
   followupStatus: '待跟进' | '已完成'
   notes: string
+  /** Pending or confirmed supplementary profile notes are context, never confirmed issues by themselves. */
+  supplementaryItems?: Array<{ id?: string; text: string; source?: string; status?: string; reviewStatus?: string; verificationStatus?: string; informationNature?: string; sourceRecordId?: string }>
   /** The customer's current structured profile; persisted on the Customer record. */
   profileFields?: Record<string, ProfileValue>
   profileFieldMeta?: Record<string, ProfileFieldMeta>
@@ -267,6 +273,9 @@ export interface Customer {
   profileMaterialization?: ProfileMaterialization
   /** Directory/detail DTOs may expose only coverage until the profile module loads. */
   profileMaterializationLoaded?: boolean
+  automaticProfilePending?: { contentHash?: string; reason?: string; createdAt?: string }
+  automaticProfileStatus?: 'NOT_STARTED' | 'PROCESSING' | 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+  automaticProfileAutoResume?: boolean
 }
 
 export interface ProfileFieldMeta {

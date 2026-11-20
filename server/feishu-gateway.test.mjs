@@ -106,4 +106,34 @@ describe('FeishuGateway', () => {
     const client = createFeishuWriteClient({ gateway: { updateRecord: async () => { throw failure } } })
     await expect(client.updateRecord('tbl-customers', 'rec-1', { 状态: '待同步' }, { operation: 'customer.update', operationId: 'CUS-1', entityType: 'customers' })).rejects.toBe(failure)
   })
+
+  it('searches only the requested records with a bounded filter and page size', async () => {
+    const { gateway, calls } = gatewayWith([
+      response({ tenant_access_token: 'token-1', expire: 7200 }),
+      response({ data: { items: [{ record_id: 'rec-target' }], has_more: false } }),
+    ])
+    const filter = { conjunction: 'and', conditions: [{ field_name: '客户ID', operator: 'is', value: ['CUS-1'] }] }
+    await expect(gateway.searchRecords('tbl-customers', filter, { pageSize: 1 })).resolves.toEqual([{ record_id: 'rec-target' }])
+    expect(calls[1].url).toContain('/tables/tbl-customers/records/search')
+    expect(calls[1].url).toContain('page_size=1')
+    expect(JSON.parse(calls[1].request.body)).toEqual({ filter })
+  })
+
+  it('follows search page tokens in the URL without duplicating or dropping records', async () => {
+    const firstPage = Array.from({ length: 21 }, (_, index) => ({ record_id: `rec-${index + 1}` }))
+    const secondPage = Array.from({ length: 20 }, (_, index) => ({ record_id: `rec-${index + 22}` }))
+    const { gateway, calls } = gatewayWith([
+      response({ tenant_access_token: 'token-1', expire: 7200 }),
+      response({ data: { items: firstPage, has_more: true, page_token: 'next-page' } }),
+      response({ data: { items: secondPage, has_more: false } }),
+    ])
+    const records = await gateway.searchRecords('tbl-customers', { conjunction: 'and', conditions: [] }, { pageSize: 21 })
+    expect(records).toHaveLength(41)
+    expect(new Set(records.map((row) => row.record_id)).size).toBe(41)
+    expect(calls[1].url).toContain('page_size=21')
+    expect(calls[1].url).not.toContain('page_token=')
+    expect(calls[2].url).toContain('page_size=21')
+    expect(calls[2].url).toContain('page_token=next-page')
+    expect(JSON.parse(calls[2].request.body)).toEqual({ filter: { conjunction: 'and', conditions: [] } })
+  })
 })

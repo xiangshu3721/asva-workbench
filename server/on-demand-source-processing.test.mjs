@@ -42,6 +42,15 @@ describe('on-demand source processing', () => {
     expect(repository.load).not.toHaveBeenCalled()
   })
 
+  it('keeps save-triggered AI closed even if a stale auto flag is set without a hard quota', async () => {
+    config.features.onDemandAiAutoTrigger = true
+    const repository = new FeishuRepository({ authRepository: {} })
+    repository.load = vi.fn()
+
+    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
+    expect(repository.load).not.toHaveBeenCalled()
+  })
+
   it('starts at most one explicitly requested processing call with on-demand limits', async () => {
     const source = { id: 'SRC-1', customerId: 'CUS-1', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }
     const repository = new FeishuRepository({ authRepository: {} })

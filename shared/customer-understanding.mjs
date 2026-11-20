@@ -1,7 +1,9 @@
 import { materializeCustomerProfile, summaryInputFingerprint } from './profile-materialization.mjs'
+import { buildConsultationInputSnapshot } from './consultation-input-snapshot.mjs'
+import { buildConsultationTopics } from './consultation-topics.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
-export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v1'
+export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v4-provisional-context-cache'
 export const CONTEXT_DENSITY_POLICY_VERSION = 'DENSITY_V1'
 export const UNDERSTANDING_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 export const UNDERSTANDING_CONFIDENCE = new Set(['LOW', 'MEDIUM', 'HIGH'])
@@ -10,6 +12,15 @@ export const DIAGNOSIS_PATTERN = /(人格障碍|抑郁症|焦虑症|双相|精�
 
 const SENSITIVE_FIELDS = new Set(['phone', 'wechat', 'current_mentor_id', 'mentor_id'])
 const EVIDENCE_ORDER = { FACT: 4, SELF_MEANING: 3, OBSERVATION: 2, HYPOTHESIS: 1 }
+const CURRENT_ISSUE_FIELDS = new Set(['current_core_issue', 'current_goal', 'current_expectation', 'current_barriers'])
+const RESOLVED_ISSUE_PATTERN = /(已(?:经)?(?:解决|缓解|恢复|过去)|不再(?:困扰|需要|影响)|曾经.*(?:已解决|已恢复))/
+const EXPLICIT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|问题|无法|影响)/
+const CURRENT_IMPACT_PATTERN = /(影响|导致|无法|反复|持续|下降|中断|冲突|困难|拖延|失眠)/
+const CONSULTATION_TOPIC_PATTERN = /(咨询|想谈|想聊|需要帮助).{0,24}(情感|关系|婚姻|伴侣|家庭|亲子|职业|工作|睡眠|压力)|(?:关于|对于|围绕).{0,15}(?:目前|未来|现在)?(?:工作|职业|发展|情感|关系|家庭|亲子).{0,18}(?:探讨|讨论|交流|咨询)|(?:工作|职业|情感|关系).{0,12}(?:发展|方向).{0,12}(?:探讨|讨论|交流|咨询)/
+const CONCRETE_CURRENT_ISSUE_PATTERN = /(困扰|压力|冲突|困难|卡住|拖延|失眠|痛苦|负担|危机|中断|无法|影响)/
+const PROVISIONAL_DIRECTION_DETAIL = '原始资料已提及该咨询主题，具体情况待客户确认。'
+const AI_SUMMARY_PREFIX_PATTERN = /^(?:AI|人工智能)\s*(?:总结|推测|分析|理解|生成|判断)\s*[：:]/i
+const AI_DERIVED_EVIDENCE_TYPES = new Set(['HYPOTHESIS', 'AI_INFERENCE'])
 const present = (value) => value !== null && value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)
 const valueText = (value) => Array.isArray(value) ? value.join('、') : present(value) ? String(value) : ''
 const safeText = (value, limit = 240) => valueText(value).replace(/\s+/g, ' ').trim().slice(0, limit)
@@ -37,6 +48,7 @@ function evidenceRef(item, sourceRecords) {
     excerpt: safeText(item.sourceExcerpt || item.displayText, 220),
     occurred_at: item.occurredAt || null,
     evidence_type: item.evidenceType,
+    review_status: item.reviewStatus || null,
     source_perspective: item.sourcePerspective || source?.sourcePerspective || (item.sourceRole === 'CUSTOMER' ? 'CUSTOMER_FIRST_PARTY' : 'STAFF_REPORTED'),
     content_source: item.contentSource || null,
     information_nature: item.informationNature || null,
@@ -56,10 +68,68 @@ function sortedEvidence(items, options = {}) {
   return [...items].sort((a, b) => scoreEvidence(b, options) - scoreEvidence(a, options) || String(b.occurredAt || '').localeCompare(String(a.occurredAt || '')) || a.id.localeCompare(b.id))
 }
 
+function isCurrentIssueEvidence(item) {
+  const text = safeText(item?.displayText || item?.standardValue)
+  if (item?.semanticKind === 'EVENT' || RESOLVED_ISSUE_PATTERN.test(text) || ['STAFF_REPORTED', 'MENTOR_OBSERVATION'].includes(item?.sourcePerspective)) return false
+  if (CONSULTATION_TOPIC_PATTERN.test(text) && !CONCRETE_CURRENT_ISSUE_PATTERN.test(text)) return false
+  const explicitIssue = item?.fieldKey === 'current_core_issue' || (item?.semanticKind === 'NEED' && EXPLICIT_ISSUE_PATTERN.test(text))
+  const impactSupportingFact = item?.evidenceType === 'FACT' && (item?.semanticKind === 'CURRENT_STATE' || item?.fieldKey === 'current_barriers') && CURRENT_IMPACT_PATTERN.test(text)
+  return explicitIssue || impactSupportingFact
+}
+
+function consultationDirectionTitle(text) {
+  if (/(情感|关系|婚姻|伴侣)/.test(text)) return '情感关系方面的咨询需求'
+  if (/(家庭|亲子)/.test(text)) return '家庭关系方面的咨询需求'
+  if (/(职业|工作)/.test(text)) return '职业发展方面的咨询需求'
+  if (/(睡眠|压力)/.test(text)) return '身心状态方面的咨询需求'
+  return safeText(text, 120)
+}
+
+function consultationDirection(text, evidenceIds = [], sourcePerspective = null) {
+  const sourceText = safeText(text, 320)
+  if (AI_SUMMARY_PREFIX_PATTERN.test(sourceText) || !CONSULTATION_TOPIC_PATTERN.test(sourceText) || RESOLVED_ISSUE_PATTERN.test(sourceText)) return null
+  const title = consultationDirectionTitle(sourceText)
+  // Unsourced or unverified notes supply a topic label, not a raw personal narrative.
+  return { text: evidenceIds.length ? sourceText : title, title, evidence_ids: evidenceIds, source_perspective: sourcePerspective, provisional: true }
+}
+
+function currentIssuePriority(item) {
+  const explicitNeed = item?.semanticKind === 'NEED' || item?.fieldKey === 'current_core_issue'
+  const customerStatement = item?.sourcePerspective === 'CUSTOMER_FIRST_PARTY' || item?.evidenceType === 'SELF_MEANING'
+  return (explicitNeed ? 8 : 2) + (customerStatement ? 3 : 0) + scoreEvidence(item, { current: true })
+}
+
+function sortedCurrentIssueEvidence(items) {
+  return [...items].sort((a, b) => currentIssuePriority(b) - currentIssuePriority(a) || String(b.occurredAt || '').localeCompare(String(a.occurredAt || '')) || a.id.localeCompare(b.id))
+}
+
+function normalizeIssueText(value) {
+  return safeText(value, 280).toLowerCase().replace(/[\s，。、“”‘’：；、,.!?！？()（）\-]/g, '')
+}
+
+function issueTerms(value) {
+  const text = normalizeIssueText(value)
+  const terms = new Set()
+  for (let index = 0; index < text.length - 1; index += 1) terms.add(text.slice(index, index + 2))
+  return terms
+}
+
+function isSimilarIssue(left, right) {
+  const a = normalizeIssueText(left)
+  const b = normalizeIssueText(right)
+  if (!a || !b) return false
+  if (a === b || a.includes(b) || b.includes(a)) return true
+  const aTerms = issueTerms(a)
+  const bTerms = issueTerms(b)
+  const shared = [...aTerms].filter((term) => bTerms.has(term)).length
+  return shared / Math.max(aTerms.size, bTerms.size, 1) >= 0.72 || (shared >= 3 && shared / Math.min(aTerms.size, bTerms.size, 1) >= 0.5)
+}
+
 function profileDomains(customer) {
   const fields = customer?.profileFields || {}
+  const fieldMeta = customer?.profileFieldMeta || {}
   return Object.fromEntries(Object.entries(fields)
-    .filter(([key, value]) => !SENSITIVE_FIELDS.has(key) && present(value))
+    .filter(([key, value]) => !SENSITIVE_FIELDS.has(key) && present(value) && fieldMeta[key]?.confirmed !== false)
     .map(([key, value]) => [key, valueText(value).slice(0, 300)]))
 }
 
@@ -86,11 +156,15 @@ export function applyUnderstandingDensityPolicy(value, density = {}) {
   }
 }
 
+// Keep the v4 cache key stable while the consultation snapshot is introduced.
+// Its independent fingerprint remains on consultation_input_snapshot and is not
+// a freshness signal for the saved _understanding in this phase.
 export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [] } = {}) {
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS').map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey || '', value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((a, b) => a.id.localeCompare(b.id))
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
   const recordedContext = {
     notes: safeText(customer.notes, 1200),
+    supplementaryTopics: (customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED').map((item) => ({ id: item.id || '', text: safeText(item.text, 320), source: item.source || '', status: item.status || '', verificationStatus: item.verificationStatus || '' })).sort((a, b) => `${a.id}:${a.text}`.localeCompare(`${b.id}:${b.text}`)),
     need: safeText(customer.need, 300),
     goal: safeText(customer.goal, 300),
     helpExpectation: safeText(customer.helpExpectation, 300),
@@ -99,19 +173,24 @@ export function understandingInputFingerprint({ customer = {}, evidenceItems = [
   return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts }))
 }
 
-export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], conflicts = [], now = new Date().toISOString() } = {}) {
+export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], now = new Date().toISOString() } = {}) {
+  const consultationInputSnapshot = buildConsultationInputSnapshot({ customer, evidenceItems, sourceRecords, sessions, conflicts, now })
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS')
   const hypotheses = evidenceItems.filter((item) => item.evidenceType === 'HYPOTHESIS' || item.reviewStatus !== 'CONFIRMED')
   const renderer = materializeCustomerProfile({ customer, evidenceItems })
+  const knownIds = new Set(confirmed.map((item) => item.id))
+  const conflictingEvidenceIds = new Set(conflicts.filter((item) => item.status === 'OPEN').flatMap((item) => [item.currentEvidenceId, item.newEvidenceId]).filter((id) => knownIds.has(id)))
+  const openConflictEvidenceIds = new Set(conflicts.filter((item) => item.status === 'OPEN').flatMap((item) => [item.currentEvidenceId, item.newEvidenceId]).filter(Boolean))
   const currentEvidence = sortedEvidence(confirmed.filter((item) => item.semanticKind !== 'EVENT'), { current: true }).slice(0, 18)
   const events = sortedEvidence(confirmed.filter((item) => item.semanticKind === 'EVENT')).slice(0, 12)
-  const needs = sortedEvidence(confirmed.filter((item) => ['NEED', 'GOAL'].includes(item.semanticKind) || ['current_core_issue', 'current_goal', 'current_expectation', 'current_barriers'].includes(item.fieldKey)), { current: true }).slice(0, 8)
+  const currentIssueEvidence = sortedCurrentIssueEvidence(confirmed.filter((item) => isCurrentIssueEvidence(item) && !conflictingEvidenceIds.has(item.id))).slice(0, 24)
+  const provisionalTopicEvidence = sortedEvidence(confirmed.filter((item) => !AI_DERIVED_EVIDENCE_TYPES.has(item.evidenceType) && !openConflictEvidenceIds.has(item.id) && item.semanticKind !== 'EVENT' && consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null))).slice(0, 12)
+  const needs = sortedCurrentIssueEvidence(confirmed.filter((item) => (item.semanticKind === 'NEED' || item.semanticKind === 'GOAL' || CURRENT_ISSUE_FIELDS.has(item.fieldKey)) && !conflictingEvidenceIds.has(item.id))).slice(0, 24)
   const selfMeanings = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'SELF_MEANING')).slice(0, 8)
   const observations = sortedEvidence(confirmed.filter((item) => item.evidenceType === 'OBSERVATION')).slice(0, 8)
   const resources = sortedEvidence(confirmed.filter((item) => item.semanticKind === 'RESOURCE' || ['strengths', 'current_resources', 'support_system'].includes(item.fieldKey)), { current: true }).slice(0, 8)
   const density = classifyUnderstandingContextDensity({ profileCoverage: renderer.coverage.percentage, confirmedEvidenceCount: confirmed.length, sourceCount: sourceRecords.filter((item) => item.customerId === customer.id).length, knownDomainCount: renderer.coverage.domains.filter((item) => item.status === 'KNOWN').length, lifeEventCount: events.length })
-  const evidenceRefs = [...currentEvidence, ...events, ...needs, ...selfMeanings, ...observations, ...resources, ...hypotheses.slice(0, 5)].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).map((item) => evidenceRef(item, sourceRecords))
-  const knownIds = new Set(confirmed.map((item) => item.id))
+  const evidenceRefs = [...currentIssueEvidence, ...provisionalTopicEvidence, ...currentEvidence, ...events, ...needs, ...selfMeanings, ...observations, ...resources, ...hypotheses.slice(0, 5)].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).map((item) => evidenceRef(item, sourceRecords))
   const openConflictRefs = conflicts.filter((item) => item.status === 'OPEN').slice(0, 8).map((item) => ({ field_key: item.fieldKey, current_value: valueText(item.currentValue), proposed_value: valueText(item.newValue), evidence_ids: unique([item.currentEvidenceId, item.newEvidenceId]).filter((id) => knownIds.has(id)) }))
   const recordedContext = {
     notes: safeText(customer.notes, 1200),
@@ -124,6 +203,11 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     recordedContext.current_goal ? { text: recordedContext.current_goal, evidence_ids: [] } : null,
     ...needs.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
   ].filter(Boolean).slice(0, 8)
+  const provisionalDirections = [
+    ...provisionalTopicEvidence.map((item) => consultationDirection(item.displayText || item.standardValue, [item.id], item.sourcePerspective || null)),
+    ...[recordedContext.current_need, recordedContext.help_expectation, recordedContext.notes].map((text) => consultationDirection(text)),
+    ...(customer.supplementaryItems || []).filter((item) => item?.status !== 'REJECTED' && item?.reviewStatus !== 'REJECTED' && item?.informationNature !== 'AI_INFERENCE' && item?.source !== 'AI_INFERENCE').map((item) => consultationDirection(item.text, [], 'UNVERIFIED_RECORDED_CONTEXT')),
+  ].filter(Boolean).filter((item, index, list) => list.findIndex((candidate) => candidate.title === item.title) === index).slice(0, 4)
   return {
     schema_version: CUSTOMER_UNDERSTANDING_VERSION,
     generated_at: now,
@@ -132,6 +216,11 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     top_life_events: events.map((item) => ({ text: safeText(item.displayText), occurred_at: item.occurredAt || null, evidence_ids: [item.id] })),
     current_goals: needs.filter((item) => item.semanticKind === 'GOAL' || item.fieldKey === 'current_goal').map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     current_needs: contextNeeds,
+    current_issue_candidates: {
+      evidence: currentIssueEvidence.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id], source_perspective: item.sourcePerspective || null, provisional: false })),
+      provisional: provisionalDirections,
+      excluded_conflict_evidence_ids: [...conflictingEvidenceIds],
+    },
     recent_self_meanings: selfMeanings.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     important_observations: observations.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     resources: resources.map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
@@ -139,7 +228,10 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     coverage_gaps: renderer.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name),
     evidence_refs: evidenceRefs,
     recorded_context: recordedContext,
-    source_summaries: sourceRecords.filter((item) => item.customerId === customer.id).slice(0, 8).map((item) => ({ source_id: item.id, title: safeText(item.title || '资料记录', 80), source_type: safeText(item.sourceType, 80), occurred_at: item.occurredAt || null })),
+    source_summaries: consultationInputSnapshot.sources.slice(0, 8).map((item) => ({ source_id: item.source_id, title: item.title, source_type: item.source_type, occurred_at: item.occurred_at })),
+    communication_records: consultationInputSnapshot.historical.communications,
+    consultation_input_snapshot: consultationInputSnapshot,
+    consultation_topics: buildConsultationTopics(consultationInputSnapshot),
     working_hypotheses: hypotheses.filter((item) => item.evidenceType === 'HYPOTHESIS').slice(0, 5).map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     context_density: density,
     input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts }),
@@ -182,6 +274,51 @@ const cleanInsight = (item, fallback = '待进一步确认') => {
   }
 }
 
+export function applyCurrentIssuePolicy(value, { currentIssueEvidenceIds = [], currentIssueCandidates = [] } = {}) {
+  const allowed = new Set(currentIssueEvidenceIds)
+  const provisional = currentIssueCandidates.filter((item) => item?.provisional)
+  const confirmed = []
+  const directions = []
+  for (const issue of value?.top_issues || []) {
+    const title = issue?.title || issue?.text || ''
+    if (!normalizeIssueText(title) || RESOLVED_ISSUE_PATTERN.test(title)) continue
+    if (issue?.confidence === 'LOW') {
+      const direction = provisional.find((candidate) => isSimilarIssue(title, candidate.title) || isSimilarIssue(issue?.text || '', candidate.title))
+      if (!direction || directions.some((existing) => isSimilarIssue(existing.title || existing.text, direction.title))) continue
+      const evidenceIds = (issue?.evidence_ids || []).filter((id) => direction.evidence_ids?.includes(id))
+      directions.push(cleanInsight({ title: direction.title, detail: PROVISIONAL_DIRECTION_DETAIL, evidence_ids: evidenceIds, confidence: 'LOW', type: 'SYNTHESIS' }))
+      continue
+    }
+    const evidenceIds = (issue?.evidence_ids || []).filter((id) => allowed.has(id))
+    if (issue?.type === 'WORKING_HYPOTHESIS' || !evidenceIds.length || confirmed.some((existing) => isSimilarIssue(existing.title || existing.text, title))) continue
+    confirmed.push({ ...issue, evidence_ids: evidenceIds })
+  }
+  // Never drop an explicitly recorded consultation direction simply because
+  // the model omitted it. It remains LOW / pending verification, never a fact.
+  for (const candidate of provisional) {
+    if (confirmed.length + directions.length >= 3) break
+    if (confirmed.some((issue) => isSimilarIssue(issue.title || issue.text, candidate.title)) || directions.some((issue) => isSimilarIssue(issue.title || issue.text, candidate.title))) continue
+    directions.push(cleanInsight({ title: candidate.title, detail: PROVISIONAL_DIRECTION_DETAIL, evidence_ids: candidate.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS' }))
+  }
+  const topIssues = [...confirmed, ...directions].slice(0, 3)
+  const lead = topIssues[0]
+  const entryPoints = [...(value?.next_conversation || [])]
+  if (lead && !confirmed.length) {
+    const topic = lead.title || lead.text
+    const topicWords = /(家庭|亲子)/.test(topic) ? /(家庭|亲子|孩子)/ : /(情感|关系)/.test(topic) ? /(情感|关系|伴侣|恋爱)/ : /(职业|工作|发展)/.test(topic) ? /(职业|工作|发展|方向)/ : /(睡眠|压力|身心)/.test(topic) ? /(睡眠|压力|状态|身心)/ : null
+    const alreadySpecific = entryPoints.some((item) => { const candidate = [item.focus, item.text, item.suggested_entry].join(' '); return topicWords ? topicWords.test(candidate) : normalizeIssueText(candidate).includes(normalizeIssueText(topic).slice(0, 5)) })
+    if (!alreadySpecific) {
+      entryPoints.unshift(cleanInsight({
+        text: `先确认${topic}的具体情境`, focus: `围绕${topic}了解客户最想优先处理的事情`,
+        why_now: '档案中已有咨询方向，但具体经历与影响尚未得到客户确认。',
+        suggested_entry: `你提到想聊${topic.replace('方面的咨询需求', '')}，现在最希望先谈的是哪件事？`,
+        evidence_ids: lead.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS',
+      }))
+    }
+  }
+  return { ...value, top_issues: topIssues, next_conversation: entryPoints.slice(0, 3) }
+}
+
 export function normalizeCustomerUnderstanding(raw, { evidenceIds = [], now = new Date().toISOString() } = {}) {
   const allowed = new Set(evidenceIds)
   const refs = (item) => cleanInsight(item)
@@ -209,6 +346,45 @@ export function normalizeCustomerUnderstanding(raw, { evidenceIds = [], now = ne
   normalized.knowledge_gaps = normalized.knowledge_gaps.map(filterRefs)
   normalized.meta.invalid_evidence_refs = unique(invalidEvidenceRefs)
   return normalized
+}
+
+// Stage 6A: preserve the model's useful narrative, but never present a
+// statement as verified solely because the model assigned HIGH/MEDIUM.
+// Only confirmed, non-AI-derived Evidence may justify stronger confidence.
+// This applies to new generations; it does not rewrite persisted snapshots.
+export function applyUnderstandingGroundingPolicy(value, { confirmedEvidenceIds = [] } = {}) {
+  if (!value || typeof value !== 'object') return value
+  const strongIds = new Set(confirmedEvidenceIds.filter(Boolean).map(String))
+  const grounded = (item) => Array.isArray(item?.evidence_ids) && item.evidence_ids.some((id) => strongIds.has(String(id)))
+  const calibrate = (item, { hypothesis = false } = {}) => {
+    if (!item) return item
+    if (hypothesis || item.type === 'WORKING_HYPOTHESIS') return { ...item, confidence: 'LOW', type: 'WORKING_HYPOTHESIS' }
+    if (grounded(item)) return item
+    return {
+      ...item,
+      confidence: 'LOW',
+      type: ['FACT_BASED', 'SELF_MEANING_BASED'].includes(item.type) ? 'SYNTHESIS' : item.type,
+    }
+  }
+  const result = {
+    ...value,
+    one_line_understanding: calibrate(value.one_line_understanding),
+    current_life_phase: calibrate(value.current_life_phase),
+  }
+  for (const key of ['current_needs', 'core_blocks', 'resources_and_strengths', 'key_tensions', 'next_conversation', 'service_cautions']) {
+    result[key] = (value[key] || []).map((item) => calibrate(item))
+  }
+  result.working_hypotheses = (value.working_hypotheses || []).map((item) => calibrate(item, { hypothesis: true }))
+  // top_issues already passes a separate, more restrictive current-issue
+  // policy, including provisional directions; do not change its semantics.
+  const substantive = [
+    result.one_line_understanding, result.current_life_phase,
+    ...(result.top_issues || []),
+    ...['current_needs', 'core_blocks', 'resources_and_strengths', 'key_tensions'].flatMap((key) => result[key] || []),
+  ]
+  const hasConfirmedClaim = substantive.some((item) => item && item.confidence !== 'LOW' && grounded(item) && item.type !== 'WORKING_HYPOTHESIS')
+  result.meta = { ...(value.meta || {}), overall_confidence: hasConfirmedClaim ? value.meta?.overall_confidence || 'LOW' : 'LOW' }
+  return result
 }
 
 function walkStrings(value, callback) {
@@ -244,9 +420,19 @@ export function createLocalCustomerUnderstanding(context) {
   const recorded = context.recorded_context || context.current_snapshot || {}
   const recordedNeeds = [recorded.current_need, recorded.current_goal, recorded.help_expectation].filter(Boolean).map((text) => ({ text: safeText(text), evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' }))
   const noteSignal = recorded.notes ? { text: `已录入资料：${safeText(recorded.notes, 220)}`, evidence_ids: [], confidence: 'LOW', type: 'SYNTHESIS' } : null
-  const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text)), ...(noteSignal ? [noteSignal] : [])].slice(0, 3)
+  const usableNeeds = [...needs, ...recordedNeeds.filter((item) => !needs.some((need) => need.text === item.text))].slice(0, 3)
+  const issueCandidates = refsFor(context.current_issue_candidates?.evidence || [])
+  const provisionalDirections = (context.current_issue_candidates?.provisional || []).map((item) => ({ text: item.title, title: item.title, detail: PROVISIONAL_DIRECTION_DETAIL, evidence_ids: item.evidence_ids || [], confidence: 'LOW', type: 'SYNTHESIS' }))
+  const oneLineSignals = [...usableNeeds, ...(noteSignal ? [noteSignal] : [])]
   const resources = refsFor(context.resources || [])
   const events = refsFor(context.top_life_events || [])
   const gaps = (context.coverage_gaps || []).slice(0, 4).map((text) => ({ text: `还需要了解${text}`, detail: '当前资料尚不足以形成稳定判断。', priority: 'MEDIUM', evidence_ids: [] }))
-  return normalizeCustomerUnderstanding({ generated_at: context.generated_at, one_line_understanding: { text: usableNeeds[0]?.text || '当前资料有限，先建立对客户处境的基本理解。', evidence_ids: usableNeeds[0]?.evidence_ids || [], confidence: usableNeeds[0]?.evidence_ids?.length ? 'HIGH' : 'LOW', type: usableNeeds[0]?.evidence_ids?.length ? 'FACT_BASED' : 'SYNTHESIS' }, top_issues: usableNeeds, current_life_phase: events[0] || null, current_needs: usableNeeds, core_blocks: [], resources_and_strengths: resources, key_tensions: [], knowledge_gaps: gaps, next_conversation: [{ text: '先确认客户最近最希望解决的一件具体事情', prompt: '最近最让你想优先处理的是什么？', evidence_ids: [] }], service_cautions: [{ text: '先确认再解释', detail: '资料不足时不把推测当成事实。', evidence_ids: [] }], meta: { overall_confidence: usableNeeds.length ? 'MEDIUM' : 'LOW', evidence_count: context.evidence_refs?.length || 0 } }, { evidenceIds: (context.evidence_refs || []).map((item) => item.evidence_id), now: context.generated_at })
+  const firstDirection = provisionalDirections[0]
+  const firstConfirmedIssue = issueCandidates[0]
+  const nextConversation = firstDirection ? { text: `确认${firstDirection.title}的具体情境`, focus: `围绕${firstDirection.title}了解客户最想优先谈的事情`, why_now: '客户资料已提及该咨询主题，尚待确认具体问题。', suggested_entry: `你提到想咨询${firstDirection.title.replace('方面的咨询需求', '')}，最近最想先谈的是哪件事？`, evidence_ids: firstDirection.evidence_ids, confidence: 'LOW', type: 'SYNTHESIS' } : firstConfirmedIssue ? { text: `了解${firstConfirmedIssue.text}的具体情境`, focus: `围绕${firstConfirmedIssue.text}了解最需要优先处理的部分`, why_now: '客户已明确提及当前困扰。', suggested_entry: `你提到${firstConfirmedIssue.text}，最近在哪些时候最明显？`, evidence_ids: firstConfirmedIssue.evidence_ids, confidence: firstConfirmedIssue.confidence, type: firstConfirmedIssue.type } : { text: '先确认客户最近最希望解决的一件具体事情', prompt: '最近最让你想优先处理的是什么？', evidence_ids: [] }
+  const normalized = normalizeCustomerUnderstanding({ generated_at: context.generated_at, one_line_understanding: { text: oneLineSignals[0]?.text || '当前资料有限，先建立对客户处境的基本理解。', evidence_ids: oneLineSignals[0]?.evidence_ids || [], confidence: oneLineSignals[0]?.evidence_ids?.length ? 'HIGH' : 'LOW', type: oneLineSignals[0]?.evidence_ids?.length ? 'FACT_BASED' : 'SYNTHESIS' }, top_issues: [...issueCandidates, ...provisionalDirections], current_life_phase: events[0] || null, current_needs: usableNeeds, core_blocks: [], resources_and_strengths: resources, key_tensions: [], knowledge_gaps: gaps, next_conversation: [nextConversation], service_cautions: [{ text: '先确认再解释', detail: '资料不足时不把推测当成事实。', evidence_ids: [] }], meta: { overall_confidence: issueCandidates.length ? 'MEDIUM' : 'LOW', evidence_count: context.evidence_refs?.length || 0 } }, { evidenceIds: (context.evidence_refs || []).map((item) => item.evidence_id), now: context.generated_at })
+  return applyCurrentIssuePolicy(normalized, {
+    currentIssueEvidenceIds: (context.current_issue_candidates?.evidence || context.current_needs || []).flatMap((item) => item.evidence_ids || []),
+    currentIssueCandidates: context.current_issue_candidates?.provisional || [],
+  })
 }

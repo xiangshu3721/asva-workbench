@@ -72,7 +72,7 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.rawNotes).toBe('客户正在考虑职业转型。')
     expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
     expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
-    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 待核实' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '' })
     expect(fields.map((item) => item.text)).not.toContain('客户正在考虑职业转型。')
   })
 
@@ -109,7 +109,7 @@ describe('CustomerProfileRenderer materialization', () => {
     const fields = result.sections.flatMap((section) => section.items)
     expect(fields.find((item) => item.label === '当前职业')).toMatchObject({ statusLabel: '人工已确认' })
     expect(fields.find((item) => item.label === '当前目标')).toMatchObject({ statusLabel: 'AI推断 · 待验证' })
-    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '导师记录 · 待核实' })
+    expect(fields.find((item) => item.label === '睡眠情况')).toMatchObject({ statusLabel: '' })
   })
 
   it('keeps a work location out of the current residence field in the display projection', () => {
@@ -166,7 +166,7 @@ describe('CustomerProfileRenderer materialization', () => {
     expect(result.provisionalItems.find((item) => item.text === '近期睡眠有所改善').evidenceIds).toEqual(['EVD-1', 'EVD-2'])
   })
 
-  it('shows persisted fallback information as pending instead of dropping it', () => {
+  it('shows source-backed AI fallback information as extracted instead of pending', () => {
     const result = materializeCustomerProfile({
       customer: {
         profileFields: {},
@@ -176,8 +176,23 @@ describe('CustomerProfileRenderer materialization', () => {
       evidenceItems: [],
     })
     expect(result.supplementaryItems).toHaveLength(1)
-    expect(result.supplementaryItems[0]).toMatchObject({ label: '客户补充信息', statusLabel: '待核实' })
+    expect(result.supplementaryItems[0]).toMatchObject({ label: '客户补充信息', statusLabel: 'AI提取' })
     expect(result.sections.find((section) => section.title === '客户补充信息')?.items[0].text).toContain('希望逐步尝试')
+  })
+
+  it('labels inference and human verification separately for supplementary information', () => {
+    const result = materializeCustomerProfile({
+      customer: {
+        profileFields: {},
+        supplementaryItems: [
+          { id: 'SUP-AI', text: '客户可能回避冲突', source: 'AI_INFERENCE', confirmed: false, informationNature: 'AI_INFERENCE' },
+          { id: 'SUP-HUMAN', text: '客户已确认的补充说明', source: 'AI_EXTRACTED', confirmed: true },
+          { id: 'SUP-THIRD', text: '导师转述的补充信息', source: 'THIRD_PARTY_REPORTED', confirmed: false },
+        ],
+      },
+      evidenceItems: [],
+    })
+    expect(result.supplementaryItems.map((item) => item.statusLabel)).toEqual(['待确认', '已确认', '待确认'])
   })
 
   it('keeps an automatically extracted field visible as pending with its source basis', () => {
@@ -186,7 +201,7 @@ describe('CustomerProfileRenderer materialization', () => {
       evidenceItems: [{ id: 'EVD-1', fieldKey: 'career_goal', standardValue: '想做自己感兴趣的事业', displayText: '事业目标：想做自己感兴趣的事业', sourceExcerpt: '想做自己感兴趣的事业', sourceId: 'SRC-1', customerId: 'CUS-1', reviewStatus: 'PENDING_REVIEW', evidenceType: 'FACT', semanticKind: 'GOAL' }],
     })
     const item = result.sections.find((section) => section.title === '职业与事业')?.items.find((candidate) => candidate.label === '事业目标')
-    expect(item).toMatchObject({ text: '想做自己感兴趣的事业', statusLabel: '待核实' })
+    expect(item).toMatchObject({ text: '想做自己感兴趣的事业', statusLabel: '' })
     expect(item.basis[0]).toMatchObject({ evidenceId: 'EVD-1', sourceId: 'SRC-1' })
     expect(result.provisionalItems).toHaveLength(0)
   })

@@ -111,6 +111,7 @@ process.env.FEISHU_PROFILE_UPDATE_PROPOSALS_TABLE_ID = state.tableIds.profileUpd
 process.env.FEISHU_EVIDENCE_CONFLICTS_TABLE_ID = state.tableIds.evidenceConflicts
 
 const { FeishuRepository, customerIdForOperation } = await import('./repository.mjs')
+const { config } = await import('./config.mjs')
 const { FeishuUnavailableError, createFeishuGateway } = await import('./feishu.mjs')
 const { fields } = await import('./field-mapping.mjs')
 
@@ -165,6 +166,27 @@ beforeEach(seed)
 afterEach(settle)
 
 describe('customer save P0 recovery path', () => {
+  it('returns a durable PENDING marker for pure-text CREATE without scheduling legacy auto processing', async () => {
+    const originalEnabled = config.features.automaticProfileArchiving
+    const originalMode = config.features.automaticProfileArchivingMode
+    config.features.automaticProfileArchiving = true
+    config.features.automaticProfileArchivingMode = 'off'
+    try {
+      const repository = new FeishuRepository()
+      repository.scheduleAutomaticCustomerProfile = vi.fn()
+      const result = await repository.createCustomer('MENTOR-1', input('p0-auto-extract', { situation: '客户正在准备职业转型。' }), '', { compactResponse: true })
+      const row = rowFor(result.createdCustomerId)
+      const metadata = JSON.parse(String(rowFields(row)['档案字段元数据'] || '{}'))
+
+      expect(result.automaticProfile).toMatchObject({ status: 'PENDING' })
+      expect(metadata._automatic_profile_pending).toMatchObject({ reason: 'CUSTOMER_SAVE' })
+      expect(repository.scheduleAutomaticCustomerProfile).not.toHaveBeenCalled()
+    } finally {
+      config.features.automaticProfileArchiving = originalEnabled
+      config.features.automaticProfileArchivingMode = originalMode
+    }
+  })
+
   it('fails fast when Feishu fails before the Customers write and keeps the retry idempotent', async () => {
     const repository = new FeishuRepository()
     const payload = input('p0-pre-write-failure')

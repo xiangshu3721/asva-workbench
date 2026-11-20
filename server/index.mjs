@@ -9,21 +9,27 @@ import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
 
-const repository = new FeishuRepository()
-repository.startAutomaticProcessingRecovery?.()
-repository.startEnrollmentRecovery?.()
-if (repository.recoverAutomaticProcessing) {
-  void repository.recoverAutomaticProcessing().catch((error) => {
-    repository.audit?.('START_AUTOMATIC_PROCESSING_RECOVERY', '', '', 'FAIL', error?.code || 'AUTO_PROCESSING_START_FAILED')
-  })
-}
-if (repository.recoverPendingEnrollments) {
-  void repository.recoverPendingEnrollments().catch((error) => {
-    repository.audit?.('START_ENROLLMENT_RECOVERY', '', '', 'FAIL', error?.code || 'ENROLLMENT_RECOVERY_START_FAILED')
-  })
+function memorySnapshot(phase, requestId, extra = {}) {
+  const memory = process.memoryUsage()
+  console.info('[ASVA_MEMORY]', JSON.stringify({
+    phase,
+    request_id: requestId || undefined,
+    rss_bytes: memory.rss,
+    heap_used_bytes: memory.heapUsed,
+    heap_total_bytes: memory.heapTotal,
+    ...extra,
+  }))
 }
 
+memorySnapshot('startup_before_repository', 'module')
+const repository = new FeishuRepository()
+// Do not start full-database recovery scans from the HTTP module entrypoint.
+// Explicit customer/source writes remain event-driven; targeted recovery is
+// still available through the existing request paths.
+memorySnapshot('startup_after_repository', 'module')
+
 function send(request, response, statusCode, body, requestId) {
+  if (request.__asvaMemoryTracked) memorySnapshot('request_end', requestId, { path: (request.url || '').split('?')[0], status: statusCode })
   if (config.appEnv === 'development' && /^\/api\/(staff\/me|dashboard(?:\/basic)?|customers(?:\/directory|\/[^/]+\/detail)?|staff\/mentors)/.test(request.url || '')) {
     console.info('[ASVA_PERF_API]', JSON.stringify({ path: (request.url || '').split('?')[0], status: statusCode, handler_ms: Date.now() - (request.__asvaStartedAt || Date.now()), request_id: requestId }))
   }
@@ -107,6 +113,8 @@ async function guardAdmin(request) {
 async function handle(request, response, requestId) {
   if (request.method === 'OPTIONS') return send(request, response, 204, {}, requestId)
   const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
+  request.__asvaMemoryTracked = url.pathname === '/api/customers/directory' || url.pathname === '/api/customers' || /^\/api\/customers\/[^/]+\/auto-archive$/.test(url.pathname)
+  if (request.__asvaMemoryTracked) memorySnapshot('request_start', requestId, { path: url.pathname })
   if (request.method === 'GET' && url.pathname === '/api/health') {
     return send(request, response, 200, { ok: true, service: 'asva-api', ...releaseMetadata, ...configurationStatus(), feishuProviderStatus: feishuGateway.providerStatus(), featureFlags: featureFlags(), tables: config.feishu.tables }, requestId)
   }
@@ -155,7 +163,11 @@ async function handle(request, response, requestId) {
   if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guard(request), decodeURIComponent(customerSources[1])), requestId)
   if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guard(request), await readBody(request)), requestId)
   const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
-  if (request.method === 'POST' && sourceProcess) { const body = await readBody(request); return send(request, response, 200, await repository.processSource(await guard(request), decodeURIComponent(sourceProcess[1]), { force: body.force === true }), requestId) }
+  if (request.method === 'POST' && sourceProcess) {
+    // Legacy clients retain the URL, but must not bypass the on-demand AI gate.
+    await readBody(request)
+    return send(request, response, 200, await repository.processSourceOnDemand(await guard(request), decodeURIComponent(sourceProcess[1]), { trigger: 'MANUAL' }), requestId)
+  }
   const onDemandSourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/on-demand-process$/)
   if (request.method === 'POST' && onDemandSourceProcess) {
     const body = await readBody(request)
@@ -164,7 +176,7 @@ async function handle(request, response, requestId) {
   const sourceDetail = url.pathname.match(/^\/api\/sources\/([^/]+)$/)
   if (request.method === 'GET' && sourceDetail) return send(request, response, 200, await repository.sourceDetail(await guard(request), decodeURIComponent(sourceDetail[1])), requestId)
   const sourceStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/source-status$/)
-  if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || ''), requestId)
+  if (request.method === 'GET' && sourceStatus) return send(request, response, 200, await repository.sourceStatus(await guard(request), decodeURIComponent(sourceStatus[1]), url.searchParams.get('operationId') || '', url.searchParams.get('sourceId') || ''), requestId)
   const customerSaveStatus = url.pathname.match(/^\/api\/customers\/([^/]+)\/save-status$/)
   if (request.method === 'GET' && customerSaveStatus) return send(request, response, 200, await repository.customerSaveStatus(await guard(request), decodeURIComponent(customerSaveStatus[1]), url.searchParams.get('operationId') || ''), requestId)
   if (request.method === 'POST' && url.pathname === '/api/privacy/service-necessity') return send(request, response, 200, await repository.overrideServiceNecessity(await guardAdmin(request), await readBody(request)), requestId)
@@ -176,6 +188,15 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/customers') {
     const compactResponse = request.headers['x-asva-response-mode'] === 'customer-mutation-v1'
     return send(request, response, 201, await repository.createCustomer(await guard(request), await readBody(request), requestId, { compactResponse }), requestId)
+  }
+  const customerAutoArchive = url.pathname.match(/^\/api\/customers\/([^/]+)\/auto-archive$/)
+  if (request.method === 'POST' && customerAutoArchive) {
+    const actorId = await guard(request)
+    const body = await readBody(request)
+    const stage = body?.stage || 'extract'
+    if (!['extract', 'finalize'].includes(stage)) return send(request, response, 400, { success: false, code: 'AUTO_ARCHIVE_STAGE_INVALID', message: '不支持的自动归档阶段。' }, requestId)
+    const result = await repository.runCustomerAutoArchive(actorId, decodeURIComponent(customerAutoArchive[1]), { stage })
+    return send(request, response, result?.errorCode === 'CUSTOMER_NOT_FOUND' ? 404 : 200, { ...result, requestId }, requestId)
   }
   // Admin manual recovery endpoint for failed enrollments (after 5 retries)
   const manualRecoveryMatch = url.pathname.match(/^\/api\/customers\/([^/]+)\/enrollments\/recover$/)

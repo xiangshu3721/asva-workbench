@@ -1,0 +1,82 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CLIENT_DEFAULT_TIMEOUT_MS, CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS, createHttpApi } from './clientApi'
+import { readFileSync } from 'node:fs'
+
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+describe('consultation refresh client reliability', () => {
+  it('uses a bounded refresh budget below the CloudBase function ceiling', async () => {
+    expect(CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS).toBe(50_000)
+    expect(CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS).toBeGreaterThan(CLIENT_DEFAULT_TIMEOUT_MS)
+    expect(CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS).toBeLessThan(60_000)
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = expect(createHttpApi('http://127.0.0.1:8788').refreshCustomerUnderstanding('STAFF-1', 'CUS-1', true)).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS)
+    await pending
+  })
+
+  it('keeps the floating assistant removed and automatically refreshes stale v4 understanding at most once per data/version key', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    expect(source).not.toContain('<GlobalAIAssistant ')
+    expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)')
+    expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)')
+    expect(source).toContain("response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache'")
+    expect(source).toContain('response.context_summary?.has_meaningful_input !== true')
+    expect(source).toContain('runConsultationRefresh(requestCustomerId, false)')
+  })
+
+  it('keys consultation cache by current source fingerprint, refreshes on client changes, and protects previous AI fingerprint', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    expect(source).toContain('const currentConsultationFingerprint = localConsultationTopics.source_fingerprint || currentOneLineFingerprint')
+    expect(source).toContain('client-${clientFingerprint}')
+    expect(source).toContain("useEffect(() => { void loadUnderstanding() }, [customer.id, currentConsultationFingerprint, props.profileRefreshRevision])")
+    expect(source).toContain('force: cacheDecision.forceRead')
+    expect(source).toContain('consultationClientFingerprint: currentConsultationFingerprint')
+    expect(source).toContain('clientSnapshotFingerprint: currentOneLineFingerprint')
+    expect(source).toContain('currentConsultationTopics(scopedResponse, fallbackTopics)')
+  })
+
+  it('rejects late refresh responses before they can replace the current cached consultation response', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const autoRefresh = source.slice(source.indexOf('const autoRefreshStaleUnderstanding ='), source.indexOf('const loadUnderstanding ='))
+    const manualRefresh = source.slice(source.indexOf('const refreshUnderstanding = async'), source.indexOf('const refreshSalesUnderstanding = async'))
+    expect(autoRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeGreaterThan(-1)
+    expect(autoRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeLessThan(autoRefresh.indexOf('props.resourceCache.set(cacheKey, result)'))
+    expect(manualRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeGreaterThan(-1)
+    expect(manualRefresh.indexOf('if (!canCommitCustomerResponse(')).toBeLessThan(manualRefresh.indexOf('props.resourceCache.set(cacheKey, result)'))
+  })
+
+  it('coalesces simultaneous consultation refresh requests and logs only the actual network request', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const start = source.indexOf('const runConsultationRefresh =')
+    const end = source.indexOf('const autoRefreshStaleUnderstanding =')
+    const refresh = source.slice(start, end)
+    expect(refresh).toContain('understandingRefreshFlightRef.current.run(flightKey')
+    expect(refresh).toContain('CUSTOMER_UNDERSTANDING_REFRESH_MS')
+    expect(refresh).toContain("result: 'ERROR'")
+    const auto = source.slice(end, source.indexOf('const loadUnderstanding ='))
+    const manual = source.slice(source.indexOf('const refreshUnderstanding = async'), source.indexOf('const refreshSalesUnderstanding = async'))
+    expect(auto).toContain('runConsultationRefresh(requestCustomerId, false)')
+    expect(manual).toContain('runConsultationRefresh(requestCustomerId, force)')
+    expect(manual).toContain("error: ''")
+  })
+
+  it('handles refresh errors from both buttons without unhandled rejections', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    const handled = source.match(/onRefresh=\{\(\) => \{ void refreshUnderstanding\(true\)\.catch\(\(\) => \{/g)
+    expect(handled).toHaveLength(2)
+  })
+
+  it('keeps a previous response visible and labels read versus refresh failures accurately', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    expect(source).toContain("error: `读取咨询理解失败：${error instanceof Error ? error.message : '请求未完成'}`")
+    expect(source).toContain("error: `重新整理失败：${error instanceof Error ? error.message : '请求未完成'}`")
+    expect(source).toContain('const scopedResponse = response?.customerId === customerId ? response : null')
+    expect(source).toContain('const understanding = scopedResponse?.understanding || (understandingReadFailed ? fallback : undefined)')
+    expect(source).toContain("const consultationStatus = consultationAiDisplayStatus(status, error, consultationView.state === 'HAS_SIGNALS')")
+    expect(source).toContain("view === 'sales' ? understandingStatusLabel(salesStatus) : consultationStatus.label")
+  })
+})

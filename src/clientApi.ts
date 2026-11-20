@@ -1,4 +1,4 @@
-import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, Staff, StaffStatus, SummaryStatus } from './domain'
+import type { Customer, CustomerDraftPreview, CustomerSalesUnderstandingMeta, CustomerSalesUnderstandingV1, CustomerUnderstandingMeta, CustomerUnderstandingV1, Database, DialogueAssessment, DialogueConfirmation, EnrollmentDraft, FeedbackInput, ManualCustomerInput, MentorAccountInput, MentorAccountResult, NewAppointmentInput, ProfileDraft, ProfileMaterialization, ProfileUpdate, ServiceSession, Staff, StaffStatus, SummaryStatus } from './domain'
 import type { createLocalApi } from './api'
 import { queryLocalAssistant } from './assistant'
 import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSummary, type CustomerAiContext } from './customer-ai'
@@ -6,6 +6,10 @@ import { createLocalBrief, createLocalCoreSummary, type AiBrief, type AiCoreSumm
 import { buildBasicDashboard } from '../shared/basic-dashboard.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { createLocalCustomerUnderstanding } from '../shared/customer-understanding.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { buildConsultationInputSnapshot } from '../shared/consultation-input-snapshot.mjs'
+// @ts-expect-error Shared runtime module intentionally stays framework-neutral.
+import { buildConsultationTopics } from '../shared/consultation-topics.mjs'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { buildCustomerSalesContext, createLocalCustomerSalesUnderstanding, historicalSalesRecords } from '../shared/customer-sales-understanding.mjs'
 import { readAccessToken, writeAccessToken } from './auth-storage'
@@ -70,7 +74,31 @@ export function normalizeDatabaseDto(value: unknown): Database {
 
 export interface AiDraft { summary: string; currentStatus: string; nextStep: string }
 export interface CustomerIntelligence { summary: AiCoreSummary; brief: AiBrief }
-export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number } }
+export function buildLocalConsultationTopics(customer: Customer, sessions: ServiceSession[] = []): ConsultationTopicsResponse {
+  return buildConsultationTopics(buildConsultationInputSnapshot({ customer, sessions })) as ConsultationTopicsResponse
+}
+
+export interface ConsultationTopicSignal {
+  title: string
+  kind: 'EXPLICIT_CONCERN' | 'PROVISIONAL_DIRECTION'
+  verification_status: string
+  source: string
+  source_ref?: string | null
+  evidence_ids: string[]
+  excerpt: string
+  recorded_at?: string | null
+  temporal_status: string
+  specific_problem_known: boolean
+  unknowns?: string[]
+}
+export interface ConsultationTopicsResponse {
+  schema_version: string
+  customer_id: string
+  source_fingerprint: string | null
+  status: 'HAS_SIGNALS' | 'INSUFFICIENT_INFORMATION'
+  topics: ConsultationTopicSignal[]
+}
+export interface CustomerUnderstandingResponse { customerId: string; status: SummaryStatus; understanding: CustomerUnderstandingV1 | null; consultation_topics?: ConsultationTopicsResponse; meta: CustomerUnderstandingMeta; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }>; context_summary: { coverage_gaps: string[]; evidence_count: number; has_meaningful_input?: boolean } }
 export interface CustomerSalesUnderstandingResponse { customerId: string; status: SummaryStatus; salesUnderstanding: CustomerSalesUnderstandingV1 | null; meta: CustomerSalesUnderstandingMeta; historical_enrollments: Array<{ name: string; type: string; status: string; enrolled_at?: string | null; paid_at?: string | null; payment_status: string; amount_recorded?: number | null }>; service_history: Array<{ name: string; type: string; status: string; occurred_at?: string | null; summary: string }>; evidence_refs: CustomerUnderstandingResponse['evidence_refs']; context_summary: { density: string; evidence_count: number } }
 export interface SafetyAssessmentResponse { customerId: string; status: 'FRESH' | 'STALE' | 'PROCESSING' | 'FAILED'; assessment: { risk_level: string; risk_confidence: string; service_gate: string; commercial_block: string; requires_human_review: boolean; requires_safety_check: boolean; recommended_escalation: string; critical_unknowns: string[]; service_cautions: string[]; next_action: string; safety_signals: Array<{ signal_type: string; subject_scope: string; polarity: string; recency: string; short_description: string }>; } | null; meta: Record<string, unknown>; context_summary: { density: string; safety_data_sufficiency: string; critical_unknowns: string[]; evidence_count: number }; evidence_refs: Array<{ evidence_id: string; source_id: string; source_title: string; display_text: string; excerpt: string; occurred_at?: string | null; evidence_type: string; source_perspective?: string }> }
 export interface TeamSnapshotCustomerPreview { id: string; name: string; initials: string; need: string }
@@ -80,7 +108,7 @@ export interface BasicDashboardCourse { course_id: string; course_name: string; 
 export interface BasicDashboardOwner { staff_id: string; staff_name: string; role: string; customer_count: number }
 export interface BasicDashboardInsight { type: string; text: string }
 export interface BasicDashboard { customer_total: number; new_customers_this_week: number; previous_week_new_customers: number; enrolled_customer_total: number; active_enrollment_total: number; profile_pending_total: number; course_enrollment_distribution: BasicDashboardCourse[]; customer_owner_distribution: BasicDashboardOwner[]; management_insights: BasicDashboardInsight[]; generated_at: string }
-export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; appEnv?: string; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
+export interface HealthMetadata { ok: boolean; service: string; appVersion?: string; releaseCounter?: number; release?: string; gitCommit?: string; gitBranch?: string; buildTime?: string | null; appEnv?: string; environment?: string; dataMode?: string; authMode?: string; featureFlags?: Record<string, boolean | number>; authConfigured?: boolean; adminAuthConfigured?: boolean; authCredentialStoreConfigured?: boolean; feishuConfigured?: boolean; deepseekConfigured?: boolean }
 export interface SavePerformanceTrace { request_id?: string; operation_id?: string; result: 'SUCCESS' | 'ERROR'; customer_save_total_ms: number; identity_resolution_ms: number; customer_write_ms: number; enrollment_write_ms: number; profile_change_ms: number; ai_ms: number; other_ms: number }
 export interface EvidenceDebugTrace { source_id: string; processing_status: string; extraction_batch: string; evidence_count: number; proposal_count: number; conflict_count: number; model: string; prompt_version: string; duration_ms: number }
 export interface SourceRecord { id: string; subjectType: string; subjectId: string; customerId: string; sourceType: string; title: string; rawText?: string; fileRef?: string; fileName?: string; occurredAt?: string | null; uploadedAt?: string | null; uploadedBy?: string; sourceRole?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY' | 'MENTOR_OBSERVATION'; contentHash?: string; processingStatus: string; processingVersion?: number; sensitivityLevel?: string; privacyLevel?: 'NORMAL' | 'SENSITIVE' | 'HIGH_SENSITIVE'; privacyStatus?: string; privacyMeta?: Record<string, unknown>; serviceNecessity?: 'LOW' | 'RELEVANT' | 'CRITICAL' | 'UNKNOWN'; serviceNecessityReason?: string; temporalType?: string; mentorSafeSummary?: string; mentorServiceDetail?: string; necessaryExcerpt?: string; salesSafeSummary?: string; sourceVersion?: number; lastBatchId?: string; processingStartedAt?: string | null; lastProcessingAt?: string | null; processingError?: string | null }
@@ -88,7 +116,7 @@ export interface EvidenceItem { id: string; sourceId: string; customerId: string
 export interface ProfileUpdateProposal { id: string; customerId: string; evidenceId: string; sourceId: string; fieldKey: string; fieldName: string; currentValue: unknown; proposedValue: unknown; action: string; changeType: string; reviewStatus: string; reason: string; confidence: number }
 export interface EvidenceConflict { id: string; customerId: string; fieldKey: string; conflictType: string; currentValue: unknown; newValue: unknown; currentEvidenceId?: string; newEvidenceId: string; status: string; resolution?: string }
 export interface SourceWorkspace { sources: SourceRecord[]; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[]; profileMaterialization?: ProfileMaterialization }
-export interface SourceSaveStatus { status: 'PERSISTED' | 'NOT_FOUND'; source: SourceRecord | null }
+export interface SourceSaveStatus { status: string; source: SourceRecord | null }
 export type AssistantQueryType = 'CUSTOMER_DETAIL' | 'CUSTOMER_SUMMARY' | 'CUSTOMER_LIST' | 'CUSTOMER_PURCHASES' | 'STATUS_SUMMARY' | 'MENTOR_SUMMARY' | 'MENTOR_LIST' | 'PRODUCT_LIST' | 'SERVICE_RECORD_LIST' | 'ENROLLMENT_QUERY' | 'REVENUE_SUMMARY' | 'UNSUPPORTED'
 export type AssistantQueryStatus = 'SUCCESS' | 'NO_DATA' | 'AMBIGUOUS' | 'INVALID_QUERY' | 'DATA_SOURCE_ERROR'
 export interface QueryTimeRange { start: string; end: string; label: string }
@@ -117,6 +145,7 @@ export interface CustomerMutationResult {
   enrollmentStatus?: 'COMPLETED' | 'PENDING'
   enrollmentMessage?: string
   mutation?: CustomerMutationState
+  automaticProfile?: { status: 'PENDING' | 'NOT_REQUIRED' | 'DISABLED'; reason?: string; contentHash?: string }
 }
 export type CustomerCreateResult = CustomerMutationResult
 export type CustomerMutationStateStatus = 'PROCESSING' | 'VERIFYING' | 'PERSISTED' | 'COMMITTED' | 'UNKNOWN' | 'FAILED'
@@ -126,10 +155,37 @@ export interface CustomerSaveStatusResponse { operationId: string; customerId: s
 function customerMutationFromDatabase(database: Database & Partial<CustomerMutationResult>, customerId = database.createdCustomerId || '', customerCreated = database.customerCreated === true): CustomerMutationResult {
   const customer = database.customers.find((item) => item.id === customerId)
   if (!customer) throw new Error('保存后未找到客户')
-  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation }
+  return { customer, enrollments: database.enrollments.filter((item) => item.customerId === customerId), profileChanges: database.profileChanges.filter((item) => item.customerId === customerId), createdCustomerId: customerId, customerCreated, persistenceStatus: 'COMMITTED', mutation: database.mutation, automaticProfile: database.automaticProfile }
 }
-export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export type AutomaticProfileStatus = 'NOT_STARTED' | 'PROCESSING' | 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'NO_USABLE_OUTPUT' | 'FAILED' | 'PENDING'
+export interface CustomerAutoArchiveResult { status: 'EXTRACT_READY' | 'COMPLETED' | 'REVIEW_REQUIRED' | 'PROCESSING' | 'DISABLED' | 'NOT_REQUIRED' | 'FAILED'; customerId: string; sourceId?: string; phase: string; evidenceCount?: number; proposalCount?: number; conflictCount?: number; physicalFieldWriteCount?: number; supplementaryWriteCount?: number; readbackOk?: boolean; archiveOutcome?: string; reused?: boolean; errorCode?: string; requestId?: string; durationMs?: number; timings?: Record<string, number> }
 export interface CustomerProfileResponse { customerId: string; profileFields?: Customer['profileFields']; profileFieldMeta?: Customer['profileFieldMeta']; profileUpdatedAt?: string | null; profileSchemaVersion?: string; profileVersion?: number; profileMaterialization: ProfileMaterialization; autoOrganizeStatus?: AutomaticProfileStatus }
+
+export type CustomerFinalizeRecoveryStatus = 'COMPLETED' | 'REVIEW_REQUIRED' | 'PROCESSING' | 'FAILED' | 'UNKNOWN'
+export async function recoverCustomerFinalizeStatus(
+  loadProfile: () => Promise<CustomerProfileResponse>,
+  options: { attempts?: number; delayMs?: number; wait?: (delayMs: number) => Promise<void> } = {},
+): Promise<{ status: CustomerFinalizeRecoveryStatus; profile?: CustomerProfileResponse }> {
+  const attempts = Math.max(1, Math.min(3, options.attempts ?? 2))
+  const delayMs = Math.max(0, options.delayMs ?? 1_000)
+  const wait = options.wait || ((value: number) => new Promise<void>((resolve) => window.setTimeout(resolve, value)))
+  let lastStatus: CustomerFinalizeRecoveryStatus = 'UNKNOWN'
+  let lastProfile: CustomerProfileResponse | undefined
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const profile = await loadProfile()
+      lastProfile = profile
+      if (profile.autoOrganizeStatus === 'COMPLETED') return { status: 'COMPLETED', profile }
+      if (profile.autoOrganizeStatus === 'REVIEW_REQUIRED') return { status: 'REVIEW_REQUIRED', profile }
+      if (profile.autoOrganizeStatus === 'FAILED' || profile.autoOrganizeStatus === 'NO_USABLE_OUTPUT') return { status: 'FAILED', profile }
+      if (['PROCESSING', 'EXTRACT_READY', 'PENDING'].includes(profile.autoOrganizeStatus || '')) lastStatus = 'PROCESSING'
+    } catch {
+      // A read failure does not prove Finalize failed; retry the bounded read only.
+    }
+    if (attempt + 1 < attempts) await wait(delayMs)
+  }
+  return { status: lastStatus, profile: lastProfile }
+}
 
 export interface WorkbenchApi {
   login(phone: string, password: string): Promise<Staff & { mustChangePassword?: boolean }>
@@ -149,6 +205,7 @@ export interface WorkbenchApi {
   createAppointment(input: NewAppointmentInput): Promise<Database>
   previewCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerDraftPreview>
   createCustomer(actorId: string, input: ManualCustomerInput): Promise<CustomerCreateResult>
+  autoArchiveCustomer(actorId: string, customerId: string, options?: { stage?: 'extract' | 'finalize' }): Promise<CustomerAutoArchiveResult>
   updateCustomer(actorId: string, customerId: string, input: ManualCustomerInput): Promise<CustomerMutationResult>
   customerSaveStatus(actorId: string, operationId: string, customerId?: string): Promise<CustomerSaveStatusResponse>
   updateCustomerEnrollments(actorId: string, customerId: string, enrollments: EnrollmentDraft[]): Promise<Database>
@@ -179,8 +236,8 @@ export interface WorkbenchApi {
   identifyDialogue(actorId: string, input: { text: string; targetCustomerId?: string; customerOperationId?: string }): Promise<DialogueAssessment>
   confirmDialogue(actorId: string, input: { analysisToken: string; contentHash: string; targetCustomerId?: string; customerOperationId?: string; speakerId?: string }): Promise<DialogueConfirmation>
   sourceWorkspace(actorId: string, customerId: string): Promise<SourceWorkspace>
-  sourceStatus(actorId: string, customerId: string, operationId: string): Promise<SourceSaveStatus>
-  createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
+  sourceStatus(actorId: string, customerId: string, operationId: string, sourceId?: string): Promise<SourceSaveStatus>
+  createSource(actorId: string, input: { customerId: string; sourceType: string; rawText: string; operationId?: string; customerOperationId?: string; dialogueConfirmation?: string; archiveIntent?: 'CUSTOMER_UPDATE'; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY'; fileRef?: string; notes?: string; document?: { filename: string; mimeType: string; extension: string; size: number; fileHash: string; charCount: number; extractedText: string } }): Promise<SourceRecord>
   processSource(actorId: string, sourceId: string, force?: boolean): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
   processSourceOnDemand(actorId: string, sourceId: string, trigger?: 'AUTO' | 'MANUAL'): Promise<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
@@ -231,6 +288,9 @@ export const CLIENT_CUSTOMER_SAVE_TIMEOUT_MS = 8_000
 // operation. This is a hard ceiling, not a longer blocking wait.
 export const CLIENT_CUSTOMER_SAVE_HARD_TIMEOUT_MS = 30_000
 export const CLIENT_SOURCE_SAVE_TIMEOUT_MS = 70_000
+// The API has a 60s CloudBase ceiling. Leave a visible client-side margin so
+// a stalled refresh becomes a truthful failure state instead of an endless wait.
+export const CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS = 50_000
 const CUSTOMER_SAVE_STATUS_DELAYS_MS = [0, 500, 1000, 2000, 4000]
 
 function emitCustomerSaveState(operationId: string, status: CustomerMutationStateStatus, customerId?: string) {
@@ -257,7 +317,8 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
   const localUnderstanding = async (actorId: string, customerId: string): Promise<CustomerUnderstandingResponse> => {
     const customer = await api.customer(actorId, customerId)
     const context = { generated_at: new Date().toISOString(), current_needs: customer?.need ? [{ text: customer.need, evidence_ids: [] }] : [], resources: customer?.profileFields?.current_resources ? [{ text: String(customer.profileFields.current_resources), evidence_ids: [] }] : [], top_life_events: [], coverage_gaps: customer?.profileMaterialization?.coverage.domains.filter((item) => item.status !== 'KNOWN').map((item) => item.name) || ['当前资料'], evidence_refs: [] }
-    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, meta: { status: 'FRESH', promptVersion: 'understanding-v1' }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
+    const topics = customer ? buildLocalConsultationTopics(customer) : buildConsultationTopics(buildConsultationInputSnapshot({ customer: { id: customerId } })) as ConsultationTopicsResponse
+    return { customerId, status: 'FRESH', understanding: customer ? createLocalCustomerUnderstanding(context) as CustomerUnderstandingV1 : null, consultation_topics: topics, meta: { status: 'FRESH', promptVersion: 'understanding-v1', profileVersion: customer?.profileVersion ?? 0 }, evidence_refs: [], context_summary: { coverage_gaps: context.coverage_gaps, evidence_count: 0 } }
   }
   const localSalesUnderstanding = async (actorId: string, customerId: string): Promise<CustomerSalesUnderstandingResponse> => {
     const database = await api.dashboard(actorId)
@@ -284,6 +345,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     createAppointment: async (input) => api.createAppointment(input),
     previewCustomer: async (actorId, input) => api.previewCustomer(actorId, input),
     createCustomer: async (actorId, input) => customerMutationFromDatabase(await api.createCustomer(actorId, input) as Database & Partial<CustomerMutationResult>),
+    autoArchiveCustomer: async (_actorId, customerId) => ({ status: 'DISABLED', customerId, phase: 'LOCAL_DEMO' }),
     updateCustomer: async (actorId, customerId, input) => customerMutationFromDatabase(await api.updateCustomer(actorId, customerId, input) as Database, customerId, false),
     customerSaveStatus: async (_actorId, operationId, customerId) => ({ operationId, customerId: customerId || '', status: 'UNKNOWN', customer: null }),
     updateCustomerEnrollments: async (actorId, customerId, enrollments) => api.updateCustomerEnrollments(actorId, customerId, enrollments),
@@ -339,6 +401,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     let payload: Record<string, any> | null = null
     const defaultTimeoutMs = path === '/api/sources' && method === 'POST'
       ? CLIENT_SOURCE_SAVE_TIMEOUT_MS
+      : /\/understanding\/refresh$/.test(path) && method === 'POST'
+        ? CLIENT_UNDERSTANDING_REFRESH_TIMEOUT_MS
       : path === '/api/customers' && method === 'POST'
         ? CLIENT_CUSTOMER_SAVE_TIMEOUT_MS
         : CLIENT_DEFAULT_TIMEOUT_MS
@@ -459,6 +523,7 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
         throw error
       }
     },
+    autoArchiveCustomer: (actorId, customerId, options = {}) => request<CustomerAutoArchiveResult>(`/api/customers/${encodeURIComponent(customerId)}/auto-archive`, actorId, { method: 'POST', body: JSON.stringify({ stage: options.stage || 'extract' }) }, { softTimeoutMs: 55_000, hardTimeoutMs: 60_000 }),
     updateCustomer: async (actorId, customerId, input) => {
       const headers = new Headers(input.operationId ? { 'X-Idempotency-Key': input.operationId } : undefined)
       headers.set('X-ASVA-Response-Mode', 'customer-mutation-v1')
@@ -505,9 +570,12 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     identifyDialogue: (actorId, input) => request<DialogueAssessment>('/api/dialogue/identify', actorId, { method: 'POST', body: JSON.stringify(input) }).then((result) => ({ ...result, contentHash: result.contentHash || '' })),
     confirmDialogue: (actorId, input) => request<DialogueConfirmation>('/api/dialogue/confirm', actorId, { method: 'POST', body: JSON.stringify(input) }),
     sourceWorkspace: (actorId, customerId) => request<SourceWorkspace>(`/api/customers/${encodeURIComponent(customerId)}/sources`, actorId),
-    sourceStatus: (actorId, customerId, operationId) => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}`, actorId),
+    sourceStatus: (actorId, customerId, operationId, sourceId = '') => request<SourceSaveStatus>(`/api/customers/${encodeURIComponent(customerId)}/source-status?operationId=${encodeURIComponent(operationId)}${sourceId ? `&sourceId=${encodeURIComponent(sourceId)}` : ''}`, actorId),
     createSource: (actorId, input) => request<SourceRecord>('/api/sources', actorId, { method: 'POST', body: JSON.stringify(input) }),
-    processSource: (actorId, sourceId, force = false) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/process`, actorId, { method: 'POST', body: JSON.stringify({ force }) }),
+    // Kept for older callers, but intentionally points at the same guarded
+    // endpoint as the current UI. `force` is ignored: it must not bypass
+    // idempotency or turn a retry into another model invocation.
+    processSource: (actorId, sourceId) => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/on-demand-process`, actorId, { method: 'POST', body: JSON.stringify({ trigger: 'MANUAL' }) }),
     processSourceOnDemand: (actorId, sourceId, trigger = 'MANUAL') => request<{ source: SourceRecord; evidenceItems: EvidenceItem[]; proposals: ProfileUpdateProposal[]; conflicts: EvidenceConflict[] }>(`/api/sources/${encodeURIComponent(sourceId)}/on-demand-process`, actorId, { method: 'POST', body: JSON.stringify({ trigger }) }),
     overrideServiceNecessity: (actorId, input) => request<SourceWorkspace>('/api/privacy/service-necessity', actorId, { method: 'POST', body: JSON.stringify(input) }),
     reviewProposal: (actorId, proposalId, decision) => request<SourceWorkspace>(`/api/profile-proposals/${encodeURIComponent(proposalId)}/review`, actorId, { method: 'POST', body: JSON.stringify({ decision }) }),

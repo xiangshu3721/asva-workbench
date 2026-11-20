@@ -68,6 +68,14 @@ describe('CustomerSalesUnderstandingV1 contract', () => {
     expect(buildCustomerSalesContext({ customer: { id: 'CUS-1', profileVersion: 1, profileFields: {} }, evidenceItems: nonFinancial }).financial_evidence).toEqual([])
   })
 
+  it('does not use pending Evidence as a confirmed commercial signal', () => {
+    const pending = evidence({ id: 'EVD-PENDING', reviewStatus: 'PENDING_REVIEW', displayText: '客户明确准备付款', sourceExcerpt: '我准备付款' })
+    const context = buildCustomerSalesContext({ customer: { id: 'CUS-1', profileVersion: 1, profileFields: {} }, evidenceItems: [pending], sourceRecords: [], conflicts: [] })
+    expect(context.current_needs).toEqual([])
+    expect(context.financial_evidence).toEqual([])
+    expect(context.commercial_signals.payment_evidence).toEqual([])
+  })
+
   it('keeps sparse customers conservative and discovery-oriented', () => {
     const value = createLocalCustomerSalesUnderstanding({ customer_snapshot: { context_density: { classification: 'SPARSE' } }, current_needs: [], current_goals: [], evidence_refs: [], paid_history_count: 0 })
     expect(value.strategy).toBe('DISCOVER_BEFORE_SALE')
