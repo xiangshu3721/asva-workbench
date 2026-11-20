@@ -34,3 +34,25 @@ tcb login --cloudbase-api-key <key> -e <envId>
 ## 当前验证状态
 
 仓库已离线验证固定 CLI 命令参数、API-only 命令范围、代码下载产物清单/哈希、失败回滚与健康检查逻辑。当前 GitHub 仓库尚未配置 `cloudbase-production` Environment，且本地没有该生产 API Key，因此尚未完成真实 API Key 的 CloudBase 读取验证，也没有部署生产。完成上述一次性配置后，必须先运行 `verify`；只有读取、回滚基线和健康检查全都通过，才可认为该发布链路就绪。
+
+## 安全保存版（PR #117）发布顺序
+
+此版本只恢复资料保存，不启用任何 AI 整理。发布前由有生产权限的审批人逐项回读以下运行时开关，均须为关闭态：
+
+- `FEATURE_AUTOMATIC_PROFILE_ARCHIVING=false`
+- `FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE=off`
+- `FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY=false`
+- `FEATURE_ON_DEMAND_AI_PROCESSING=false`
+- `FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false`
+- `ON_DEMAND_AI_DAILY_LIMIT=0`
+
+合并到 `master` 会自动触发 `Deploy ASVA Workbench to GitHub Pages`，因此不能把合并说成“没有生产发布”。该 Pages 发布仅更新前端；本版本在两个按需 AI 开关都关闭时不会发出 AI 整理请求，资料保存后显示“资料已保存，AI 整理暂未开启”。
+
+CloudBase API 不会随合并自动发布。Pages 成功后，仍须在受保护的 `cloudbase-production` Environment 中按以下顺序人工运行 `Release ASVA API (manual)`：
+
+1. 先以 `verify` 读取并验证现有 `asva-api`、回滚基线和健康检查；失败即停止。
+2. 确认本次 `master` SHA 与已审查的 PR 合并 SHA 一致，并保留上述关闭态配置与 `asva-ai-archive` 的暂停 Cron。
+3. 获得生产审批后，以 `deploy` 和确认文本 `DEPLOY_ASVA_API` 发布 **asva-api 代码**；它不会发布 Worker、恢复 Cron、变更触发器或环境变量。
+4. 回读 `/asva-api/api/health` 的 HTTP 200 / `ok:true` 及 feature flags，确认 AI 开关仍为关闭态；只做已有资料的只读验收，不调用资料整理接口。
+
+若任一配置无法安全回读，或 API 健康检查失败，停止在该步骤，不以 Pages 已发布替代 API 验收，也不通过重启 Worker、开启 Cron 或调用模型来排障。
