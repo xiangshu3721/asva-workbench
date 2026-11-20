@@ -90,8 +90,8 @@ export class CloudBaseAiBudgetGuard {
           _id: opId, kind: 'RESERVATION', operationId, sourceId, sourceVersion, actorId, day,
           status: 'RESERVED', createdAt: now, updatedAt: now,
         }
-        await records.doc(dayId(day)).set({ data: writable({ ...current, used: Number(current.used || 0) + 1, active: Number(current.active || 0) + 1, updatedAt: now }) })
-        await records.doc(opId).set({ data: writable(reservation) })
+        await records.doc(dayId(day)).set(writable({ ...current, used: Number(current.used || 0) + 1, active: Number(current.active || 0) + 1, updatedAt: now }))
+        await records.doc(opId).set(writable(reservation))
         return { duplicate: false, reservation }
       })
       return result?.result || result
@@ -103,9 +103,18 @@ export class CloudBaseAiBudgetGuard {
     try {
       const db = this.database()
       await db.runTransaction(async (transaction) => {
-        const document = asDocument(await transaction.collection(this.collection).doc(item._id || reservationId(item.operationId)).get())
+        const records = transaction.collection(this.collection)
+        // A pause must also close the narrow window after reservation but
+        // before the model request starts. In-flight requests may still
+        // finalize, but no paused request may become ATTEMPTED.
+        const control = asDocument(await records.doc(CONTROL_ID).get())
+        if (!control || control.mode !== 'ENABLED') {
+          const paused = control?.mode === 'PAUSED'
+          throw new AiBudgetGuardError(paused ? 'AI 整理已被管理员紧急暂停。' : 'AI 整理尚未由管理员启用。', paused ? 'AI_BUDGET_EMERGENCY_PAUSED' : 'AI_BUDGET_CONTROL_DISABLED', 409)
+        }
+        const document = asDocument(await records.doc(item._id || reservationId(item.operationId)).get())
         if (!document || document.status !== 'RESERVED') throw new AiBudgetGuardError('AI 额度预留状态无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
-        await transaction.collection(this.collection).doc(document._id || reservationId(item.operationId)).update({ data: { status: 'ATTEMPTED', attemptedAt: time(), updatedAt: time() } })
+        await records.doc(document._id || reservationId(item.operationId)).update({ status: 'ATTEMPTED', attemptedAt: time(), updatedAt: time() })
       })
     } catch (error) { throw unavailable(error) }
   }
@@ -122,8 +131,8 @@ export class CloudBaseAiBudgetGuard {
         const bucket = asDocument(await records.doc(dayId(item.day)).get())
         if (!bucket) throw new AiBudgetGuardError('AI 每日额度记录无法确认。', 'AI_BUDGET_DAY_UNKNOWN', 503)
         const updatedAt = time()
-        await records.doc(document._id || reservationId(item.operationId)).update({ data: { status, completedAt: updatedAt, updatedAt } })
-        await records.doc(dayId(item.day)).update({ data: { active: Math.max(0, Number(bucket.active || 0) - 1), updatedAt } })
+        await records.doc(document._id || reservationId(item.operationId)).update({ status, completedAt: updatedAt, updatedAt })
+        await records.doc(dayId(item.day)).update({ active: Math.max(0, Number(bucket.active || 0) - 1), updatedAt })
       })
     } catch (error) { throw unavailable(error) }
   }
@@ -139,7 +148,7 @@ export class CloudBaseAiBudgetGuard {
       const db = this.database()
       await db.runTransaction(async (transaction) => {
         const before = asDocument(await transaction.collection(this.collection).doc(CONTROL_ID).get()) || { _id: CONTROL_ID, kind: 'CONTROL', createdAt: time() }
-        await transaction.collection(this.collection).doc(CONTROL_ID).set({ data: writable({ ...before, mode, updatedAt: time(), updatedBy: actorId }) })
+        await transaction.collection(this.collection).doc(CONTROL_ID).set(writable({ ...before, mode, updatedAt: time(), updatedBy: actorId }))
       })
       return this.control()
     } catch (error) { throw unavailable(error) }

@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import { AiBudgetGuardError, CloudBaseAiBudgetGuard, chinaDay, operationIdForSource } from './ai-budget-guard.mjs'
 
-function memoryCloudBase() {
+function memoryCloudBase({ failUpdate } = {}) {
   const documents = new Map()
   let tail = Promise.resolve()
   const clone = (value) => value && structuredClone(value)
   const document = (id) => ({
     get: async () => ({ data: clone(documents.get(id)) || null }),
-    set: async ({ data }) => { documents.set(id, clone(data)); return { updated: 1 } },
-    update: async ({ data }) => {
+    set: async (data) => {
+      if (!data || Object.prototype.hasOwnProperty.call(data, 'data')) throw new Error('CloudBase Node SDK set() requires document fields directly')
+      documents.set(id, clone(data))
+      return { updated: 1 }
+    },
+    update: async (data) => {
+      if (!data || Object.prototype.hasOwnProperty.call(data, 'data')) throw new Error('CloudBase Node SDK update() requires document fields directly')
       const current = documents.get(id)
       if (!current) throw new Error(`missing ${id}`)
+      const failure = failUpdate?.({ id, current: clone(current), data: clone(data) })
+      if (failure) throw failure
       documents.set(id, { ...current, ...clone(data) })
       return { updated: 1 }
     },
@@ -87,6 +94,40 @@ describe('durable on-demand AI budget guard', () => {
     const reserved = await first.reserve(request('unknown'))
     await first.markAttempted(reserved.reservation)
 
+    await expect(second.reserve(request('later', 'SRC-2'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_CONCURRENCY_REACHED', status: 429 })
+    expect(shared.documents.get('day:2026-11-20')).toMatchObject({ used: 1, active: 1 })
+  })
+
+  it('blocks a reserved call before model start when an administrator pauses AI', async () => {
+    const shared = memoryCloudBase()
+    const first = guard(shared)
+    await first.setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })
+    const reserved = await first.reserve(request('pause-window'))
+    await first.setControl({ mode: 'PAUSED', actorId: 'ADMIN-1' })
+
+    await expect(first.markAttempted(reserved.reservation)).rejects.toMatchObject({ code: 'AI_BUDGET_EMERGENCY_PAUSED', status: 409 })
+    expect(shared.documents.get(reserved.reservation._id)).toMatchObject({ status: 'RESERVED' })
+    expect(shared.documents.get('day:2026-11-20')).toMatchObject({ used: 1, active: 1 })
+  })
+
+  it('keeps the concurrency slot consumed when successful completion is unknown', async () => {
+    let failSuccessfulCompletion = true
+    const shared = memoryCloudBase({
+      failUpdate: ({ id, data }) => {
+        if (failSuccessfulCompletion && id.startsWith('op:') && data.status === 'SUCCEEDED') {
+          failSuccessfulCompletion = false
+          return new Error('simulated finalization timeout')
+        }
+        return null
+      },
+    })
+    const first = guard(shared)
+    const second = guard(shared)
+    await first.setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })
+    const reserved = await first.reserve(request('unknown-completion'))
+    await first.markAttempted(reserved.reservation)
+
+    await expect(first.complete(reserved.reservation, { status: 'SUCCEEDED' })).rejects.toMatchObject({ code: 'AI_BUDGET_STORE_UNAVAILABLE', status: 503 })
     await expect(second.reserve(request('later', 'SRC-2'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_CONCURRENCY_REACHED', status: 429 })
     expect(shared.documents.get('day:2026-11-20')).toMatchObject({ used: 1, active: 1 })
   })

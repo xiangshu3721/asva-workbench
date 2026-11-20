@@ -118,5 +118,7 @@ describe('on-demand source processing', () => {
 
     await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1')).rejects.toMatchObject({ code: 'AI_BUDGET_STORE_UNAVAILABLE', status: 503 })
     expect(repository.processSource).toHaveBeenCalledTimes(1)
+    expect(guard.complete).toHaveBeenCalledTimes(1)
+    expect(guard.complete).toHaveBeenCalledWith(expect.any(Object), { status: 'SUCCEEDED' })
   })
 })

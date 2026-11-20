@@ -79,6 +79,12 @@ export function validateProductionEnv(values, envPath = '') {
     if (canaryEnabled || canaryCustomerIds.length) throw new Error('production 自动归档部署不得携带 Canary 配置')
   }
   if (values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true') throw new Error('按需 AI 自动触发需要先验证函数专用的硬性配额或限频；当前发布必须保持 FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false')
+  if (values.FEATURE_ON_DEMAND_AI_PROCESSING === 'true') {
+    const dailyLimit = Number(values.ON_DEMAND_AI_DAILY_LIMIT)
+    if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 100) throw new Error('手动按需 AI 必须设置 1 到 100 的 ON_DEMAND_AI_DAILY_LIMIT')
+    if (!String(values.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()) throw new Error('手动按需 AI 必须显式设置 ON_DEMAND_AI_BUDGET_COLLECTION')
+    if (String(values.ON_DEMAND_AI_MAX_CONCURRENT || '') !== '1') throw new Error('手动按需 AI 必须将 ON_DEMAND_AI_MAX_CONCURRENT 固定为 1')
+  }
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
   if (missing.length) throw new Error(`生产部署配置缺少必填变量：${missing.join(', ')}`)
@@ -93,6 +99,10 @@ export function validateProductionEnv(values, envPath = '') {
     automaticProfileArchivingEnabledAt: automaticProfileEnabledAt || '',
     automaticProfileArchivingCanary: canaryEnabled,
     automaticProfileCanaryCustomerCount: canaryCustomerIds.length,
+    onDemandAiProcessing: values.FEATURE_ON_DEMAND_AI_PROCESSING === 'true',
+    onDemandAiDailyLimit: Math.max(0, Number(values.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0),
+    onDemandAiBudgetStoreConfigured: Boolean(String(values.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()),
+    onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(values.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
     requiredKeyCount: requiredKeys.length,
     configuredTableKeys: Object.keys(values).filter((key) => key.startsWith('FEISHU_') && key.endsWith('_TABLE_ID')).sort(),
   }
@@ -142,6 +152,8 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ON_DEMAND_AI_MAX_TOKENS: values.ON_DEMAND_AI_MAX_TOKENS || '2048',
     ON_DEMAND_AI_TIMEOUT_MS: values.ON_DEMAND_AI_TIMEOUT_MS || '45000',
     ON_DEMAND_AI_DAILY_LIMIT: values.ON_DEMAND_AI_DAILY_LIMIT || '0',
+    ON_DEMAND_AI_BUDGET_COLLECTION: values.ON_DEMAND_AI_BUDGET_COLLECTION || '',
+    ON_DEMAND_AI_MAX_CONCURRENT: values.ON_DEMAND_AI_MAX_CONCURRENT || '1',
     ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
     ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
     CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',

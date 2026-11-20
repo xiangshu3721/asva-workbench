@@ -2871,20 +2871,18 @@ export class FeishuRepository {
       throw Object.assign(new Error('该资料的 AI 整理已发起或已结束，不能自动重复调用。'), { code: 'ON_DEMAND_AI_DUPLICATE_OPERATION', status: 409 })
     }
     if (!reservation) throw new AiBudgetGuardError('AI 额度预留结果无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
+    let result
     try {
       // Persist ATTEMPTED before touching Feishu/model. If this transition or
       // its finalization becomes unknown, the reservation stays consumed and
       // blocks another model call rather than risk a duplicate charge.
       await this.aiBudgetGuard.markAttempted(reservation)
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'ATTEMPTED')
-      const result = await this.processSource(actorId, sourceId, { onDemand: true })
-      await this.aiBudgetGuard.complete(reservation, { status: 'SUCCEEDED' })
-      this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'SUCCESS')
-      return result
+      result = await this.processSource(actorId, sourceId, { onDemand: true })
     } catch (error) {
       try {
-        // Any known terminal failure frees only concurrency. It never returns
-        // the daily reservation and never initiates a retry.
+        // A known failure before a successful model result frees only
+        // concurrency. It never returns the daily reservation or retries.
         await this.aiBudgetGuard.complete(reservation, { status: 'FAILED' })
       } catch (completionError) {
         this.audit('PROCESS_SOURCE_ON_DEMAND_FINALIZATION', sourceId, actorId, 'UNKNOWN', completionError.code || 'AI_BUDGET_FINALIZATION_UNKNOWN')
@@ -2893,6 +2891,17 @@ export class FeishuRepository {
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'FAILED', error.code || 'ON_DEMAND_AI_FAILED')
       throw error
     }
+    try {
+      await this.aiBudgetGuard.complete(reservation, { status: 'SUCCEEDED' })
+    } catch (completionError) {
+      // The model has already run. If its durable completion cannot be
+      // confirmed, do not write FAILED as a fallback: that could release the
+      // cross-instance slot and permit another charge while state is unknown.
+      this.audit('PROCESS_SOURCE_ON_DEMAND_FINALIZATION', sourceId, actorId, 'UNKNOWN', completionError.code || 'AI_BUDGET_FINALIZATION_UNKNOWN')
+      throw completionError
+    }
+    this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'SUCCESS')
+    return result
   }
   async onDemandAiControl(actorId) {
     await this.staff(actorId)

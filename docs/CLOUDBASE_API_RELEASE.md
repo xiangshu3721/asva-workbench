@@ -56,3 +56,24 @@ CloudBase API 不会随合并自动发布。Pages 成功后，仍须在受保护
 4. 回读 `/asva-api/api/health` 的 HTTP 200 / `ok:true` 及 feature flags，确认 AI 开关仍为关闭态；只做已有资料的只读验收，不调用资料整理接口。
 
 若任一配置无法安全回读，或 API 健康检查失败，停止在该步骤，不以 Pages 已发布替代 API 验收，也不通过重启 Worker、开启 Cron 或调用模型来排障。
+
+## 持久化额度守门（PR #119）
+
+PR #119 仅为**手动单条整理**增加跨实例额度守门；保存后自动整理仍由代码硬性拒绝。标准 API-only 工作流只更新 `asva-api` 代码并保留现有函数环境变量，不能借由代码发布改变以下配置。
+
+在获得单独的生产配置授权、且完成只读事务能力核对前，保持：
+
+- `FEATURE_ON_DEMAND_AI_PROCESSING=false`
+- `FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false`
+- `ON_DEMAND_AI_DAILY_LIMIT=0`
+- `ON_DEMAND_AI_BUDGET_COLLECTION=`（空）
+
+获批恢复手动整理时，先为额度守门创建并只供其使用的 CloudBase NoSQL 集合，再通过受控生产配置一次性设置：
+
+- `FEATURE_ON_DEMAND_AI_PROCESSING=true`
+- `FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false`
+- `ON_DEMAND_AI_DAILY_LIMIT=<获批的 1–100 整数>`
+- `ON_DEMAND_AI_BUDGET_COLLECTION=<专用集合名>`
+- `ON_DEMAND_AI_MAX_CONCURRENT=1`
+
+配置后先回读健康检查中的开关与“预算存储已配置”状态，再由管理员将持久化控制状态从默认 `DISABLED` 切到 `ENABLED`，仅对一笔事先授权的资料执行一次手动整理。若事务、最终状态记录或结果回读任一步无法确认，立即切换为 `PAUSED`；不得重试、重投、开启自动触发、恢复 Worker 或修改 Cron。
