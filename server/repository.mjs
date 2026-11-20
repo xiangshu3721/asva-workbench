@@ -1112,7 +1112,7 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.onDemandAiUsage = { day: '', count: 0 }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -2833,15 +2833,38 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
-  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false } = {}) {
-    const lockKey = `${sourceId}:${stage}`
+  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false } = {}) {
+    const lockKey = onDemand ? sourceId : `${sourceId}:${stage}`
     const inFlight = this.sourceProcessingLocks.get(lockKey)
     if (inFlight) return inFlight
-    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence })
+    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence, onDemand })
     this.sourceProcessingLocks.set(lockKey, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
-  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false } = {}) {
+  async processSourceOnDemand(actorId, sourceId, { trigger = 'MANUAL' } = {}) {
+    if (!config.features.onDemandAiProcessing) throw Object.assign(new Error('按需 AI 整理尚未开启'), { code: 'ON_DEMAND_AI_DISABLED', status: 409 })
+    // There is no verified cross-instance daily hard quota in the current
+    // CloudBase setup. Keep save-triggered AI unavailable even if a stale
+    // environment variable is edited manually; only explicit manual use may
+    // enter this route while the platform control is still pending.
+    if (trigger === 'AUTO') throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
+    if (!config.features.onDemandAiDailyLimit) throw Object.assign(new Error('按需 AI 每日额度尚未配置'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REQUIRED', status: 409 })
+    const database = await this.load()
+    const visibleDatabase = scope(database, actorId)
+    const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
+    if (!source) throw Object.assign(new Error('资料不存在'), { code: 'SOURCE_NOT_FOUND', status: 404 })
+    if (String(source.rawText || '').length > config.features.onDemandAiMaxChars) throw Object.assign(new Error(`资料超过单次整理上限（${config.features.onDemandAiMaxChars} 字）`), { code: 'ON_DEMAND_AI_INPUT_TOO_LARGE', status: 413 })
+    if (['COMPLETED', 'REVIEW_REQUIRED', 'PROCESSING'].includes(source.processingStatus)) return this.sourceDetail(actorId, sourceId)
+    const day = new Date().toISOString().slice(0, 10)
+    if (this.onDemandAiUsage.day !== day) this.onDemandAiUsage = { day, count: 0 }
+    if (this.onDemandAiUsage.count >= config.features.onDemandAiDailyLimit) throw Object.assign(new Error('今日按需 AI 整理额度已用完'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', status: 429 })
+    // This is deliberately only a process-local fuse. It is never treated as
+    // a cross-instance daily hard limit, so AUTO remains disabled by default.
+    this.onDemandAiUsage.count += 1
+    this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'PENDING', `SOFT_DAILY_COUNT_${this.onDemandAiUsage.count}`)
+    return this.processSource(actorId, sourceId, { onDemand: true })
+  }
+  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
@@ -2886,11 +2909,13 @@ export class FeishuRepository {
     await updateMappedRecord('sourceRecords', 'source.processing.start', sourceRow.record_id, { processing_status: 'PROCESSING', processing_version: processingVersion, processing_started_at: processingStartedAt, last_processing_at: processingStartedAt, processing_error: '', updated_at: processingStartedAt })
     try {
       if (!source.rawText) throw Object.assign(new Error('原始资料不能为空'), { code: 'SOURCE_TEXT_REQUIRED', status: 400 })
+      if (onDemand && String(source.rawText).length > config.features.onDemandAiMaxChars) throw Object.assign(new Error(`资料超过单次整理上限（${config.features.onDemandAiMaxChars} 字）`), { code: 'ON_DEMAND_AI_INPUT_TOO_LARGE', status: 413 })
       const candidates = []
       if (!resumeExistingEvidence) {
         const chunks = chunkText(source.rawText)
+        if (onDemand && chunks.length !== 1) throw Object.assign(new Error('按需整理仅支持单段资料'), { code: 'ON_DEMAND_AI_MULTI_CHUNK_FORBIDDEN', status: 413 })
         for (const chunk of chunks) {
-          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, dialogueContext, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
+          const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, dialogueContext, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, operation: onDemand ? 'on-demand.source.process' : 'evidence.extract', maxAttempts: onDemand ? 1 : undefined, timeoutMs: onDemand ? config.features.onDemandAiTimeoutMs : undefined, maxTokens: onDemand ? config.features.onDemandAiMaxTokens : undefined, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
           processingDiagnostics.extracted_candidate_count += rawItems.length
           for (const rawItem of rawItems) {
             if (rawItem?.customer_id && String(rawItem.customer_id) !== String(source.customerId)) {

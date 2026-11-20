@@ -92,8 +92,9 @@ describe('R043 progressive customer rendering', () => {
     expect(appSource).toContain("sourcePerspective: 'STAFF_REPORTED'")
     expect(appSource).not.toContain('这是客户本人原话 / 原始资料')
     expect(appSource).toContain('const source = await onCreate(input)')
-    expect(appSource).toContain('startArchiveStatusPolling(source.id)')
-    expect(appSource).not.toContain('void onProcess(source.id)')
+    expect(appSource).toContain("onProcess(source.id, 'AUTO')")
+    expect(appSource).toContain("setMessage('资料已保存，AI 整理暂未开启')")
+    expect(appSource).not.toContain('startArchiveStatusPolling')
   })
 
   it('checks the archive status with bounded read-only refreshes while the profile is open', () => {

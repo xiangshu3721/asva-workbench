@@ -107,6 +107,10 @@ class SyntheticRepository {
     return this.sourceDetail(actorId, sourceId)
   }
 
+  processSourceOnDemand(actorId, sourceId) {
+    return this.processSource(actorId, sourceId)
+  }
+
   reviewProposal(actorId, proposalId, decision) {
     const proposal = this.proposals.find((item) => item.id === proposalId)
     if (!proposal) throw new Error('建议不存在')

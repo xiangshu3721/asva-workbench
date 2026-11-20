@@ -120,6 +120,16 @@ describe('DeepSeek processing diagnostics', () => {
     await expect(createEvidenceCandidates({ text: '合成资料。', sourceRole: 'STAFF_REPORTED', sourcePerspective: 'STAFF_REPORTED' })).rejects.toMatchObject({ code: 'DEEPSEEK_OUTPUT_TRUNCATED' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('honors the one-attempt and output-token limits used by on-demand processing', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { message: 'synthetic unavailable' } }), { status: 503, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createEvidenceCandidates({ text: '合成资料。', sourceRole: 'STAFF_REPORTED', sourcePerspective: 'STAFF_REPORTED', operation: 'on-demand.source.process', maxAttempts: 1, maxTokens: 512, timeoutMs: 1000 })).rejects.toMatchObject({ code: 'DEEPSEEK_UNAVAILABLE' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_tokens).toBe(512)
+  })
 })
 
 afterEach(() => vi.unstubAllGlobals())

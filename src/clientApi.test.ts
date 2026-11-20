@@ -30,14 +30,14 @@ describe('HTTP environment diagnostics', () => {
     expect(classifyFetchFailure(new TypeError('preflight response is invalid')).code).toBe('CORS_PREFLIGHT_FAILED')
   })
 
-  it('AI_RETRY_DOES_NOT_RESAVE_SOURCE', async () => {
+  it('AI_RETRY_DOES_NOT_RESAVE_SOURCE_OR_BYPASS_GUARD', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ source: { id: 'SRC-1', processingStatus: 'COMPLETED' }, evidenceItems: [], proposals: [], conflicts: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
     await createHttpApi('http://127.0.0.1:8788').processSource('STAFF-1', 'SRC-1', true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const firstCall = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(firstCall[0]).toContain('/api/sources/SRC-1/process')
-    expect(JSON.parse(String(firstCall[1].body))).toEqual({ force: true })
+    expect(firstCall[0]).toContain('/api/sources/SRC-1/on-demand-process')
+    expect(JSON.parse(String(firstCall[1].body))).toEqual({ trigger: 'MANUAL' })
   })
 
   it('AI_RETRY_SUCCESS', async () => {
@@ -47,7 +47,7 @@ describe('HTTP environment diagnostics', () => {
     await api.processSource('STAFF-1', 'SRC-1', true)
     await api.processSource('STAFF-1', 'SRC-1', true)
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock.mock.calls.every((call) => (call as unknown as [string, RequestInit])[0].includes('/api/sources/SRC-1/process'))).toBe(true)
+    expect(fetchMock.mock.calls.every((call) => (call as unknown as [string, RequestInit])[0].includes('/api/sources/SRC-1/on-demand-process'))).toBe(true)
   })
 
   it('AUTO_ARCHIVE_FINALIZE sends an independent Finalize request after Extract readiness', async () => {

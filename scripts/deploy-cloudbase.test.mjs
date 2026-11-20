@@ -43,6 +43,12 @@ describe('CloudBase production deployment preflight', () => {
     expect(() => validateProductionEnv(values)).toThrow(/FEATURE_AUTOMATIC_PROFILE_ARCHIVING/)
   })
 
+  it('rejects the new save-triggered AI switch until a platform hard limit is available', () => {
+    const values = validProductionValues()
+    values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER = 'true'
+    expect(() => validateProductionEnv(values)).toThrow(/FEATURE_ON_DEMAND_AI_AUTO_TRIGGER/)
+  })
+
   it('requires an explicit non-empty allowlist for production Canary mode', () => {
     const values = validProductionValues()
     values.ASVA_DEPLOY_MODE = 'canary'
@@ -78,5 +84,8 @@ describe('CloudBase production deployment preflight', () => {
     expect(env.AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT).toBe('')
     expect(env.FEATURE_AUTOMATIC_PROFILE_ARCHIVING_CANARY).toBe('false')
     expect(env.AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS).toBe('')
+    expect(env.FEATURE_ON_DEMAND_AI_PROCESSING).toBe('false')
+    expect(env.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER).toBe('false')
+    expect(env.ON_DEMAND_AI_DAILY_LIMIT).toBe('0')
   })
 })

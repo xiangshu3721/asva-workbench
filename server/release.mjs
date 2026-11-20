@@ -32,5 +32,10 @@ export const releaseMetadata = {
 }
 
 export function featureFlags() {
-  return { externalAppointment: process.env.FEATURE_EXTERNAL_APPOINTMENT === 'true' }
+  return {
+    externalAppointment: process.env.FEATURE_EXTERNAL_APPOINTMENT === 'true',
+    onDemandAiProcessing: process.env.FEATURE_ON_DEMAND_AI_PROCESSING === 'true',
+    onDemandAiAutoTrigger: process.env.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true',
+    onDemandAiDailyLimit: Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0),
+  }
 }
