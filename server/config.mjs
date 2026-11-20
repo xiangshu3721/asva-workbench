@@ -41,6 +41,7 @@ const onDemandAiMaxTokens = Math.min(2048, Math.max(256, Number(value('ON_DEMAND
 const onDemandAiDailyLimit = Math.min(100, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
 const onDemandAiMaxConcurrent = Math.min(1, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CONCURRENT', '1')) || 1))
 const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
+const onDemandAiBudgetApiKey = value('CLOUDBASE_APIKEY')
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -82,10 +83,11 @@ export const config = {
     onDemandAiTimeoutMs,
     onDemandAiMaxTokens,
     onDemandAiDailyLimit,
-    // A missing collection is deliberately not given a default. The API must
-    // fail closed until a real CloudBase NoSQL collection is provisioned and
-    // read back by an approved production release.
+    // A missing pgdoc collection or server API key is deliberately not given
+    // a default. The API must fail closed until the dedicated PostgreSQL-
+    // backed collection is provisioned and read back by an approved release.
     onDemandAiBudgetCollection,
+    onDemandAiBudgetApiKey,
     onDemandAiMaxConcurrent,
   },
   deepseek: {

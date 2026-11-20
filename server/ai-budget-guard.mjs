@@ -47,23 +47,48 @@ function requireReservation(reservation) {
 }
 
 /**
- * CloudBase NoSQL is intentionally the only production store. Every state
+ * pgdoc is CloudBase's PostgreSQL-backed document layer. Every state
  * transition touches a deterministic daily document and a deterministic
  * operation document inside one server-side transaction. A store error is a
  * hard stop: the caller must never reach the model without a reservation.
+ *
+ * This guard deliberately never creates its collection. Enabling pgdoc,
+ * creating the dedicated collection, and injecting the server API key are
+ * reviewed production setup steps; an incomplete setup must fail closed.
  */
 export class CloudBaseAiBudgetGuard {
-  constructor({ collection, envId = process.env.TCB_ENV || process.env.SCF_NAMESPACE || process.env.TCB_ENV_ID || '', clock = () => new Date(), app } = {}) {
+  constructor({ collection, envId = process.env.TCB_ENV || process.env.SCF_NAMESPACE || process.env.TCB_ENV_ID || '', apiKey = process.env.CLOUDBASE_APIKEY || '', clock = () => new Date(), app } = {}) {
     this.collection = String(collection || '').trim()
     this.clock = clock
     this.app = app || null
     this.envId = envId
+    this.apiKey = String(apiKey || '').trim()
   }
 
   database() {
     if (!this.collection) throw new AiBudgetGuardError('AI 额度存储尚未配置。', 'AI_BUDGET_STORE_UNCONFIGURED', 409)
-    if (!this.app) this.app = cloudbase.init(this.envId ? { env: this.envId } : {})
+    // HTTP Cloud Functions do not receive the default CloudBase credential.
+    // Do not fall back to an unauthenticated or client-side key: this is a
+    // server-only guard and must stop before the model on incomplete setup.
+    if (!this.app) {
+      if (!this.envId || !this.apiKey) throw new AiBudgetGuardError('AI 额度存储尚未完成服务端配置。', 'AI_BUDGET_STORE_UNCONFIGURED', 409)
+      this.app = cloudbase.init({ env: this.envId, accessKey: this.apiKey })
+    }
     return this.app.database()
+  }
+
+  async transaction(task) {
+    const transaction = await this.database().startTransaction()
+    try {
+      const result = await task(transaction)
+      await transaction.commit()
+      return result
+    } catch (error) {
+      // A rollback failure cannot turn a failed reservation into permission to
+      // call the model. Preserve the original failure and fail closed.
+      try { await transaction.rollback(error) } catch {}
+      throw error
+    }
   }
 
   async reserve({ operationId, sourceId, sourceVersion, actorId, dailyLimit, maxConcurrent }) {
@@ -73,8 +98,7 @@ export class CloudBaseAiBudgetGuard {
     const now = time()
     const opId = reservationId(operationId)
     try {
-      const db = this.database()
-      const result = await db.runTransaction(async (transaction) => {
+      const result = await this.transaction(async (transaction) => {
         const records = transaction.collection(this.collection)
         const control = asDocument(await records.doc(CONTROL_ID).get())
         if (!control || control.mode !== 'ENABLED') {
@@ -94,15 +118,14 @@ export class CloudBaseAiBudgetGuard {
         await records.doc(opId).set(writable(reservation))
         return { duplicate: false, reservation }
       })
-      return result?.result || result
+      return result
     } catch (error) { throw unavailable(error) }
   }
 
   async markAttempted(reservation) {
     const item = requireReservation(reservation)
     try {
-      const db = this.database()
-      await db.runTransaction(async (transaction) => {
+      await this.transaction(async (transaction) => {
         const records = transaction.collection(this.collection)
         // A pause must also close the narrow window after reservation but
         // before the model request starts. In-flight requests may still
@@ -123,8 +146,7 @@ export class CloudBaseAiBudgetGuard {
     const item = requireReservation(reservation)
     if (!['SUCCEEDED', 'FAILED'].includes(status)) throw new AiBudgetGuardError('AI 额度完成状态无效。', 'AI_BUDGET_COMPLETION_INVALID', 400)
     try {
-      const db = this.database()
-      await db.runTransaction(async (transaction) => {
+      await this.transaction(async (transaction) => {
         const records = transaction.collection(this.collection)
         const document = asDocument(await records.doc(item._id || reservationId(item.operationId)).get())
         if (!document || document.status !== 'ATTEMPTED') throw new AiBudgetGuardError('AI 额度完成状态无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
@@ -145,8 +167,7 @@ export class CloudBaseAiBudgetGuard {
     if (!['ENABLED', 'PAUSED', 'DISABLED'].includes(mode)) throw new AiBudgetGuardError('AI 管理状态无效。', 'AI_BUDGET_CONTROL_INVALID', 400)
     if (!actorId) throw new AiBudgetGuardError('管理员身份无效。', 'AI_BUDGET_CONTROL_INVALID', 400)
     try {
-      const db = this.database()
-      await db.runTransaction(async (transaction) => {
+      await this.transaction(async (transaction) => {
         const before = asDocument(await transaction.collection(this.collection).doc(CONTROL_ID).get()) || { _id: CONTROL_ID, kind: 'CONTROL', createdAt: time() }
         await transaction.collection(this.collection).doc(CONTROL_ID).set(writable({ ...before, mode, updatedAt: time(), updatedBy: actorId }))
       })
@@ -156,5 +177,5 @@ export class CloudBaseAiBudgetGuard {
 }
 
 export function createAiBudgetGuard(features = {}) {
-  return new CloudBaseAiBudgetGuard({ collection: features.onDemandAiBudgetCollection })
+  return new CloudBaseAiBudgetGuard({ collection: features.onDemandAiBudgetCollection, apiKey: features.onDemandAiBudgetApiKey })
 }

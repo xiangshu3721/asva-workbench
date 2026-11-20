@@ -68,12 +68,13 @@ PR #119 仅为**手动单条整理**增加跨实例额度守门；保存后自�
 - `ON_DEMAND_AI_DAILY_LIMIT=0`
 - `ON_DEMAND_AI_BUDGET_COLLECTION=`（空）
 
-获批恢复手动整理时，先为额度守门创建并只供其使用的 CloudBase NoSQL 集合，再通过受控生产配置一次性设置：
+获批恢复手动整理时，先只读确认该环境没有依赖旧文档型数据库 HTTP API 的业务；`pgdoc` 是环境级接管，不能把它当作无影响的开关。确认后，才在现有 CloudBase PostgreSQL 环境启用 `pgdoc`，并由管理员创建一个只供额度守门使用的 pgdoc 集合。守门代码绝不会在请求路径自动创建集合。再通过受控生产配置一次性设置：
 
 - `FEATURE_ON_DEMAND_AI_PROCESSING=true`
 - `FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false`
 - `ON_DEMAND_AI_DAILY_LIMIT=<获批的 1–100 整数>`
 - `ON_DEMAND_AI_BUDGET_COLLECTION=<专用集合名>`
+- `CLOUDBASE_APIKEY=<仅后端使用的环境 API Key>`
 - `ON_DEMAND_AI_MAX_CONCURRENT=1`
 
 配置后先回读健康检查中的开关与“预算存储已配置”状态，再由管理员将持久化控制状态从默认 `DISABLED` 切到 `ENABLED`，仅对一笔事先授权的资料执行一次手动整理。若事务、最终状态记录或结果回读任一步无法确认，立即切换为 `PAUSED`；不得重试、重投、开启自动触发、恢复 Worker 或修改 Cron。

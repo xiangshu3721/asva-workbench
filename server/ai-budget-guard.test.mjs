@@ -22,15 +22,26 @@ function memoryCloudBase({ failUpdate } = {}) {
       return { updated: 1 }
     },
   })
-  const transaction = { collection: () => ({ doc: document }) }
+  const beginTransaction = async () => {
+    let unlock
+    const previous = tail
+    tail = new Promise((resolve) => { unlock = resolve })
+    await previous
+    let finished = false
+    const finish = () => {
+      if (!finished) {
+        finished = true
+        unlock()
+      }
+    }
+    return {
+      collection: () => ({ doc: document }),
+      commit: async () => finish(),
+      rollback: async () => finish(),
+    }
+  }
   const db = {
-    runTransaction: async (fn) => {
-      let unlock
-      const previous = tail
-      tail = new Promise((resolve) => { unlock = resolve })
-      await previous
-      try { return { result: await fn(transaction) } } finally { unlock() }
-    },
+    startTransaction: beginTransaction,
     collection: () => ({ doc: document }),
   }
   return { app: { database: () => db }, documents }
@@ -84,6 +95,9 @@ describe('durable on-demand AI budget guard', () => {
 
     const unavailable = new CloudBaseAiBudgetGuard({ collection: '', app: shared.app })
     await expect(unavailable.reserve(request('unavailable'))).rejects.toMatchObject({ code: 'AI_BUDGET_STORE_UNCONFIGURED', status: 409 })
+
+    const missingServerCredential = new CloudBaseAiBudgetGuard({ collection: 'asva_ai_budget_v1', envId: 'env', apiKey: '' })
+    await expect(missingServerCredential.reserve(request('missing-server-credential'))).rejects.toMatchObject({ code: 'AI_BUDGET_STORE_UNCONFIGURED', status: 409 })
   })
 
   it('does not release an unknown model attempt for another call', async () => {
