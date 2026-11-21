@@ -120,6 +120,25 @@ describe('durable on-demand AI budget guard over HTTPS RPC', () => {
     const broken = new CloudBaseAiBudgetGuard({ table: 'asva_ai_budget_v1', rpcBaseUrl: 'https://rpc.test', apiKey: 'simulated', fetchImpl: async () => { throw new Error('network down') } }); await expect(broken.reserve(request('fault'))).rejects.toMatchObject({ code: 'AI_BUDGET_STORE_UNAVAILABLE', status: 503 })
   })
 
+  it('fails closed when the gateway rejects anonymous or unauthorized roles', async () => {
+    const calls = []
+    const rejected = (status, code) => new CloudBaseAiBudgetGuard({
+      table: 'asva_ai_budget_v1',
+      rpcBaseUrl: 'https://rpc.test/v1/rdb/rest/rpc',
+      apiKey: 'simulated',
+      fetchImpl: async (_url, options) => {
+        calls.push({ status, authorization: options.headers.authorization })
+        return { ok: false, status, json: async () => ({ error: { message: 'denied', code, status } }) }
+      },
+    })
+    await expect(rejected(401, 'MISSING_CREDENTIALS').control()).rejects.toMatchObject({ code: 'MISSING_CREDENTIALS', status: 401 })
+    await expect(rejected(403, 'PERMISSION_DENIED').setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', status: 403 })
+    expect(calls).toEqual([
+      { status: 401, authorization: 'Bearer simulated' },
+      { status: 403, authorization: 'Bearer simulated' },
+    ])
+  })
+
   it('does not release an unknown attempt and keeps failed calls fail-closed', async () => {
     const shared = memoryRpc(); const first = guard(shared); const second = guard(shared); await first.setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' }); const item = await first.reserve(request('failed')); await first.markAttempted(item.reservation); await first.complete(item.reservation, { status: 'FAILED' })
     await expect(second.reserve(request('later', 'SRC-2'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_CONCURRENCY_REACHED', status: 429 })
