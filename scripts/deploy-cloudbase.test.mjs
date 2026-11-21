@@ -49,6 +49,21 @@ describe('CloudBase production deployment preflight', () => {
     expect(() => validateProductionEnv(values)).toThrow(/FEATURE_ON_DEMAND_AI_AUTO_TRIGGER/)
   })
 
+  it('requires the durable budget configuration before enabling manual AI', () => {
+    const values = validProductionValues()
+    values.FEATURE_ON_DEMAND_AI_PROCESSING = 'true'
+    values.ON_DEMAND_AI_DAILY_LIMIT = '1'
+    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_BUDGET_COLLECTION/)
+    values.ON_DEMAND_AI_BUDGET_COLLECTION = 'asva_ai_budget_v1'
+    expect(() => validateProductionEnv(values)).toThrow(/CLOUDBASE_APIKEY/)
+    values.CLOUDBASE_APIKEY = 'server-key-only'
+    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_BUDGET_RPC_BASE_URL/)
+    values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL = 'https://env.api.tcloudbasegateway.com/v1/rdb/rest/rpc'
+    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_MAX_CONCURRENT/)
+    values.ON_DEMAND_AI_MAX_CONCURRENT = '1'
+    expect(validateProductionEnv(values)).toMatchObject({ onDemandAiDailyLimit: 1, onDemandAiBudgetStoreConfigured: true, onDemandAiMaxConcurrent: 1 })
+  })
+
   it('requires an explicit non-empty allowlist for production Canary mode', () => {
     const values = validProductionValues()
     values.ASVA_DEPLOY_MODE = 'canary'
@@ -87,5 +102,9 @@ describe('CloudBase production deployment preflight', () => {
     expect(env.FEATURE_ON_DEMAND_AI_PROCESSING).toBe('false')
     expect(env.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER).toBe('false')
     expect(env.ON_DEMAND_AI_DAILY_LIMIT).toBe('0')
+    expect(env.ON_DEMAND_AI_BUDGET_COLLECTION).toBe('')
+    expect(env.CLOUDBASE_APIKEY).toBe('')
+    expect(env.ON_DEMAND_AI_BUDGET_RPC_BASE_URL).toBe('')
+    expect(env.ON_DEMAND_AI_MAX_CONCURRENT).toBe('1')
   })
 })

@@ -130,6 +130,21 @@ describe('DeepSeek processing diagnostics', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_tokens).toBe(512)
   })
+
+  it('rejects an oversized final on-demand prompt before any provider request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createEvidenceCandidates({
+      text: '合成资料。',
+      sourceRole: 'STAFF_REPORTED',
+      sourcePerspective: 'STAFF_REPORTED',
+      current: { notes: '甲'.repeat(8_000) },
+      operation: 'on-demand.source.process',
+      maxPromptChars: 4_000,
+    })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_PROMPT_TOO_LARGE', status: 413 })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 afterEach(() => vi.unstubAllGlobals())

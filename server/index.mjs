@@ -133,6 +133,11 @@ async function handle(request, response, requestId) {
     const phone = String(body.phone || '').replace(/[\s-]/g, '')
     return send(request, response, 200, { initial_password: generateInitialPassword({ phone }) }, requestId)
   }
+  if (request.method === 'GET' && url.pathname === '/api/admin/ai-processing/control') return send(request, response, 200, await repository.onDemandAiControl(await guardAdmin(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/admin/ai-processing/control') {
+    const body = await readBody(request)
+    return send(request, response, 200, await repository.setOnDemandAiControl(await guardAdmin(request), body.mode), requestId)
+  }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/customers/directory') return send(request, response, 200, await repository.customerDirectory(await guard(request)), requestId)

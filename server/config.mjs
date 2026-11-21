@@ -36,9 +36,19 @@ const stagingRequiredTableKeys = ['customers', 'staff', 'profileChanges', 'sourc
 const automaticProfileArchivingMode = value('FEATURE_AUTOMATIC_PROFILE_ARCHIVING_MODE', 'off').toLowerCase()
 const automaticProfileArchivingEnabledAt = value('AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
 const onDemandAiMaxChars = Math.min(4000, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CHARS', '4000')) || 4000))
+// The raw Source limit does not include the field catalogue, safety rules or
+// current profile snapshot that are appended to the model prompt.
+const onDemandAiMaxPromptChars = Math.min(16_000, Math.max(4_000, Number(value('ON_DEMAND_AI_MAX_PROMPT_CHARS', '16000')) || 16_000))
 const onDemandAiTimeoutMs = Math.min(45_000, Math.max(1_000, Number(value('ON_DEMAND_AI_TIMEOUT_MS', '45000')) || 45_000))
 const onDemandAiMaxTokens = Math.min(2048, Math.max(256, Number(value('ON_DEMAND_AI_MAX_TOKENS', '2048')) || 2048))
-const onDemandAiDailyLimit = Math.min(100, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
+// V1 has one shared hard budget for MANUAL and AUTO. Keep the application
+// fail-closed on zero, and never let an environment edit raise this ceiling.
+const onDemandAiDailyLimit = Math.min(3, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
+const onDemandAiMaxConcurrent = Math.min(1, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CONCURRENT', '1')) || 1))
+const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
+const onDemandAiBudgetApiKey = value('CLOUDBASE_APIKEY')
+const onDemandAiBudgetRpcBaseUrl = value('ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
+const onDemandAiBudgetRpcFunction = value('ON_DEMAND_AI_BUDGET_RPC_FUNCTION', 'asva_ai_budget_guard')
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -77,9 +87,18 @@ export const config = {
     // stay false until a function-specific platform rate/quota guard exists.
     onDemandAiAutoTrigger: value('FEATURE_ON_DEMAND_AI_AUTO_TRIGGER', 'false') === 'true',
     onDemandAiMaxChars,
+    onDemandAiMaxPromptChars,
     onDemandAiTimeoutMs,
     onDemandAiMaxTokens,
     onDemandAiDailyLimit,
+    // A missing RPC table, endpoint or server API key is deliberately not
+    // given a default. The API must fail closed until the dedicated
+    // PostgreSQL table and function are provisioned and read back by review.
+    onDemandAiBudgetCollection,
+    onDemandAiBudgetApiKey,
+    onDemandAiBudgetRpcBaseUrl,
+    onDemandAiBudgetRpcFunction,
+    onDemandAiMaxConcurrent,
   },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),

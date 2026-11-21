@@ -56,3 +56,56 @@ CloudBase API 不会随合并自动发布。Pages 成功后，仍须在受保护
 4. 回读 `/asva-api/api/health` 的 HTTP 200 / `ok:true` 及 feature flags，确认 AI 开关仍为关闭态；只做已有资料的只读验收，不调用资料整理接口。
 
 若任一配置无法安全回读，或 API 健康检查失败，停止在该步骤，不以 Pages 已发布替代 API 验收，也不通过重启 Worker、开启 Cron 或调用模型来排障。
+
+## 持久化额度守门（PR #119）
+
+PR #119 仅为**手动单条整理**增加跨实例额度守门；保存后自动整理仍由代码硬性拒绝。额度状态使用现有 CloudBase PostgreSQL 的 HTTPS RPC，不启用 pgdoc、不建立第二套数据库、不运行 Worker 或 Cron。
+
+### 生产 SQL
+
+迁移文件为 `cloudbase/migrations/20261121150000_asva_ai_budget_rpc.sql`，只创建一张 `public.asva_ai_budget_v1` 表和一个 `public.asva_ai_budget_guard(jsonb)` 函数。函数内部锁定唯一 `control` 行，负责 `reserve`、`mark_attempted`、`complete`、`control` 和 `set_control`；模型调用发生在数据库事务之外。
+
+迁移同时：
+
+- 初始化 `DISABLED` 控制行；
+- 固定表名并拒绝动态表名；
+- 启用 RLS，撤销 `PUBLIC`、`anon`、`authenticated` 和 `service_role` 的表读写权限；
+- 仅向 `service_role` 授予 RPC 执行权限；
+- 在函数内校验 `service_role` / `asva_api` JWT 角色，匿名和普通用户直接拒绝；
+- 保留失败或未知完成状态的活动令牌，不执行自动重试。
+
+应用迁移前保存目标 schema 只读快照，确认表和函数不存在后执行：
+
+```bash
+tcb db execute -e root-journey-prod-d4d7pzd0a8f805 --sql "$(cat cloudbase/migrations/20261121150000_asva_ai_budget_rpc.sql)" --json
+```
+
+回滚仅在受控窗口执行：先暂停额度控制，再备份审计数据，最后由管理员显式删除该专用函数、表及索引；不得删除其他业务表。
+
+### 后端配置与验收
+
+保持以下开关关闭，直到一次真实手动资料验收获批：
+
+- `FEATURE_ON_DEMAND_AI_PROCESSING=false`
+- `FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false`
+- `ON_DEMAND_AI_DAILY_LIMIT=0`
+- `ON_DEMAND_AI_MAX_CONCURRENT=1`
+
+后端仅需保留服务端 `CLOUDBASE_APIKEY`，并设置：
+
+- `ON_DEMAND_AI_BUDGET_COLLECTION=asva_ai_budget_v1`
+- `ON_DEMAND_AI_BUDGET_RPC_BASE_URL=https://<envId>.api.tcloudbasegateway.com/v1/rdb/rest/rpc`
+- `ON_DEMAND_AI_BUDGET_RPC_FUNCTION=asva_ai_budget_guard`
+
+SQL 应用后，必须使用服务端 Key 完成合成验收：匿名/普通角色拒绝、10 实例并发只产生一个活动令牌、每日最多 3 次、北京时间跨日不释放活动令牌、相同 Source 版本幂等、失败和未知完成保持锁定。任何一步无法确认都保持 `DISABLED`，不调用模型。
+
+### 受控发布顺序
+
+1. 只读快照并应用上述 SQL；
+2. 通过 HTTPS RPC 完成合成事务和权限验收；
+3. 合并 PR #119，等待 Pages 自动发布；
+4. 发布新的不可变 `asva-api` 版本；
+5. 仅将 `/asva-api` 从版本 23 切换到新版本；
+6. 验证健康 HTTP 200、`ok:true`、手动/自动 AI 仍为关闭、每日额度仍为 0；失败立即恢复 `/asva-api` 到 23。
+
+PR #120 必须继续保持 Draft，`asva-ai-archive` 的 Worker、Cron 和其他路由不在本次范围内。
