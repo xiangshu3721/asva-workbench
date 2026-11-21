@@ -5,6 +5,10 @@ const CONTROL_ID = 'control'
 const dayId = (day) => `day:${day}`
 const reservationId = (operationId) => `op:${crypto.createHash('sha256').update(operationId).digest('hex')}`
 const time = () => new Date().toISOString()
+// V1 is deliberately a fixed, service-wide ceiling. Configuration may lower
+// it, but neither an HTTP caller nor a mistaken environment value can raise it.
+const HARD_DAILY_LIMIT = 3
+const HARD_MAX_CONCURRENT = 1
 
 export const operationIdForSource = (source = {}) => {
   const contentVersion = String(source.contentHash || crypto.createHash('sha256').update(String(source.rawText || '')).digest('hex'))
@@ -94,6 +98,8 @@ export class CloudBaseAiBudgetGuard {
   async reserve({ operationId, sourceId, sourceVersion, actorId, dailyLimit, maxConcurrent }) {
     if (!operationId || !sourceId || !sourceVersion || !actorId) throw new AiBudgetGuardError('AI 额度预留参数无效。', 'AI_BUDGET_RESERVATION_INVALID', 400)
     if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || !Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new AiBudgetGuardError('AI 额度限制尚未配置。', 'AI_BUDGET_LIMIT_INVALID', 409)
+    const effectiveDailyLimit = Math.min(dailyLimit, HARD_DAILY_LIMIT)
+    const effectiveMaxConcurrent = Math.min(maxConcurrent, HARD_MAX_CONCURRENT)
     const day = chinaDay(this.clock())
     const now = time()
     const opId = reservationId(operationId)
@@ -107,14 +113,28 @@ export class CloudBaseAiBudgetGuard {
         }
         const existing = asDocument(await records.doc(opId).get())
         if (existing) return { duplicate: true, reservation: existing }
+        // Every new attempt writes CONTROL_ID in the same transaction. That
+        // gives PG one durable contention point even when the daily document
+        // does not exist yet, so concurrent instances cannot lose an update.
+        // Unlike a day bucket, this active token must survive Beijing midnight.
+        const quotaRolledOver = control.quotaDay !== day
+        const usedToday = quotaRolledOver ? 0 : Number(control.used || 0)
+        if (usedToday >= effectiveDailyLimit) throw new AiBudgetGuardError('今日按需 AI 整理额度已用完。', 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', 429)
+        if (Number(control.active || 0) >= effectiveMaxConcurrent || control.activeOperationId) throw new AiBudgetGuardError('已有一条 AI 整理正在执行，请稍后查看结果。', 'ON_DEMAND_AI_CONCURRENCY_REACHED', 429)
         const current = asDocument(await records.doc(dayId(day)).get()) || { _id: dayId(day), kind: 'DAY', day, used: 0, active: 0 }
-        if (Number(current.used || 0) >= dailyLimit) throw new AiBudgetGuardError('今日按需 AI 整理额度已用完。', 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', 429)
-        if (Number(current.active || 0) >= maxConcurrent) throw new AiBudgetGuardError('已有一条 AI 整理正在执行，请稍后查看结果。', 'ON_DEMAND_AI_CONCURRENCY_REACHED', 429)
         const reservation = {
           _id: opId, kind: 'RESERVATION', operationId, sourceId, sourceVersion, actorId, day,
           status: 'RESERVED', createdAt: now, updatedAt: now,
         }
-        await records.doc(dayId(day)).set(writable({ ...current, used: Number(current.used || 0) + 1, active: Number(current.active || 0) + 1, updatedAt: now }))
+        await records.doc(CONTROL_ID).set(writable({
+          ...control,
+          quotaDay: day,
+          used: usedToday + 1,
+          active: 1,
+          activeOperationId: opId,
+          updatedAt: now,
+        }))
+        await records.doc(dayId(day)).set(writable({ ...current, used: usedToday + 1, active: Number(current.active || 0) + 1, updatedAt: now }))
         await records.doc(opId).set(writable(reservation))
         return { duplicate: false, reservation }
       })
@@ -137,12 +157,13 @@ export class CloudBaseAiBudgetGuard {
         }
         const document = asDocument(await records.doc(item._id || reservationId(item.operationId)).get())
         if (!document || document.status !== 'RESERVED') throw new AiBudgetGuardError('AI 额度预留状态无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
+        if (control.activeOperationId !== (document._id || reservationId(item.operationId)) || Number(control.active || 0) !== 1) throw new AiBudgetGuardError('AI 全局并发令牌无法确认。', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
         await records.doc(document._id || reservationId(item.operationId)).update({ status: 'ATTEMPTED', attemptedAt: time(), updatedAt: time() })
       })
     } catch (error) { throw unavailable(error) }
   }
 
-  async complete(reservation, { status }) {
+  async complete(reservation, { status, releaseActive = status === 'SUCCEEDED' }) {
     const item = requireReservation(reservation)
     if (!['SUCCEEDED', 'FAILED'].includes(status)) throw new AiBudgetGuardError('AI 额度完成状态无效。', 'AI_BUDGET_COMPLETION_INVALID', 400)
     try {
@@ -154,6 +175,12 @@ export class CloudBaseAiBudgetGuard {
         if (!bucket) throw new AiBudgetGuardError('AI 每日额度记录无法确认。', 'AI_BUDGET_DAY_UNKNOWN', 503)
         const updatedAt = time()
         await records.doc(document._id || reservationId(item.operationId)).update({ status, completedAt: updatedAt, updatedAt })
+        if (!releaseActive) return
+        const control = asDocument(await records.doc(CONTROL_ID).get())
+        if (!control || control.activeOperationId !== (document._id || reservationId(item.operationId)) || Number(control.active || 0) !== 1) {
+          throw new AiBudgetGuardError('AI 全局并发令牌无法确认。', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
+        }
+        await records.doc(CONTROL_ID).update({ active: 0, activeOperationId: '', updatedAt })
         await records.doc(dayId(item.day)).update({ active: Math.max(0, Number(bucket.active || 0) - 1), updatedAt })
       })
     } catch (error) { throw unavailable(error) }

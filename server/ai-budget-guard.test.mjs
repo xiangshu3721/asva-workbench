@@ -86,6 +86,62 @@ describe('durable on-demand AI budget guard', () => {
     await expect(first.reserve(request('three', 'SRC-3'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', status: 429 })
   })
 
+  it('keeps an empty-day race below the hard global quota with ten instances', async () => {
+    const shared = memoryCloudBase()
+    const guards = Array.from({ length: 10 }, () => guard(shared))
+    await guards[0].setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })
+
+    const firstWave = await Promise.allSettled(guards.map((item, index) => item.reserve({
+      operationId: `concurrent-${index}`,
+      sourceId: `SRC-${index}`,
+      sourceVersion: 'hash-v1',
+      actorId: 'ADMIN-1',
+      dailyLimit: 99,
+      maxConcurrent: 99,
+    })))
+    const allocated = firstWave.filter((item) => item.status === 'fulfilled')
+    expect(allocated).toHaveLength(1)
+    expect(shared.documents.get('control')).toMatchObject({ quotaDay: '2026-11-20', used: 1, active: 1 })
+
+    const first = allocated[0].value.reservation
+    await guards[0].markAttempted(first)
+    await guards[0].complete(first, { status: 'SUCCEEDED' })
+    for (const [index, operationId] of ['second', 'third'].entries()) {
+      const reserved = await guards[index + 1].reserve({
+        operationId,
+        sourceId: `SRC-${operationId}`,
+        sourceVersion: 'hash-v1',
+        actorId: 'ADMIN-1',
+        dailyLimit: 99,
+        maxConcurrent: 99,
+      })
+      await guards[index + 1].markAttempted(reserved.reservation)
+      await guards[index + 1].complete(reserved.reservation, { status: 'SUCCEEDED' })
+    }
+    await expect(guards[0].reserve({
+      operationId: 'fourth', sourceId: 'SRC-fourth', sourceVersion: 'hash-v1', actorId: 'ADMIN-1', dailyLimit: 99, maxConcurrent: 99,
+    })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', status: 429 })
+    expect(shared.documents.get('control')).toMatchObject({ used: 3, active: 0 })
+  })
+
+  it('keeps the one global active token across Beijing midnight', async () => {
+    const shared = memoryCloudBase()
+    const beforeMidnight = new CloudBaseAiBudgetGuard({ collection: 'asva_ai_budget_v1', app: shared.app, clock: () => new Date('2026-11-20T15:59:59.000Z') })
+    const afterMidnight = new CloudBaseAiBudgetGuard({ collection: 'asva_ai_budget_v1', app: shared.app, clock: () => new Date('2026-11-20T16:00:00.000Z') })
+    await beforeMidnight.setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })
+    const previousDay = await beforeMidnight.reserve(request('before-midnight'))
+    await beforeMidnight.markAttempted(previousDay.reservation)
+
+    await expect(afterMidnight.reserve(request('after-midnight', 'SRC-2'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_CONCURRENCY_REACHED', status: 429 })
+    await beforeMidnight.complete(previousDay.reservation, { status: 'SUCCEEDED' })
+    const nextDay = await afterMidnight.reserve(request('after-midnight', 'SRC-2'))
+
+    expect(nextDay.duplicate).toBe(false)
+    expect(shared.documents.get('control')).toMatchObject({ quotaDay: '2026-11-21', used: 1, active: 1 })
+    expect(shared.documents.get('day:2026-11-20')).toMatchObject({ active: 0 })
+    expect(shared.documents.get('day:2026-11-21')).toMatchObject({ active: 1 })
+  })
+
   it('fails closed under emergency pause and never treats a store fault as permission', async () => {
     const shared = memoryCloudBase()
     const enabled = guard(shared)
@@ -110,6 +166,19 @@ describe('durable on-demand AI budget guard', () => {
 
     await expect(second.reserve(request('later', 'SRC-2'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_CONCURRENCY_REACHED', status: 429 })
     expect(shared.documents.get('day:2026-11-20')).toMatchObject({ used: 1, active: 1 })
+  })
+
+  it('keeps the global token after a failed attempt until an administrator investigates', async () => {
+    const shared = memoryCloudBase()
+    const first = guard(shared)
+    const second = guard(shared)
+    await first.setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })
+    const reserved = await first.reserve(request('failed'))
+    await first.markAttempted(reserved.reservation)
+    await first.complete(reserved.reservation, { status: 'FAILED' })
+
+    await expect(second.reserve(request('later', 'SRC-2'))).rejects.toMatchObject({ code: 'ON_DEMAND_AI_CONCURRENCY_REACHED', status: 429 })
+    expect(shared.documents.get('control')).toMatchObject({ active: 1, activeOperationId: reserved.reservation._id })
   })
 
   it('blocks a reserved call before model start when an administrator pauses AI', async () => {
