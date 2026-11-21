@@ -84,6 +84,7 @@ export function validateProductionEnv(values, envPath = '') {
     if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 100) throw new Error('手动按需 AI 必须设置 1 到 100 的 ON_DEMAND_AI_DAILY_LIMIT')
     if (!String(values.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()) throw new Error('手动按需 AI 必须显式设置 ON_DEMAND_AI_BUDGET_COLLECTION')
     if (!String(values.CLOUDBASE_APIKEY || '').trim()) throw new Error('手动按需 AI 必须显式设置 CLOUDBASE_APIKEY')
+    if (!String(values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim()) throw new Error('手动按需 AI 必须显式设置 ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
     if (String(values.ON_DEMAND_AI_MAX_CONCURRENT || '') !== '1') throw new Error('手动按需 AI 必须将 ON_DEMAND_AI_MAX_CONCURRENT 固定为 1')
   }
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
@@ -103,6 +104,7 @@ export function validateProductionEnv(values, envPath = '') {
     onDemandAiProcessing: values.FEATURE_ON_DEMAND_AI_PROCESSING === 'true',
     onDemandAiDailyLimit: Math.max(0, Number(values.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0),
     onDemandAiBudgetStoreConfigured: Boolean(String(values.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()),
+    onDemandAiBudgetRpcConfigured: Boolean(String(values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim()),
     onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(values.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
     requiredKeyCount: requiredKeys.length,
     configuredTableKeys: Object.keys(values).filter((key) => key.startsWith('FEISHU_') && key.endsWith('_TABLE_ID')).sort(),
@@ -155,6 +157,8 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ON_DEMAND_AI_DAILY_LIMIT: values.ON_DEMAND_AI_DAILY_LIMIT || '0',
     ON_DEMAND_AI_BUDGET_COLLECTION: values.ON_DEMAND_AI_BUDGET_COLLECTION || '',
     CLOUDBASE_APIKEY: values.CLOUDBASE_APIKEY || '',
+    ON_DEMAND_AI_BUDGET_RPC_BASE_URL: values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '',
+    ON_DEMAND_AI_BUDGET_RPC_FUNCTION: values.ON_DEMAND_AI_BUDGET_RPC_FUNCTION || 'asva_ai_budget_guard',
     ON_DEMAND_AI_MAX_CONCURRENT: values.ON_DEMAND_AI_MAX_CONCURRENT || '1',
     ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
     ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',

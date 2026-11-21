@@ -1,12 +1,9 @@
 import crypto from 'node:crypto'
-import cloudbase from '@cloudbase/node-sdk'
 
 const CONTROL_ID = 'control'
 const dayId = (day) => `day:${day}`
 const reservationId = (operationId) => `op:${crypto.createHash('sha256').update(operationId).digest('hex')}`
 const time = () => new Date().toISOString()
-// V1 is deliberately a fixed, service-wide ceiling. Configuration may lower
-// it, but neither an HTTP caller nor a mistaken environment value can raise it.
 const HARD_DAILY_LIMIT = 3
 const HARD_MAX_CONCURRENT = 1
 
@@ -34,175 +31,118 @@ function unavailable(error) {
   return new AiBudgetGuardError('AI 额度守门不可用，已停止本次整理。', 'AI_BUDGET_STORE_UNAVAILABLE', 503, error)
 }
 
-function asDocument(result) {
-  const data = result?.data
-  if (Array.isArray(data)) return data[0] || null
-  return data || null
-}
-
-function writable(document) {
-  const { _id, ...data } = document || {}
-  return data
-}
-
 function requireReservation(reservation) {
   if (!reservation?.operationId || !reservation?.day) throw new AiBudgetGuardError('AI 额度预留信息无效。', 'AI_BUDGET_RESERVATION_INVALID', 503)
   return reservation
 }
 
 /**
- * pgdoc is CloudBase's PostgreSQL-backed document layer. Every state
- * transition touches a deterministic daily document and a deterministic
- * operation document inside one server-side transaction. A store error is a
- * hard stop: the caller must never reach the model without a reservation.
- *
- * This guard deliberately never creates its collection. Enabling pgdoc,
- * creating the dedicated collection, and injecting the server API key are
- * reviewed production setup steps; an incomplete setup must fail closed.
+ * PostgreSQL HTTPS RPC adapter. PostgreSQL owns the single-table transaction,
+ * row locks and hard quota. This client sends exactly one request per state
+ * transition and never retries.
  */
 export class CloudBaseAiBudgetGuard {
-  constructor({ collection, envId = process.env.TCB_ENV || process.env.SCF_NAMESPACE || process.env.TCB_ENV_ID || '', apiKey = process.env.CLOUDBASE_APIKEY || '', clock = () => new Date(), app } = {}) {
-    this.collection = String(collection || '').trim()
-    this.clock = clock
-    this.app = app || null
-    this.envId = envId
+  constructor({
+    collection,
+    table,
+    envId = process.env.TCB_ENV || process.env.SCF_NAMESPACE || process.env.TCB_ENV_ID || '',
+    apiKey = process.env.CLOUDBASE_APIKEY || '',
+    rpcBaseUrl = process.env.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '',
+    rpcFunction = process.env.ON_DEMAND_AI_BUDGET_RPC_FUNCTION || 'asva_ai_budget_guard',
+    fetchImpl = globalThis.fetch,
+    clock = () => new Date(),
+  } = {}) {
+    this.collection = String(collection || table || '').trim()
+    this.envId = String(envId || '').trim()
     this.apiKey = String(apiKey || '').trim()
+    this.rpcBaseUrl = String(rpcBaseUrl || (this.envId ? `https://${this.envId}.api.tcloudbasegateway.com/v1/rdb/rest/rpc` : '')).replace(/\/$/, '')
+    this.rpcFunction = String(rpcFunction || '').trim()
+    this.fetchImpl = fetchImpl
+    this.clock = clock
   }
 
-  database() {
-    if (!this.collection) throw new AiBudgetGuardError('AI 额度存储尚未配置。', 'AI_BUDGET_STORE_UNCONFIGURED', 409)
-    // HTTP Cloud Functions do not receive the default CloudBase credential.
-    // Do not fall back to an unauthenticated or client-side key: this is a
-    // server-only guard and must stop before the model on incomplete setup.
-    if (!this.app) {
-      if (!this.envId || !this.apiKey) throw new AiBudgetGuardError('AI 额度存储尚未完成服务端配置。', 'AI_BUDGET_STORE_UNCONFIGURED', 409)
-      this.app = cloudbase.init({ env: this.envId, accessKey: this.apiKey })
-    }
-    return this.app.database()
+  configured() {
+    return Boolean(this.collection && this.rpcBaseUrl && this.rpcFunction && this.apiKey && typeof this.fetchImpl === 'function')
   }
 
-  async transaction(task) {
-    const transaction = await this.database().startTransaction()
+  async rpc(action, payload = {}) {
+    if (!this.configured()) throw new AiBudgetGuardError('AI 额度存储尚未完成服务端配置。', 'AI_BUDGET_STORE_UNCONFIGURED', 409)
+    const url = `${this.rpcBaseUrl}/${encodeURIComponent(this.rpcFunction)}`
+    let response
     try {
-      const result = await task(transaction)
-      await transaction.commit()
-      return result
-    } catch (error) {
-      // A rollback failure cannot turn a failed reservation into permission to
-      // call the model. Preserve the original failure and fail closed.
-      try { await transaction.rollback(error) } catch {}
-      throw error
+      response = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ action, table: this.collection, ...payload }),
+      })
+    } catch (error) { throw unavailable(error) }
+    let body = null
+    try { body = await response.json() } catch {}
+    const data = body?.data ?? body?.result ?? body
+    if (!response.ok) {
+      const error = body?.error || body || {}
+      throw new AiBudgetGuardError(error.message || 'AI 额度 RPC 请求失败。', error.code || 'AI_BUDGET_STORE_UNAVAILABLE', Number(error.status || response.status || 503), error)
     }
+    if (data?.error) {
+      const error = data.error
+      throw new AiBudgetGuardError(error.message || 'AI 额度 RPC 请求失败。', error.code || 'AI_BUDGET_STORE_UNAVAILABLE', Number(error.status || 503), error)
+    }
+    return data
   }
 
   async reserve({ operationId, sourceId, sourceVersion, actorId, dailyLimit, maxConcurrent }) {
     if (!operationId || !sourceId || !sourceVersion || !actorId) throw new AiBudgetGuardError('AI 额度预留参数无效。', 'AI_BUDGET_RESERVATION_INVALID', 400)
     if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || !Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new AiBudgetGuardError('AI 额度限制尚未配置。', 'AI_BUDGET_LIMIT_INVALID', 409)
-    const effectiveDailyLimit = Math.min(dailyLimit, HARD_DAILY_LIMIT)
-    const effectiveMaxConcurrent = Math.min(maxConcurrent, HARD_MAX_CONCURRENT)
     const day = chinaDay(this.clock())
-    const now = time()
-    const opId = reservationId(operationId)
     try {
-      const result = await this.transaction(async (transaction) => {
-        const records = transaction.collection(this.collection)
-        const control = asDocument(await records.doc(CONTROL_ID).get())
-        if (!control || control.mode !== 'ENABLED') {
-          const paused = control?.mode === 'PAUSED'
-          throw new AiBudgetGuardError(paused ? 'AI 整理已被管理员紧急暂停。' : 'AI 整理尚未由管理员启用。', paused ? 'AI_BUDGET_EMERGENCY_PAUSED' : 'AI_BUDGET_CONTROL_DISABLED', 409)
-        }
-        const existing = asDocument(await records.doc(opId).get())
-        if (existing) return { duplicate: true, reservation: existing }
-        // Every new attempt writes CONTROL_ID in the same transaction. That
-        // gives PG one durable contention point even when the daily document
-        // does not exist yet, so concurrent instances cannot lose an update.
-        // Unlike a day bucket, this active token must survive Beijing midnight.
-        const quotaRolledOver = control.quotaDay !== day
-        const usedToday = quotaRolledOver ? 0 : Number(control.used || 0)
-        if (usedToday >= effectiveDailyLimit) throw new AiBudgetGuardError('今日按需 AI 整理额度已用完。', 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', 429)
-        if (Number(control.active || 0) >= effectiveMaxConcurrent || control.activeOperationId) throw new AiBudgetGuardError('已有一条 AI 整理正在执行，请稍后查看结果。', 'ON_DEMAND_AI_CONCURRENCY_REACHED', 429)
-        const current = asDocument(await records.doc(dayId(day)).get()) || { _id: dayId(day), kind: 'DAY', day, used: 0, active: 0 }
-        const reservation = {
-          _id: opId, kind: 'RESERVATION', operationId, sourceId, sourceVersion, actorId, day,
-          status: 'RESERVED', createdAt: now, updatedAt: now,
-        }
-        await records.doc(CONTROL_ID).set(writable({
-          ...control,
-          quotaDay: day,
-          used: usedToday + 1,
-          active: 1,
-          activeOperationId: opId,
-          updatedAt: now,
-        }))
-        await records.doc(dayId(day)).set(writable({ ...current, used: usedToday + 1, active: Number(current.active || 0) + 1, updatedAt: now }))
-        await records.doc(opId).set(writable(reservation))
-        return { duplicate: false, reservation }
+      const result = await this.rpc('reserve', {
+        operationId,
+        reservationId: reservationId(operationId),
+        sourceId,
+        sourceVersion,
+        actorId,
+        day,
+        now: time(),
+        dailyLimit: Math.min(dailyLimit, HARD_DAILY_LIMIT),
+        maxConcurrent: Math.min(maxConcurrent, HARD_MAX_CONCURRENT),
       })
+      if (!result?.reservation || typeof result.duplicate !== 'boolean') throw new AiBudgetGuardError('AI 额度预留结果无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
       return result
     } catch (error) { throw unavailable(error) }
   }
 
   async markAttempted(reservation) {
     const item = requireReservation(reservation)
-    try {
-      await this.transaction(async (transaction) => {
-        const records = transaction.collection(this.collection)
-        // A pause must also close the narrow window after reservation but
-        // before the model request starts. In-flight requests may still
-        // finalize, but no paused request may become ATTEMPTED.
-        const control = asDocument(await records.doc(CONTROL_ID).get())
-        if (!control || control.mode !== 'ENABLED') {
-          const paused = control?.mode === 'PAUSED'
-          throw new AiBudgetGuardError(paused ? 'AI 整理已被管理员紧急暂停。' : 'AI 整理尚未由管理员启用。', paused ? 'AI_BUDGET_EMERGENCY_PAUSED' : 'AI_BUDGET_CONTROL_DISABLED', 409)
-        }
-        const document = asDocument(await records.doc(item._id || reservationId(item.operationId)).get())
-        if (!document || document.status !== 'RESERVED') throw new AiBudgetGuardError('AI 额度预留状态无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
-        if (control.activeOperationId !== (document._id || reservationId(item.operationId)) || Number(control.active || 0) !== 1) throw new AiBudgetGuardError('AI 全局并发令牌无法确认。', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
-        await records.doc(document._id || reservationId(item.operationId)).update({ status: 'ATTEMPTED', attemptedAt: time(), updatedAt: time() })
-      })
-    } catch (error) { throw unavailable(error) }
+    try { await this.rpc('mark_attempted', { reservation: item, now: time() }) } catch (error) { throw unavailable(error) }
   }
 
   async complete(reservation, { status, releaseActive = status === 'SUCCEEDED' }) {
     const item = requireReservation(reservation)
     if (!['SUCCEEDED', 'FAILED'].includes(status)) throw new AiBudgetGuardError('AI 额度完成状态无效。', 'AI_BUDGET_COMPLETION_INVALID', 400)
-    try {
-      await this.transaction(async (transaction) => {
-        const records = transaction.collection(this.collection)
-        const document = asDocument(await records.doc(item._id || reservationId(item.operationId)).get())
-        if (!document || document.status !== 'ATTEMPTED') throw new AiBudgetGuardError('AI 额度完成状态无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
-        const bucket = asDocument(await records.doc(dayId(item.day)).get())
-        if (!bucket) throw new AiBudgetGuardError('AI 每日额度记录无法确认。', 'AI_BUDGET_DAY_UNKNOWN', 503)
-        const updatedAt = time()
-        await records.doc(document._id || reservationId(item.operationId)).update({ status, completedAt: updatedAt, updatedAt })
-        if (!releaseActive) return
-        const control = asDocument(await records.doc(CONTROL_ID).get())
-        if (!control || control.activeOperationId !== (document._id || reservationId(item.operationId)) || Number(control.active || 0) !== 1) {
-          throw new AiBudgetGuardError('AI 全局并发令牌无法确认。', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
-        }
-        await records.doc(CONTROL_ID).update({ active: 0, activeOperationId: '', updatedAt })
-        await records.doc(dayId(item.day)).update({ active: Math.max(0, Number(bucket.active || 0) - 1), updatedAt })
-      })
-    } catch (error) { throw unavailable(error) }
+    try { await this.rpc('complete', { reservation: item, status, releaseActive: Boolean(releaseActive), now: time() }) } catch (error) { throw unavailable(error) }
   }
 
   async control() {
-    try { return asDocument(await this.database().collection(this.collection).doc(CONTROL_ID).get()) || { mode: 'DISABLED' } } catch (error) { throw unavailable(error) }
+    try { return (await this.rpc('control')) || { mode: 'DISABLED' } } catch (error) { throw unavailable(error) }
   }
 
   async setControl({ mode, actorId }) {
     if (!['ENABLED', 'PAUSED', 'DISABLED'].includes(mode)) throw new AiBudgetGuardError('AI 管理状态无效。', 'AI_BUDGET_CONTROL_INVALID', 400)
     if (!actorId) throw new AiBudgetGuardError('管理员身份无效。', 'AI_BUDGET_CONTROL_INVALID', 400)
     try {
-      await this.transaction(async (transaction) => {
-        const before = asDocument(await transaction.collection(this.collection).doc(CONTROL_ID).get()) || { _id: CONTROL_ID, kind: 'CONTROL', createdAt: time() }
-        await transaction.collection(this.collection).doc(CONTROL_ID).set(writable({ ...before, mode, updatedAt: time(), updatedBy: actorId }))
-      })
+      await this.rpc('set_control', { mode, actorId, now: time(), controlId: CONTROL_ID })
       return this.control()
     } catch (error) { throw unavailable(error) }
   }
 }
 
 export function createAiBudgetGuard(features = {}) {
-  return new CloudBaseAiBudgetGuard({ collection: features.onDemandAiBudgetCollection, apiKey: features.onDemandAiBudgetApiKey })
+  return new CloudBaseAiBudgetGuard({
+    collection: features.onDemandAiBudgetCollection,
+    apiKey: features.onDemandAiBudgetApiKey,
+    rpcBaseUrl: features.onDemandAiBudgetRpcBaseUrl,
+    rpcFunction: features.onDemandAiBudgetRpcFunction,
+  })
 }
+
+export { CONTROL_ID, HARD_DAILY_LIMIT, HARD_MAX_CONCURRENT, dayId, reservationId }

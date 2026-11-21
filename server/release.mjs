@@ -38,6 +38,6 @@ export function featureFlags() {
     onDemandAiAutoTrigger: process.env.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true',
     onDemandAiDailyLimit: Math.min(3, Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0)),
     onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(process.env.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
-    onDemandAiBudgetStoreConfigured: Boolean(String(process.env.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()),
+    onDemandAiBudgetStoreConfigured: Boolean(String(process.env.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim() && String(process.env.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim() && String(process.env.CLOUDBASE_APIKEY || '').trim()),
   }
 }

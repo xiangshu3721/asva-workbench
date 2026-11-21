@@ -47,6 +47,8 @@ const onDemandAiDailyLimit = Math.min(3, Math.max(0, Number(value('ON_DEMAND_AI_
 const onDemandAiMaxConcurrent = Math.min(1, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CONCURRENT', '1')) || 1))
 const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
 const onDemandAiBudgetApiKey = value('CLOUDBASE_APIKEY')
+const onDemandAiBudgetRpcBaseUrl = value('ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
+const onDemandAiBudgetRpcFunction = value('ON_DEMAND_AI_BUDGET_RPC_FUNCTION', 'asva_ai_budget_guard')
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -89,11 +91,13 @@ export const config = {
     onDemandAiTimeoutMs,
     onDemandAiMaxTokens,
     onDemandAiDailyLimit,
-    // A missing pgdoc collection or server API key is deliberately not given
-    // a default. The API must fail closed until the dedicated PostgreSQL-
-    // backed collection is provisioned and read back by an approved release.
+    // A missing RPC table, endpoint or server API key is deliberately not
+    // given a default. The API must fail closed until the dedicated
+    // PostgreSQL table and function are provisioned and read back by review.
     onDemandAiBudgetCollection,
     onDemandAiBudgetApiKey,
+    onDemandAiBudgetRpcBaseUrl,
+    onDemandAiBudgetRpcFunction,
     onDemandAiMaxConcurrent,
   },
   deepseek: {
