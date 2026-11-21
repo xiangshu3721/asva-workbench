@@ -13,7 +13,7 @@ function memoryRpc({ failComplete = false } = {}) {
     tail = new Promise((resolve) => { unlock = resolve })
     await previous
     try {
-      const body = JSON.parse(options.body)
+      const body = JSON.parse(options.body).request
       const id = body.reservationId || reservationId(body.reservation?.operationId || '')
       if (body.action === 'set_control') {
         const before = docs.get('control') || { id: 'control', mode: 'DISABLED', used: 0, active: 0, activeOperationId: '' }

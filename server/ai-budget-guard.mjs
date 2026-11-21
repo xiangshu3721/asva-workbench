@@ -73,7 +73,11 @@ export class CloudBaseAiBudgetGuard {
       response = await this.fetchImpl(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ action, table: this.collection, ...payload }),
+        // Keep one stable PostgREST argument so camelCase payload fields are
+        // not subject to PostgreSQL identifier folding. The SQL RPC validates
+        // and ignores the client-supplied table name in favor of its fixed
+        // budget table.
+        body: JSON.stringify({ request: { action, table: this.collection, ...payload } }),
       })
     } catch (error) { throw unavailable(error) }
     let body = null
