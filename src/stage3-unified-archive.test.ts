@@ -19,4 +19,9 @@ describe('stage 3 unified archive entry', () => {
     expect(workspaceSource).toContain("onProcess(source.id, 'AUTO')")
     expect(workspaceSource).toContain("onProcess(sourceId, 'MANUAL')")
   })
+
+  it('only exposes automatic processing when the server reports every durable canary gate', () => {
+    const applicationSource = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+    expect(applicationSource).toContain('flags.onDemandAiAutoTriggerCanaryConfigured === true')
+  })
 })

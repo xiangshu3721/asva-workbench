@@ -39,5 +39,8 @@ export function featureFlags() {
     onDemandAiDailyLimit: Math.min(3, Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0)),
     onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(process.env.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
     onDemandAiBudgetStoreConfigured: Boolean(String(process.env.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim() && String(process.env.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim() && String(process.env.CLOUDBASE_APIKEY || '').trim()),
+    // Do not expose customer or mentor identifiers through public health.
+    // Only disclose whether a non-empty, two-part automatic canary exists.
+    onDemandAiAutoTriggerCanaryConfigured: Boolean(String(process.env.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS || '').trim() && String(process.env.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS || '').trim()),
   }
 }

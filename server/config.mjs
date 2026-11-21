@@ -49,6 +49,12 @@ const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
 const onDemandAiBudgetApiKey = value('CLOUDBASE_APIKEY')
 const onDemandAiBudgetRpcBaseUrl = value('ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
 const onDemandAiBudgetRpcFunction = value('ON_DEMAND_AI_BUDGET_RPC_FUNCTION', 'asva_ai_budget_guard')
+const delimitedSet = (raw) => new Set((raw || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean))
+// Automatic processing is intentionally limited to an explicit, intersecting
+// mentor/customer canary. An empty either side means no automatic request may
+// reach the model, even if its feature flag was accidentally enabled.
+const onDemandAiAutoTriggerCustomerIds = delimitedSet(value('ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS'))
+const onDemandAiAutoTriggerActorIds = delimitedSet(value('ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS'))
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -84,8 +90,11 @@ export const config = {
     // switch. It gates only an explicit, single-source HTTP request.
     onDemandAiProcessing: value('FEATURE_ON_DEMAND_AI_PROCESSING', 'false') === 'true',
     // Auto-triggering is deliberately a second, fail-closed switch. It must
-    // stay false until a function-specific platform rate/quota guard exists.
+    // stay false until the durable transaction guard has passed a controlled
+    // production run. Both canary sets below must also match.
     onDemandAiAutoTrigger: value('FEATURE_ON_DEMAND_AI_AUTO_TRIGGER', 'false') === 'true',
+    onDemandAiAutoTriggerCustomerIds,
+    onDemandAiAutoTriggerActorIds,
     onDemandAiMaxChars,
     onDemandAiMaxPromptChars,
     onDemandAiTimeoutMs,

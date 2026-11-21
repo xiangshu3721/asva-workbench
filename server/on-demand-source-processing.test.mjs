@@ -28,6 +28,8 @@ describe('on-demand source processing', () => {
     Object.assign(config.features, original, {
       onDemandAiProcessing: true,
       onDemandAiAutoTrigger: false,
+      onDemandAiAutoTriggerCustomerIds: new Set(),
+      onDemandAiAutoTriggerActorIds: new Set(),
       onDemandAiDailyLimit: 2,
       onDemandAiMaxChars: 4000,
       onDemandAiMaxTokens: 2048,
@@ -54,13 +56,30 @@ describe('on-demand source processing', () => {
     expect(repository.load).not.toHaveBeenCalled()
   })
 
-  it('keeps save-triggered AI closed even if a stale auto flag is set without a hard quota', async () => {
+  it('keeps save-triggered AI closed when its scoped canary is absent', async () => {
     config.features.onDemandAiAutoTrigger = true
     const repository = new FeishuRepository({ authRepository: {} })
     repository.load = vi.fn()
 
-    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
-    expect(repository.load).not.toHaveBeenCalled()
+    repository.load = vi.fn(async () => databaseFor({ id: 'SRC-1', customerId: 'CUS-1', uploadedBy: 'ADMIN-1', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }))
+    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_AUTO_CANARY_RESTRICTED', status: 409 })
+    expect(repository.load).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows exactly one save-triggered call only for the configured mentor and customer canary', async () => {
+    config.features.onDemandAiAutoTrigger = true
+    config.features.onDemandAiAutoTriggerCustomerIds = new Set(['CUS-1'])
+    config.features.onDemandAiAutoTriggerActorIds = new Set(['ADMIN-1'])
+    const source = { id: 'SRC-1', customerId: 'CUS-1', uploadedBy: 'ADMIN-1', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }
+    const guard = budgetGuard()
+    const repository = new FeishuRepository({ authRepository: {}, aiBudgetGuard: guard })
+    repository.load = vi.fn(async () => databaseFor(source))
+    repository.processSource = vi.fn(async () => ({ source: { ...source, processingStatus: 'COMPLETED' }, evidenceItems: [], proposals: [], conflicts: [] }))
+
+    await repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })
+
+    expect(repository.processSource).toHaveBeenCalledTimes(1)
+    expect(guard.reserve).toHaveBeenCalledTimes(1)
   })
 
   it('starts at most one explicitly requested processing call with on-demand limits', async () => {

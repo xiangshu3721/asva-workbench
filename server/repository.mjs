@@ -2844,15 +2844,17 @@ export class FeishuRepository {
   }
   async processSourceOnDemand(actorId, sourceId, { trigger = 'MANUAL' } = {}) {
     if (!config.features.onDemandAiProcessing) throw Object.assign(new Error('按需 AI 整理尚未开启'), { code: 'ON_DEMAND_AI_DISABLED', status: 409 })
-    // This manual-only release deliberately keeps AUTO hard-closed even when
-    // a variable is edited prematurely. Auto-triggering is a later canary
-    // release after the durable guard has passed a real authorized run.
-    if (trigger === 'AUTO') throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
+    if (trigger === 'AUTO' && !config.features.onDemandAiAutoTrigger) throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
     if (!config.features.onDemandAiDailyLimit) throw Object.assign(new Error('按需 AI 每日额度尚未配置'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REQUIRED', status: 409 })
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     if (!source) throw Object.assign(new Error('资料不存在'), { code: 'SOURCE_NOT_FOUND', status: 404 })
+    if (trigger === 'AUTO') {
+      const allowedCustomer = config.features.onDemandAiAutoTriggerCustomerIds.has(source.customerId)
+      const allowedActor = config.features.onDemandAiAutoTriggerActorIds.has(actorId) && source.uploadedBy === actorId
+      if (!allowedCustomer || !allowedActor) throw Object.assign(new Error('保存后自动整理尚未在此导师和客户范围内开启'), { code: 'ON_DEMAND_AI_AUTO_CANARY_RESTRICTED', status: 409 })
+    }
     if (String(source.rawText || '').length > config.features.onDemandAiMaxChars) throw Object.assign(new Error(`资料超过单次整理上限（${config.features.onDemandAiMaxChars} 字）`), { code: 'ON_DEMAND_AI_INPUT_TOO_LARGE', status: 413 })
     if (['COMPLETED', 'REVIEW_REQUIRED', 'PROCESSING'].includes(source.processingStatus)) return this.sourceDetail(actorId, sourceId)
     const operationId = operationIdForSource(source)
