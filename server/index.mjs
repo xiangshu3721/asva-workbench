@@ -138,6 +138,10 @@ async function handle(request, response, requestId) {
     const body = await readBody(request)
     return send(request, response, 200, await repository.setOnDemandAiControl(await guardAdmin(request), body.mode), requestId)
   }
+  if (request.method === 'GET' && url.pathname === '/api/admin/ai-processing/daily-stats') {
+    const day = url.searchParams.get('day') || undefined
+    return send(request, response, 200, await repository.onDemandAiDailyStats(await guardAdmin(request), day), requestId)
+  }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/customers/directory') return send(request, response, 200, await repository.customerDirectory(await guard(request)), requestId)

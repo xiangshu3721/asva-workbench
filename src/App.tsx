@@ -250,10 +250,14 @@ function WorkbenchApp() {
     ]).then(([backend, frontend]) => {
       if (cancelled) return
       const flags = backend.featureFlags || {}
-      const manual = flags.onDemandAiProcessing === true && Number(flags.onDemandAiDailyLimit || 0) > 0
-      // QPS/concurrency controls are not a cross-instance daily hard quota.
-      // Keep automatic requests off until that specific platform boundary exists.
-      setOnDemandAiAvailability({ manual, auto: false })
+      const guarded = flags.onDemandAiProcessing === true && Number(flags.onDemandAiDailyLimit || 0) > 0
+      const manual = guarded
+      // This remains false by default. A saved source can use AUTO only after
+      // the separate switch and non-empty scoped canary are intentionally
+      // configured; the server delegates to #119's durable guard and
+      // rechecks the exact IDs.
+      const auto = guarded && flags.onDemandAiAutoTrigger === true && flags.onDemandAiAutoTriggerCanaryConfigured === true
+      setOnDemandAiAvailability({ manual, auto })
       const frontendRelease = frontend?.release || 'UNKNOWN'
       const backendRelease = backend.release || 'UNKNOWN'
       const versionCompatible = releasesMatch(frontend, backend)

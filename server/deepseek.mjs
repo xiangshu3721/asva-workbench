@@ -35,6 +35,20 @@ export const EVIDENCE_EXTRACT_MAX_ATTEMPTS = 1
 // ceiling after the Feishu read/write budget has been reserved.
 export const CUSTOMER_UNDERSTANDING_TIMEOUT_MS = 22_000
 
+// Track the most recent DeepSeek token usage for cost monitoring.
+// This is intentionally module-scoped; callers that need accurate per-call
+// usage should use extractTokensFromPayload() directly.
+let lastUsage = { inputTokens: 0, outputTokens: 0 }
+export function getLastDeepSeekUsage() { return { ...lastUsage } }
+export function resetLastDeepSeekUsage() { lastUsage = { inputTokens: 0, outputTokens: 0 } }
+export function extractTokensFromPayload(payload) {
+  const usage = payload?.usage || {}
+  return {
+    inputTokens: Number(usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0,
+    outputTokens: Number(usage.completion_tokens ?? usage.output_tokens ?? 0) || 0,
+  }
+}
+
 async function callDeepSeek(messages, temperature = 0.2, options = {}) {
   if (!config.deepseek.apiKey) throw new DeepSeekUnavailableError('DeepSeek 尚未配置')
   const model = options.model || config.deepseek.model
@@ -86,7 +100,9 @@ async function callDeepSeek(messages, temperature = 0.2, options = {}) {
     const choice = payload?.choices?.[0]
     const finishReason = choice?.finish_reason || ''
     const content = choice?.message?.content?.trim()
-    console.info('[ASVA_DEEPSEEK]', JSON.stringify({ operation: options.operation || 'unknown', model, attempt, http_status: response.status, finish_reason: finishReason, output_length: content?.length || 0, duration_ms: Date.now() - startedAt }))
+    const usage = extractTokensFromPayload(payload)
+    lastUsage = { inputTokens: lastUsage.inputTokens + usage.inputTokens, outputTokens: lastUsage.outputTokens + usage.outputTokens }
+    console.info('[ASVA_DEEPSEEK]', JSON.stringify({ operation: options.operation || 'unknown', model, attempt, http_status: response.status, finish_reason: finishReason, output_length: content?.length || 0, input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, duration_ms: Date.now() - startedAt }))
     if (finishReason === 'length') throw Object.assign(new Error('DeepSeek 输出被截断'), { code: 'DEEPSEEK_OUTPUT_TRUNCATED', status: 502 })
     if (!content) throw Object.assign(new Error('DeepSeek 返回内容为空或缺少 choices.message.content'), { code: classifyDeepSeekResponse({ emptyContent: true }), status: 502 })
     if (options.requireJson && !parseJson(content)) throw Object.assign(new Error('DeepSeek 返回内容不是有效 JSON'), { code: classifyDeepSeekResponse({ invalidJson: true }), status: 502 })
