@@ -35,9 +35,25 @@ export const EVIDENCE_EXTRACT_MAX_ATTEMPTS = 1
 // ceiling after the Feishu read/write budget has been reserved.
 export const CUSTOMER_UNDERSTANDING_TIMEOUT_MS = 22_000
 
-// Track the most recent DeepSeek token usage for cost monitoring.
-// This is intentionally module-scoped; callers that need accurate per-call
-// usage should use extractTokensFromPayload() directly.
+// R048.14: Track token usage per-call instead of process-global.
+// Each callDeepSeek invocation returns an object with content and usage.
+// Callers must propagate usage through the call chain to avoid cross-request contamination.
+let callIdCounter = 0
+const callUsageMap = new Map()
+export function getCurrentCallId() { return `call-${++callIdCounter}` }
+export function recordCallUsage(callId, usage) {
+  const existing = callUsageMap.get(callId) || { inputTokens: 0, outputTokens: 0 }
+  callUsageMap.set(callId, {
+    inputTokens: existing.inputTokens + usage.inputTokens,
+    outputTokens: existing.outputTokens + usage.outputTokens,
+  })
+}
+export function consumeCallUsage(callId) {
+  const usage = callUsageMap.get(callId) || { inputTokens: 0, outputTokens: 0 }
+  callUsageMap.delete(callId)
+  return usage
+}
+// Legacy compatibility: still track last usage for single-call scenarios
 let lastUsage = { inputTokens: 0, outputTokens: 0 }
 export function getLastDeepSeekUsage() { return { ...lastUsage } }
 export function resetLastDeepSeekUsage() { lastUsage = { inputTokens: 0, outputTokens: 0 } }
@@ -101,8 +117,13 @@ async function callDeepSeek(messages, temperature = 0.2, options = {}) {
     const finishReason = choice?.finish_reason || ''
     const content = choice?.message?.content?.trim()
     const usage = extractTokensFromPayload(payload)
-    lastUsage = { inputTokens: lastUsage.inputTokens + usage.inputTokens, outputTokens: lastUsage.outputTokens + usage.outputTokens }
-    console.info('[ASVA_DEEPSEEK]', JSON.stringify({ operation: options.operation || 'unknown', model, attempt, http_status: response.status, finish_reason: finishReason, output_length: content?.length || 0, input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, duration_ms: Date.now() - startedAt }))
+    // Track usage per-call if callId provided, otherwise accumulate globally
+    if (options.callId) {
+      recordCallUsage(options.callId, usage)
+    } else {
+      lastUsage = { inputTokens: lastUsage.inputTokens + usage.inputTokens, outputTokens: lastUsage.outputTokens + usage.outputTokens }
+    }
+    console.info('[ASVA_DEEPSEEK]', JSON.stringify({ operation: options.operation || 'unknown', model, attempt, http_status: response.status, finish_reason: finishReason, output_length: content?.length || 0, input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, call_id: options.callId || 'global', duration_ms: Date.now() - startedAt }))
     if (finishReason === 'length') throw Object.assign(new Error('DeepSeek 输出被截断'), { code: 'DEEPSEEK_OUTPUT_TRUNCATED', status: 502 })
     if (!content) throw Object.assign(new Error('DeepSeek 返回内容为空或缺少 choices.message.content'), { code: classifyDeepSeekResponse({ emptyContent: true }), status: 502 })
     if (options.requireJson && !parseJson(content)) throw Object.assign(new Error('DeepSeek 返回内容不是有效 JSON'), { code: classifyDeepSeekResponse({ invalidJson: true }), status: 502 })
@@ -266,7 +287,7 @@ export async function createEvidenceCandidates(input) {
   if (Number.isInteger(input.maxPromptChars) && input.maxPromptChars > 0 && promptCharCount > input.maxPromptChars) {
     throw Object.assign(new Error(`按需整理最终提示词超过单次上限（${input.maxPromptChars} 字）`), { code: 'ON_DEMAND_AI_PROMPT_TOO_LARGE', status: 413 })
   }
-  const raw = await callDeepSeek(messages, 0, { model: config.deepseek.evidenceModel, operation: input.operation || 'evidence.extract', timeoutMs: input.timeoutMs ?? EVIDENCE_EXTRACT_TIMEOUT_MS, maxAttempts: input.maxAttempts ?? EVIDENCE_EXTRACT_MAX_ATTEMPTS, maxTokens: input.maxTokens ?? 4096, thinking: { type: 'disabled' }, responseFormat: { type: 'json_object' }, requireJson: true })
+  const raw = await callDeepSeek(messages, 0, { model: config.deepseek.evidenceModel, operation: input.operation || 'evidence.extract', timeoutMs: input.timeoutMs ?? EVIDENCE_EXTRACT_TIMEOUT_MS, maxAttempts: input.maxAttempts ?? EVIDENCE_EXTRACT_MAX_ATTEMPTS, maxTokens: input.maxTokens ?? 4096, thinking: { type: 'disabled' }, responseFormat: { type: 'json_object' }, requireJson: true, callId: input.callId })
   const parsed = parseJson(raw)
   if (!parsed) throw Object.assign(new Error('资料整理模型返回内容无法解析为 JSON'), { code: 'JSON_PARSE_FAILED', status: 502 })
   if (!Array.isArray(parsed.items)) throw Object.assign(new Error('资料整理模型返回 JSON 缺少 items 数组'), { code: 'SCHEMA_VALIDATION_FAILED', status: 502 })

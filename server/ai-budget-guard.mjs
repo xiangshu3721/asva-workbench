@@ -144,9 +144,43 @@ export class CloudBaseAiBudgetGuard {
 
   async dailyStats(day) {
     try {
-      const result = await this.rpc('daily_stats', { day: day || new Date().toISOString().slice(0, 10) })
-      return result || { day, used: 0, successCount: 0, failCount: 0, totalInputTokens: 0, totalOutputTokens: 0, estimatedCostUsd: 0 }
+      // R048.14: Default to Beijing time (UTC+8) for daily stats
+      const defaultDay = chinaDay(this.clock())
+      const result = await this.rpc('daily_stats', { day: day || defaultDay })
+      const stats = result || { day: day || defaultDay, used: 0, successCount: 0, failCount: 0, totalInputTokens: 0, totalOutputTokens: 0, estimatedCostUsd: 0 }
+      // Add cost estimate note
+      stats.costEstimateNote = 'DeepSeek API 估算：$0.14/M input + $0.28/M output，不含缓存 token 折扣，非实际账单'
+      return stats
     } catch (error) { throw unavailable(error) }
+  }
+
+  // R048.14: Anomaly detection and alerting
+  async checkAndAlertAnomalies(day) {
+    try {
+      const stats = await this.dailyStats(day)
+      const anomalies = []
+      // High failure rate
+      if (stats.used > 0 && stats.failCount / stats.used > 0.3) {
+        anomalies.push({ type: 'HIGH_FAILURE_RATE', message: `失败率 ${(stats.failCount / stats.used * 100).toFixed(1)}% 超过 30% 阈值`, severity: 'WARNING' })
+      }
+      // High cost
+      if (stats.estimatedCostUsd > 1.0) {
+        anomalies.push({ type: 'HIGH_DAILY_COST', message: `日估算费用 $${stats.estimatedCostUsd.toFixed(4)} 超过 $1.00 阈值`, severity: 'WARNING' })
+      }
+      // Pending tasks stuck
+      if (stats.pendingCount > 0) {
+        anomalies.push({ type: 'PENDING_TASKS', message: `${stats.pendingCount} 个任务处于待处理状态`, severity: 'INFO' })
+      }
+      if (anomalies.length > 0) {
+        // Log alerts for now; future: integrate with Feishu/notification channel
+        console.warn('[ASVA_BUDGET_ANOMALY]', JSON.stringify({ day, anomalies, stats }))
+        // Future: await this.sendAlert(anomalies, stats)
+      }
+      return { stats, anomalies }
+    } catch (error) {
+      console.error('[ASVA_BUDGET_ANOMALY_CHECK_FAILED]', error.message)
+      return { stats: null, anomalies: [], error: error.message }
+    }
   }
 
   async setControl({ mode, actorId }) {
