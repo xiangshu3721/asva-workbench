@@ -49,6 +49,14 @@ const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
 const onDemandAiBudgetApiKey = value('CLOUDBASE_APIKEY')
 const onDemandAiBudgetRpcBaseUrl = value('ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
 const onDemandAiBudgetRpcFunction = value('ON_DEMAND_AI_BUDGET_RPC_FUNCTION', 'asva_ai_budget_guard')
+const idSet = (raw) => new Set(String(raw || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean))
+// Temporary acceptance isolation. When enabled, the manual endpoint only
+// accepts an exact ADMIN actor and an exact Source id, both evaluated on the
+// server before any budget reservation or model call. Missing lists fail
+// closed instead of opening the endpoint to every mentor.
+const onDemandAiTestScopeEnabled = value('ON_DEMAND_AI_TEST_SCOPE_ENABLED', 'false') === 'true'
+const onDemandAiTestAdminActorIds = idSet(value('ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS'))
+const onDemandAiTestSourceIds = idSet(value('ON_DEMAND_AI_TEST_SOURCE_IDS'))
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -99,6 +107,9 @@ export const config = {
     onDemandAiBudgetRpcBaseUrl,
     onDemandAiBudgetRpcFunction,
     onDemandAiMaxConcurrent,
+    onDemandAiTestScopeEnabled,
+    onDemandAiTestAdminActorIds,
+    onDemandAiTestSourceIds,
   },
   deepseek: {
     apiKey: value('DEEPSEEK_API_KEY'),

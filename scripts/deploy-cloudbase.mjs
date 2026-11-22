@@ -90,6 +90,11 @@ export function validateProductionEnv(values, envPath = '') {
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
   if (missing.length) throw new Error(`生产部署配置缺少必填变量：${missing.join(', ')}`)
+  if (values.ON_DEMAND_AI_TEST_SCOPE_ENABLED === 'true') {
+    const testAdmins = String(values.ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    const testSources = String(values.ON_DEMAND_AI_TEST_SOURCE_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    if (!testAdmins.length || !testSources.length) throw new Error('按需 AI 测试范围启用时必须同时配置 ADMIN 与 Source 白名单')
+  }
   return {
     envPath,
     appEnv: values.APP_ENV,
@@ -160,6 +165,9 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ON_DEMAND_AI_BUDGET_RPC_BASE_URL: values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '',
     ON_DEMAND_AI_BUDGET_RPC_FUNCTION: values.ON_DEMAND_AI_BUDGET_RPC_FUNCTION || 'asva_ai_budget_guard',
     ON_DEMAND_AI_MAX_CONCURRENT: values.ON_DEMAND_AI_MAX_CONCURRENT || '1',
+    ON_DEMAND_AI_TEST_SCOPE_ENABLED: values.ON_DEMAND_AI_TEST_SCOPE_ENABLED || 'false',
+    ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS: values.ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS || '',
+    ON_DEMAND_AI_TEST_SOURCE_IDS: values.ON_DEMAND_AI_TEST_SOURCE_IDS || '',
     ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
     ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
     CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',

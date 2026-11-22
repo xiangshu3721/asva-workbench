@@ -108,6 +108,65 @@ describe('on-demand source processing', () => {
     expect(guard.markAttempted).not.toHaveBeenCalled()
   })
 
+  it('fails closed before reserve or model when the temporary test scope has no lists', async () => {
+    config.features.onDemandAiTestScopeEnabled = true
+    config.features.onDemandAiTestAdminActorIds = new Set()
+    config.features.onDemandAiTestSourceIds = new Set()
+    const guard = budgetGuard()
+    const repository = new FeishuRepository({ authRepository: {}, aiBudgetGuard: guard })
+    repository.load = vi.fn()
+
+    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1')).rejects.toMatchObject({ code: 'ON_DEMAND_AI_TEST_SCOPE_UNCONFIGURED', status: 403 })
+    expect(repository.load).not.toHaveBeenCalled()
+    expect(guard.reserve).not.toHaveBeenCalled()
+  })
+
+  it('rejects an actor or Source outside the temporary test whitelist before any charge', async () => {
+    config.features.onDemandAiTestScopeEnabled = true
+    config.features.onDemandAiTestAdminActorIds = new Set(['ADMIN-1'])
+    config.features.onDemandAiTestSourceIds = new Set(['SRC-ALLOWED'])
+    const guard = budgetGuard()
+    const repository = new FeishuRepository({ authRepository: {}, aiBudgetGuard: guard })
+    repository.load = vi.fn()
+
+    await expect(repository.processSourceOnDemand('ADMIN-2', 'SRC-ALLOWED')).rejects.toMatchObject({ code: 'ON_DEMAND_AI_TEST_ACTOR_NOT_ALLOWED', status: 403 })
+    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-OTHER')).rejects.toMatchObject({ code: 'ON_DEMAND_AI_TEST_SOURCE_NOT_ALLOWED', status: 403 })
+    expect(repository.load).not.toHaveBeenCalled()
+    expect(guard.reserve).not.toHaveBeenCalled()
+  })
+
+  it('rejects a whitelisted non-ADMIN actor on the server', async () => {
+    config.features.onDemandAiTestScopeEnabled = true
+    config.features.onDemandAiTestAdminActorIds = new Set(['MENTOR-1'])
+    config.features.onDemandAiTestSourceIds = new Set(['SRC-1'])
+    const guard = budgetGuard()
+    const repository = new FeishuRepository({ authRepository: {}, aiBudgetGuard: guard })
+    repository.load = vi.fn(async () => ({
+      ...databaseFor({ id: 'SRC-1', customerId: 'CUS-1', rawText: '合成测试资料', processingStatus: 'UPLOADED' }),
+      staff: [{ id: 'MENTOR-1', permissionRole: 'MENTOR', role: 'MENTOR', status: 'ACTIVE', loginEnabled: true }],
+    }))
+
+    await expect(repository.processSourceOnDemand('MENTOR-1', 'SRC-1')).rejects.toMatchObject({ code: 'ADMIN_REQUIRED', status: 403 })
+    expect(guard.reserve).not.toHaveBeenCalled()
+  })
+
+  it('allows the exact ADMIN and Source pair through the temporary test scope', async () => {
+    config.features.onDemandAiTestScopeEnabled = true
+    config.features.onDemandAiTestAdminActorIds = new Set(['ADMIN-1'])
+    config.features.onDemandAiTestSourceIds = new Set(['SRC-1'])
+    const source = { id: 'SRC-1', customerId: 'CUS-1', rawText: '【测试数据｜非真实客户】合成资料。', processingStatus: 'UPLOADED' }
+    const guard = budgetGuard()
+    const repository = new FeishuRepository({ authRepository: {}, aiBudgetGuard: guard })
+    repository.load = vi.fn(async () => databaseFor(source))
+    repository.processSource = vi.fn(async () => ({ source: { ...source, processingStatus: 'COMPLETED' }, evidenceItems: [], proposals: [], conflicts: [] }))
+
+    const result = await repository.processSourceOnDemand('ADMIN-1', 'SRC-1')
+
+    expect(result.source.processingStatus).toBe('COMPLETED')
+    expect(guard.reserve).toHaveBeenCalledTimes(1)
+    expect(repository.processSource).toHaveBeenCalledTimes(1)
+  })
+
   it('closes the request if durable finalization cannot be confirmed', async () => {
     const source = { id: 'SRC-1', customerId: 'CUS-1', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }
     const guard = budgetGuard()

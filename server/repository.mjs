@@ -2842,6 +2842,17 @@ export class FeishuRepository {
     this.sourceProcessingLocks.set(lockKey, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
+  async assertOnDemandTestScope(actorId, sourceId) {
+    const actors = config.features.onDemandAiTestAdminActorIds
+    const sources = config.features.onDemandAiTestSourceIds
+    if (!(actors instanceof Set) || actors.size === 0 || !(sources instanceof Set) || sources.size === 0) {
+      throw Object.assign(new Error('按需 AI 测试范围未配置，已拒绝。'), { code: 'ON_DEMAND_AI_TEST_SCOPE_UNCONFIGURED', status: 403 })
+    }
+    if (!actors.has(String(actorId))) throw Object.assign(new Error('当前账号不在按需 AI 测试白名单。'), { code: 'ON_DEMAND_AI_TEST_ACTOR_NOT_ALLOWED', status: 403 })
+    if (!sources.has(String(sourceId))) throw Object.assign(new Error('该资料不在按需 AI 测试白名单。'), { code: 'ON_DEMAND_AI_TEST_SOURCE_NOT_ALLOWED', status: 403 })
+    const account = await this.staff(actorId)
+    if (account.permissionRole !== 'ADMIN' || account.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以执行此操作'), { code: 'ADMIN_REQUIRED', status: 403 })
+  }
   async processSourceOnDemand(actorId, sourceId, { trigger = 'MANUAL' } = {}) {
     if (!config.features.onDemandAiProcessing) throw Object.assign(new Error('按需 AI 整理尚未开启'), { code: 'ON_DEMAND_AI_DISABLED', status: 409 })
     // This manual-only release deliberately keeps AUTO hard-closed even when
@@ -2849,6 +2860,9 @@ export class FeishuRepository {
     // release after the durable guard has passed a real authorized run.
     if (trigger === 'AUTO') throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
     if (!config.features.onDemandAiDailyLimit) throw Object.assign(new Error('按需 AI 每日额度尚未配置'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REQUIRED', status: 409 })
+    // Temporary production acceptance isolation: exact ADMIN + exact Source,
+    // checked before loading records, reserving budget or calling the model.
+    if (config.features.onDemandAiTestScopeEnabled) await this.assertOnDemandTestScope(actorId, sourceId)
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
