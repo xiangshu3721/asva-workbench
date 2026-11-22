@@ -25,7 +25,7 @@ import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 import { AiBudgetGuardError, createAiBudgetGuard, operationIdForSource } from './ai-budget-guard.mjs'
-import { getLastDeepSeekUsage, resetLastDeepSeekUsage } from './deepseek.mjs'
+import { getCurrentCallId, consumeCallUsage, resetLastDeepSeekUsage, getLastDeepSeekUsage } from './deepseek.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 export function readFeishuRichText(value) {
@@ -2835,11 +2835,11 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
-  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false } = {}) {
+  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false, callId = undefined } = {}) {
     const lockKey = onDemand ? sourceId : `${sourceId}:${stage}`
     const inFlight = this.sourceProcessingLocks.get(lockKey)
     if (inFlight) return inFlight
-    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence, onDemand })
+    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence, onDemand, callId })
     this.sourceProcessingLocks.set(lockKey, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
@@ -2889,6 +2889,7 @@ export class FeishuRepository {
     }
     if (!reservation) throw new AiBudgetGuardError('AI 额度预留结果无法确认。', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
     let result
+    const callId = getCurrentCallId()
     try {
       // Persist ATTEMPTED before touching Feishu/model. If this transition or
       // its finalization becomes unknown, the reservation stays consumed and
@@ -2896,20 +2897,29 @@ export class FeishuRepository {
       await this.aiBudgetGuard.markAttempted(reservation)
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'ATTEMPTED')
       resetLastDeepSeekUsage()
-      result = await this.processSource(actorId, sourceId, { onDemand: true })
+      result = await this.processSource(actorId, sourceId, { onDemand: true, callId })
     } catch (error) {
+      // R048.14: Distinguish definite failure from unknown execution result.
+      // Definite failures (invalid input, rate limit, etc.) release active token.
+      // Unknown results (timeout, network error after model call started) keep active
+      // to prevent double-charging while admin investigates.
+      const isDefiniteFailure = error?.code && ['INVALID_SOURCE_TYPE', 'SOURCE_TEXT_REQUIRED', 'SOURCE_CUSTOMER_REQUIRED', 'DEEPSEEK_RATE_LIMIT', 'DEEPSEEK_OUTPUT_TRUNCATED', 'ON_DEMAND_AI_INPUT_TOO_LARGE', 'ON_DEMAND_AI_PROMPT_TOO_LARGE'].includes(error.code)
+      const isUnknownResult = error?.code && ['DEEPSEEK_TIMEOUT', 'DEEPSEEK_UNAVAILABLE', 'DEEPSEEK_UPSTREAM_OVERLOADED', 'DEEPSEEK_INVALID_RESPONSE', 'REQUEST_TIMEOUT', 'HTTP_433', 'HTTP_502', 'HTTP_504'].includes(error.code)
       try {
-        // A known failure before a successful model result frees only
-        // concurrency. It never returns the daily reservation or retries.
-        await this.aiBudgetGuard.complete(reservation, { status: 'FAILED' })
+        // Definite failure: release concurrency, keep daily quota consumed.
+        // Unknown result: keep active locked to prevent double-charge; admin must manually unlock via setControl.
+        await this.aiBudgetGuard.complete(reservation, { status: 'FAILED', releaseActive: isDefiniteFailure })
       } catch (completionError) {
         this.audit('PROCESS_SOURCE_ON_DEMAND_FINALIZATION', sourceId, actorId, 'UNKNOWN', completionError.code || 'AI_BUDGET_FINALIZATION_UNKNOWN')
         throw completionError
       }
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'FAILED', error.code || 'ON_DEMAND_AI_FAILED')
+      if (isUnknownResult) {
+        this.audit('PROCESS_SOURCE_ON_DEMAND_LOCKED', sourceId, actorId, 'ACTIVE_LOCKED', '未知执行结果，并发令牌保留，需管理员人工检查')
+      }
       throw error
     }
-    const tokenUsage = getLastDeepSeekUsage()
+    const tokenUsage = consumeCallUsage(callId)
     try {
       await this.aiBudgetGuard.complete(reservation, { status: 'SUCCEEDED', inputTokens: tokenUsage.inputTokens, outputTokens: tokenUsage.outputTokens })
     } catch (completionError) {
@@ -2935,7 +2945,12 @@ export class FeishuRepository {
     await this.staff(actorId)
     return this.aiBudgetGuard.dailyStats(day)
   }
-  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false } = {}) {
+  async onDemandAiAnomalyCheck(actorId, day) {
+    const account = await this.staff(actorId)
+    if (account.permissionRole !== 'ADMIN') throw Object.assign(new Error('只有 ADMIN 可以执行异常检查'), { code: 'ADMIN_REQUIRED', status: 403 })
+    return this.aiBudgetGuard.checkAndAlertAnomalies(day)
+  }
+  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false, callId = undefined } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
@@ -2986,7 +3001,7 @@ export class FeishuRepository {
         const chunks = chunkText(source.rawText)
         if (onDemand && chunks.length !== 1) throw Object.assign(new Error('按需整理仅支持单段资料'), { code: 'ON_DEMAND_AI_MULTI_CHUNK_FORBIDDEN', status: 413 })
         for (const chunk of chunks) {
-        const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, dialogueContext, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, operation: onDemand ? 'on-demand.source.process' : 'evidence.extract', maxAttempts: onDemand ? 1 : undefined, timeoutMs: onDemand ? config.features.onDemandAiTimeoutMs : undefined, maxTokens: onDemand ? config.features.onDemandAiMaxTokens : undefined, maxPromptChars: onDemand ? config.features.onDemandAiMaxPromptChars : undefined, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
+        const rawItems = await this.evidenceExtractor({ text: chunk.text, sourceRole: source.sourceRole, sourcePerspective: source.sourcePerspective, dialogueContext, current: database.customers.find((item) => item.id === source.customerId)?.profileFields || {}, operation: onDemand ? 'on-demand.source.process' : 'evidence.extract', maxAttempts: onDemand ? 1 : undefined, timeoutMs: onDemand ? config.features.onDemandAiTimeoutMs : undefined, maxTokens: onDemand ? config.features.onDemandAiMaxTokens : undefined, maxPromptChars: onDemand ? config.features.onDemandAiMaxPromptChars : undefined, callId, onDiagnostics: (diagnostics) => { processingDiagnostics.prompt_char_count += Number(diagnostics?.prompt_char_count || 0); processingDiagnostics.token_estimate += Number(diagnostics?.token_estimate || 0) } })
           processingDiagnostics.extracted_candidate_count += rawItems.length
           for (const rawItem of rawItems) {
             if (rawItem?.customer_id && String(rawItem.customer_id) !== String(source.customerId)) {

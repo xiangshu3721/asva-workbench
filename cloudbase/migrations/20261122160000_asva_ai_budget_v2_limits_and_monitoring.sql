@@ -3,8 +3,15 @@
 -- - Max concurrent: 1 → 2 (validated against Feishu write path)
 -- - Add token tracking columns to reservation rows
 -- - Add daily stats view for monitoring
+-- - Fix CHECK constraint on active column to support counter semantics
 
 BEGIN;
+
+-- Drop old CHECK constraint that only allows 0 or 1
+ALTER TABLE public.asva_ai_budget_v1 DROP CONSTRAINT IF EXISTS asva_ai_budget_v1_active_check;
+
+-- Add new CHECK constraint that allows 0..2 for counter semantics
+ALTER TABLE public.asva_ai_budget_v1 ADD CONSTRAINT asva_ai_budget_v1_active_check CHECK (active >= 0 AND active <= 2);
 
 -- Add token tracking columns to existing budget table
 ALTER TABLE public.asva_ai_budget_v1 ADD COLUMN IF NOT EXISTS input_tokens integer DEFAULT 0;

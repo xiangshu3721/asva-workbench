@@ -91,7 +91,7 @@ describe('on-demand source processing', () => {
 
     expect(result.source.processingStatus).toBe('COMPLETED')
     expect(repository.processSource).toHaveBeenCalledTimes(1)
-    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-1', { onDemand: true })
+    expect(repository.processSource).toHaveBeenCalledWith('ADMIN-1', 'SRC-1', { onDemand: true, callId: expect.any(String) })
     expect(guard.reserve).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'SRC-1', dailyLimit: 2, maxConcurrent: 1 }))
     expect(guard.markAttempted).toHaveBeenCalledTimes(1)
     expect(guard.complete).toHaveBeenCalledWith(expect.any(Object), { status: 'SUCCEEDED', inputTokens: expect.any(Number), outputTokens: expect.any(Number) })

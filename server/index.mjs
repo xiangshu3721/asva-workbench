@@ -142,6 +142,10 @@ async function handle(request, response, requestId) {
     const day = url.searchParams.get('day') || undefined
     return send(request, response, 200, await repository.onDemandAiDailyStats(await guardAdmin(request), day), requestId)
   }
+  if (request.method === 'GET' && url.pathname === '/api/admin/ai-processing/anomaly-check') {
+    const day = url.searchParams.get('day') || undefined
+    return send(request, response, 200, await repository.onDemandAiAnomalyCheck(await guardAdmin(request), day), requestId)
+  }
   if (request.method === 'GET' && url.pathname === '/api/dashboard') return send(request, response, 200, await repository.dashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/dashboard/basic') return send(request, response, 200, await repository.basicDashboard(await guard(request)), requestId)
   if (request.method === 'GET' && url.pathname === '/api/customers/directory') return send(request, response, 200, await repository.customerDirectory(await guard(request)), requestId)
@@ -170,7 +174,27 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/documents/extract') { const body = await readBody(request); return send(request, response, 200, await repository.extractDocument(await guard(request), body.document), requestId) }
   const customerSources = url.pathname.match(/^\/api\/customers\/([^/]+)\/sources$/)
   if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guard(request), decodeURIComponent(customerSources[1])), requestId)
-  if (request.method === 'POST' && url.pathname === '/api/sources') return send(request, response, 201, await repository.createSource(await guard(request), await readBody(request)), requestId)
+  if (request.method === 'POST' && url.pathname === '/api/sources') {
+    const actor = await guard(request)
+    const source = await repository.createSource(actor, await readBody(request))
+    // R048.14: Trigger AUTO processing server-side if conditions are met.
+    // This ensures processing starts even if the browser closes before sending AUTO request.
+    // PG reservation guarantees idempotency; duplicate AUTO requests are rejected.
+    try {
+      const flags = config.features
+      if (flags.onDemandAiProcessing && flags.onDemandAiAutoTrigger && flags.onDemandAiDailyLimit > 0) {
+        const allowedCustomer = flags.onDemandAiAutoTriggerCustomerIds?.has(source.customerId)
+        const allowedActor = flags.onDemandAiAutoTriggerActorIds?.has(actor.id) && source.uploadedBy === actor.id
+        if (allowedCustomer && allowedActor) {
+          // Start async processing, don't await. SCF will continue execution after response.
+          repository.processSourceOnDemand(actor.id, source.id, { trigger: 'AUTO' }).catch((error) => {
+            console.error('[ASVA_AUTO_TRIGGER]', JSON.stringify({ sourceId: source.id, error: error.code || error.message }))
+          })
+        }
+      }
+    } catch {}
+    return send(request, response, 201, source, requestId)
+  }
   const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
   if (request.method === 'POST' && sourceProcess) {
     // Legacy clients retain the URL, but must not bypass the on-demand AI gate.
