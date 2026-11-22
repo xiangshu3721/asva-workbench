@@ -3415,7 +3415,11 @@ export class FeishuRepository {
       const finishedAt = now()
       const finalErrors = [...new Set([...derivedErrors, ...(archiveOutcome.errorCode ? [archiveOutcome.errorCode] : []), ...(candidates.length > 0 && replaceableEvidence.length === 0 ? ['NO_VALID_EVIDENCE'] : [])])]
       await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: finalErrors.length ? finalErrors.join(',').slice(0, 200) : '', updated_at: finishedAt })
-      const debugDatabase = await this.load()
+      // P0-20261122: reuse debugBeforeStatus for trace diagnostics instead of
+      // loading debugDatabase again. Proposals/conflicts were created before
+      // debugBeforeStatus was loaded, so it has the correct counts. This saves
+      // one full 12-table load (~3-4s) in the on-demand path.
+      const debugDatabase = debugBeforeStatus
       this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, archive_outcome: archiveOutcome.outcome, processing_error: finalErrors.length ? finalErrors.join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, ...archivingCounts, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)

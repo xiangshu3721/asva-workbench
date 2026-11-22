@@ -229,7 +229,11 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
       name: functionName,
       handler: 'index.main',
       runtime: 'Nodejs20.19',
-      timeout: 60,
+      // P0-20261122: first acceptance run completed all business writes at 59.7s
+      // but was killed by the 60s SCF timeout before PG complete ran. HTTP
+      // functions support 1-7200s. 120s gives the on-demand path headroom for
+      // model call + evidence writes + proposal writes + PG completion.
+      timeout: 120,
       memorySize: 256,
       envVariables,
     })
