@@ -1543,6 +1543,27 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       await onRefreshProfile?.()
       setMessage('AI 整理完成，客户档案已刷新。')
     } catch (processError) {
+      // P0-20261122: timeout/network errors may mean the server completed
+      // processing but the response was lost. Do a read-only status check
+      // before showing failure — the source may be REVIEW_REQUIRED (success).
+      const code = (processError as { serverCode?: string; code?: string })?.serverCode || (processError as { code?: string })?.code
+      const isAmbiguous = !code || code === 'REQUEST_TIMEOUT' || code === 'NETWORK_UNREACHABLE' || code === 'HTTP_433' || code === 'HTTP_502' || code === 'HTTP_504'
+      if (isAmbiguous) {
+        try {
+          const refreshed = await load({ refresh: true })
+          if (refreshed) {
+            const matched = refreshed.sources.find((s) => s.id === sourceId)
+            if (matched?.processingStatus === 'REVIEW_REQUIRED') {
+              setMessage('AI 已提取证据，等待审核。')
+              return
+            }
+            if (matched?.processingStatus === 'COMPLETED') {
+              setMessage('AI 整理完成，客户档案已刷新。')
+              return
+            }
+          }
+        } catch { /* fall through to default message */ }
+      }
       setMessage(onDemandAiStatusMessage(processError))
     } finally { setSaving(false) }
   }
@@ -1569,7 +1590,29 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       await load({ refresh: true })
       await onRefreshProfile?.()
       setMessage('AI 整理完成，客户档案已刷新。')
-    }).catch((processError) => setMessage(onDemandAiStatusMessage(processError)))
+    }).catch(async (processError) => {
+      // P0-20261122: timeout/network errors may mean the server completed
+      // processing but the response was lost. Do a read-only status check.
+      const code = (processError as { serverCode?: string; code?: string })?.serverCode || (processError as { code?: string })?.code
+      const isAmbiguous = !code || code === 'REQUEST_TIMEOUT' || code === 'NETWORK_UNREACHABLE' || code === 'HTTP_433' || code === 'HTTP_502' || code === 'HTTP_504'
+      if (isAmbiguous) {
+        try {
+          const refreshed = await load({ refresh: true })
+          if (refreshed) {
+            const matched = refreshed.sources.find((s) => s.id === source.id)
+            if (matched?.processingStatus === 'REVIEW_REQUIRED') {
+              setMessage('AI 已提取证据，等待审核。')
+              return
+            }
+            if (matched?.processingStatus === 'COMPLETED') {
+              setMessage('AI 整理完成，客户档案已刷新。')
+              return
+            }
+          }
+        } catch { /* fall through to default message */ }
+      }
+      setMessage(onDemandAiStatusMessage(processError))
+    })
   }
   const recoverPendingSave = async (pending: { operationId: string; input: SourceCreateInput; startedAt: number }) => {
     updateSaveState('TIMEOUT')

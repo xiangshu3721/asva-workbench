@@ -90,6 +90,11 @@ export function validateProductionEnv(values, envPath = '') {
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
   if (missing.length) throw new Error(`生产部署配置缺少必填变量：${missing.join(', ')}`)
+  if (values.ON_DEMAND_AI_TEST_SCOPE_ENABLED === 'true') {
+    const testAdmins = String(values.ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    const testSources = String(values.ON_DEMAND_AI_TEST_SOURCE_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    if (!testAdmins.length || !testSources.length) throw new Error('按需 AI 测试范围启用时必须同时配置 ADMIN 与 Source 白名单')
+  }
   return {
     envPath,
     appEnv: values.APP_ENV,
@@ -160,6 +165,9 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     ON_DEMAND_AI_BUDGET_RPC_BASE_URL: values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '',
     ON_DEMAND_AI_BUDGET_RPC_FUNCTION: values.ON_DEMAND_AI_BUDGET_RPC_FUNCTION || 'asva_ai_budget_guard',
     ON_DEMAND_AI_MAX_CONCURRENT: values.ON_DEMAND_AI_MAX_CONCURRENT || '1',
+    ON_DEMAND_AI_TEST_SCOPE_ENABLED: values.ON_DEMAND_AI_TEST_SCOPE_ENABLED || 'false',
+    ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS: values.ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS || '',
+    ON_DEMAND_AI_TEST_SOURCE_IDS: values.ON_DEMAND_AI_TEST_SOURCE_IDS || '',
     ASVA_DEPLOY_MODE: values.ASVA_DEPLOY_MODE || 'normal',
     ASVA_FRONTEND_ORIGIN: values.ASVA_FRONTEND_ORIGIN || 'https://xiangshu3721.github.io',
     CORS_ALLOWED_ORIGINS: values.CORS_ALLOWED_ORIGINS || 'https://xiangshu3721.github.io,http://localhost:5173,http://127.0.0.1:5173',
@@ -221,7 +229,11 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
       name: functionName,
       handler: 'index.main',
       runtime: 'Nodejs20.19',
-      timeout: 60,
+      // P0-20261122: first acceptance run completed all business writes at 59.7s
+      // but was killed by the 60s SCF timeout before PG complete ran. HTTP
+      // functions support 1-7200s. 120s gives the on-demand path headroom for
+      // model call + evidence writes + proposal writes + PG completion.
+      timeout: 120,
       memorySize: 256,
       envVariables,
     })
@@ -242,9 +254,11 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
     const tcb = process.env.TCB_BIN || 'tcb'
     const functionsOutput = await runCapture(tcb, ['fn', 'list', '--env-id', envId, '--json'], root)
     const functionsJsonStart = functionsOutput.indexOf('{')
-    const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
+    const functionsRaw = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
+    // tcb fn list may return data as an array or as { Functions: [...] }
+    const functionsList = Array.isArray(functionsRaw.data) ? functionsRaw.data : (functionsRaw.data?.Functions || functionsRaw.data?.functions || [])
     if (deployApi) {
-      const hasExistingTarget = (functions.data || []).some((item) => item.name === functionName)
+      const hasExistingTarget = functionsList.some((item) => item.name === functionName || item.FunctionName === functionName)
       const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
       if (hasExistingTarget) functionArgs.push('--force')
       functionArgs.push('--json')
@@ -259,7 +273,7 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
     }
 
     if (deployWorker) {
-      const hasExistingWorker = (functions.data || []).some((item) => item.name === workerName)
+      const hasExistingWorker = functionsList.some((item) => item.name === workerName || item.FunctionName === workerName)
       const workerArgs = ['fn', 'deploy', workerName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
       if (hasExistingWorker) workerArgs.push('--force')
       workerArgs.push('--json')

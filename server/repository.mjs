@@ -2842,6 +2842,17 @@ export class FeishuRepository {
     this.sourceProcessingLocks.set(lockKey, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
+  async assertOnDemandTestScope(actorId, sourceId) {
+    const actors = config.features.onDemandAiTestAdminActorIds
+    const sources = config.features.onDemandAiTestSourceIds
+    if (!(actors instanceof Set) || actors.size === 0 || !(sources instanceof Set) || sources.size === 0) {
+      throw Object.assign(new Error('按需 AI 测试范围未配置，已拒绝。'), { code: 'ON_DEMAND_AI_TEST_SCOPE_UNCONFIGURED', status: 403 })
+    }
+    if (!actors.has(String(actorId))) throw Object.assign(new Error('当前账号不在按需 AI 测试白名单。'), { code: 'ON_DEMAND_AI_TEST_ACTOR_NOT_ALLOWED', status: 403 })
+    if (!sources.has(String(sourceId))) throw Object.assign(new Error('该资料不在按需 AI 测试白名单。'), { code: 'ON_DEMAND_AI_TEST_SOURCE_NOT_ALLOWED', status: 403 })
+    const account = await this.staff(actorId)
+    if (account.permissionRole !== 'ADMIN' || account.loginEnabled !== true) throw Object.assign(new Error('只有 ADMIN 可以执行此操作'), { code: 'ADMIN_REQUIRED', status: 403 })
+  }
   async processSourceOnDemand(actorId, sourceId, { trigger = 'MANUAL' } = {}) {
     if (!config.features.onDemandAiProcessing) throw Object.assign(new Error('按需 AI 整理尚未开启'), { code: 'ON_DEMAND_AI_DISABLED', status: 409 })
     // This manual-only release deliberately keeps AUTO hard-closed even when
@@ -2849,6 +2860,9 @@ export class FeishuRepository {
     // release after the durable guard has passed a real authorized run.
     if (trigger === 'AUTO') throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
     if (!config.features.onDemandAiDailyLimit) throw Object.assign(new Error('按需 AI 每日额度尚未配置'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REQUIRED', status: 409 })
+    // Temporary production acceptance isolation: exact ADMIN + exact Source,
+    // checked before loading records, reserving budget or calling the model.
+    if (config.features.onDemandAiTestScopeEnabled) await this.assertOnDemandTestScope(actorId, sourceId)
     const database = await this.load()
     const visibleDatabase = scope(database, actorId)
     const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
@@ -3401,7 +3415,11 @@ export class FeishuRepository {
       const finishedAt = now()
       const finalErrors = [...new Set([...derivedErrors, ...(archiveOutcome.errorCode ? [archiveOutcome.errorCode] : []), ...(candidates.length > 0 && replaceableEvidence.length === 0 ? ['NO_VALID_EVIDENCE'] : [])])]
       await updateMappedRecord('sourceRecords', `source.processing.${finalStatus.toLowerCase()}`, sourceRow.record_id, { processing_status: finalStatus, processing_version: processingVersion, last_processing_at: finishedAt, processing_error: finalErrors.length ? finalErrors.join(',').slice(0, 200) : '', updated_at: finishedAt })
-      const debugDatabase = await this.load()
+      // P0-20261122: reuse debugBeforeStatus for trace diagnostics instead of
+      // loading debugDatabase again. Proposals/conflicts were created before
+      // debugBeforeStatus was loaded, so it has the correct counts. This saves
+      // one full 12-table load (~3-4s) in the on-demand path.
+      const debugDatabase = debugBeforeStatus
       this.evidenceTraces.unshift({ source_id: sourceId, processing_status: finalStatus, archive_outcome: archiveOutcome.outcome, processing_error: finalErrors.length ? finalErrors.join(',') : '', extraction_batch: batchId, evidence_count: replaceableEvidence.length, ...archivingCounts, proposal_count: debugDatabase.profileUpdateProposals.filter((item) => item.sourceId === sourceId).length, conflict_count: debugDatabase.evidenceConflicts.filter((item) => item.newEvidenceId && debugDatabase.evidenceItems.find((evidence) => evidence.id === item.newEvidenceId)?.sourceId === sourceId).length, model: config.deepseek.model, prompt_version: 'evidence-v1', ...processingDiagnostics, source_save_ms: this.sourceSaveTimes.get(sourceId), background_analysis_ms: Date.now() - startedAt, duration_ms: Date.now() - startedAt })
       this.evidenceTraces = this.evidenceTraces.slice(0, 50)
       this.audit('PROCESS_SOURCE', sourceId, actorId)

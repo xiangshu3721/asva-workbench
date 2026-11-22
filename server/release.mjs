@@ -39,5 +39,7 @@ export function featureFlags() {
     onDemandAiDailyLimit: Math.min(3, Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0)),
     onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(process.env.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
     onDemandAiBudgetStoreConfigured: Boolean(String(process.env.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim() && String(process.env.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim() && String(process.env.CLOUDBASE_APIKEY || '').trim()),
+    // Expose only the boolean. Whitelist identifiers stay server-side.
+    onDemandAiTestScopeEnabled: process.env.ON_DEMAND_AI_TEST_SCOPE_ENABLED === 'true',
   }
 }
