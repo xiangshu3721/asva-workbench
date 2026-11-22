@@ -254,9 +254,11 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
     const tcb = process.env.TCB_BIN || 'tcb'
     const functionsOutput = await runCapture(tcb, ['fn', 'list', '--env-id', envId, '--json'], root)
     const functionsJsonStart = functionsOutput.indexOf('{')
-    const functions = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
+    const functionsRaw = functionsJsonStart >= 0 ? JSON.parse(functionsOutput.slice(functionsJsonStart)) : { data: [] }
+    // tcb fn list may return data as an array or as { Functions: [...] }
+    const functionsList = Array.isArray(functionsRaw.data) ? functionsRaw.data : (functionsRaw.data?.Functions || functionsRaw.data?.functions || [])
     if (deployApi) {
-      const hasExistingTarget = (functions.data || []).some((item) => item.name === functionName)
+      const hasExistingTarget = functionsList.some((item) => item.name === functionName || item.FunctionName === functionName)
       const functionArgs = ['fn', 'deploy', functionName, '--dir', functionDir, '--httpFn', '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
       if (hasExistingTarget) functionArgs.push('--force')
       functionArgs.push('--json')
@@ -271,7 +273,7 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
     }
 
     if (deployWorker) {
-      const hasExistingWorker = (functions.data || []).some((item) => item.name === workerName)
+      const hasExistingWorker = functionsList.some((item) => item.name === workerName || item.FunctionName === workerName)
       const workerArgs = ['fn', 'deploy', workerName, '--dir', workerDir, '--runtime', 'Nodejs20.19', '--install-dependency', 'false', '--yes']
       if (hasExistingWorker) workerArgs.push('--force')
       workerArgs.push('--json')
