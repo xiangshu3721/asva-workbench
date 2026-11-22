@@ -28,9 +28,9 @@ function memoryRpc({ failComplete = false } = {}) {
         if (existing) return respond({ duplicate: true, reservation: existing })
         const used = control.quotaDay === body.day ? Number(control.used || 0) : 0
         if (used >= body.dailyLimit) return error('limit', 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', 429)
-        if (Number(control.active || 0) >= body.maxConcurrent || control.activeOperationId) return error('concurrency', 'ON_DEMAND_AI_CONCURRENCY_REACHED', 429)
+        if (Number(control.active || 0) >= body.maxConcurrent) return error('concurrency', 'ON_DEMAND_AI_CONCURRENCY_REACHED', 429)
         const reservation = { _id: id, operationId: body.operationId, sourceId: body.sourceId, sourceVersion: body.sourceVersion, actorId: body.actorId, day: body.day, status: 'RESERVED' }
-        docs.set('control', { ...control, quotaDay: body.day, used: used + 1, active: 1, activeOperationId: id })
+        docs.set('control', { ...control, quotaDay: body.day, used: used + 1, active: Number(control.active || 0) + 1, activeOperationId: id })
         docs.set(`day:${body.day}`, { day: body.day, used: used + 1, active: 1 })
         docs.set(id, reservation)
         return respond({ duplicate: false, reservation })
@@ -40,7 +40,6 @@ function memoryRpc({ failComplete = false } = {}) {
         const reservation = body.reservation
         const current = docs.get(reservation._id || id)
         if (!current || current.status !== 'RESERVED') return error('unknown', 'AI_BUDGET_RESERVATION_UNKNOWN', 503)
-        if (control.activeOperationId !== (current._id || id) || Number(control.active) !== 1) return error('token', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
         docs.set(current._id || id, { ...current, status: 'ATTEMPTED' })
         return respond({ ok: true })
       }
@@ -51,8 +50,8 @@ function memoryRpc({ failComplete = false } = {}) {
         if (failComplete) return error('timeout', 'AI_BUDGET_STORE_UNAVAILABLE', 503)
         docs.set(current._id || id, { ...current, status: body.status })
         if (body.releaseActive) {
-          if (control.activeOperationId !== (current._id || id) || Number(control.active) !== 1) return error('token', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
-          docs.set('control', { ...control, active: 0, activeOperationId: '' })
+          if (Number(control.active || 0) < 1) return error('token', 'AI_BUDGET_CONCURRENCY_UNKNOWN', 503)
+          docs.set('control', { ...control, active: Math.max(0, Number(control.active) - 1), activeOperationId: null })
           const bucket = docs.get(`day:${current.day}`)
           docs.set(`day:${current.day}`, { ...bucket, active: Math.max(0, Number(bucket?.active || 0) - 1) })
         }
@@ -97,12 +96,16 @@ describe('durable on-demand AI budget guard over HTTPS RPC', () => {
 
   it('keeps empty-day race below hard quota with ten instances', async () => {
     const shared = memoryRpc(); const guards = Array.from({ length: 10 }, () => guard(shared)); await guards[0].setControl({ mode: 'ENABLED', actorId: 'ADMIN-1' })
+    // R048.13: hard max concurrent raised to 2; maxConcurrent: 99 → capped to 2 by the guard.
     const wave = await Promise.allSettled(guards.map((item, index) => item.reserve({ operationId: `concurrent-${index}`, sourceId: `SRC-${index}`, sourceVersion: 'hash-v1', actorId: 'ADMIN-1', dailyLimit: 99, maxConcurrent: 99 })))
-    const allocated = wave.filter((item) => item.status === 'fulfilled'); expect(allocated).toHaveLength(1)
+    const allocated = wave.filter((item) => item.status === 'fulfilled'); expect(allocated).toHaveLength(2)
+    // Complete first two, then fill up to the daily limit of 5.
     const first = allocated[0].value.reservation; await guards[0].markAttempted(first); await guards[0].complete(first, { status: 'SUCCEEDED' })
-    for (const [index, operationId] of ['second', 'third'].entries()) { const item = await guards[index + 1].reserve({ operationId, sourceId: `SRC-${operationId}`, sourceVersion: 'hash-v1', actorId: 'ADMIN-1', dailyLimit: 99, maxConcurrent: 99 }); await guards[index + 1].markAttempted(item.reservation); await guards[index + 1].complete(item.reservation, { status: 'SUCCEEDED' }) }
-    await expect(guards[0].reserve({ operationId: 'fourth', sourceId: 'SRC-fourth', sourceVersion: 'hash-v1', actorId: 'ADMIN-1', dailyLimit: 99, maxConcurrent: 99 })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', status: 429 })
-    expect(shared.docs.get('control')).toMatchObject({ used: 3, active: 0 })
+    const secondAlloc = allocated[1].value.reservation; await guards[1].markAttempted(secondAlloc); await guards[1].complete(secondAlloc, { status: 'SUCCEEDED' })
+    for (const [index, operationId] of ['third', 'fourth', 'fifth'].entries()) { const item = await guards[index + 2].reserve({ operationId, sourceId: `SRC-${operationId}`, sourceVersion: 'hash-v1', actorId: 'ADMIN-1', dailyLimit: 5, maxConcurrent: 99 }); await guards[index + 2].markAttempted(item.reservation); await guards[index + 2].complete(item.reservation, { status: 'SUCCEEDED' }) }
+    // After 5 successes with dailyLimit: 5, the 6th must be rejected.
+    await expect(guards[0].reserve({ operationId: 'sixth', sourceId: 'SRC-sixth', sourceVersion: 'hash-v1', actorId: 'ADMIN-1', dailyLimit: 5, maxConcurrent: 99 })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_DAILY_LIMIT_REACHED', status: 429 })
+    expect(shared.docs.get('control')).toMatchObject({ used: 5, active: 0 })
   })
 
   it('keeps one active token across Beijing midnight', async () => {

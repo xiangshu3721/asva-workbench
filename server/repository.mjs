@@ -25,6 +25,7 @@ import { normalizeCanonicalFact } from '../shared/canonical-profile-facts.mjs'
 import { applyServiceNecessityOverride, buildConsultationContext, buildSalesContext, classifyPrivacyText, combinePrivacyContext, privacySafeText, resolvePrivacyPolicy, SERVICE_NECESSITY_LEVELS } from '../shared/privacy-guard.mjs'
 import { createDialogueAnalysisToken, finalizeDialogueConfirmation, normalizeDialogueAssessment, parseDialogueContext, serializeDialogueContext, stripDialogueContext, verifyDialogueConfirmation } from '../shared/dialogue-gate.mjs'
 import { AiBudgetGuardError, createAiBudgetGuard, operationIdForSource } from './ai-budget-guard.mjs'
+import { getLastDeepSeekUsage, resetLastDeepSeekUsage } from './deepseek.mjs'
 
 const statusMap = { 待分配: 'WAIT_ASSIGN', 已分配: 'WAIT_FOLLOW_UP', 已联系: 'WAIT_FOLLOW_UP', 待联系: 'WAIT_FOLLOW_UP', 待跟进: 'WAIT_FOLLOW_UP', 已接待: 'WAIT_FEEDBACK', 已完成: 'COMPLETED', FOLLOWING: 'WAIT_FOLLOW_UP' }
 export function readFeishuRichText(value) {
@@ -2855,10 +2856,7 @@ export class FeishuRepository {
   }
   async processSourceOnDemand(actorId, sourceId, { trigger = 'MANUAL' } = {}) {
     if (!config.features.onDemandAiProcessing) throw Object.assign(new Error('按需 AI 整理尚未开启'), { code: 'ON_DEMAND_AI_DISABLED', status: 409 })
-    // This manual-only release deliberately keeps AUTO hard-closed even when
-    // a variable is edited prematurely. Auto-triggering is a later canary
-    // release after the durable guard has passed a real authorized run.
-    if (trigger === 'AUTO') throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
+    if (trigger === 'AUTO' && !config.features.onDemandAiAutoTrigger) throw Object.assign(new Error('保存后自动整理尚未开启'), { code: 'ON_DEMAND_AI_AUTO_TRIGGER_DISABLED', status: 409 })
     if (!config.features.onDemandAiDailyLimit) throw Object.assign(new Error('按需 AI 每日额度尚未配置'), { code: 'ON_DEMAND_AI_DAILY_LIMIT_REQUIRED', status: 409 })
     // Temporary production acceptance isolation: exact ADMIN + exact Source,
     // checked before loading records, reserving budget or calling the model.
@@ -2867,6 +2865,11 @@ export class FeishuRepository {
     const visibleDatabase = scope(database, actorId)
     const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
     if (!source) throw Object.assign(new Error('资料不存在'), { code: 'SOURCE_NOT_FOUND', status: 404 })
+    if (trigger === 'AUTO') {
+      const allowedCustomer = config.features.onDemandAiAutoTriggerCustomerIds.has(source.customerId)
+      const allowedActor = config.features.onDemandAiAutoTriggerActorIds.has(actorId) && source.uploadedBy === actorId
+      if (!allowedCustomer || !allowedActor) throw Object.assign(new Error('保存后自动整理尚未在此导师和客户范围内开启'), { code: 'ON_DEMAND_AI_AUTO_CANARY_RESTRICTED', status: 409 })
+    }
     if (String(source.rawText || '').length > config.features.onDemandAiMaxChars) throw Object.assign(new Error(`资料超过单次整理上限（${config.features.onDemandAiMaxChars} 字）`), { code: 'ON_DEMAND_AI_INPUT_TOO_LARGE', status: 413 })
     if (['COMPLETED', 'REVIEW_REQUIRED', 'PROCESSING'].includes(source.processingStatus)) return this.sourceDetail(actorId, sourceId)
     const operationId = operationIdForSource(source)
@@ -2892,6 +2895,7 @@ export class FeishuRepository {
       // blocks another model call rather than risk a duplicate charge.
       await this.aiBudgetGuard.markAttempted(reservation)
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'ATTEMPTED')
+      resetLastDeepSeekUsage()
       result = await this.processSource(actorId, sourceId, { onDemand: true })
     } catch (error) {
       try {
@@ -2905,8 +2909,9 @@ export class FeishuRepository {
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'FAILED', error.code || 'ON_DEMAND_AI_FAILED')
       throw error
     }
+    const tokenUsage = getLastDeepSeekUsage()
     try {
-      await this.aiBudgetGuard.complete(reservation, { status: 'SUCCEEDED' })
+      await this.aiBudgetGuard.complete(reservation, { status: 'SUCCEEDED', inputTokens: tokenUsage.inputTokens, outputTokens: tokenUsage.outputTokens })
     } catch (completionError) {
       // The model has already run. If its durable completion cannot be
       // confirmed, do not write FAILED as a fallback: that could release the
@@ -2925,6 +2930,10 @@ export class FeishuRepository {
     const account = await this.staff(actorId)
     if (account.permissionRole !== 'ADMIN') throw Object.assign(new Error('只有 ADMIN 可以变更 AI 紧急暂停状态'), { code: 'ADMIN_REQUIRED', status: 403 })
     return this.aiBudgetGuard.setControl({ mode, actorId })
+  }
+  async onDemandAiDailyStats(actorId, day) {
+    await this.staff(actorId)
+    return this.aiBudgetGuard.dailyStats(day)
   }
   async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false } = {}) {
     this.invalidateDatabaseCache()

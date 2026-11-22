@@ -4,8 +4,11 @@ const CONTROL_ID = 'control'
 const dayId = (day) => `day:${day}`
 const reservationId = (operationId) => `op:${crypto.createHash('sha256').update(operationId).digest('hex')}`
 const time = () => new Date().toISOString()
-const HARD_DAILY_LIMIT = 3
-const HARD_MAX_CONCURRENT = 1
+// R048.13: raised from 3/1 to 100/2. Daily limit is a safety fuse, not a
+// permanent business policy. Concurrency 2 is validated against the Feishu
+// write path; if parallel writes cause issues, reduce back to 1.
+const HARD_DAILY_LIMIT = 100
+const HARD_MAX_CONCURRENT = 2
 
 export const operationIdForSource = (source = {}) => {
   const contentVersion = String(source.contentHash || crypto.createHash('sha256').update(String(source.rawText || '')).digest('hex'))
@@ -120,14 +123,30 @@ export class CloudBaseAiBudgetGuard {
     try { await this.rpc('mark_attempted', { reservation: item, now: time() }) } catch (error) { throw unavailable(error) }
   }
 
-  async complete(reservation, { status, releaseActive = status === 'SUCCEEDED' }) {
+  async complete(reservation, { status, releaseActive = status === 'SUCCEEDED', inputTokens = 0, outputTokens = 0 } = {}) {
     const item = requireReservation(reservation)
     if (!['SUCCEEDED', 'FAILED'].includes(status)) throw new AiBudgetGuardError('AI 额度完成状态无效。', 'AI_BUDGET_COMPLETION_INVALID', 400)
-    try { await this.rpc('complete', { reservation: item, status, releaseActive: Boolean(releaseActive), now: time() }) } catch (error) { throw unavailable(error) }
+    try {
+      await this.rpc('complete', {
+        reservation: item,
+        status,
+        releaseActive: Boolean(releaseActive),
+        inputTokens: Number.isInteger(inputTokens) ? inputTokens : 0,
+        outputTokens: Number.isInteger(outputTokens) ? outputTokens : 0,
+        now: time(),
+      })
+    } catch (error) { throw unavailable(error) }
   }
 
   async control() {
     try { return (await this.rpc('control')) || { mode: 'DISABLED' } } catch (error) { throw unavailable(error) }
+  }
+
+  async dailyStats(day) {
+    try {
+      const result = await this.rpc('daily_stats', { day: day || new Date().toISOString().slice(0, 10) })
+      return result || { day, used: 0, successCount: 0, failCount: 0, totalInputTokens: 0, totalOutputTokens: 0, estimatedCostUsd: 0 }
+    } catch (error) { throw unavailable(error) }
   }
 
   async setControl({ mode, actorId }) {

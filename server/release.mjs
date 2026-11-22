@@ -36,10 +36,13 @@ export function featureFlags() {
     externalAppointment: process.env.FEATURE_EXTERNAL_APPOINTMENT === 'true',
     onDemandAiProcessing: process.env.FEATURE_ON_DEMAND_AI_PROCESSING === 'true',
     onDemandAiAutoTrigger: process.env.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true',
-    onDemandAiDailyLimit: Math.min(3, Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0)),
-    onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(process.env.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
+    onDemandAiDailyLimit: Math.min(100, Math.max(0, Number(process.env.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0)),
+    onDemandAiMaxConcurrent: Math.min(2, Math.max(1, Number(process.env.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
     onDemandAiBudgetStoreConfigured: Boolean(String(process.env.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim() && String(process.env.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim() && String(process.env.CLOUDBASE_APIKEY || '').trim()),
     // Expose only the boolean. Whitelist identifiers stay server-side.
     onDemandAiTestScopeEnabled: process.env.ON_DEMAND_AI_TEST_SCOPE_ENABLED === 'true',
+    // Do not expose customer or mentor identifiers through public health.
+    // Only disclose whether a non-empty, two-part automatic canary exists.
+    onDemandAiAutoTriggerCanaryConfigured: Boolean(String(process.env.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS || '').trim() && String(process.env.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS || '').trim()),
   }
 }

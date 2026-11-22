@@ -43,8 +43,8 @@ const onDemandAiTimeoutMs = Math.min(45_000, Math.max(1_000, Number(value('ON_DE
 const onDemandAiMaxTokens = Math.min(2048, Math.max(256, Number(value('ON_DEMAND_AI_MAX_TOKENS', '2048')) || 2048))
 // V1 has one shared hard budget for MANUAL and AUTO. Keep the application
 // fail-closed on zero, and never let an environment edit raise this ceiling.
-const onDemandAiDailyLimit = Math.min(3, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
-const onDemandAiMaxConcurrent = Math.min(1, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CONCURRENT', '1')) || 1))
+const onDemandAiDailyLimit = Math.min(100, Math.max(0, Number(value('ON_DEMAND_AI_DAILY_LIMIT', '0')) || 0))
+const onDemandAiMaxConcurrent = Math.min(2, Math.max(1, Number(value('ON_DEMAND_AI_MAX_CONCURRENT', '1')) || 1))
 const onDemandAiBudgetCollection = value('ON_DEMAND_AI_BUDGET_COLLECTION')
 const onDemandAiBudgetApiKey = value('CLOUDBASE_APIKEY')
 const onDemandAiBudgetRpcBaseUrl = value('ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
@@ -57,6 +57,11 @@ const idSet = (raw) => new Set(String(raw || '').split(/[\s,]+/).map((id) => id.
 const onDemandAiTestScopeEnabled = value('ON_DEMAND_AI_TEST_SCOPE_ENABLED', 'false') === 'true'
 const onDemandAiTestAdminActorIds = idSet(value('ON_DEMAND_AI_TEST_ADMIN_ACTOR_IDS'))
 const onDemandAiTestSourceIds = idSet(value('ON_DEMAND_AI_TEST_SOURCE_IDS'))
+// Automatic processing is intentionally limited to an explicit, intersecting
+// mentor/customer canary. An empty either side means no automatic request may
+// reach the model, even if its feature flag was accidentally enabled.
+const onDemandAiAutoTriggerCustomerIds = idSet(value('ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS'))
+const onDemandAiAutoTriggerActorIds = idSet(value('ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS'))
 const automaticProfileCanaryCustomerIds = new Set((value('AUTOMATIC_PROFILE_CANARY_CUSTOMER_IDS') || '')
   .split(/[\s,]+/)
   .map((id) => id.trim())
@@ -92,8 +97,11 @@ export const config = {
     // switch. It gates only an explicit, single-source HTTP request.
     onDemandAiProcessing: value('FEATURE_ON_DEMAND_AI_PROCESSING', 'false') === 'true',
     // Auto-triggering is deliberately a second, fail-closed switch. It must
-    // stay false until a function-specific platform rate/quota guard exists.
+    // stay false until the durable transaction guard has passed a controlled
+    // production run. Both canary sets below must also match.
     onDemandAiAutoTrigger: value('FEATURE_ON_DEMAND_AI_AUTO_TRIGGER', 'false') === 'true',
+    onDemandAiAutoTriggerCustomerIds,
+    onDemandAiAutoTriggerActorIds,
     onDemandAiMaxChars,
     onDemandAiMaxPromptChars,
     onDemandAiTimeoutMs,
