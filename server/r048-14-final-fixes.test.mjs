@@ -124,9 +124,18 @@ describe('R048.14 final fixes', () => {
   })
 
   describe('Server-side AUTO trigger', () => {
-    it('index.mjs creates source and triggers AUTO when conditions met', () => {
+    it('index.mjs uses actorId string correctly (R048.15 bug fix)', () => {
       const indexSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8')
-      // Must check AUTO conditions after createSource
+      // Must use actorId string, not actor.id (which would be undefined)
+      expect(indexSource).toMatch(/const actorId = await guard\(request\)/)
+      expect(indexSource).toMatch(/allowedActor.*actorId.*source\.uploadedBy === actorId/)
+      expect(indexSource).toMatch(/processSourceOnDemand\(actorId,/)
+      // Must NOT use actor.id (the bug)
+      expect(indexSource).not.toMatch(/actor\.id.*source\.uploadedBy/)
+    })
+
+    it('AUTO trigger logic is present in index.mjs', () => {
+      const indexSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8')
       expect(indexSource).toContain('processSourceOnDemand')
       expect(indexSource).toContain("trigger: 'AUTO'")
       expect(indexSource).toContain('onDemandAiAutoTrigger')

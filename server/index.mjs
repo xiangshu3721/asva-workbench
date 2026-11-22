@@ -175,19 +175,19 @@ async function handle(request, response, requestId) {
   const customerSources = url.pathname.match(/^\/api\/customers\/([^/]+)\/sources$/)
   if (request.method === 'GET' && customerSources) return send(request, response, 200, await repository.sourceWorkspace(await guard(request), decodeURIComponent(customerSources[1])), requestId)
   if (request.method === 'POST' && url.pathname === '/api/sources') {
-    const actor = await guard(request)
-    const source = await repository.createSource(actor, await readBody(request))
-    // R048.14: Trigger AUTO processing server-side if conditions are met.
+    const actorId = await guard(request)
+    const source = await repository.createSource(actorId, await readBody(request))
+    // R048.15: Trigger AUTO processing server-side if conditions are met.
     // This ensures processing starts even if the browser closes before sending AUTO request.
     // PG reservation guarantees idempotency; duplicate AUTO requests are rejected.
     try {
       const flags = config.features
       if (flags.onDemandAiProcessing && flags.onDemandAiAutoTrigger && flags.onDemandAiDailyLimit > 0) {
         const allowedCustomer = flags.onDemandAiAutoTriggerCustomerIds?.has(source.customerId)
-        const allowedActor = flags.onDemandAiAutoTriggerActorIds?.has(actor.id) && source.uploadedBy === actor.id
+        const allowedActor = flags.onDemandAiAutoTriggerActorIds?.has(actorId) && source.uploadedBy === actorId
         if (allowedCustomer && allowedActor) {
           // Start async processing, don't await. SCF will continue execution after response.
-          repository.processSourceOnDemand(actor.id, source.id, { trigger: 'AUTO' }).catch((error) => {
+          repository.processSourceOnDemand(actorId, source.id, { trigger: 'AUTO' }).catch((error) => {
             console.error('[ASVA_AUTO_TRIGGER]', JSON.stringify({ sourceId: source.id, error: error.code || error.message }))
           })
         }
