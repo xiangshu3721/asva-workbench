@@ -141,6 +141,17 @@ describe('R048.14 final fixes', () => {
       expect(indexSource).toContain('onDemandAiAutoTrigger')
       expect(indexSource).toContain('onDemandAiAutoTriggerCustomerIds')
     })
+
+    it('AUTO trigger is SYNCHRONOUS — awaited before response.end() (R048.16)', () => {
+      const indexSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8')
+      // Must AWAIT processSourceOnDemand before returning response
+      expect(indexSource).toMatch(/autoTriggerResult = await repository\.processSourceOnDemand/)
+      // Must NOT use fire-and-forget (no .catch without await)
+      expect(indexSource).not.toMatch(/repository\.processSourceOnDemand\([^)]+\)\.catch\(/)
+      // Response must include autoTrigger result
+      expect(indexSource).toContain('autoTrigger:')
+      expect(indexSource).toContain("status: 'COMPLETED'")
+    })
   })
 
   describe('FAILED lock behavior', () => {

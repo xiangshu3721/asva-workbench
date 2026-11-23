@@ -43,10 +43,16 @@ describe('CloudBase production deployment preflight', () => {
     expect(() => validateProductionEnv(values)).toThrow(/FEATURE_AUTOMATIC_PROFILE_ARCHIVING/)
   })
 
-  it('rejects the new save-triggered AI switch until a platform hard limit is available', () => {
+  it('requires canary config when AUTO trigger is enabled (R048.16)', () => {
     const values = validProductionValues()
     values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER = 'true'
-    expect(() => validateProductionEnv(values)).toThrow(/FEATURE_ON_DEMAND_AI_AUTO_TRIGGER/)
+    // Without canary IDs, should fail
+    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS/)
+    values.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS = 'CUS-CANARY-1'
+    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS/)
+    values.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS = 'ACTOR-CANARY-1'
+    // With canary IDs, should pass (no throw)
+    expect(() => validateProductionEnv(values)).not.toThrow()
   })
 
   it('requires the durable budget configuration before enabling manual AI', () => {
@@ -62,6 +68,12 @@ describe('CloudBase production deployment preflight', () => {
     expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_MAX_CONCURRENT/)
     values.ON_DEMAND_AI_MAX_CONCURRENT = '1'
     expect(validateProductionEnv(values)).toMatchObject({ onDemandAiDailyLimit: 1, onDemandAiBudgetStoreConfigured: true, onDemandAiMaxConcurrent: 1 })
+    // V2 PG migration allows concurrent=2
+    values.ON_DEMAND_AI_MAX_CONCURRENT = '2'
+    expect(validateProductionEnv(values)).toMatchObject({ onDemandAiMaxConcurrent: 2 })
+    // concurrent=3 should be rejected
+    values.ON_DEMAND_AI_MAX_CONCURRENT = '3'
+    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_MAX_CONCURRENT/)
   })
 
   it('requires an explicit non-empty allowlist for production Canary mode', () => {

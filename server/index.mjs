@@ -177,23 +177,34 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/sources') {
     const actorId = await guard(request)
     const source = await repository.createSource(actorId, await readBody(request))
-    // R048.15: Trigger AUTO processing server-side if conditions are met.
-    // This ensures processing starts even if the browser closes before sending AUTO request.
-    // PG reservation guarantees idempotency; duplicate AUTO requests are rejected.
+    // R048.16: AUTO trigger is now SYNCHRONOUS — awaited before response.end().
+    // SCF HTTP functions execute until response.end() or timeout (120s).
+    // This guarantees: even if the browser closes mid-request, the SCF runtime
+    // continues processing. No fire-and-forget after response.end().
+    // PG reservation ensures idempotency; duplicate AUTO requests are rejected.
+    let autoTriggerResult = null
+    let autoTriggerError = null
     try {
       const flags = config.features
       if (flags.onDemandAiProcessing && flags.onDemandAiAutoTrigger && flags.onDemandAiDailyLimit > 0) {
         const allowedCustomer = flags.onDemandAiAutoTriggerCustomerIds?.has(source.customerId)
         const allowedActor = flags.onDemandAiAutoTriggerActorIds?.has(actorId) && source.uploadedBy === actorId
         if (allowedCustomer && allowedActor) {
-          // Start async processing, don't await. SCF will continue execution after response.
-          repository.processSourceOnDemand(actorId, source.id, { trigger: 'AUTO' }).catch((error) => {
+          try {
+            // AWAIT the processing — this blocks the HTTP response until complete.
+            // The SCF runtime guarantees execution until response.end() or timeout.
+            autoTriggerResult = await repository.processSourceOnDemand(actorId, source.id, { trigger: 'AUTO' })
+          } catch (error) {
+            autoTriggerError = error.code || error.message
             console.error('[ASVA_AUTO_TRIGGER]', JSON.stringify({ sourceId: source.id, error: error.code || error.message }))
-          })
+          }
         }
       }
     } catch {}
-    return send(request, response, 201, source, requestId)
+    return send(request, response, 201, {
+      ...source,
+      autoTrigger: autoTriggerResult ? { status: 'COMPLETED' } : autoTriggerError ? { status: 'FAILED', error: autoTriggerError } : undefined,
+    }, requestId)
   }
   const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
   if (request.method === 'POST' && sourceProcess) {

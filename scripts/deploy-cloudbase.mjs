@@ -78,14 +78,23 @@ export function validateProductionEnv(values, envPath = '') {
     if (!automaticProfileEnabledAt || Number.isNaN(Date.parse(automaticProfileEnabledAt))) throw new Error('production 自动归档部署必须设置有效的 AUTOMATIC_PROFILE_ARCHIVING_ENABLED_AT')
     if (canaryEnabled || canaryCustomerIds.length) throw new Error('production 自动归档部署不得携带 Canary 配置')
   }
-  if (values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true') throw new Error('按需 AI 自动触发需要先验证函数专用的硬性配额或限频；当前发布必须保持 FEATURE_ON_DEMAND_AI_AUTO_TRIGGER=false')
+  if (values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true') {
+    // R048.16: AUTO trigger is now allowed with canary configuration.
+    // The trigger is synchronous (awaited before response.end()), so it's reliable
+    // even if the browser closes. PG reservation ensures idempotency.
+    const canaryCustomerIds = String(values.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    const canaryActorIds = String(values.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    if (!canaryCustomerIds.length) throw new Error('AUTO 触发必须配置 ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS（canary 客户白名单）')
+    if (!canaryActorIds.length) throw new Error('AUTO 触发必须配置 ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS（canary 导师白名单）')
+  }
   if (values.FEATURE_ON_DEMAND_AI_PROCESSING === 'true') {
     const dailyLimit = Number(values.ON_DEMAND_AI_DAILY_LIMIT)
     if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 100) throw new Error('手动按需 AI 必须设置 1 到 100 的 ON_DEMAND_AI_DAILY_LIMIT')
     if (!String(values.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()) throw new Error('手动按需 AI 必须显式设置 ON_DEMAND_AI_BUDGET_COLLECTION')
     if (!String(values.CLOUDBASE_APIKEY || '').trim()) throw new Error('手动按需 AI 必须显式设置 CLOUDBASE_APIKEY')
     if (!String(values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim()) throw new Error('手动按需 AI 必须显式设置 ON_DEMAND_AI_BUDGET_RPC_BASE_URL')
-    if (String(values.ON_DEMAND_AI_MAX_CONCURRENT || '') !== '1') throw new Error('手动按需 AI 必须将 ON_DEMAND_AI_MAX_CONCURRENT 固定为 1')
+    const maxConcurrent = Number(values.ON_DEMAND_AI_MAX_CONCURRENT)
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 2) throw new Error('ON_DEMAND_AI_MAX_CONCURRENT 必须设置为 1（V1 PG）或 2（V2 PG 迁移后）')
   }
   const requiredKeys = [...PRODUCTION_REQUIRED_KEYS, ...(values.AUTH_MODE === 'PASSWORD' ? ['FEISHU_AUTH_CREDENTIALS_TABLE_ID'] : ['ASVA_ADMIN_LOGIN_CODE'])]
   const missing = requiredKeys.filter((key) => !values[key])
@@ -110,7 +119,7 @@ export function validateProductionEnv(values, envPath = '') {
     onDemandAiDailyLimit: Math.max(0, Number(values.ON_DEMAND_AI_DAILY_LIMIT || 0) || 0),
     onDemandAiBudgetStoreConfigured: Boolean(String(values.ON_DEMAND_AI_BUDGET_COLLECTION || '').trim()),
     onDemandAiBudgetRpcConfigured: Boolean(String(values.ON_DEMAND_AI_BUDGET_RPC_BASE_URL || '').trim()),
-    onDemandAiMaxConcurrent: Math.min(1, Math.max(1, Number(values.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
+    onDemandAiMaxConcurrent: Math.min(2, Math.max(1, Number(values.ON_DEMAND_AI_MAX_CONCURRENT || 1) || 1)),
     requiredKeyCount: requiredKeys.length,
     configuredTableKeys: Object.keys(values).filter((key) => key.startsWith('FEISHU_') && key.endsWith('_TABLE_ID')).sort(),
   }
@@ -156,6 +165,8 @@ export function buildProductionEnvVariables(values, buildMetadata) {
     // Enabling it requires an explicit reviewed production configuration change.
     FEATURE_ON_DEMAND_AI_PROCESSING: values.FEATURE_ON_DEMAND_AI_PROCESSING || 'false',
     FEATURE_ON_DEMAND_AI_AUTO_TRIGGER: values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER || 'false',
+    ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS: values.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS || '',
+    ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS: values.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS || '',
     ON_DEMAND_AI_MAX_CHARS: values.ON_DEMAND_AI_MAX_CHARS || '4000',
     ON_DEMAND_AI_MAX_TOKENS: values.ON_DEMAND_AI_MAX_TOKENS || '2048',
     ON_DEMAND_AI_TIMEOUT_MS: values.ON_DEMAND_AI_TIMEOUT_MS || '45000',
