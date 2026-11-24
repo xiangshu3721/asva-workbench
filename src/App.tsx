@@ -254,9 +254,8 @@ function WorkbenchApp() {
       const manual = guarded
       // This remains false by default. A saved source can use AUTO only after
       // the separate switch and non-empty scoped canary are intentionally
-      // configured; the server delegates to #119's durable guard and
-      // rechecks the exact IDs.
-      const auto = guarded && flags.onDemandAiAutoTrigger === true && flags.onDemandAiAutoTriggerCanaryConfigured === true
+      // R048.17: Canary whitelist removed — AUTO is available to all authorized mentors
+      const auto = guarded && flags.onDemandAiAutoTrigger === true
       setOnDemandAiAvailability({ manual, auto })
       const frontendRelease = frontend?.release || 'UNKNOWN'
       const backendRelease = backend.release || 'UNKNOWN'
@@ -1589,34 +1588,48 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       setMessage('资料已保存，AI 整理暂未开启')
       return
     }
-    setMessage(`资料已保存，AI 整理中 · ${Math.round(performance.now() - saveStartedAt)}ms`)
-    void onProcess(source.id, 'AUTO').then(async () => {
-      await load({ refresh: true })
-      await onRefreshProfile?.()
-      setMessage('AI 整理完成，客户档案已刷新。')
-    }).catch(async (processError) => {
-      // P0-20261122: timeout/network errors may mean the server completed
-      // processing but the response was lost. Do a read-only status check.
-      const code = (processError as { serverCode?: string; code?: string })?.serverCode || (processError as { code?: string })?.code
-      const isAmbiguous = !code || code === 'REQUEST_TIMEOUT' || code === 'NETWORK_UNREACHABLE' || code === 'HTTP_433' || code === 'HTTP_502' || code === 'HTTP_504'
-      if (isAmbiguous) {
-        try {
-          const refreshed = await load({ refresh: true })
-          if (refreshed) {
-            const matched = refreshed.sources.find((s) => s.id === source.id)
-            if (matched?.processingStatus === 'REVIEW_REQUIRED') {
-              setMessage('AI 已提取证据，等待审核。')
-              return
-            }
-            if (matched?.processingStatus === 'COMPLETED') {
-              setMessage('AI 整理完成，客户档案已刷新。')
-              return
-            }
-          }
-        } catch { /* fall through to default message */ }
+    // R048.17: Server already triggered AUTO asynchronously.
+    // Poll source status until completion, then refresh customer profile.
+    setMessage(`资料已保存，AI 正在整理 · ${Math.round(performance.now() - saveStartedAt)}ms`)
+    const pollInterval = 2000 // Poll every 2 seconds
+    const maxPolls = 60 // Max 2 minutes (120s timeout)
+    let pollCount = 0
+    const pollStatus = async () => {
+      if (pollCount >= maxPolls) {
+        setMessage('AI 整理时间较长，请稍后刷新查看结果。')
+        return
       }
-      setMessage(onDemandAiStatusMessage(processError))
-    })
+      pollCount++
+      try {
+        const status = await onSourceStatus(customer.id, source.operationId || '', source.id)
+        if (status.status === 'PERSISTED' && status.source) {
+          const processingStatus = status.source.processingStatus
+          if (processingStatus === 'COMPLETED') {
+            await load({ refresh: true })
+            await onRefreshProfile?.()
+            setMessage('AI 整理完成，客户档案已刷新。')
+            return
+          }
+          if (processingStatus === 'REVIEW_REQUIRED') {
+            await load({ refresh: true })
+            setMessage('AI 已提取证据，等待审核。')
+            return
+          }
+          if (processingStatus === 'PROCESSING' || processingStatus === 'UPLOADED') {
+            // Still processing, poll again
+            setTimeout(pollStatus, pollInterval)
+            return
+          }
+        }
+        // Unexpected status, stop polling
+        setMessage('AI 整理状态异常，请刷新页面查看。')
+      } catch {
+        // Network error, retry
+        setTimeout(pollStatus, pollInterval)
+      }
+    }
+    // Start polling after a short delay to let the server start processing
+    setTimeout(pollStatus, 1000)
   }
   const recoverPendingSave = async (pending: { operationId: string; input: SourceCreateInput; startedAt: number }) => {
     updateSaveState('TIMEOUT')

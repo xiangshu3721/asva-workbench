@@ -42,7 +42,6 @@ export function featureFlags() {
     // Expose only the boolean. Whitelist identifiers stay server-side.
     onDemandAiTestScopeEnabled: process.env.ON_DEMAND_AI_TEST_SCOPE_ENABLED === 'true',
     // Do not expose customer or mentor identifiers through public health.
-    // Only disclose whether a non-empty, two-part automatic canary exists.
-    onDemandAiAutoTriggerCanaryConfigured: Boolean(String(process.env.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS || '').trim() && String(process.env.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS || '').trim()),
+    // R048.17: Canary whitelist removed — AUTO is available to all authorized mentors.
   }
 }

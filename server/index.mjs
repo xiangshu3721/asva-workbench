@@ -177,34 +177,21 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/sources') {
     const actorId = await guard(request)
     const source = await repository.createSource(actorId, await readBody(request))
-    // R048.16: AUTO trigger is now SYNCHRONOUS — awaited before response.end().
-    // SCF HTTP functions execute until response.end() or timeout (120s).
-    // This guarantees: even if the browser closes mid-request, the SCF runtime
-    // continues processing. No fire-and-forget after response.end().
+    // R048.17: AUTO trigger is now ASYNCHRONOUS — decoupled from HTTP response.
+    // The save endpoint returns immediately after persisting the source.
+    // A background promise continues processing; the SCF event loop keeps the
+    // function alive until the promise resolves or the 120s timeout expires.
     // PG reservation ensures idempotency; duplicate AUTO requests are rejected.
-    let autoTriggerResult = null
-    let autoTriggerError = null
-    try {
-      const flags = config.features
-      if (flags.onDemandAiProcessing && flags.onDemandAiAutoTrigger && flags.onDemandAiDailyLimit > 0) {
-        const allowedCustomer = flags.onDemandAiAutoTriggerCustomerIds?.has(source.customerId)
-        const allowedActor = flags.onDemandAiAutoTriggerActorIds?.has(actorId) && source.uploadedBy === actorId
-        if (allowedCustomer && allowedActor) {
-          try {
-            // AWAIT the processing — this blocks the HTTP response until complete.
-            // The SCF runtime guarantees execution until response.end() or timeout.
-            autoTriggerResult = await repository.processSourceOnDemand(actorId, source.id, { trigger: 'AUTO' })
-          } catch (error) {
-            autoTriggerError = error.code || error.message
-            console.error('[ASVA_AUTO_TRIGGER]', JSON.stringify({ sourceId: source.id, error: error.code || error.message }))
-          }
-        }
-      }
-    } catch {}
-    return send(request, response, 201, {
-      ...source,
-      autoTrigger: autoTriggerResult ? { status: 'COMPLETED' } : autoTriggerError ? { status: 'FAILED', error: autoTriggerError } : undefined,
-    }, requestId)
+    // Frontend polls source status to show progress.
+    if (config.features.onDemandAiProcessing && config.features.onDemandAiAutoTrigger && config.features.onDemandAiDailyLimit > 0) {
+      // Fire-and-forget background processing.
+      // The SCF runtime keeps the function alive as long as the event loop is not empty.
+      // If the function times out (120s), the PG reservation stays active, preventing duplicate calls.
+      repository.processSourceOnDemand(actorId, source.id, { trigger: 'AUTO' })
+        .then(result => console.info('[ASVA_AUTO_TRIGGER]', JSON.stringify({ sourceId: source.id, status: result?.source?.processingStatus })))
+        .catch(error => console.error('[ASVA_AUTO_TRIGGER]', JSON.stringify({ sourceId: source.id, error: error.code || error.message })))
+    }
+    return send(request, response, 201, source, requestId)
   }
   const sourceProcess = url.pathname.match(/^\/api\/sources\/([^/]+)\/process$/)
   if (request.method === 'POST' && sourceProcess) {

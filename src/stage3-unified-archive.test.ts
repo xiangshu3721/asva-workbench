@@ -16,11 +16,12 @@ describe('stage 3 unified archive entry', () => {
     expect(workspaceSource).not.toContain('archivePollTimersRef')
     expect(workspaceSource).not.toContain('window.setTimeout')
     expect(workspaceSource).toContain("if (!onDemandAiAutoAvailable)")
-    expect(workspaceSource).toContain("onProcess(source.id, 'AUTO')")
+    // R048.17: Server triggers AUTO asynchronously; frontend polls status
+    expect(workspaceSource).toContain('pollStatus')
     expect(workspaceSource).toContain("onProcess(sourceId, 'MANUAL')")
   })
 
-  it('only exposes automatic processing when the server reports every durable canary gate', () => {
-    expect(appSource).toContain('flags.onDemandAiAutoTriggerCanaryConfigured === true')
+  it('only exposes automatic processing when the server has AUTO trigger enabled', () => {
+    expect(appSource).toContain('flags.onDemandAiAutoTrigger === true')
   })
 })

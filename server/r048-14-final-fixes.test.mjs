@@ -128,7 +128,6 @@ describe('R048.14 final fixes', () => {
       const indexSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8')
       // Must use actorId string, not actor.id (which would be undefined)
       expect(indexSource).toMatch(/const actorId = await guard\(request\)/)
-      expect(indexSource).toMatch(/allowedActor.*actorId.*source\.uploadedBy === actorId/)
       expect(indexSource).toMatch(/processSourceOnDemand\(actorId,/)
       // Must NOT use actor.id (the bug)
       expect(indexSource).not.toMatch(/actor\.id.*source\.uploadedBy/)
@@ -139,18 +138,19 @@ describe('R048.14 final fixes', () => {
       expect(indexSource).toContain('processSourceOnDemand')
       expect(indexSource).toContain("trigger: 'AUTO'")
       expect(indexSource).toContain('onDemandAiAutoTrigger')
-      expect(indexSource).toContain('onDemandAiAutoTriggerCustomerIds')
+      // R048.17: Canary whitelist removed — no more customer/actor ID checks
+      expect(indexSource).not.toContain('onDemandAiAutoTriggerCustomerIds')
     })
 
-    it('AUTO trigger is SYNCHRONOUS — awaited before response.end() (R048.16)', () => {
+    it('AUTO trigger is ASYNCHRONOUS — fire-and-forget after source save (R048.17)', () => {
       const indexSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8')
-      // Must AWAIT processSourceOnDemand before returning response
-      expect(indexSource).toMatch(/autoTriggerResult = await repository\.processSourceOnDemand/)
-      // Must NOT use fire-and-forget (no .catch without await)
-      expect(indexSource).not.toMatch(/repository\.processSourceOnDemand\([^)]+\)\.catch\(/)
-      // Response must include autoTrigger result
-      expect(indexSource).toContain('autoTrigger:')
-      expect(indexSource).toContain("status: 'COMPLETED'")
+      // Must NOT await processSourceOnDemand for AUTO (async background processing)
+      // Check that the line before .then doesn't start with 'await'
+      expect(indexSource).toMatch(/repository\.processSourceOnDemand\(actorId,\s*source\.id,\s*\{\s*trigger:\s*'AUTO'\s*\}\s*\)\s*\n\s*\.then/)
+      // Must use .catch for error logging
+      expect(indexSource).toMatch(/\.catch\(error/)
+      // Response must return source immediately (no autoTrigger status wrapping)
+      expect(indexSource).toContain('return send(request, response, 201, source, requestId)')
     })
   })
 
