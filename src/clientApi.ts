@@ -247,7 +247,7 @@ export interface WorkbenchApi {
   reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
   resolveConflict(actorId: string, conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN'): Promise<SourceWorkspace>
   importAssessment(actorId: string, shareUrl: string): Promise<AssessmentPreview>
-  confirmAssessmentBinding(actorId: string, customerId: string, input: { provider: string; reportId: string; preview: AssessmentPreview; shareUrl?: string; notes?: string }): Promise<AssessmentBinding>
+  confirmAssessmentBinding(actorId: string, customerId: string, input: { shareUrl: string; nameConfirmedBy?: string; nameConfirmedReason?: string; customerConsent?: boolean; customerConsentRecord?: string }): Promise<AssessmentBinding>
   getCustomerAssessments(actorId: string, customerId: string): Promise<CustomerAssessmentsResponse>
   unbindAssessment(actorId: string, bindingId: string, reason?: string): Promise<{ bindingId: string; status: string }>
   transferAssessment(actorId: string, bindingId: string, targetCustomerId: string, reason?: string): Promise<{ oldBindingId: string; newBindingId: string; status: string }>

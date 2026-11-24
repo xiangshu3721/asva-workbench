@@ -387,7 +387,8 @@ describe('assessment-import', () => {
       expect(result).toHaveProperty('headline')
       expect(result).toHaveProperty('summary')
       expect(result).toHaveProperty('caution')
-      expect(result).toHaveProperty('shareUrl')
+      // shareUrl must NOT be returned — credentials must never leak to client
+      expect(result).not.toHaveProperty('shareUrl')
       expect(result).toHaveProperty('source')
       expect(result).toHaveProperty('importedAt')
 

@@ -8,8 +8,10 @@ import { AuthError, bearerToken, issueSession, verifySession } from './auth.mjs'
 import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
-import { importAssessmentFromShareUrl } from './assessment-import.mjs'
-import { createAssessmentStore } from './assessment-store.mjs'
+import { importAssessmentFromShareUrl, readAssessmentReport } from './assessment-import.mjs'
+import { CloudBaseAssessmentStore, sanitizeReportForStorage, sanitizeShareUrl, snapshotHash } from './assessment-pg-store.mjs'
+import { parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs'
+import { normalizeStarReportPreview } from '../shared/assessment-import-star-contract.mjs'
 
 function memorySnapshot(phase, requestId, extra = {}) {
   const memory = process.memoryUsage()
@@ -25,12 +27,13 @@ function memorySnapshot(phase, requestId, extra = {}) {
 
 memorySnapshot('startup_before_repository', 'module')
 const repository = new FeishuRepository()
-// Assessment store: customer binding persistence via Feishu bitable.
-// Created lazily on first use to avoid blocking startup if Feishu is unavailable.
+// Assessment store: PostgreSQL-backed binding storage.
+// Uses the existing CloudBase PG via RPC function (asva_assessment_guard).
+// No auto-table-creation; tables created via migration SQL.
 let assessmentStoreInstance = null
 function getAssessmentStore() {
   if (!assessmentStoreInstance) {
-    assessmentStoreInstance = createAssessmentStore({ feishu: feishuGateway, config })
+    assessmentStoreInstance = new CloudBaseAssessmentStore()
   }
   return assessmentStoreInstance
 }
@@ -300,76 +303,205 @@ async function handle(request, response, requestId) {
     return send(request, response, 200, await repository.createAppointment(await readBody(request)), requestId)
   }
   // Assessment import: mentor pastes a star share URL → ASVA proxies the read
-  // Step 1: Preview (no binding yet)
+  // Step 1: Preview (no binding yet) — returns safe preview only
   if (request.method === 'POST' && url.pathname === '/api/assessments/import') {
     const actorId = await guard(request)
     const body = await readBody(request)
     if (!body.shareUrl || typeof body.shareUrl !== 'string') fail('缺少分享链接', 'INVALID_ARGUMENTS', 400)
     try {
       const preview = await importAssessmentFromShareUrl(body.shareUrl)
-      return send(request, response, 200, preview, requestId)
+      // Return preview only — no credentials stored, no binding created
+      return send(request, response, 200, {
+        reportId: preview.reportId,
+        assessmentId: preview.assessmentId,
+        assessmentName: preview.assessmentName,
+        assessmentVersion: preview.assessmentVersion,
+        completedAt: preview.completedAt,
+        nickname: preview.nickname,
+        keyMetrics: preview.keyMetrics,
+        headline: preview.headline,
+        summary: preview.summary,
+        caution: preview.caution,
+        provider: 'mindtest-web',
+        // Share URL sanitized: strip linkSecret before returning to client
+        safeShareUrl: sanitizeShareUrl(body.shareUrl),
+        importedAt: preview.importedAt,
+      }, requestId)
     } catch (error) {
       const status = error.code === 'REPORT_NOT_FOUND' ? 404 : error.code === 'TIMEOUT' ? 504 : 400
       throw error.code ? Object.assign(error, { status }) : error
     }
   }
-  // Step 2: Confirm binding (after preview, mentor confirms customer)
+  // Step 2: Confirm binding — server re-reads from source, does NOT trust client report data
   const confirmBindPath = url.pathname.match(/^\/api\/customers\/([^/]+)\/assessments\/confirm$/)
   if (request.method === 'POST' && confirmBindPath) {
     const actorId = await guard(request)
     const customerId = decodeURIComponent(confirmBindPath[1])
     const body = await readBody(request)
-    if (!body.reportId || !body.provider) fail('缺少报告标识', 'INVALID_ARGUMENTS', 400)
-    if (!body.preview) fail('缺少报告预览，请重新导入', 'INVALID_ARGUMENTS', 400)
+
+    // Only accept the share URL from client — NOT reportId, provider, or preview data
+    if (!body.shareUrl || typeof body.shareUrl !== 'string') fail('缺少分享链接，请重新导入', 'INVALID_ARGUMENTS', 400)
+
+    // Parse share URL server-side
+    let parsed
+    try {
+      parsed = parseStarShareUrl(body.shareUrl)
+    } catch (error) {
+      fail('分享链接格式不正确', 'INVALID_SHARE_URL', 400)
+    }
+    const { reportId, linkSecret } = parsed
+
+    // Re-read the FULL report from source service (not from client)
+    let fullReport
+    try {
+      fullReport = await readAssessmentReport(reportId, linkSecret)
+    } catch (error) {
+      if (error.code === 'REPORT_NOT_FOUND') fail('报告不存在或链接已失效', 'REPORT_NOT_FOUND', 404)
+      if (error.code === 'TIMEOUT') fail('报告服务请求超时', 'TIMEOUT', 504)
+      throw error
+    }
+
+    // Verify reportId from source matches
+    if (fullReport.reportId !== reportId) {
+      fail('报告标识不匹配，可能存在伪造', 'REPORT_ID_MISMATCH', 400)
+    }
+
+    // Generate preview server-side from the source report (not from client)
+    let serverPreview
+    try {
+      serverPreview = normalizeStarReportPreview(fullReport, reportId)
+    } catch (error) {
+      fail('报告内容不符合预期格式', 'INVALID_REPORT_CONTENT', 400)
+    }
 
     // Fetch customer info
     const customer = await repository.customer(actorId, customerId)
     if (!customer) fail('客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
 
+    // Check name mismatch (Issue #113)
+    const reportNickname = serverPreview.nickname || ''
+    const customerName = customer.name || customer.nickname || customer.id
+    const nameMismatch = reportNickname && customerName && reportNickname !== customerName
+
+    // By default, name mismatch blocks binding unless admin confirms
+    if (nameMismatch && !body.nameConfirmedBy) {
+      return send(request, response, 409, {
+        error: '报告署名与客户姓名不一致，需要管理员确认身份后才能绑定',
+        code: 'NAME_MISMATCH_REQUIRES_CONFIRMATION',
+        reportNickname,
+        customerName,
+        preview: {
+          reportId: serverPreview.reportId,
+          assessmentId: serverPreview.assessmentId,
+          assessmentName: serverPreview.assessmentName,
+          nickname: serverPreview.nickname,
+          completedAt: serverPreview.completedAt,
+        },
+      }, requestId)
+    }
+
+    // Admin override: must record who confirmed and why
+    const nameConfirmedBy = nameMismatch ? (body.nameConfirmedBy || actorId) : ''
+    const nameConfirmedReason = nameMismatch ? (body.nameConfirmedReason || '') : ''
+    if (nameMismatch && nameConfirmedBy !== actorId) {
+      // Only the acting admin can confirm (prevent privilege escalation)
+      // Check if actor is admin
+      const actor = await repository.staff(actorId)
+      if (!actor || actor.permissionRole !== 'ADMIN') {
+        fail('只有管理员可以确认姓名不一致的报告', 'PERMISSION_DENIED', 403)
+      }
+    }
+
+    // Sanitize report for storage (strip credentials)
+    const sanitizedSnapshot = sanitizeReportForStorage(fullReport)
+    const sanitizedPreview = sanitizeReportForStorage(serverPreview)
+    const safeUrl = sanitizeShareUrl(body.shareUrl)
+
     const store = getAssessmentStore()
     try {
-      // Re-read the full report from source for snapshot (preview is sanitized)
-      // We already have the preview; store it as the safe snapshot
       const result = await store.bindReport({
-        provider: body.provider,
-        reportId: body.reportId,
-        assessmentId: body.preview.assessmentId,
-        assessmentName: body.preview.assessmentName,
+        provider: 'mindtest-web',
+        reportId: fullReport.reportId,
+        assessmentId: serverPreview.assessmentId || fullReport.assessmentId || 'star',
+        assessmentName: serverPreview.assessmentName || fullReport.assessmentName || '职业六芒星',
+        assessmentVersion: serverPreview.assessmentVersion || fullReport.assessmentVersion || '',
+        schemaVersion: fullReport.schemaVersion || '',
         customerId: customer.id,
-        customerName: customer.name || customer.nickname || customer.id,
-        reportNickname: body.preview.nickname,
-        completedAt: body.preview.completedAt,
+        customerName: customerName,
+        reportNickname: reportNickname,
+        completedAt: serverPreview.completedAt || fullReport.completedAt || '',
         boundBy: actorId,
-        shareUrl: body.shareUrl || '',
-        fullReport: body.preview, // Store the safe preview as snapshot (source is authoritative)
-        safePreview: body.preview,
-        notes: body.notes || '',
+        shareUrl: safeUrl,
+        fullReport: sanitizedSnapshot,
+        safePreview: sanitizedPreview,
+        nameMismatch: Boolean(nameMismatch),
+        nameConfirmedBy,
+        nameConfirmedReason,
+        customerConsent: Boolean(body.customerConsent),
+        customerConsentRecord: body.customerConsentRecord || '',
       })
-      return send(request, response, result.idempotent ? 200 : 201, result, requestId)
+      return send(request, response, result.idempotent ? 200 : 201, {
+        bindingId: result.bindingId,
+        idempotent: result.idempotent,
+        status: result.status,
+        // Return server-verified preview, not client data
+        preview: {
+          reportId: serverPreview.reportId,
+          assessmentId: serverPreview.assessmentId,
+          assessmentName: serverPreview.assessmentName,
+          nickname: serverPreview.nickname,
+          completedAt: serverPreview.completedAt,
+          headline: serverPreview.headline,
+          summary: serverPreview.summary,
+          caution: serverPreview.caution,
+        },
+        safeShareUrl: safeUrl,
+        nameMismatch: Boolean(nameMismatch),
+        customerConsent: Boolean(body.customerConsent),
+      }, requestId)
     } catch (error) {
       if (error.code === 'REPORT_ALREADY_BOUND') {
-        return send(request, response, 409, { error: error.message, code: error.code, existingCustomerId: error.existingCustomerId }, requestId)
+        // Do NOT leak the other customer's name or ID to unauthorized mentors
+        const actor = await repository.staff(actorId)
+        const safeMessage = actor?.permissionRole === 'ADMIN'
+          ? `此报告已绑定到其他客户（${error.existingCustomerName || '未知'}）。如需转移，请先解绑。`
+          : '此报告已绑定到其他客户。如需转移，请联系管理员。'
+        return send(request, response, 409, { error: safeMessage, code: error.code }, requestId)
       }
       throw error
     }
   }
-  // Get customer's assessment history
+  // Get customer's assessments
   const customerAssessments = url.pathname.match(/^\/api\/customers\/([^/]+)\/assessments$/)
   if (request.method === 'GET' && customerAssessments) {
     const actorId = await guard(request)
     const customerId = decodeURIComponent(customerAssessments[1])
-    // Verify customer access
     const customer = await repository.customer(actorId, customerId)
     if (!customer) fail('客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
 
     const store = getAssessmentStore()
     const assessments = await store.getCustomerAssessments(customerId)
+    // Filter: only return assessments with customer consent for AI context
+    // (the raw list is returned; the frontend decides what to show in AI context)
     return send(request, response, 200, { customerId, assessments }, requestId)
   }
-  // Unbind assessment
+  // Get assessment history (includes all statuses)
+  const assessmentHistory = url.pathname.match(/^\/api\/customers\/([^/]+)\/assessments\/history$/)
+  if (request.method === 'GET' && assessmentHistory) {
+    const actorId = await guard(request)
+    const customerId = decodeURIComponent(assessmentHistory[1])
+    const customer = await repository.customer(actorId, customerId)
+    if (!customer) fail('客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
+
+    const assessmentId = url.searchParams.get('assessmentId') || ''
+    const store = getAssessmentStore()
+    const bindings = await store.getCustomerAssessmentHistory(customerId, assessmentId)
+    return send(request, response, 200, { customerId, bindings }, requestId)
+  }
+  // Unbind assessment (admin only)
   const unbindPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/unbind$/)
   if (request.method === 'POST' && unbindPath) {
-    const actorId = await guardAdmin(request) // Only admin can unbind
+    const actorId = await guardAdmin(request)
     const bindingId = decodeURIComponent(unbindPath[1])
     const body = await readBody(request)
     const store = getAssessmentStore()
@@ -378,13 +510,14 @@ async function handle(request, response, requestId) {
       return send(request, response, 200, result, requestId)
     } catch (error) {
       if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
       throw error
     }
   }
-  // Transfer binding to different customer
+  // Transfer binding (admin only)
   const transferPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/transfer$/)
   if (request.method === 'POST' && transferPath) {
-    const actorId = await guardAdmin(request) // Only admin can transfer
+    const actorId = await guardAdmin(request)
     const bindingId = decodeURIComponent(transferPath[1])
     const body = await readBody(request)
     if (!body.targetCustomerId) fail('缺少目标客户', 'INVALID_ARGUMENTS', 400)
@@ -398,6 +531,71 @@ async function handle(request, response, requestId) {
       return send(request, response, 200, result, requestId)
     } catch (error) {
       if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
+      throw error
+    }
+  }
+  // Revoke local access (admin only) — source-revoke vs local-revoke:
+  // - Source revoke: upstream assessmentReportDev revokes the linkSecret
+  // - Local revoke: ASVA revokes access independently, preserving snapshot for audit
+  const revokePath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/revoke$/)
+  if (request.method === 'POST' && revokePath) {
+    const actorId = await guardAdmin(request)
+    const bindingId = decodeURIComponent(revokePath[1])
+    const body = await readBody(request)
+    const store = getAssessmentStore()
+    try {
+      const result = await store.revokeLocal(bindingId, actorId, body.reason || '')
+      return send(request, response, 200, result, requestId)
+    } catch (error) {
+      if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
+      throw error
+    }
+  }
+  // Confirm name mismatch (admin only)
+  const confirmNamePath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/confirm-name$/)
+  if (request.method === 'POST' && confirmNamePath) {
+    const actorId = await guardAdmin(request)
+    const bindingId = decodeURIComponent(confirmNamePath[1])
+    const body = await readBody(request)
+    const store = getAssessmentStore()
+    try {
+      const result = await store.confirmName(bindingId, actorId, body.reason || '')
+      return send(request, response, 200, result, requestId)
+    } catch (error) {
+      if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
+      throw error
+    }
+  }
+  // Grant customer consent for AI usage
+  const consentPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/consent$/)
+  if (request.method === 'POST' && consentPath) {
+    const actorId = await guard(request)
+    const bindingId = decodeURIComponent(consentPath[1])
+    const body = await readBody(request)
+    const store = getAssessmentStore()
+    try {
+      const result = await store.grantConsent(bindingId, actorId, body.consentRecord || '')
+      return send(request, response, 200, result, requestId)
+    } catch (error) {
+      if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
+      throw error
+    }
+  }
+  // Get binding audit events
+  const eventsPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/events$/)
+  if (request.method === 'GET' && eventsPath) {
+    const actorId = await guardAdmin(request)
+    const bindingId = decodeURIComponent(eventsPath[1])
+    const store = getAssessmentStore()
+    try {
+      const events = await store.getBindingEvents(bindingId)
+      return send(request, response, 200, { bindingId, events }, requestId)
+    } catch (error) {
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
       throw error
     }
   }

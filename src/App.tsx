@@ -1460,11 +1460,19 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
 
   const loadAssessments = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
       const result = await api.getCustomerAssessments(actorId, customer.id)
-      setAssessments(result.assessments || [])
-    } catch (err) {
+      // Sort client-side by completedAt desc (newest first) — don't trust server order
+      const sorted = (result.assessments || []).sort((a, b) => {
+        const ta = a.completedAt ? new Date(a.completedAt).getTime() : 0
+        const tb = b.completedAt ? new Date(b.completedAt).getTime() : 0
+        return tb - ta
+      })
+      setAssessments(sorted)
+    } catch (err: any) {
       console.error('Failed to load assessments:', err)
+      setError('加载测评记录失败')
     } finally {
       setLoading(false)
     }
@@ -1493,23 +1501,43 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleConfirmBind = async () => {
-    if (!preview) return
+    if (!preview || !shareUrl) return
     setBindLoading(true)
     setError('')
     try {
       await api.confirmAssessmentBinding(actorId, customer.id, {
-        provider: 'mindtest-web',
-        reportId: preview.reportId,
-        preview,
-        shareUrl: preview.shareUrl,
+        shareUrl, // Server will re-read from source; no client report data
       })
       setImportOpen(false)
       setShareUrl('')
       setPreview(null)
       await loadAssessments()
     } catch (err: any) {
-      if (err?.code === 'REPORT_ALREADY_BOUND' || err?.message?.includes('已绑定')) {
-        setError('此报告已绑定到其他客户。如需转移，请联系管理员。')
+      if (err?.code === 'NAME_MISMATCH_REQUIRES_CONFIRMATION') {
+        // Show confirmation dialog for admin
+        if (isAdmin) {
+          const confirmed = confirm(`报告署名「${err.reportNickname}」与客户「${err.customerName}」不一致。\n\n已确认该报告属于此客户本人？`)
+          if (confirmed) {
+            try {
+              await api.confirmAssessmentBinding(actorId, customer.id, {
+                shareUrl,
+                nameConfirmedBy: actorId,
+                nameConfirmedReason: '管理员人工确认身份一致',
+              })
+              setImportOpen(false)
+              setShareUrl('')
+              setPreview(null)
+              await loadAssessments()
+              return
+            } catch (retryErr: any) {
+              setError(retryErr?.message || '绑定失败')
+            }
+          }
+        } else {
+          setError('报告署名与客户姓名不一致，请联系管理员确认身份。')
+        }
+      } else if (err?.code === 'REPORT_ALREADY_BOUND' || err?.message?.includes('已绑定')) {
+        setError(err?.message || '此报告已绑定到其他客户。如需转移，请联系管理员。')
       } else {
         setError(err?.message || '绑定失败')
       }
@@ -1587,10 +1615,17 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
       </div>}
     </div>}
 
-    {!importOpen && !loading && assessments.length === 0 && (
+    {!importOpen && !loading && assessments.length === 0 && !error && (
       <div className="assessment-empty">
         <p>暂无测评记录</p>
         <small>点击上方"导入测评"粘贴分享链接</small>
+      </div>
+    )}
+
+    {!importOpen && !loading && assessments.length === 0 && error && (
+      <div className="assessment-empty">
+        <p>{error}</p>
+        <button className="secondary-button small" type="button" onClick={loadAssessments}>重试</button>
       </div>
     )}
 

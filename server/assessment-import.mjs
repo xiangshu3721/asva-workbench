@@ -138,7 +138,8 @@ export async function importAssessmentFromShareUrl(shareUrl, options = {}) {
     headline: preview.headline,
     summary: preview.summary,
     caution: preview.caution,
-    shareUrl,
+    // Note: shareUrl is intentionally NOT included. The caller should use
+    // the original URL they have; we never return credentials.
     source: 'assessment-import',
     importedAt: new Date().toISOString(),
   }
