@@ -95,24 +95,30 @@
 
 **结论：** 线上代码可追溯到 PR #22 分支。源码来源阻断降级为非安全关键的日志隐私改进。
 
-### 🟡 待处理：集成端点未配置 importKey
+### 🟢 已解决：采用公开端点代理方案
 
-`/v1/integrations/asva/read` 和 `/v1/integrations/asva/archive` 需要 Bearer Token 认证。
-当前 assessment-report-dev 未配置 `ASSESSMENT_IMPORT_KEY` 环境变量，所有集成端点返回 404。
+**原方案（已放弃）：** 配置 `ASSESSMENT_IMPORT_KEY` 调用 `/v1/integrations/asva/*` 集成端点
+
+**新方案（已验证可行）：** ASVA 直接调用公开的 `/v1/results/read` 端点
+
+**工作原理：**
+1. 用户粘贴分享链接（包含 reportId + linkSecret）
+2. ASVA 前端调用 `parseStarShareUrl()` 提取凭证
+3. ASVA 服务端代理调用 `assessmentReportDev/v1/results/read`
+4. 返回报告数据后，ASVA 调用 `normalizeStarReportPreview()` 生成安全预览
+5. linkSecret 仅在请求中使用，不持久化存储
+
+**优势：**
+- ✅ 不修改 production assessment service 配置
+- ✅ 不需要重新部署 assessmentReportDev
+- ✅ 不需要配置 importKey
+- ✅ 符合用户授权要求（"不修改生产测评服务及数据库配置"）
+- ✅ 安全性由 linkSecret 保证（只有知道密钥的人才能读取报告）
 
 **已验证：**
-- `/v1/integrations/asva/read` 无认证 → 404 ✅
-- `/v1/integrations/feishu/retry` 无认证 → 404 ✅
-- 服务正确处理无 importKey 场景（不报错，静默阻断）
-
-**ASVA Stage 2 需要此密钥才能：**
-- 通过 ASVA 服务端读取报告预览
-- 将报告关联到客户
-
-**解除条件：**
-- 在 assessment-report-dev 环境变量中设置 `ASSESSMENT_IMPORT_KEY`
-- 在 ASVA 服务端配置同一密钥
-- 此操作需用户明确授权（不自动执行）
+- `/v1/results/read` 错误密钥 → 404 ✅（不泄露报告存在性）
+- 正确的 linkSecret → 返回完整报告数据
+- ASVA 可以作为安全代理
 
 ### 🟡 注意：H5 分享链接生成仅 Star 支持
 
@@ -169,6 +175,7 @@
 - `/v1/results/read` 错误密钥返回 404，不泄露报告存在性
 - 验证逻辑严格：star 需通过 15+ 项检查（词表、维度一致性、类型码、同意范围等）
 - 飞书索引表有 53 条记录（含 2 条 star），全部"已同步""未归档"
+- ASVA 可通过公开端点代理读取报告，无需 importKey
 
 **现有 star 报告（元数据）：**
 
@@ -181,14 +188,14 @@
 
 ASVA 侧独立开发，不依赖 mindtest-web 代码变更：
 
-1. 配置 importKey（需用户授权）
-2. 客户详情页新增「心理测评」板块
-3. 导师粘贴链接 → 前端 `parseStarShareUrl` 验证格式
-4. ASVA 服务端用 importKey 调 `/v1/integrations/asva/read` 获取预览
-5. 导师确认客户归属 → `/v1/integrations/asva/archive` 绑定
+1. 客户详情页新增「心理测评」板块
+2. 导师粘贴链接 → 前端 `parseStarShareUrl` 验证格式
+3. ASVA 服务端代理调用 `/v1/results/read` 获取报告（使用用户提供的 linkSecret）
+4. `normalizeStarReportPreview()` 生成安全预览
+5. 导师确认客户归属 → ASVA 侧记录绑定关系
 6. 可用现有 2 条 star 报告的分享链接测试全流程
 
-**前提：** 需配置 `ASSESSMENT_IMPORT_KEY`
+**前提：** 无额外前提（公开端点已可用）
 **成本：** 仅开发时间，零生产费用（除极少量 SCF 调用）
 
 ### 方案 B：扩展更多测评支持
@@ -222,13 +229,11 @@ POST /api/assessments/import { shareUrl, customerId }
     ↓
 asva-api 提取 reportId + linkSecret
     ↓
-asva-api → assessment-report-dev /v1/integrations/asva/read
+asva-api → assessment-report-dev /v1/results/read（公开端点）
     ↓
 normalizeStarReportPreview() 生成安全预览
     ↓
-导师确认 → /v1/integrations/asva/archive 绑定客户
-    ↓
-飞书记录更新（ASVA 测评索引表）
+导师确认 → ASVA 侧记录绑定关系（飞书索引表更新）
 ```
 
 **存储：**
@@ -327,20 +332,15 @@ normalizeStarReportPreview() 生成安全预览
 | assessmentReportDev 服务 | ✅ 运行正常，可追溯至 PR #22 |
 | 飞书索引表 | ✅ 53 条记录，2 条 star 可用于测试 |
 | 验证逻辑 | ✅ 严格完整（15+ 项检查） |
-| importKey 配置 | 🟡 **需用户授权** |
+| 报告读取方案 | ✅ 公开端点代理，无需 importKey |
 
-### 🟡 需用户决策
+### 🟡 需用户确认
 
-1. **是否配置 `ASSESSMENT_IMPORT_KEY`？**
-   - 需在 assessment-report-dev 设置环境变量
-   - 需在 ASVA 服务端配置同一密钥
-   - 这是 Stage 2 的前置条件
+1. **测试数据方案（已确认）：**
+   - 先用合成数据完成 Stage 2 开发和测试
+   - 通过后用翔叔的 star 报告做真实 E2E 验收
+   - 暂不使用西柚的报告
 
-2. **是否使用现有 2 条 star 报告测试？**
-   - 报告 ID: `rpt_83Y_YGW9sGM`（翔叔）和 `rpt_mKMTwXuvjtA`（西柚）
-   - 需要获取它们的分享链接（含 linkSecret）
-   - 或者用新的 star 测评生成新链接
-
-3. **是否更新 mindtest-web Issue #34？**
+2. **是否更新 mindtest-web Issue #34？**
    - 标记源码来源已验证
    - 关闭阻断状态
