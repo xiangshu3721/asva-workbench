@@ -56,26 +56,25 @@ describe('on-demand source processing', () => {
     expect(repository.load).not.toHaveBeenCalled()
   })
 
-  it('keeps save-triggered AI closed when its scoped canary is absent', async () => {
+  it('rejects AUTO trigger when actor is not the source uploader', async () => {
     config.features.onDemandAiAutoTrigger = true
     const repository = new FeishuRepository({ authRepository: {} })
-    repository.load = vi.fn(async () => databaseFor({ id: 'SRC-1', customerId: 'CUS-1', uploadedBy: 'ADMIN-1', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }))
+    repository.load = vi.fn(async () => databaseFor({ id: 'SRC-1', customerId: 'CUS-1', uploadedBy: 'ADMIN-2', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }))
 
-    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_AUTO_CANARY_RESTRICTED', status: 409 })
+    await expect(repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })).rejects.toMatchObject({ code: 'ON_DEMAND_AI_AUTO_ACTOR_MISMATCH', status: 403 })
   })
 
-  it('allows exactly one save-triggered call only for the configured mentor and customer canary', async () => {
+  it('allows save-triggered AUTO for any customer when actor is the uploader', async () => {
     config.features.onDemandAiAutoTrigger = true
-    config.features.onDemandAiAutoTriggerCustomerIds = new Set(['CUS-1'])
-    config.features.onDemandAiAutoTriggerActorIds = new Set(['ADMIN-1'])
+    // No whitelist configuration needed - all authenticated uploaders allowed
     const source = { id: 'SRC-1', customerId: 'CUS-1', uploadedBy: 'ADMIN-1', rawText: '客户明确说最近睡眠不佳。', processingStatus: 'UPLOADED' }
     const guard = budgetGuard()
     const repository = new FeishuRepository({ authRepository: {}, aiBudgetGuard: guard })
     repository.load = vi.fn(async () => databaseFor(source))
     repository.processSource = vi.fn(async () => ({ source: { ...source, processingStatus: 'COMPLETED' }, evidenceItems: [], proposals: [], conflicts: [] }))
-
+    
     await repository.processSourceOnDemand('ADMIN-1', 'SRC-1', { trigger: 'AUTO' })
-
+    
     expect(repository.processSource).toHaveBeenCalledTimes(1)
     expect(guard.reserve).toHaveBeenCalledTimes(1)
   })

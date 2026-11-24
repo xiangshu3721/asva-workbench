@@ -79,13 +79,9 @@ export function validateProductionEnv(values, envPath = '') {
     if (canaryEnabled || canaryCustomerIds.length) throw new Error('production 自动归档部署不得携带 Canary 配置')
   }
   if (values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER === 'true') {
-    // R048.16: AUTO trigger is now allowed with canary configuration.
-    // The trigger is synchronous (awaited before response.end()), so it's reliable
-    // even if the browser closes. PG reservation ensures idempotency.
-    const canaryCustomerIds = String(values.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
-    const canaryActorIds = String(values.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS || '').split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
-    if (!canaryCustomerIds.length) throw new Error('AUTO 触发必须配置 ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS（canary 客户白名单）')
-    if (!canaryActorIds.length) throw new Error('AUTO 触发必须配置 ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS（canary 导师白名单）')
+    // R048.17: Canary whitelist removed after production acceptance.
+    // All authenticated staff who upload sources can trigger AUTO.
+    // PG reservation ensures idempotency and budget protection.
   }
   if (values.FEATURE_ON_DEMAND_AI_PROCESSING === 'true') {
     const dailyLimit = Number(values.ON_DEMAND_AI_DAILY_LIMIT)

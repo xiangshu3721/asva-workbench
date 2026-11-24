@@ -43,15 +43,12 @@ describe('CloudBase production deployment preflight', () => {
     expect(() => validateProductionEnv(values)).toThrow(/FEATURE_AUTOMATIC_PROFILE_ARCHIVING/)
   })
 
-  it('requires canary config when AUTO trigger is enabled (R048.16)', () => {
+  it('does not require canary config when AUTO trigger is enabled (R048.17)', () => {
     const values = validProductionValues()
     values.FEATURE_ON_DEMAND_AI_AUTO_TRIGGER = 'true'
-    // Without canary IDs, should fail
-    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS/)
-    values.ON_DEMAND_AI_AUTO_TRIGGER_CUSTOMER_IDS = 'CUS-CANARY-1'
-    expect(() => validateProductionEnv(values)).toThrow(/ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS/)
-    values.ON_DEMAND_AI_AUTO_TRIGGER_ACTOR_IDS = 'ACTOR-CANARY-1'
-    // With canary IDs, should pass (no throw)
+    // R048.17: Canary whitelist removed after production acceptance.
+    // AUTO trigger no longer requires customer/actor whitelist.
+    // Should pass without canary IDs
     expect(() => validateProductionEnv(values)).not.toThrow()
   })
 

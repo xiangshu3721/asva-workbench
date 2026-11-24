@@ -87,45 +87,46 @@ describe('AUTO trigger end-to-end flow', () => {
     expect(stats.successCount).toBe(1)
   })
 
-  it('AUTO trigger fails closed when canary customer not in whitelist', async () => {
+  it('AUTO trigger succeeds for any customer when actor is the uploader', async () => {
     const sourceId = 'SRC-TEST-2'
     const actorId = 'ACTOR-TEST-1'
     
-    // Update load mock to return a source with non-whitelisted customer
+    // Source with any customer, uploaded by the actor
     repository.load.mockResolvedValue({
       staff: [{ id: actorId, permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
       customers: [{ id: 'CUS-OTHER' }],
-      sourceRecords: [{ id: sourceId, customerId: 'CUS-OTHER', uploadedBy: actorId }],
+      sourceRecords: [{ id: sourceId, customerId: 'CUS-OTHER', uploadedBy: actorId, rawText: 'test', processingStatus: 'UPLOADED', contentHash: 'hash' }],
       evidenceItems: [],
       profileUpdateProposals: [],
       evidenceConflicts: [],
     })
+    repository.processSource = vi.fn(async () => ({ source: { id: sourceId, processingStatus: 'COMPLETED' }, evidenceItems: [], proposals: [], conflicts: [] }))
 
-    // Execute AUTO trigger - should fail with canary error
-    await expect(repository.processSourceOnDemand(actorId, sourceId, { trigger: 'AUTO' }))
-      .rejects.toThrow(/尚未在此导师和客户范围内开启/)
+    // Execute AUTO trigger - should succeed (no customer whitelist)
+    await repository.processSourceOnDemand(actorId, sourceId, { trigger: 'AUTO' })
 
-    // Verify: no reservation was created
-    expect(budgetGuard.reserve).not.toHaveBeenCalled()
+    // Verify: reservation was created
+    expect(budgetGuard.reserve).toHaveBeenCalledTimes(1)
   })
-
-  it('AUTO trigger fails closed when actor not in whitelist', async () => {
+  
+  it('AUTO trigger fails when actor is not the source uploader', async () => {
     const sourceId = 'SRC-TEST-3'
     const actorId = 'ACTOR-OTHER'
+    const uploaderId = 'ACTOR-UPLOADER'
     
-    // Update load mock
+    // Source uploaded by a different actor
     repository.load.mockResolvedValue({
       staff: [{ id: actorId, permissionRole: 'ADMIN', status: 'ACTIVE', loginEnabled: true }],
       customers: [{ id: 'CUS-TEST-1' }],
-      sourceRecords: [{ id: sourceId, customerId: 'CUS-TEST-1', uploadedBy: actorId }],
+      sourceRecords: [{ id: sourceId, customerId: 'CUS-TEST-1', uploadedBy: uploaderId }],
       evidenceItems: [],
       profileUpdateProposals: [],
       evidenceConflicts: [],
     })
 
-    // Execute AUTO trigger - should fail with canary error
+    // Execute AUTO trigger - should fail with actor mismatch error
     await expect(repository.processSourceOnDemand(actorId, sourceId, { trigger: 'AUTO' }))
-      .rejects.toThrow(/尚未在此导师和客户范围内开启/)
+      .rejects.toThrow(/只有资料上传人可以触发自动整理/)
 
     // Verify: no reservation was created
     expect(budgetGuard.reserve).not.toHaveBeenCalled()

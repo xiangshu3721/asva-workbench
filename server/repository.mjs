@@ -2880,9 +2880,11 @@ export class FeishuRepository {
     }
     if (!source) throw Object.assign(new Error('资料不存在'), { code: 'SOURCE_NOT_FOUND', status: 404 })
     if (trigger === 'AUTO') {
-      const allowedCustomer = config.features.onDemandAiAutoTriggerCustomerIds.has(source.customerId)
-      const allowedActor = config.features.onDemandAiAutoTriggerActorIds.has(actorId) && source.uploadedBy === actorId
-      if (!allowedCustomer || !allowedActor) throw Object.assign(new Error('保存后自动整理尚未在此导师和客户范围内开启'), { code: 'ON_DEMAND_AI_AUTO_CANARY_RESTRICTED', status: 409 })
+      // R048.17 production acceptance passed. Remove canary whitelist restriction.
+      // All authenticated staff who uploaded the source can trigger AUTO.
+      // Budget protection (PG), idempotency, monitoring, and emergency pause remain active.
+      const allowedActor = source.uploadedBy === actorId
+      if (!allowedActor) throw Object.assign(new Error('只有资料上传人可以触发自动整理'), { code: 'ON_DEMAND_AI_AUTO_ACTOR_MISMATCH', status: 403 })
     }
     if (String(source.rawText || '').length > config.features.onDemandAiMaxChars) throw Object.assign(new Error(`资料超过单次整理上限（${config.features.onDemandAiMaxChars} 字）`), { code: 'ON_DEMAND_AI_INPUT_TOO_LARGE', status: 413 })
     if (['COMPLETED', 'REVIEW_REQUIRED', 'PROCESSING'].includes(source.processingStatus)) return this.sourceDetail(actorId, sourceId)
