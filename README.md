@@ -166,3 +166,27 @@ server/
 shared/
   semantic-engine.mjs  浏览器与 HTTP 服务共用的 Schema / DSL / Planner / Compiler / Aggregator
 ```
+
+## 生产基线（R048.17）
+
+**当前稳定版本：** Git `12aa238` / SCF v37 / 906 个测试通过
+
+自动归档和保存性能已恢复并固化。核心机制包括：
+
+- **Stage 4 自动归档：** 导师保存资料后自动提取 Evidence 并更新客户正式字段
+- **保存性能：** ≤ 200ms（实测 64-79ms）
+- **费用安全：** PG 每日 100 次上限、并发 2、幂等防重、紧急暂停
+- **异步解耦：** 保存与 AI 处理分离，前端递增退避轮询
+
+详细基线文档：[`docs/stage4/11-R048-17-PRODUCTION-BASELINE.md`](docs/stage4/11-R048-17-PRODUCTION-BASELINE.md)
+
+### ⚠️ 保护规则
+
+后续开发**不得随意修改**以下核心机制：
+
+1. Stage 4 归档逻辑（`server/repository.mjs`）
+2. PG 费用守门（`server/ai-budget-guard.mjs`）
+3. 异步 AUTO 触发（`server/index.mjs`）
+4. 前端递增退避轮询（`src/App.tsx`）
+
+如需修改，须明确审批并更新基线文档。
