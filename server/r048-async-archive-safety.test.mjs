@@ -206,13 +206,17 @@ describe('R048.17 async archive safety', () => {
     const { readFileSync } = require('fs')
     const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
     
-    // Must have max poll count
-    expect(appSource).toMatch(/maxPolls\s*=\s*\d+/)
-    // Must have poll interval
-    expect(appSource).toMatch(/pollInterval\s*=\s*\d+/)
-    // Must have a counter
-    expect(appSource).toContain('pollCount')
-    // Must stop polling when max reached
-    expect(appSource).toMatch(/pollCount\s*>=\s*maxPolls/)
+    // Must have incremental backoff delays
+    expect(appSource).toContain('pollDelays')
+    // Must have absolute deadline
+    expect(appSource).toContain('absoluteDeadline')
+    // Must have cleanup refs
+    expect(appSource).toContain('sourcePollTimerRef')
+    expect(appSource).toContain('sourcePollAbortRef')
+    // Must have cleanup useEffect
+    expect(appSource).toContain('sourcePollAbortRef.current?.abort()')
+    // Must stop on terminal statuses
+    expect(appSource).toContain("'FAILED'")
+    expect(appSource).toContain("'NOT_FOUND'")
   })
 })

@@ -1478,7 +1478,16 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
   const [analysisSummary, setAnalysisSummary] = useState('')
   const saveStateRef = useRef<SourceSaveState>('IDLE')
   const pendingSaveRef = useRef<{ operationId: string; input: SourceCreateInput; startedAt: number } | null>(null)
+  const sourcePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sourcePollAbortRef = useRef<AbortController | null>(null)
   const workspaceRequestSequenceRef = useRef(0)
+  // R048.17: Cleanup polling on unmount or customer switch
+  useEffect(() => {
+    return () => {
+      sourcePollAbortRef.current?.abort()
+      if (sourcePollTimerRef.current) clearTimeout(sourcePollTimerRef.current)
+    }
+  }, [customer.id])
   const setWorkspaceSnapshot = (next: SourceWorkspace) => {
     workspaceRef.current = next
     workspaceLoadedRef.current = true
@@ -1589,47 +1598,52 @@ function EvidenceWorkspace({ customer, isAdmin, cachedWorkspace, cachedWorkspace
       return
     }
     // R048.17: Server already triggered AUTO asynchronously.
-    // Poll source status until completion, then refresh customer profile.
+    // Poll source status with incremental backoff until completion.
     setMessage(`资料已保存，AI 正在整理 · ${Math.round(performance.now() - saveStartedAt)}ms`)
-    const pollInterval = 2000 // Poll every 2 seconds
-    const maxPolls = 60 // Max 2 minutes (120s timeout)
-    let pollCount = 0
+    // Cancel any previous polling
+    if (sourcePollTimerRef.current) clearTimeout(sourcePollTimerRef.current)
+    sourcePollAbortRef.current?.abort()
+    const abortController = new AbortController()
+    sourcePollAbortRef.current = abortController
+    // Incremental backoff: 5s, 10s, 15s, 20s, 25s, 30s (6 polls, ~105s total)
+    const pollDelays = [5000, 10_000, 15_000, 20_000, 25_000, 30_000]
+    const absoluteDeadline = Date.now() + 150_000 // 2.5 min absolute max
+    let pollIndex = 0
+    const stopPolling = () => {
+      if (sourcePollTimerRef.current) { clearTimeout(sourcePollTimerRef.current); sourcePollTimerRef.current = null }
+    }
     const pollStatus = async () => {
-      if (pollCount >= maxPolls) {
-        setMessage('AI 整理时间较长，请稍后刷新查看结果。')
-        return
-      }
-      pollCount++
+      if (abortController.signal.aborted) return
+      if (Date.now() > absoluteDeadline) { stopPolling(); setMessage('AI 整理时间较长，请稍后刷新查看结果。'); return }
+      if (pollIndex >= pollDelays.length) { stopPolling(); setMessage('AI 整理时间较长，请稍后刷新查看结果。'); return }
       try {
         const status = await onSourceStatus(customer.id, source.operationId || '', source.id)
-        if (status.status === 'PERSISTED' && status.source) {
-          const processingStatus = status.source.processingStatus
-          if (processingStatus === 'COMPLETED') {
-            await load({ refresh: true })
-            await onRefreshProfile?.()
-            setMessage('AI 整理完成，客户档案已刷新。')
-            return
-          }
-          if (processingStatus === 'REVIEW_REQUIRED') {
-            await load({ refresh: true })
-            setMessage('AI 已提取证据，等待审核。')
-            return
-          }
-          if (processingStatus === 'PROCESSING' || processingStatus === 'UPLOADED') {
-            // Still processing, poll again
-            setTimeout(pollStatus, pollInterval)
-            return
-          }
+        if (abortController.signal.aborted) return
+        const ps = status.source?.processingStatus || status.status
+        if (ps === 'COMPLETED') {
+          stopPolling()
+          await load({ refresh: true })
+          await onRefreshProfile?.()
+          setMessage('AI 整理完成，客户档案已刷新。')
+          return
         }
-        // Unexpected status, stop polling
-        setMessage('AI 整理状态异常，请刷新页面查看。')
+        if (ps === 'REVIEW_REQUIRED') { stopPolling(); await load({ refresh: true }); setMessage('AI 已提取证据，等待审核。'); return }
+        if (ps === 'FAILED') { stopPolling(); setMessage('AI 整理失败，请稍后重试或联系管理员。'); return }
+        if (ps === 'NOT_FOUND') { stopPolling(); setMessage('资料状态未找到，请刷新页面。'); return }
+        // UPLOADED or PROCESSING — continue polling
+        const delay = pollDelays[pollIndex] || pollDelays[pollDelays.length - 1]
+        pollIndex++
+        sourcePollTimerRef.current = setTimeout(pollStatus, delay)
       } catch {
-        // Network error, retry
-        setTimeout(pollStatus, pollInterval)
+        if (abortController.signal.aborted) return
+        // Network error — continue polling with next delay
+        const delay = pollDelays[pollIndex] || pollDelays[pollDelays.length - 1]
+        pollIndex++
+        sourcePollTimerRef.current = setTimeout(pollStatus, delay)
       }
     }
-    // Start polling after a short delay to let the server start processing
-    setTimeout(pollStatus, 1000)
+    // Start first poll after 5s
+    sourcePollTimerRef.current = setTimeout(pollStatus, pollDelays[0])
   }
   const recoverPendingSave = async (pending: { operationId: string; input: SourceCreateInput; startedAt: number }) => {
     updateSaveState('TIMEOUT')
