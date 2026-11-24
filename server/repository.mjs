@@ -2861,9 +2861,23 @@ export class FeishuRepository {
     // Temporary production acceptance isolation: exact ADMIN + exact Source,
     // checked before loading records, reserving budget or calling the model.
     if (config.features.onDemandAiTestScopeEnabled) await this.assertOnDemandTestScope(actorId, sourceId)
-    const database = await this.load()
-    const visibleDatabase = scope(database, actorId)
-    const source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
+    // R048.17: Retry with exponential backoff for Feishu eventual consistency.
+    // When a source is just created, Feishu API may not immediately return it.
+    // Retry up to 3 times with delays: 1s, 2s, 4s (total 7s max).
+    let database
+    let visibleDatabase
+    let source
+    for (let attempt = 0; attempt < 3; attempt++) {
+      database = await this.load({ force: true })
+      visibleDatabase = scope(database, actorId)
+      source = visibleDatabase.sourceRecords.find((item) => item.id === sourceId)
+      if (source) break
+      if (attempt < 2) {
+        const delayMs = Math.pow(2, attempt) * 1000
+        if (config.appEnv === 'development') console.info('[ASVA_RETRY]', JSON.stringify({ sourceId, attempt: attempt + 1, delayMs }))
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+    }
     if (!source) throw Object.assign(new Error('资料不存在'), { code: 'SOURCE_NOT_FOUND', status: 404 })
     if (trigger === 'AUTO') {
       const allowedCustomer = config.features.onDemandAiAutoTriggerCustomerIds.has(source.customerId)
