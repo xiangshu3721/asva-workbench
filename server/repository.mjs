@@ -3190,7 +3190,11 @@ export class FeishuRepository {
       // privacy, conflict, confirmed-fact, and time-ordering rules are unchanged.
       const onDemandAutoArchive = onDemand && onDemandTrigger === 'AUTO' && isAutomaticProfileSource(source)
       const automaticMode = legacyAutomaticMode || onDemandAutoArchive
-      const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && (wasExtractReady || reconcileExistingEvidence)
+      // R048.17: On-demand AUTO sources also go through the full Stage 4 path
+      // (batched writes + readback verification + correct outcome classification).
+      // Without this, a fresh UPLOADED source (wasExtractReady=false, reconcileExistingEvidence=false)
+      // would fall into the non-stage4 path which lacks readback and uses different outcome logic.
+      const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && (wasExtractReady || reconcileExistingEvidence || (onDemand && onDemandTrigger === 'AUTO'))
       const derivedErrors = []
       const stage4ProfileWrites = []
       const stage4SupplementaryEvidence = []
