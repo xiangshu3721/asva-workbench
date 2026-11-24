@@ -8,6 +8,7 @@ import { AuthError, bearerToken, issueSession, verifySession } from './auth.mjs'
 import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
+import { importAssessmentFromShareUrl } from './assessment-import.mjs'
 
 function memorySnapshot(phase, requestId, extra = {}) {
   const memory = process.memoryUsage()
@@ -287,6 +288,19 @@ async function handle(request, response, requestId) {
   if (request.method === 'POST' && url.pathname === '/api/appointments') {
     if (!config.features.externalAppointment) fail('外部预约入口当前已冻结', 'FEATURE_DISABLED', 403)
     return send(request, response, 200, await repository.createAppointment(await readBody(request)), requestId)
+  }
+  // Assessment import: mentor pastes a star share URL → ASVA proxies the read
+  if (request.method === 'POST' && url.pathname === '/api/assessments/import') {
+    await guard(request)
+    const body = await readBody(request)
+    if (!body.shareUrl || typeof body.shareUrl !== 'string') fail('缺少分享链接', 'INVALID_ARGUMENTS', 400)
+    try {
+      const preview = await importAssessmentFromShareUrl(body.shareUrl)
+      return send(request, response, 200, preview, requestId)
+    } catch (error) {
+      const status = error.code === 'REPORT_NOT_FOUND' ? 404 : error.code === 'TIMEOUT' ? 504 : 400
+      throw error.code ? Object.assign(error, { status }) : error
+    }
   }
   fail('接口不存在', 'NOT_FOUND', 404)
 }
