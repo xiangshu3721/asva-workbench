@@ -42,17 +42,27 @@ export function snapshotHash(value) {
 
 /**
  * Strip credentials and sensitive fields from a report before storage.
- * Removes: linkSecret, ownerToken, shareSecret, any field containing 'secret' or 'token'.
+ * Recursively removes: linkSecret, ownerToken, shareSecret, any field containing 'secret' or 'token'.
+ * Handles nested objects and arrays.
  */
 export function sanitizeReportForStorage(report) {
-  if (!report || typeof report !== 'object') return report
+  if (report === null || report === undefined) return report
+  if (typeof report !== 'object') return report
+  if (Array.isArray(report)) return report.map(item => sanitizeReportForStorage(item))
+  
   const sanitized = {}
   for (const [key, value] of Object.entries(report)) {
     const lower = key.toLowerCase()
+    // Skip top-level credentials
     if (lower.includes('secret') || lower.includes('token') || lower.includes('password') || lower.includes('credential')) {
-      continue // Skip credentials
+      continue
     }
-    sanitized[key] = value
+    // Recursively sanitize nested objects and arrays
+    if (value !== null && typeof value === 'object') {
+      sanitized[key] = sanitizeReportForStorage(value)
+    } else {
+      sanitized[key] = value
+    }
   }
   return sanitized
 }

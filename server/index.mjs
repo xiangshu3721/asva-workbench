@@ -383,7 +383,7 @@ async function handle(request, response, requestId) {
     const customerName = customer.name || customer.nickname || customer.id
     const nameMismatch = reportNickname && customerName && reportNickname !== customerName
 
-    // By default, name mismatch blocks binding unless admin confirms
+    // By default, name mismatch blocks binding unless admin confirms in the same request
     if (nameMismatch && !body.nameConfirmedBy) {
       return send(request, response, 409, {
         error: '报告署名与客户姓名不一致，需要管理员确认身份后才能绑定',
@@ -400,16 +400,21 @@ async function handle(request, response, requestId) {
       }, requestId)
     }
 
-    // Admin override: must record who confirmed and why
-    const nameConfirmedBy = nameMismatch ? (body.nameConfirmedBy || actorId) : ''
-    const nameConfirmedReason = nameMismatch ? (body.nameConfirmedReason || '') : ''
-    if (nameMismatch && nameConfirmedBy !== actorId) {
-      // Only the acting admin can confirm (prevent privilege escalation)
-      // Check if actor is admin
+    // Admin override: verify the actor is actually ADMIN (server-side check)
+    let nameConfirmedBy = ''
+    let nameConfirmedReason = ''
+    if (nameMismatch) {
+      // Must have explicit confirmation with reason
+      if (!body.nameConfirmedReason || body.nameConfirmedReason.trim().length === 0) {
+        fail('姓名不一致的确认必须提供核实依据', 'NAME_CONFIRM_REASON_REQUIRED', 400)
+      }
+      // Verify the actor is an admin (server-side, cannot be spoofed)
       const actor = await repository.staff(actorId)
       if (!actor || actor.permissionRole !== 'ADMIN') {
         fail('只有管理员可以确认姓名不一致的报告', 'PERMISSION_DENIED', 403)
       }
+      nameConfirmedBy = actorId
+      nameConfirmedReason = body.nameConfirmedReason.trim()
     }
 
     // Sanitize report for storage (strip credentials)
@@ -576,9 +581,24 @@ async function handle(request, response, requestId) {
     const bindingId = decodeURIComponent(consentPath[1])
     const body = await readBody(request)
     const store = getAssessmentStore()
+    
+    // Verify binding exists and actor has access to the customer
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+    
+    // Check customer access permission
+    const customer = await repository.customer(actorId, binding.customerId)
+    if (!customer) fail('无权操作此客户的测评授权', 'CUSTOMER_ACCESS_DENIED', 403)
+    
     try {
-      const result = await store.grantConsent(bindingId, actorId, body.consentRecord || '')
-      return send(request, response, 200, result, requestId)
+      // Support both grant and revoke
+      if (body.action === 'revoke') {
+        const result = await store.rpc('revoke_consent', { bindingId, actorId, reason: body.reason || '', now: new Date().toISOString() })
+        return send(request, response, 200, { bindingId, consentRevoked: true }, requestId)
+      } else {
+        const result = await store.grantConsent(bindingId, actorId, body.consentRecord || '')
+        return send(request, response, 200, result, requestId)
+      }
     } catch (error) {
       if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
       if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
