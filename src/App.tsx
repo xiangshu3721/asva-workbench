@@ -1456,6 +1456,9 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   const [bindLoading, setBindLoading] = useState(false)
   const [error, setError] = useState('')
   const [previewError, setPreviewError] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
+  const [snapshotViewer, setSnapshotViewer] = useState<{ bindingId: string; data: unknown } | null>(null)
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
   const loadedRef = useRef(false)
 
   const loadAssessments = useCallback(async () => {
@@ -1554,6 +1557,43 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
       await loadAssessments()
     } catch (err: any) {
       alert(err?.message || '解绑失败')
+    }
+  }
+
+  const handleTransfer = async (bindingId: string) => {
+    if (!isAdmin) return
+    const targetId = prompt('请输入目标客户 ID：')
+    if (!targetId) return
+    const reason = prompt('转移原因（必填）：')
+    if (!reason?.trim()) { alert('转移原因不能为空'); return }
+    try {
+      await api.transferAssessment(actorId, bindingId, targetId, reason.trim())
+      await loadAssessments()
+    } catch (err: any) {
+      alert(err?.message || '转移失败')
+    }
+  }
+
+  const handleRevoke = async (bindingId: string) => {
+    if (!isAdmin) return
+    if (!confirm('确定撤销此测评报告的本地访问？撤销后该客户将无法查看此报告，但快照保留用于审计。')) return
+    try {
+      await api.revokeAssessment(actorId, bindingId, '管理员本地撤销')
+      await loadAssessments()
+    } catch (err: any) {
+      alert(err?.message || '撤销失败')
+    }
+  }
+
+  const handleViewSnapshot = async (bindingId: string) => {
+    setSnapshotLoading(true)
+    try {
+      const result = await api.getAssessmentSnapshot(actorId, bindingId)
+      setSnapshotViewer({ bindingId, data: result.snapshot })
+    } catch (err: any) {
+      alert(err?.message || '加载快照失败')
+    } finally {
+      setSnapshotLoading(false)
     }
   }
 
@@ -1658,8 +1698,15 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
                 ) : null}
                 <div className="assessment-card-footer">
                   <span className="assessment-card-bound">绑定于 {formatDate(binding.boundAt)}</span>
-                  {binding.shareUrl && <a href={binding.shareUrl} target="_blank" rel="noreferrer" className="assessment-card-link">查看原报告 ↗</a>}
-                  {isAdmin && <button className="assessment-card-unbind" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>}
+                  {!binding.customerConsent && <span className="assessment-card-no-consent" title="客户未授权 AI 使用">⚠ 未授权</span>}
+                  {binding.sourceRevoked && <span className="assessment-card-source-revoked" title="源链接已失效">源已失效</span>}
+                  {binding.localRevoked && <span className="assessment-card-revoked" title="本地已撤销">已撤销</span>}
+                  <button className="assessment-card-snapshot secondary-button small" type="button" onClick={() => handleViewSnapshot(binding.bindingId)} disabled={snapshotLoading}>
+                    {snapshotLoading ? '加载中…' : '查看快照'}
+                  </button>
+                  {isAdmin && <button className="assessment-card-transfer secondary-button small" type="button" onClick={() => handleTransfer(binding.bindingId)}>转移</button>}
+                  {isAdmin && <button className="assessment-card-unbind secondary-button small" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>}
+                  {isAdmin && <button className="assessment-card-revoke secondary-button small" type="button" onClick={() => handleRevoke(binding.bindingId)}>撤销</button>}
                 </div>
               </article>
             ))}
@@ -1667,6 +1714,17 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
         })}
       </div>
     )}
+
+    {snapshotViewer && <div className="assessment-snapshot-overlay" onClick={() => setSnapshotViewer(null)}>
+      <div className="assessment-snapshot-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="assessment-snapshot-header">
+          <strong>完整报告快照</strong>
+          <small>此数据为绑定时从源服务读取并存储的不可变快照</small>
+          <button className="secondary-button small" type="button" onClick={() => setSnapshotViewer(null)}>关闭</button>
+        </div>
+        <pre className="assessment-snapshot-content">{JSON.stringify(snapshotViewer.data, null, 2)}</pre>
+      </div>
+    </div>}
   </section>
 }
 function SummaryFact({ title, value, note, tone }: { title: string; value: string; note?: string; tone: string }) { return <div className={`summary-fact summary-fact-${tone}`}><span>{title}</span><strong>{value}</strong>{note && <small>{note}</small>}</div> }

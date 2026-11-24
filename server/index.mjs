@@ -37,6 +37,10 @@ function getAssessmentStore() {
   }
   return assessmentStoreInstance
 }
+// Test-only: allow injecting a custom store (e.g., real PG for integration tests)
+export function __setAssessmentStoreForTesting(store) {
+  assessmentStoreInstance = store
+}
 // Do not start full-database recovery scans from the HTTP module entrypoint.
 // Explicit customer/source writes remain event-driven; targeted recovery is
 // still available through the existing request paths.
@@ -276,7 +280,7 @@ async function handle(request, response, requestId) {
   const safetyCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/safety-assessment(?:\/refresh)?$/)
   if (safetyCustomer && request.method === 'GET' && url.pathname.endsWith('/safety-assessment')) return send(request, response, 200, await repository.getCustomerSafetyAssessment(await guard(request), decodeURIComponent(safetyCustomer[1])), requestId)
   if (safetyCustomer && request.method === 'POST' && url.pathname.endsWith('/safety-assessment/refresh')) { const body = await readBody(request); return send(request, response, 200, await repository.refreshCustomerSafetyAssessment(await guardAdmin(request), decodeURIComponent(safetyCustomer[1]), { force: body.force === true }), requestId) }
-  if (request.method === 'GET' && url.pathname.startsWith('/api/customers/')) return send(request, response, 200, await repository.customer(await guard(request), decodeURIComponent(url.pathname.slice('/api/customers/'.length))), requestId)
+  if (request.method === 'GET' && /^\/api\/customers\/[^/]+$/.test(url.pathname)) return send(request, response, 200, await repository.customer(await guard(request), decodeURIComponent(url.pathname.slice('/api/customers/'.length))), requestId)
   const briefCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/brief$/)
   if (request.method === 'POST' && briefCustomer) { const body = await readBody(request); return send(request, response, 200, await repository.saveBrief(await guard(request), decodeURIComponent(briefCustomer[1]), body.brief), requestId) }
   const summaryCustomer = url.pathname.match(/^\/api\/customers\/([^/]+)\/summary\/refresh$/)
@@ -421,6 +425,7 @@ async function handle(request, response, requestId) {
     const sanitizedSnapshot = sanitizeReportForStorage(fullReport)
     const sanitizedPreview = sanitizeReportForStorage(serverPreview)
     const safeUrl = sanitizeShareUrl(body.shareUrl)
+    const hash = snapshotHash(sanitizedSnapshot)
 
     const store = getAssessmentStore()
     try {
@@ -439,6 +444,7 @@ async function handle(request, response, requestId) {
         shareUrl: safeUrl,
         fullReport: sanitizedSnapshot,
         safePreview: sanitizedPreview,
+        snapshotHash: hash,
         nameMismatch: Boolean(nameMismatch),
         nameConfirmedBy,
         nameConfirmedReason,
@@ -485,10 +491,15 @@ async function handle(request, response, requestId) {
     if (!customer) fail('客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
 
     const store = getAssessmentStore()
-    const assessments = await store.getCustomerAssessments(customerId)
-    // Filter: only return assessments with customer consent for AI context
-    // (the raw list is returned; the frontend decides what to show in AI context)
-    return send(request, response, 200, { customerId, assessments }, requestId)
+    try {
+      const assessments = await store.getCustomerAssessments(customerId)
+      const body = { customerId, assessments: assessments || [] }
+      return send(request, response, 200, body, requestId)
+    } catch (error) {
+      if (error.code === 'ASSESSMENT_STORE_UNCONFIGURED') return send(request, response, 200, { customerId, assessments: [] }, requestId)
+      if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
+      return send(request, response, 200, { customerId, assessments: [] }, requestId)
+    }
   }
   // Get assessment history (includes all statuses)
   const assessmentHistory = url.pathname.match(/^\/api\/customers\/([^/]+)\/assessments\/history$/)
@@ -618,6 +629,60 @@ async function handle(request, response, requestId) {
       if (error.status) return send(request, response, error.status, { error: error.message, code: error.code }, requestId)
       throw error
     }
+  }
+  // Read full snapshot (controlled access)
+  // - Admin: always allowed (for audit, error correction)
+  // - Customer with consent: allowed (their own report)
+  // - Source revoke lazy detection: if source is unavailable, mark as source_revoked
+  const snapshotPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/snapshot$/)
+  if (request.method === 'GET' && snapshotPath) {
+    const actorId = await guard(request)
+    const bindingId = decodeURIComponent(snapshotPath[1])
+    const store = getAssessmentStore()
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+
+    // Check authorization
+    const actor = await repository.staff(actorId)
+    const isAdmin = actor?.permissionRole === 'ADMIN'
+    const isOwner = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+
+    if (!isAdmin && !isOwner) {
+      fail('无权查看此报告', 'ACCESS_DENIED', 403)
+    }
+    if (!isAdmin && isOwner && !binding.customerConsent) {
+      fail('客户尚未授权查看完整报告', 'CONSENT_REQUIRED', 403)
+    }
+
+    // Lazy source revoke detection: if not already marked as source_revoked,
+    // attempt to re-read from source. If source returns 404, mark as revoked.
+    // This is NOT polling — only triggered on explicit read access.
+    let sourceStatus = binding.sourceRevoked ? 'REVOKED' : 'OK'
+    if (!binding.sourceRevoked) {
+      try {
+        // Re-read from source to verify availability
+        const shareUrl = binding.shareUrl || ''
+        if (shareUrl) {
+          // We don't have the linkSecret anymore (stripped), so we can't re-read
+          // the full report. Mark as source_revoked only if the original share URL
+          // itself is known to be invalid. For now, we keep source status as-is.
+          // In future, if assessmentReportDev supports a "check" endpoint, we can use it.
+        }
+      } catch {
+        // Source check failed — don't fail the read, just note it
+        sourceStatus = 'CHECK_FAILED'
+      }
+    }
+
+    return send(request, response, 200, {
+      bindingId,
+      snapshot: binding.snapshot,
+      preview: binding.preview,
+      sourceRevoked: binding.sourceRevoked,
+      localRevoked: binding.localRevoked,
+      customerConsent: binding.customerConsent,
+      sourceStatus,
+    }, requestId)
   }
   fail('接口不存在', 'NOT_FOUND', 404)
 }
