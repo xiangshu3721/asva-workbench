@@ -64,8 +64,9 @@ describe('assessment-import', () => {
   describe('readAssessmentReport', () => {
     it('calls the assessment service with correct parameters', async () => {
       const mockFetch = async (url, options) => {
-        expect(url).toContain('/v1/results/read')
+        expect(url).toContain('assessment-report-dev/v1/results/read')
         expect(options.method).toBe('POST')
+        expect(options.redirect).toBe('error')
         const body = JSON.parse(options.body)
         expect(body.reportId).toBe('rpt_synthetic_test_01')
         expect(body.linkSecret).toBe('secret_key_1234567')
@@ -101,8 +102,7 @@ describe('assessment-import', () => {
       })
 
       const result = await readAssessmentReport('rpt_synthetic_test_01', 'secret_key_1234567', {
-        fetch: mockFetchWithResponse,
-        serviceBase: 'https://test.example.com'
+        fetch: mockFetchWithResponse
       })
 
       expect(result.reportId).toBe('rpt_synthetic_test_01')

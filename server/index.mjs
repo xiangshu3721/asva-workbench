@@ -9,6 +9,7 @@ import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
 import { importAssessmentFromShareUrl } from './assessment-import.mjs'
+import { createAssessmentStore } from './assessment-store.mjs'
 
 function memorySnapshot(phase, requestId, extra = {}) {
   const memory = process.memoryUsage()
@@ -24,6 +25,15 @@ function memorySnapshot(phase, requestId, extra = {}) {
 
 memorySnapshot('startup_before_repository', 'module')
 const repository = new FeishuRepository()
+// Assessment store: customer binding persistence via Feishu bitable.
+// Created lazily on first use to avoid blocking startup if Feishu is unavailable.
+let assessmentStoreInstance = null
+function getAssessmentStore() {
+  if (!assessmentStoreInstance) {
+    assessmentStoreInstance = createAssessmentStore({ feishu: feishuGateway, config })
+  }
+  return assessmentStoreInstance
+}
 // Do not start full-database recovery scans from the HTTP module entrypoint.
 // Explicit customer/source writes remain event-driven; targeted recovery is
 // still available through the existing request paths.
@@ -290,8 +300,9 @@ async function handle(request, response, requestId) {
     return send(request, response, 200, await repository.createAppointment(await readBody(request)), requestId)
   }
   // Assessment import: mentor pastes a star share URL → ASVA proxies the read
+  // Step 1: Preview (no binding yet)
   if (request.method === 'POST' && url.pathname === '/api/assessments/import') {
-    await guard(request)
+    const actorId = await guard(request)
     const body = await readBody(request)
     if (!body.shareUrl || typeof body.shareUrl !== 'string') fail('缺少分享链接', 'INVALID_ARGUMENTS', 400)
     try {
@@ -300,6 +311,94 @@ async function handle(request, response, requestId) {
     } catch (error) {
       const status = error.code === 'REPORT_NOT_FOUND' ? 404 : error.code === 'TIMEOUT' ? 504 : 400
       throw error.code ? Object.assign(error, { status }) : error
+    }
+  }
+  // Step 2: Confirm binding (after preview, mentor confirms customer)
+  const confirmBindPath = url.pathname.match(/^\/api\/customers\/([^/]+)\/assessments\/confirm$/)
+  if (request.method === 'POST' && confirmBindPath) {
+    const actorId = await guard(request)
+    const customerId = decodeURIComponent(confirmBindPath[1])
+    const body = await readBody(request)
+    if (!body.reportId || !body.provider) fail('缺少报告标识', 'INVALID_ARGUMENTS', 400)
+    if (!body.preview) fail('缺少报告预览，请重新导入', 'INVALID_ARGUMENTS', 400)
+
+    // Fetch customer info
+    const customer = await repository.customer(actorId, customerId)
+    if (!customer) fail('客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
+
+    const store = getAssessmentStore()
+    try {
+      // Re-read the full report from source for snapshot (preview is sanitized)
+      // We already have the preview; store it as the safe snapshot
+      const result = await store.bindReport({
+        provider: body.provider,
+        reportId: body.reportId,
+        assessmentId: body.preview.assessmentId,
+        assessmentName: body.preview.assessmentName,
+        customerId: customer.id,
+        customerName: customer.name || customer.nickname || customer.id,
+        reportNickname: body.preview.nickname,
+        completedAt: body.preview.completedAt,
+        boundBy: actorId,
+        shareUrl: body.shareUrl || '',
+        fullReport: body.preview, // Store the safe preview as snapshot (source is authoritative)
+        safePreview: body.preview,
+        notes: body.notes || '',
+      })
+      return send(request, response, result.idempotent ? 200 : 201, result, requestId)
+    } catch (error) {
+      if (error.code === 'REPORT_ALREADY_BOUND') {
+        return send(request, response, 409, { error: error.message, code: error.code, existingCustomerId: error.existingCustomerId }, requestId)
+      }
+      throw error
+    }
+  }
+  // Get customer's assessment history
+  const customerAssessments = url.pathname.match(/^\/api\/customers\/([^/]+)\/assessments$/)
+  if (request.method === 'GET' && customerAssessments) {
+    const actorId = await guard(request)
+    const customerId = decodeURIComponent(customerAssessments[1])
+    // Verify customer access
+    const customer = await repository.customer(actorId, customerId)
+    if (!customer) fail('客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
+
+    const store = getAssessmentStore()
+    const assessments = await store.getCustomerAssessments(customerId)
+    return send(request, response, 200, { customerId, assessments }, requestId)
+  }
+  // Unbind assessment
+  const unbindPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/unbind$/)
+  if (request.method === 'POST' && unbindPath) {
+    const actorId = await guardAdmin(request) // Only admin can unbind
+    const bindingId = decodeURIComponent(unbindPath[1])
+    const body = await readBody(request)
+    const store = getAssessmentStore()
+    try {
+      const result = await store.unbindReport(bindingId, actorId, body.reason || '')
+      return send(request, response, 200, result, requestId)
+    } catch (error) {
+      if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      throw error
+    }
+  }
+  // Transfer binding to different customer
+  const transferPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/transfer$/)
+  if (request.method === 'POST' && transferPath) {
+    const actorId = await guardAdmin(request) // Only admin can transfer
+    const bindingId = decodeURIComponent(transferPath[1])
+    const body = await readBody(request)
+    if (!body.targetCustomerId) fail('缺少目标客户', 'INVALID_ARGUMENTS', 400)
+
+    const targetCustomer = await repository.customer(actorId, body.targetCustomerId)
+    if (!targetCustomer) fail('目标客户不存在或无权访问', 'CUSTOMER_NOT_FOUND', 404)
+
+    const store = getAssessmentStore()
+    try {
+      const result = await store.transferBinding(bindingId, targetCustomer.id, targetCustomer.name || targetCustomer.id, actorId, body.reason || '')
+      return send(request, response, 200, result, requestId)
+    } catch (error) {
+      if (error.code === 'BINDING_NOT_FOUND') return send(request, response, 404, { error: error.message }, requestId)
+      throw error
     }
   }
   fail('接口不存在', 'NOT_FOUND', 404)

@@ -112,6 +112,9 @@ export interface HealthMetadata { ok: boolean; service: string; appVersion?: str
 export interface SavePerformanceTrace { request_id?: string; operation_id?: string; result: 'SUCCESS' | 'ERROR'; customer_save_total_ms: number; identity_resolution_ms: number; customer_write_ms: number; enrollment_write_ms: number; profile_change_ms: number; ai_ms: number; other_ms: number }
 export interface EvidenceDebugTrace { source_id: string; processing_status: string; extraction_batch: string; evidence_count: number; proposal_count: number; conflict_count: number; model: string; prompt_version: string; duration_ms: number }
 export interface SourceRecord { id: string; subjectType: string; subjectId: string; customerId: string; sourceType: string; title: string; rawText?: string; fileRef?: string; fileName?: string; occurredAt?: string | null; uploadedAt?: string | null; uploadedBy?: string; sourceRole?: string; sourcePerspective?: 'STAFF_REPORTED' | 'CUSTOMER_FIRST_PARTY' | 'MENTOR_OBSERVATION'; contentHash?: string; processingStatus: string; processingVersion?: number; sensitivityLevel?: string; privacyLevel?: 'NORMAL' | 'SENSITIVE' | 'HIGH_SENSITIVE'; privacyStatus?: string; privacyMeta?: Record<string, unknown>; serviceNecessity?: 'LOW' | 'RELEVANT' | 'CRITICAL' | 'UNKNOWN'; serviceNecessityReason?: string; temporalType?: string; mentorSafeSummary?: string; mentorServiceDetail?: string; necessaryExcerpt?: string; salesSafeSummary?: string; sourceVersion?: number; lastBatchId?: string; processingStartedAt?: string | null; lastProcessingAt?: string | null; processingError?: string | null }
+export interface AssessmentPreview { reportId: string; assessmentId: string; assessmentName: string; assessmentVersion: string; completedAt: string; nickname: string; keyMetrics: Array<{ id: string; name: string; labels: string[] }>; headline: string; summary: string; caution: string; shareUrl: string; source: string; importedAt: string; provider?: string }
+export interface AssessmentBinding { bindingId: string; recordId?: string; provider: string; reportId: string; assessmentId: string; assessmentName: string; customerId: string; customerName: string; reportNickname: string; completedAt: number | string | null; boundAt: number | string | null; boundBy: string; status: string; shareUrl?: string; snapshotHash?: string; snapshot?: unknown; preview?: unknown; notes?: string; idempotent?: boolean; alreadyBound?: boolean }
+export interface CustomerAssessmentsResponse { customerId: string; assessments: AssessmentBinding[] }
 export interface EvidenceItem { id: string; sourceId: string; customerId: string; evidenceType: 'FACT' | 'SELF_MEANING' | 'OBSERVATION' | 'HYPOTHESIS'; semanticKind: string; fieldKey?: string; standardValue: unknown; displayText: string; sourceExcerpt: string; locator?: Record<string, unknown>; occurredAt?: string | null; sourceRole?: string; contentSource?: 'CUSTOMER_DIRECT' | 'STAFF_TRANSCRIBED_CUSTOMER' | 'MENTOR_REPORTED' | 'MENTOR_OBSERVATION' | 'THIRD_PARTY_REPORTED' | 'UNKNOWN' | 'MIXED'; informationNature?: 'OBJECTIVE_RECORD' | 'PERSONAL_STATEMENT' | 'REPORTED_SPEECH' | 'BEHAVIOR_OBSERVATION' | 'SUBJECTIVE_JUDGMENT' | 'AI_INFERENCE' | 'UNKNOWN'; verificationStatus?: 'UNKNOWN' | 'SOURCE_SUPPORTED' | 'HUMAN_VERIFIED' | 'CONFLICTED'; provenanceStatus?: 'EXPLICIT' | 'LEGACY_MISSING'; confidence: number; reviewStatus: string; privacyLevel?: 'NORMAL' | 'SENSITIVE' | 'HIGH_SENSITIVE'; privacyMeta?: Record<string, unknown>; serviceNecessity?: 'LOW' | 'RELEVANT' | 'CRITICAL' | 'UNKNOWN'; serviceNecessityReason?: string; temporalType?: string; mentorSafeText?: string; mentorServiceDetail?: string; necessaryExcerpt?: string; salesSafeSummary?: string; extractionBatchId?: string }
 export interface ProfileUpdateProposal { id: string; customerId: string; evidenceId: string; sourceId: string; fieldKey: string; fieldName: string; currentValue: unknown; proposedValue: unknown; action: string; changeType: string; reviewStatus: string; reason: string; confidence: number }
 export interface EvidenceConflict { id: string; customerId: string; fieldKey: string; conflictType: string; currentValue: unknown; newValue: unknown; currentEvidenceId?: string; newEvidenceId: string; status: string; resolution?: string }
@@ -243,6 +246,11 @@ export interface WorkbenchApi {
   overrideServiceNecessity(actorId: string, input: { entityType: 'source' | 'evidence'; id: string; serviceNecessity: 'LOW' | 'RELEVANT' | 'CRITICAL' }): Promise<SourceWorkspace>
   reviewProposal(actorId: string, proposalId: string, decision: 'CONFIRM' | 'REJECT'): Promise<SourceWorkspace>
   resolveConflict(actorId: string, conflictId: string, resolution: 'USE_NEW' | 'KEEP_CURRENT' | 'KEEP_BOTH' | 'MARK_UNKNOWN'): Promise<SourceWorkspace>
+  importAssessment(actorId: string, shareUrl: string): Promise<AssessmentPreview>
+  confirmAssessmentBinding(actorId: string, customerId: string, input: { provider: string; reportId: string; preview: AssessmentPreview; shareUrl?: string; notes?: string }): Promise<AssessmentBinding>
+  getCustomerAssessments(actorId: string, customerId: string): Promise<CustomerAssessmentsResponse>
+  unbindAssessment(actorId: string, bindingId: string, reason?: string): Promise<{ bindingId: string; status: string }>
+  transferAssessment(actorId: string, bindingId: string, targetCustomerId: string, reason?: string): Promise<{ oldBindingId: string; newBindingId: string; status: string }>
 }
 
 export interface ApiRequestTrace { time: string; method: string; path: string; status: number | null; duration: number; request_id?: string; result: 'SUCCESS' | 'ERROR' }
@@ -389,6 +397,11 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     overrideServiceNecessity: async () => { throw new Error('本地 Demo 不支持隐私策略调整') },
     reviewProposal: async () => { throw new Error('本地 Demo 不支持资料分析') },
     resolveConflict: async () => { throw new Error('本地 Demo 不支持资料分析') },
+    importAssessment: async () => { throw new Error('本地 Demo 不支持测评导入') },
+    confirmAssessmentBinding: async () => { throw new Error('本地 Demo 不支持测评绑定') },
+    getCustomerAssessments: async () => ({ customerId: '', assessments: [] }),
+    unbindAssessment: async () => { throw new Error('本地 Demo 不支持测评解绑') },
+    transferAssessment: async () => { throw new Error('本地 Demo 不支持测评转移') },
   }
 }
 
@@ -588,5 +601,10 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     overrideServiceNecessity: (actorId, input) => request<SourceWorkspace>('/api/privacy/service-necessity', actorId, { method: 'POST', body: JSON.stringify(input) }),
     reviewProposal: (actorId, proposalId, decision) => request<SourceWorkspace>(`/api/profile-proposals/${encodeURIComponent(proposalId)}/review`, actorId, { method: 'POST', body: JSON.stringify({ decision }) }),
     resolveConflict: (actorId, conflictId, resolution) => request<SourceWorkspace>(`/api/evidence-conflicts/${encodeURIComponent(conflictId)}/resolve`, actorId, { method: 'POST', body: JSON.stringify({ resolution }) }),
+    importAssessment: (actorId, shareUrl) => request<AssessmentPreview>('/api/assessments/import', actorId, { method: 'POST', body: JSON.stringify({ shareUrl }) }, { softTimeoutMs: 20000, hardTimeoutMs: 25000 }),
+    confirmAssessmentBinding: (actorId, customerId, input) => request<AssessmentBinding>(`/api/customers/${encodeURIComponent(customerId)}/assessments/confirm`, actorId, { method: 'POST', body: JSON.stringify(input) }),
+    getCustomerAssessments: (actorId, customerId) => request<CustomerAssessmentsResponse>(`/api/customers/${encodeURIComponent(customerId)}/assessments`, actorId),
+    unbindAssessment: (actorId, bindingId, reason) => request<{ bindingId: string; status: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/unbind`, actorId, { method: 'POST', body: JSON.stringify({ reason: reason || '' }) }),
+    transferAssessment: (actorId, bindingId, targetCustomerId, reason) => request<{ oldBindingId: string; newBindingId: string; status: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/transfer`, actorId, { method: 'POST', body: JSON.stringify({ targetCustomerId, reason: reason || '' }) }),
   }
 }

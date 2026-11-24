@@ -6,22 +6,32 @@
 import { normalizeStarReportPreview, parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs'
 
 // assessmentReportDev service base URL (same CloudBase environment)
-const DEFAULT_REPORT_SERVICE_BASE = 'https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.com/assessment-report-dev'
+// This is the ONLY trusted endpoint. Never allow user-controlled URLs.
+const TRUSTED_REPORT_SERVICE_BASE = 'https://root-journey-prod-d4d7pzd0a8f805-1304965105.ap-shanghai.app.tcloudbase.com/assessment-report-dev'
 
 const READ_TIMEOUT_MS = 15_000
 const MAX_RESPONSE_BYTES = 256 * 1024 // 256 KB
 
 /**
- * Read a report from assessmentReportDev using the public /v1/results/read endpoint.
+ * Read a report from assessmentReportDev's public /v1/results/read endpoint.
  * The caller must have extracted reportId and linkSecret from the user's share URL.
+ * 
+ * Security properties:
+ * - Fixed trusted endpoint URL (not user-controllable)
+ * - redirect: 'error' — never follows redirects to untrusted hosts
+ * - 15s timeout enforced via AbortController
+ * - 256KB size limit enforced during streaming (not after download)
+ * - linkSecret is only used as read credential, never stored
+ * - Sensitive data (linkSecret, ownerToken) never logged
  * 
  * @param {string} reportId - The report ID (e.g., rpt_xxx)
  * @param {string} linkSecret - The link secret from the share URL
- * @param {object} options - Optional overrides (serviceBase, fetch)
- * @returns {Promise<object>} The report data (sanitized preview)
+ * @param {object} options - Optional overrides (fetch for testing)
+ * @returns {Promise<object>} The report data
  */
 export async function readAssessmentReport(reportId, linkSecret, options = {}) {
-  const serviceBase = options.serviceBase || process.env.ASSESSMENT_REPORT_SERVICE_BASE || DEFAULT_REPORT_SERVICE_BASE
+  // Always use the trusted fixed URL — no env var override for security
+  const serviceBase = TRUSTED_REPORT_SERVICE_BASE
   
   if (!reportId || !linkSecret) {
     throw Object.assign(new Error('缺少报告标识或链接密钥'), { code: 'INVALID_ARGUMENTS' })
@@ -38,6 +48,7 @@ export async function readAssessmentReport(reportId, linkSecret, options = {}) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId, linkSecret }),
       signal: controller.signal,
+      redirect: 'error', // Never follow redirects — fixed trusted endpoint only
     })
 
     if (response.status === 404) {
