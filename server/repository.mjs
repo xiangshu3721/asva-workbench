@@ -2835,11 +2835,11 @@ export class FeishuRepository {
     const includeRaw = database.staff.find((item) => item.id === actorId)?.permissionRole === 'ADMIN'
     return { status: 'PERSISTED', source: publicSource(source, { includeRaw }) }
   }
-  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false, callId = undefined } = {}) {
+  async processSource(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false, onDemandTrigger = undefined, callId = undefined } = {}) {
     const lockKey = onDemand ? sourceId : `${sourceId}:${stage}`
     const inFlight = this.sourceProcessingLocks.get(lockKey)
     if (inFlight) return inFlight
-    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence, onDemand, callId })
+    const task = this.processSourceUnsafe(actorId, sourceId, { force, stage, reconcileExistingEvidence, onDemand, onDemandTrigger, callId })
     this.sourceProcessingLocks.set(lockKey, task)
     try { return await task } finally { if (this.sourceProcessingLocks.get(lockKey) === task) this.sourceProcessingLocks.delete(lockKey) }
   }
@@ -2911,7 +2911,7 @@ export class FeishuRepository {
       await this.aiBudgetGuard.markAttempted(reservation)
       this.audit('PROCESS_SOURCE_ON_DEMAND', sourceId, actorId, 'ATTEMPTED')
       resetLastDeepSeekUsage()
-      result = await this.processSource(actorId, sourceId, { onDemand: true, callId })
+      result = await this.processSource(actorId, sourceId, { onDemand: true, onDemandTrigger: trigger, callId })
     } catch (error) {
       // R048.14: Distinguish definite failure from unknown execution result.
       // Definite failures (invalid input, rate limit, etc.) release active token.
@@ -2964,7 +2964,7 @@ export class FeishuRepository {
     if (account.permissionRole !== 'ADMIN') throw Object.assign(new Error('只有 ADMIN 可以执行异常检查'), { code: 'ADMIN_REQUIRED', status: 403 })
     return this.aiBudgetGuard.checkAndAlertAnomalies(day)
   }
-  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false, callId = undefined } = {}) {
+  async processSourceUnsafe(actorId, sourceId, { force = false, stage = 'full', reconcileExistingEvidence = false, onDemand = false, onDemandTrigger = undefined, callId = undefined } = {}) {
     this.invalidateDatabaseCache()
     requireStage2Tables()
     const startedAt = Date.now()
@@ -2975,11 +2975,14 @@ export class FeishuRepository {
     const sourceRow = database._rows.sourceRecords.find((item) => item.record_id === source?._recordId)
     if (!source || !sourceRow) throw new Error('资料不存在')
     const wasExtractReady = source.processingStatus === 'EXTRACT_READY'
-    if (isAutomaticProfileSource(source) && !automaticProfileArchivingAllowedForCustomer(source.customerId)) {
+    // R048.17 fix: Skip old automatic profile archiving checks when processing via on-demand AUTO trigger.
+    // The on-demand AI flow (R048.16) is independent from the legacy automatic archiving worker.
+    // Sources created with archiveIntent='CUSTOMER_UPDATE' should still be processed by the AUTO trigger.
+    if (!onDemand && isAutomaticProfileSource(source) && !automaticProfileArchivingAllowedForCustomer(source.customerId)) {
       this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'DISABLED', 'AUTOMATIC_PROFILE_CANARY_CUSTOMER_NOT_ALLOWED')
       return this.sourceDetail(actorId, sourceId)
     }
-    if (isAutomaticProfileSource(source) && !automaticProfileEventAllowed(source.createdAt || source.uploadedAt || source.occurredAt || source.processingStartedAt)) {
+    if (!onDemand && isAutomaticProfileSource(source) && !automaticProfileEventAllowed(source.createdAt || source.uploadedAt || source.occurredAt || source.processingStartedAt)) {
       this.audit('PROCESS_SOURCE_AUTOMATIC', sourceId, actorId, 'DISABLED', 'AUTOMATIC_PROFILE_EVENT_BEFORE_ENABLE_TIME')
       return this.sourceDetail(actorId, sourceId)
     }
@@ -3180,7 +3183,13 @@ export class FeishuRepository {
       // the profile from one canonical item only.
       const allEvidence = dedupeEvidence(refreshed.evidenceItems.filter((item) => item.sourceId === sourceId))
       if (!customerRecord) throw Object.assign(new Error('客户不存在'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
-      const automaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
+      const legacyAutomaticMode = automaticProfileArchivingAllowedForCustomer(source.customerId)
+      // R048.17: Sources that entered through the on-demand AUTO trigger and passed
+      // PG budget + canary whitelist follow the same archiving rules as the legacy
+      // automatic profile archiving flow. The trigger gates archiving behavior;
+      // privacy, conflict, confirmed-fact, and time-ordering rules are unchanged.
+      const onDemandAutoArchive = onDemand && onDemandTrigger === 'AUTO' && isAutomaticProfileSource(source)
+      const automaticMode = legacyAutomaticMode || onDemandAutoArchive
       const stage4Finalize = automaticMode && isAutomaticProfileSource(source) && (wasExtractReady || reconcileExistingEvidence)
       const derivedErrors = []
       const stage4ProfileWrites = []

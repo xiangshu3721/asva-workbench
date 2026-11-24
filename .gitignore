@@ -12,3 +12,10 @@ build-meta.json
 public/build-meta.json
 cloudbase/functions/asva-api/build-meta.json
 cloudbase/functions/asva-ai-archive/build-meta.json
+
+# Temporary acceptance test scripts and secrets
+.deploy-production.env
+acceptance-*.mjs
+check-*.mjs
+investigate-*.mjs
+query-*.mjs
