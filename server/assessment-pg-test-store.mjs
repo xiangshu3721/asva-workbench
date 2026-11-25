@@ -51,6 +51,8 @@ export class PgTestAssessmentStore {
       nameMismatch: Boolean(params.nameMismatch),
       nameConfirmedBy: params.nameConfirmedBy || '',
       nameConfirmedReason: params.nameConfirmedReason || '',
+      archiveConfirmedBy: params.boundBy || '',
+      archiveConfirmedAt: new Date().toISOString(),
       customerConsent: Boolean(params.customerConsent),
       customerConsentRecord: params.customerConsentRecord || '',
       now: new Date().toISOString(),

@@ -11,31 +11,62 @@
 | 项目 | 说明 |
 |---|---|
 | PR | #124 `assessment/stage2-import` |
+| 目标分支 | `master`（非 main） |
 | 变更范围 | server/index.mjs, src/App.tsx, assessment-pg-store.mjs, assessment-pg-test-store.mjs |
 | 数据库变更 | 新建表 `asva_assessment_bindings`, `asva_assessment_events`; 新建 RPC `asva_assessment_guard` |
 | 外部依赖 | CloudBase PostgreSQL (via RPC gateway) |
+| 部署方式 | GitHub Actions → CloudBase SCF + Pages（受控发布，非自动） |
 | 回滚策略 | 代码回退 + 数据保留 |
 
 ---
 
-## 2. 迁移顺序（严格按此顺序）
+## 2. 发布前检查
+
+### 2.1 确认 master 最新版本
+
+```bash
+git fetch origin
+git log origin/master --oneline -5
+# 记录当前版本，避免覆盖其他已上线修改
+```
+
+### 2.2 记录生产 v37 回滚点
+
+```bash
+# 记录当前生产版本的 commit
+git log origin/master -1 --format="%H %s" > rollback-point.txt
+
+# 记录当前 SCF 版本（如果有版本标识）
+# 记录当前 Pages 部署版本
+```
+
+### 2.3 确认无未合并的紧急修复
+
+```bash
+# 检查是否有其他分支需要优先合并
+git branch -r | grep -v master | grep -v assessment
+```
+
+---
+
+## 3. 迁移顺序（严格按此顺序）
 
 ### Phase 1: 数据库迁移
 
 ```bash
 # 1. 备份当前数据库（CloudBase 控制台导出）
-# 2. 执行迁移 SQL
-psql -h <host> -U <user> -d <db> \
+# 2. 执行迁移 SQL（使用生产数据库连接）
+psql -h <prod-host> -U <prod-user> -d <prod-db> \
   -f cloudbase/migrations/20261124180000_asva_assessment_bindings.sql
 
 # 3. 验证迁移
-psql -h <host> -U <user> -d <db> -c "
+psql -h <prod-host> -U <prod-user> -d <prod-db> -c "
   SELECT table_name FROM information_schema.tables
   WHERE table_name IN ('asva_assessment_bindings', 'asva_assessment_events');
 "
 # 预期输出：2 行
 
-psql -h <host> -U <user> -d <db> -c "
+psql -h <prod-host> -U <prod-user> -d <prod-db> -c "
   SELECT routine_name FROM information_schema.routines
   WHERE routine_name = 'asva_assessment_guard';
 "
@@ -44,30 +75,40 @@ psql -h <host> -U <user> -d <db> -c "
 
 ### Phase 2: 环境变量配置
 
-在 CloudBase 控制台或 .env 中设置：
+在 CloudBase 控制台设置（不覆盖现有变量）：
 
 ```bash
 # 必填：CloudBase API Key（用于 RPC 认证）
-CLOUDBASE_APIKEY=<from-cloudbase-console>
+# 注意：复用现有 CLOUDBASE_APIKEY，不要覆盖
+CLOUDBASE_APIKEY=<existing-key>
 
 # 必填：CloudBase 环境 ID（用于构建 RPC URL）
-TCB_ENV=<env-id>
-# 或直接设置 RPC 基础 URL：
+# 注意：复用现有 TCB_ENV，不要覆盖
+TCB_ENV=<existing-env-id>
+
+# 可选：覆盖 RPC 基础 URL（通常不需要，会自动从 TCB_ENV 构建）
 # ASSESSMENT_RPC_BASE_URL=https://<env-id>.api.tcloudbasegateway.com/v1/rdb/rest/rpc
 
 # 可选：覆盖 RPC 函数名（默认 asva_assessment_guard）
 # ASSESSMENT_RPC_FUNCTION=asva_assessment_guard
 ```
 
-### Phase 3: 代码部署
+**重要**：仅新增评估相关变量，不修改现有的 DeepSeek、飞书、额度守门等配置。
+
+### Phase 3: 代码合并与部署
 
 ```bash
-# 1. 合并 PR #124 到 main
-git checkout main
-git merge --no-ff assessment/stage2-import
-git push origin main
+# 1. 合并 PR #124 到 master
+git checkout master
+git pull origin master
+git merge --no-ff assessment/stage2-import -m "feat(assessment): customer binding + snapshot storage"
+git push origin master
 
-# 2. CloudBase 自动部署（或手动触发部署）
+# 2. 触发 CloudBase SCF 部署（通过 GitHub Actions 或手动）
+# 方式 A：等待 GitHub Actions 自动部署（如果配置了）
+# 方式 B：手动触发 CloudBase CLI 部署
+npm run deploy:cloudbase
+
 # 3. 等待部署完成（约 2-5 分钟）
 ```
 
@@ -78,24 +119,25 @@ git push origin main
 curl -s https://<production>/api/health | jq .
 # 预期：200, version 包含最新 commit
 
-# 4b. 评估导入冒烟（使用测试客户）
-curl -X POST https://<production>/api/assessments/import \
-  -H 'Content-Type: application/json' \
-  -H 'X-Staff-Id: <admin-id>' \
-  -d '{"shareUrl": "<test-share-url>"}'
-# 预期：200, 包含 reportId
+# 4b. 前端页面加载
+# 打开浏览器访问 https://<production>/
+# 使用飞书登录，验证页面正常显示
 
-# 4c. 评估绑定冒烟
-curl -X POST https://<production>/api/customers/<test-customer-id>/assessments/confirm \
-  -H 'Content-Type: application/json' \
-  -H 'X-Staff-Id: <admin-id>' \
-  -d '{"shareUrl": "<test-share-url>"}'
-# 预期：201, 包含 bindingId
+# 4c. 评估导入冒烟（通过前端 UI）
+# 1. 登录工作台
+# 2. 选择一个客户
+# 3. 点击"导入测评报告"
+# 4. 粘贴测试分享链接
+# 5. 确认预览正常，无凭证泄露
 
-# 4d. 快照读取冒烟
-curl -s https://<production>/api/assessments/bindings/<bindingId>/snapshot \
-  -H 'X-Staff-Id: <admin-id>' | jq '{sourceStatus, sourceRevoked}'
-# 预期：sourceStatus = "UNKNOWN"
+# 4d. 评估绑定冒烟（通过前端 UI）
+# 1. 确认绑定成功
+# 2. 检查绑定列表显示
+# 3. 点击查看快照，确认显示正常
+
+# 4e. 验证快照存储（通过浏览器开发者工具）
+# Network tab → 找到 snapshot API 请求
+# 检查响应：sourceStatus = "UNKNOWN"
 ```
 
 ---
@@ -242,11 +284,15 @@ curl -X POST \
 
 ```bash
 # Step 1: 回退代码
-git checkout main
+git checkout master
+git pull origin master
 git revert <assessment-merge-commit> --no-edit
-git push origin main
+git push origin master
 
-# Step 2: 等待 CloudBase 自动部署（或手动触发）
+# Step 2: 触发 CloudBase SCF 部署
+# 方式 A：等待 GitHub Actions 自动部署
+# 方式 B：手动触发
+npm run deploy:cloudbase
 
 # Step 3: 验证回滚
 curl -s https://<production>/api/health | jq .version

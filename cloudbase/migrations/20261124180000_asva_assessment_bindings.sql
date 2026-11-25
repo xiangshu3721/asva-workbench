@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS public.asva_assessment_bindings (
   name_confirmed_by text,
   name_confirmed_at timestamptz,
   name_confirmed_reason text,
+  -- Archive authorization: explicit confirmation that customer agrees to store this report
+  archive_confirmed_by text NOT NULL DEFAULT '',
+  archive_confirmed_at timestamptz,
+  -- AI usage consent: separate from archive, defaults OFF
   customer_consent boolean NOT NULL DEFAULT false,
   customer_consent_at timestamptz,
   customer_consent_record text,
@@ -230,6 +234,7 @@ BEGIN
       customer_id, customer_name, report_nickname, completed_at, bound_at, bound_by, status,
       snapshot, snapshot_hash, preview,
       name_mismatch, name_confirmed_by, name_confirmed_at, name_confirmed_reason,
+      archive_confirmed_by, archive_confirmed_at,
       customer_consent, customer_consent_at, customer_consent_record,
       created_at, updated_at
     ) VALUES (
@@ -254,6 +259,8 @@ BEGIN
       NULLIF(request->>'nameConfirmedBy', ''),
       NULLIF(request->>'nameConfirmedAt', '')::timestamptz,
       NULLIF(request->>'nameConfirmedReason', ''),
+      COALESCE(request->>'archiveConfirmedBy', COALESCE(request->>'boundBy', '')),
+      p_now,
       COALESCE((request->>'customerConsent')::boolean, false),
       NULLIF(request->>'customerConsentAt', '')::timestamptz,
       NULLIF(request->>'customerConsentRecord', ''),
@@ -553,6 +560,8 @@ BEGIN
         'nameConfirmedBy', v_binding.name_confirmed_by,
         'nameConfirmedAt', v_binding.name_confirmed_at,
         'nameConfirmedReason', v_binding.name_confirmed_reason,
+        'archiveConfirmedBy', v_binding.archive_confirmed_by,
+        'archiveConfirmedAt', v_binding.archive_confirmed_at,
         'customerConsent', v_binding.customer_consent,
         'customerConsentAt', v_binding.customer_consent_at,
         'sourceRevoked', v_binding.source_revoked,

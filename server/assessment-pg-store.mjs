@@ -191,6 +191,10 @@ export class CloudBaseAssessmentStore {
         nameConfirmedBy: nameConfirmedBy || '',
         nameConfirmedAt: nameMismatch && nameConfirmedBy ? now : '',
         nameConfirmedReason: nameConfirmedReason || '',
+        // Archive authorization: boundBy confirms on behalf of customer
+        archiveConfirmedBy: boundBy || '',
+        archiveConfirmedAt: now,
+        // AI consent: defaults false, must be explicitly granted
         customerConsent: Boolean(customerConsent),
         customerConsentAt: customerConsent ? now : '',
         customerConsentRecord: customerConsentRecord || '',
@@ -358,6 +362,8 @@ function normalizeBinding(raw) {
     nameConfirmedBy: raw.nameConfirmedBy || raw.name_confirmed_by,
     nameConfirmedAt: raw.nameConfirmedAt || raw.name_confirmed_at,
     nameConfirmedReason: raw.nameConfirmedReason || raw.name_confirmed_reason,
+    archiveConfirmedBy: raw.archiveConfirmedBy || raw.archive_confirmed_by || '',
+    archiveConfirmedAt: raw.archiveConfirmedAt || raw.archive_confirmed_at,
     customerConsent: raw.customerConsent || raw.customer_consent || false,
     customerConsentAt: raw.customerConsentAt || raw.customer_consent_at,
     sourceRevoked: raw.sourceRevoked || raw.source_revoked || false,

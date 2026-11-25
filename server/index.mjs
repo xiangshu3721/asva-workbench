@@ -468,11 +468,9 @@ async function handle(request, response, requestId) {
         },
         safeShareUrl: safeUrl,
         nameMismatch: Boolean(nameMismatch),
-        // Archive authorization: the act of binding confirms the customer
-        // authorizes this report to be stored in their customer record.
-        // This is SEPARATE from AI usage consent (customerConsent).
-        archiveAuthorized: true,
-        archiveAuthorizedAt: new Date().toISOString(),
+        // Archive authorization: persisted in DB with who confirmed and when
+        archiveConfirmedBy: actorId,
+        archiveConfirmedAt: new Date().toISOString(),
         // AI usage consent: defaults to false, must be explicitly granted later
         customerConsent: Boolean(body.customerConsent),
       }, requestId)
@@ -518,7 +516,24 @@ async function handle(request, response, requestId) {
     const assessmentId = url.searchParams.get('assessmentId') || ''
     const store = getAssessmentStore()
     const bindings = await store.getCustomerAssessmentHistory(customerId, assessmentId)
-    return send(request, response, 200, { customerId, bindings }, requestId)
+    // Strip sensitive preview fields for non-ACTIVE bindings
+    const sanitizedBindings = bindings.map(b => {
+      if (b.status !== 'ACTIVE') {
+        // Keep basic metadata but remove summary/headline/caution for privacy
+        return {
+          ...b,
+          preview: b.preview ? {
+            reportId: b.preview.reportId,
+            assessmentId: b.preview.assessmentId,
+            assessmentName: b.preview.assessmentName,
+            completedAt: b.preview.completedAt,
+            // Remove: headline, summary, caution, nickname
+          } : null,
+        }
+      }
+      return b
+    })
+    return send(request, response, 200, { customerId, bindings: sanitizedBindings }, requestId)
   }
   // Unbind assessment (admin only)
   const unbindPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/unbind$/)
@@ -638,7 +653,8 @@ async function handle(request, response, requestId) {
   }
   // Read full snapshot (controlled access)
   // - Admin: always allowed (for audit, error correction) — can see ALL statuses
-  // - Customer: allowed only for ACTIVE bindings with customerConsent
+  // - Mentor/staff with customer access: allowed for ACTIVE bindings (professional viewing)
+  // - AI usage consent (customerConsent) is separate — required only for AI context inclusion
   // - UNBOUND/TRANSFERRED/REVOKED bindings: blocked for non-admin
   const snapshotPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/snapshot$/)
   if (request.method === 'GET' && snapshotPath) {
@@ -659,11 +675,12 @@ async function handle(request, response, requestId) {
       }, requestId)
     }
 
-    // Non-admin customer must have access to the customer AND consent
+    // Non-admin staff must have access to the customer
+    // Note: AI consent (customerConsent) is NOT required for human viewing
+    // It's only required for AI context inclusion (handled elsewhere)
     if (!isAdmin) {
       const isOwner = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
       if (!isOwner) fail('无权查看此报告', 'ACCESS_DENIED', 403)
-      if (!binding.customerConsent) fail('客户尚未授权 AI 使用此报告，无法查看完整快照', 'AI_CONSENT_REQUIRED', 403)
     }
 
     // Source status: since linkSecret is stripped at storage time, we CANNOT
@@ -681,6 +698,8 @@ async function handle(request, response, requestId) {
       sourceRevoked: binding.sourceRevoked,
       localRevoked: binding.localRevoked,
       customerConsent: binding.customerConsent,
+      archiveConfirmedBy: binding.archiveConfirmedBy || '',
+      archiveConfirmedAt: binding.archiveConfirmedAt || null,
       sourceStatus,
       sourceStatusMessage: binding.sourceRevoked
         ? '源链接已被上游撤销，此为绑定时保存的不可变快照'

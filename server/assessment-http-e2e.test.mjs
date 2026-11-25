@@ -536,13 +536,14 @@ describe('Real HTTP + PostgreSQL assessment integration', () => {
   })
 
   describe('13. Archive vs AI authorization separation', () => {
-    it('binding implies archive authorization (distinct from AI consent)', async () => {
+    it('binding persists archive authorization with confirmer info', async () => {
       // Confirm without customerConsent
       const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
         method: 'POST',
         body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
       })
-      expect(bound.payload.archiveAuthorized).toBe(true)
+      expect(bound.payload.archiveConfirmedBy).toBe('MENTOR-HTTP')
+      expect(bound.payload.archiveConfirmedAt).toBeTruthy()
       // AI consent defaults to false
       expect(bound.payload.customerConsent).toBe(false)
     })
@@ -566,19 +567,17 @@ describe('Real HTTP + PostgreSQL assessment integration', () => {
       expect(row.rows[0].customer_consent).toBe(true)
     })
 
-    it('customer without AI consent cannot read snapshot', async () => {
+    it('mentor can read snapshot without AI consent (professional viewing)', async () => {
       const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
         method: 'POST',
         body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
       })
       const bindingId = bound.payload.bindingId
 
-      // Try to read snapshot as mentor (who acts as customer access in test setup)
-      // Since customerConsent is false, non-admin should be blocked
+      // Mentor has customer access, can view without AI consent
       const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'MENTOR-HTTP')
-      // Mentor has access to the customer, but no AI consent → blocked
-      expect(snap.response.status).toBe(403)
-      expect(snap.payload.code).toBe('AI_CONSENT_REQUIRED')
+      expect(snap.response.status).toBe(200)
+      expect(snap.payload.snapshot).toBeTruthy()
     })
 
     it('admin can read snapshot even without AI consent', async () => {
