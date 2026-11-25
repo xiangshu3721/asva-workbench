@@ -1457,7 +1457,7 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   const [error, setError] = useState('')
   const [previewError, setPreviewError] = useState('')
   const [showHistory, setShowHistory] = useState(false)
-  const [snapshotViewer, setSnapshotViewer] = useState<{ bindingId: string; data: unknown } | null>(null)
+  const [snapshotViewer, setSnapshotViewer] = useState<{ bindingId: string; data: unknown; sourceStatus: string; sourceStatusMessage: string; localRevoked: boolean; customerConsent: boolean } | null>(null)
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const loadedRef = useRef(false)
 
@@ -1589,9 +1589,22 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
     setSnapshotLoading(true)
     try {
       const result = await api.getAssessmentSnapshot(actorId, bindingId)
-      setSnapshotViewer({ bindingId, data: result.snapshot })
+      setSnapshotViewer({
+        bindingId,
+        data: result.snapshot,
+        sourceStatus: result.sourceStatus || 'UNKNOWN',
+        sourceStatusMessage: result.sourceStatusMessage || '源报告状态未知',
+        localRevoked: result.localRevoked,
+        customerConsent: result.customerConsent,
+      })
     } catch (err: any) {
-      alert(err?.message || '加载快照失败')
+      if (err?.code === 'BINDING_NOT_ACTIVE') {
+        alert('此报告已不在活跃状态，无法查看快照。')
+      } else if (err?.code === 'AI_CONSENT_REQUIRED') {
+        alert('客户尚未授权 AI 使用此报告，无法查看完整快照。请先获取客户授权。')
+      } else {
+        alert(err?.message || '加载快照失败')
+      }
     } finally {
       setSnapshotLoading(false)
     }
@@ -1719,9 +1732,18 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
       <div className="assessment-snapshot-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="assessment-snapshot-header">
           <strong>完整报告快照</strong>
-          <small>此数据为绑定时从源服务读取并存储的不可变快照</small>
           <button className="secondary-button small" type="button" onClick={() => setSnapshotViewer(null)}>关闭</button>
         </div>
+        <div className="assessment-snapshot-meta">
+          <div className={`assessment-status-badge assessment-status-${snapshotViewer.sourceStatus === 'REVOKED' ? 'revoked' : 'unknown'}`}>
+            源状态：{snapshotViewer.sourceStatus === 'REVOKED' ? '已撤销' : '未知'}
+          </div>
+          {snapshotViewer.localRevoked && <div className="assessment-status-badge assessment-status-revoked">本地已撤销</div>}
+          <div className={`assessment-status-badge ${snapshotViewer.customerConsent ? 'assessment-status-ok' : 'assessment-status-pending'}`}>
+            AI 授权：{snapshotViewer.customerConsent ? '已授权' : '未授权'}
+          </div>
+        </div>
+        <small className="assessment-snapshot-note">{snapshotViewer.sourceStatusMessage}</small>
         <pre className="assessment-snapshot-content">{JSON.stringify(snapshotViewer.data, null, 2)}</pre>
       </div>
     </div>}

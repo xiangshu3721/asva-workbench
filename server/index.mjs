@@ -468,6 +468,12 @@ async function handle(request, response, requestId) {
         },
         safeShareUrl: safeUrl,
         nameMismatch: Boolean(nameMismatch),
+        // Archive authorization: the act of binding confirms the customer
+        // authorizes this report to be stored in their customer record.
+        // This is SEPARATE from AI usage consent (customerConsent).
+        archiveAuthorized: true,
+        archiveAuthorizedAt: new Date().toISOString(),
+        // AI usage consent: defaults to false, must be explicitly granted later
         customerConsent: Boolean(body.customerConsent),
       }, requestId)
     } catch (error) {
@@ -631,9 +637,9 @@ async function handle(request, response, requestId) {
     }
   }
   // Read full snapshot (controlled access)
-  // - Admin: always allowed (for audit, error correction)
-  // - Customer with consent: allowed (their own report)
-  // - Source revoke lazy detection: if source is unavailable, mark as source_revoked
+  // - Admin: always allowed (for audit, error correction) — can see ALL statuses
+  // - Customer: allowed only for ACTIVE bindings with customerConsent
+  // - UNBOUND/TRANSFERRED/REVOKED bindings: blocked for non-admin
   const snapshotPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/snapshot$/)
   if (request.method === 'GET' && snapshotPath) {
     const actorId = await guard(request)
@@ -642,46 +648,43 @@ async function handle(request, response, requestId) {
     const binding = await store.findBindingById(bindingId)
     if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
 
-    // Check authorization
     const actor = await repository.staff(actorId)
     const isAdmin = actor?.permissionRole === 'ADMIN'
-    const isOwner = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
 
-    if (!isAdmin && !isOwner) {
-      fail('无权查看此报告', 'ACCESS_DENIED', 403)
-    }
-    if (!isAdmin && isOwner && !binding.customerConsent) {
-      fail('客户尚未授权查看完整报告', 'CONSENT_REQUIRED', 403)
+    // Non-ACTIVE bindings are only accessible to admin (audit)
+    if (!isAdmin && binding.status !== 'ACTIVE') {
+      return send(request, response, 403, {
+        error: '此报告已不在活跃状态，无法查看',
+        code: 'BINDING_NOT_ACTIVE',
+      }, requestId)
     }
 
-    // Lazy source revoke detection: if not already marked as source_revoked,
-    // attempt to re-read from source. If source returns 404, mark as revoked.
-    // This is NOT polling — only triggered on explicit read access.
-    let sourceStatus = binding.sourceRevoked ? 'REVOKED' : 'OK'
-    if (!binding.sourceRevoked) {
-      try {
-        // Re-read from source to verify availability
-        const shareUrl = binding.shareUrl || ''
-        if (shareUrl) {
-          // We don't have the linkSecret anymore (stripped), so we can't re-read
-          // the full report. Mark as source_revoked only if the original share URL
-          // itself is known to be invalid. For now, we keep source status as-is.
-          // In future, if assessmentReportDev supports a "check" endpoint, we can use it.
-        }
-      } catch {
-        // Source check failed — don't fail the read, just note it
-        sourceStatus = 'CHECK_FAILED'
-      }
+    // Non-admin customer must have access to the customer AND consent
+    if (!isAdmin) {
+      const isOwner = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+      if (!isOwner) fail('无权查看此报告', 'ACCESS_DENIED', 403)
+      if (!binding.customerConsent) fail('客户尚未授权 AI 使用此报告，无法查看完整快照', 'AI_CONSENT_REQUIRED', 403)
     }
+
+    // Source status: since linkSecret is stripped at storage time, we CANNOT
+    // re-read from source. The status is genuinely UNKNOWN — not verified.
+    // sourceRevoked is only set when we get explicit signal (e.g. source returns 404
+    // during a re-read that includes the secret, which we no longer have).
+    // So the default truthful status is 'UNKNOWN'.
+    const sourceStatus = binding.sourceRevoked ? 'REVOKED' : 'UNKNOWN'
 
     return send(request, response, 200, {
       bindingId,
+      status: binding.status,
       snapshot: binding.snapshot,
       preview: binding.preview,
       sourceRevoked: binding.sourceRevoked,
       localRevoked: binding.localRevoked,
       customerConsent: binding.customerConsent,
       sourceStatus,
+      sourceStatusMessage: binding.sourceRevoked
+        ? '源链接已被上游撤销，此为绑定时保存的不可变快照'
+        : '源报告状态未知（分享密钥已剥离，无法重新验证）。此为绑定时从源服务读取并存储的不可变快照。',
     }, requestId)
   }
   fail('接口不存在', 'NOT_FOUND', 404)

@@ -117,10 +117,10 @@ const address = server.address()
 const baseUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`
 
 // ============================================================================
-// 4. Inject real PostgreSQL store
+// 4. Inject real PostgreSQL store (use separate database to avoid conflicts)
 // ============================================================================
 const { PgTestAssessmentStore } = await import('./assessment-pg-test-store.mjs')
-const pgStore = new PgTestAssessmentStore()
+const pgStore = new PgTestAssessmentStore('asva_assessment_http_e2e')
 __setAssessmentStoreForTesting(pgStore)
 
 // ============================================================================
@@ -423,6 +423,195 @@ describe('Real HTTP + PostgreSQL assessment integration', () => {
       const types = events.payload.events.map(e => e.eventType)
       expect(types).toContain('BOUND')
       expect(types).toContain('UNBOUND')
+    })
+  })
+
+  describe('11. Snapshot access control for non-ACTIVE bindings', () => {
+    it('admin can read snapshot of unbound binding (audit)', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Unbind
+      await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/unbind`, 'ADMIN-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'test' }),
+      })
+
+      // Admin can still read snapshot (audit access)
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'ADMIN-HTTP')
+      expect(snap.response.status).toBe(200)
+      expect(snap.payload.bindingId).toBe(bindingId)
+      expect(snap.payload.status).toBe('UNBOUND')
+    })
+
+    it('non-admin cannot read snapshot of unbound binding', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Unbind
+      await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/unbind`, 'ADMIN-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'test' }),
+      })
+
+      // Mentor cannot read snapshot of unbound binding
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'MENTOR-HTTP')
+      expect(snap.response.status).toBe(403)
+      expect(snap.payload.code).toBe('BINDING_NOT_ACTIVE')
+    })
+
+    it('non-admin cannot read snapshot of revoked binding', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Admin revokes
+      await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/revoke`, 'ADMIN-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ reason: '安全撤销' }),
+      })
+
+      // Mentor cannot read snapshot of revoked binding
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'MENTOR-HTTP')
+      expect(snap.response.status).toBe(403)
+      expect(snap.payload.code).toBe('BINDING_NOT_ACTIVE')
+    })
+
+    it('non-admin cannot read snapshot of transferred binding', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Admin transfers to CUS-HTTP-2
+      await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/transfer`, 'ADMIN-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ targetCustomerId: 'CUS-HTTP-2', reason: 'test' }),
+      })
+
+      // Mentor cannot read snapshot of the old (transferred) binding
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'MENTOR-HTTP')
+      expect(snap.response.status).toBe(403)
+      expect(snap.payload.code).toBe('BINDING_NOT_ACTIVE')
+    })
+  })
+
+  describe('12. Source status returns UNKNOWN (not verified)', () => {
+    it('sourceStatus is UNKNOWN by default (no source re-check)', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Use admin to read (no consent needed for admin)
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'ADMIN-HTTP')
+      expect(snap.response.status).toBe(200)
+      // Source status must NOT be 'OK' — it's genuinely unknown
+      expect(snap.payload.sourceStatus).toBe('UNKNOWN')
+      expect(snap.payload.sourceStatusMessage).toContain('未知')
+      expect(snap.payload.sourceRevoked).toBe(false)
+    })
+
+    it('admin can read snapshot with UNKNOWN source status', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'ADMIN-HTTP')
+      expect(snap.response.status).toBe(200)
+      expect(snap.payload.sourceStatus).toBe('UNKNOWN')
+    })
+  })
+
+  describe('13. Archive vs AI authorization separation', () => {
+    it('binding implies archive authorization (distinct from AI consent)', async () => {
+      // Confirm without customerConsent
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      expect(bound.payload.archiveAuthorized).toBe(true)
+      // AI consent defaults to false
+      expect(bound.payload.customerConsent).toBe(false)
+    })
+
+    it('can grant AI consent separately after binding', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Grant AI consent
+      const consented = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/consent`, 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'grant', consentRecord: '客户同意 AI 使用' }),
+      })
+      expect(consented.response.status).toBe(200)
+
+      // Verify: archive still authorized, AI consent now true
+      const row = await pgStore.pool.query('SELECT customer_consent FROM public.asva_assessment_bindings WHERE id = $1', [bindingId])
+      expect(row.rows[0].customer_consent).toBe(true)
+    })
+
+    it('customer without AI consent cannot read snapshot', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Try to read snapshot as mentor (who acts as customer access in test setup)
+      // Since customerConsent is false, non-admin should be blocked
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'MENTOR-HTTP')
+      // Mentor has access to the customer, but no AI consent → blocked
+      expect(snap.response.status).toBe(403)
+      expect(snap.payload.code).toBe('AI_CONSENT_REQUIRED')
+    })
+
+    it('admin can read snapshot even without AI consent', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Admin can read even without AI consent (for audit)
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'ADMIN-HTTP')
+      expect(snap.response.status).toBe(200)
+    })
+  })
+
+  describe('14. Snapshot access requires customer consent for non-admin', () => {
+    it('customer with consent can read snapshot', async () => {
+      const bound = await request('/api/customers/CUS-HTTP-1/assessments/confirm', 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ shareUrl: SYNTHETIC_SHARE_URL }),
+      })
+      const bindingId = bound.payload.bindingId
+
+      // Grant consent first
+      await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/consent`, 'MENTOR-HTTP', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'grant', consentRecord: '客户同意' }),
+      })
+
+      // Now mentor (who has customer access) can read
+      const snap = await request(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/snapshot`, 'MENTOR-HTTP')
+      expect(snap.response.status).toBe(200)
+      expect(snap.payload.snapshot).toBeTruthy()
     })
   })
 })
