@@ -1539,7 +1539,6 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleUnbind = async (bindingId: string) => {
-    if (!isAdmin) return
     if (!confirm('确定解绑此测评报告？解绑后将从客户档案中移除该报告。')) return
     try {
       await api.unbindAssessment(actorId, bindingId, '导师手动解绑')
@@ -1578,20 +1577,44 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleUpdateReport = async (binding: AssessmentBinding) => {
-    if (!isAdmin) return
     const newUrl = prompt(`更新「${binding.assessmentName}」的报告：\n\n请粘贴新的分享链接（必须是同一测评类型）：\n（留空则取消）`)
     if (!newUrl?.trim()) return
     const reason = prompt('更新原因（可选）：') || ''
     try {
-      await api.updateAssessmentReport(actorId, binding.bindingId, newUrl.trim(), reason.trim())
+      const result = await api.updateAssessmentReport(actorId, binding.bindingId, newUrl.trim(), reason.trim())
       await loadAssessments()
-      alert('报告已更新，旧版本保留在历史记录中。')
+      if (result.idempotent) {
+        alert('该链接已绑定到当前报告，无需重复更新。')
+      } else {
+        alert('报告已更新，旧版本保留在历史记录中。')
+      }
     } catch (err: any) {
       if (err?.code === 'ASSESSMENT_TYPE_MISMATCH') {
         alert(err?.message || '新报告类型与原报告不一致，无法更新。')
       } else {
         alert(err?.message || '更新失败')
       }
+    }
+  }
+
+  const handleViewUpdateHistory = async (bindingId: string) => {
+    try {
+      const result = await api.getAssessmentUpdateHistory(actorId, bindingId)
+      const history = result.history || []
+      if (history.length === 0) {
+        alert('该报告暂无更新记录。')
+        return
+      }
+      const lines = history.map(e => {
+        const time = formatDate(e.createdAt)
+        const type = e.eventType === 'REPORT_UPDATED' ? '报告被更新（新版本）' : e.eventType === 'REPORT_SUPERSEDED' ? '旧版本被替换' : e.eventType === 'SHARE_URL_SUPPLEMENTED' ? '补充了分享链接' : e.eventType
+        const actor = e.actorId || '未知'
+        const detail = (e.detail as any)?.reason || ''
+        return `${time} · ${type}\n  操作人：${actor}${detail ? `\n  原因：${detail}` : ''}`
+      })
+      alert(`📋 更新记录\n\n${lines.join('\n\n')}`)
+    } catch (err: any) {
+      alert(err?.message || '获取更新记录失败')
     }
   }
 
@@ -1700,8 +1723,11 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
                   <button className="assessment-card-view-original secondary-button small" type="button" onClick={() => handleViewOriginalReport(binding)}>
                     查看原报告
                   </button>
-                  {isAdmin && <button className="assessment-card-update secondary-button small" type="button" onClick={() => handleUpdateReport(binding)}>更新报告</button>}
-                  {isAdmin && <button className="assessment-card-unbind secondary-button small" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>}
+                  <button className="assessment-card-history secondary-button small" type="button" onClick={() => handleViewUpdateHistory(binding.bindingId)}>
+                    更新记录
+                  </button>
+                  <button className="assessment-card-update secondary-button small" type="button" onClick={() => handleUpdateReport(binding)}>更新报告</button>
+                  <button className="assessment-card-unbind secondary-button small" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>
                 </div>
               </article>
             ))}

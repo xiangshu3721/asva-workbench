@@ -255,8 +255,9 @@ export interface WorkbenchApi {
   transferAssessment(actorId: string, bindingId: string, targetCustomerId: string, reason?: string): Promise<{ oldBindingId: string; newBindingId: string; status: string }>
   revokeAssessment(actorId: string, bindingId: string, reason?: string): Promise<{ bindingId: string; status: string }>
   getAssessmentShareUrl(actorId: string, bindingId: string): Promise<{ bindingId: string; shareUrl: string }>
-  supplementAssessmentShareUrl(actorId: string, bindingId: string, shareUrl: string): Promise<{ success: boolean; binding: AssessmentBinding }>
-  updateAssessmentReport(actorId: string, bindingId: string, newShareUrl: string, reason?: string): Promise<{ success: boolean; binding: AssessmentBinding }>
+  supplementAssessmentShareUrl(actorId: string, bindingId: string, shareUrl: string): Promise<{ ok: boolean; bindingId: string }>
+  updateAssessmentReport(actorId: string, bindingId: string, newShareUrl: string, reason?: string): Promise<{ success: boolean; idempotent?: boolean; oldBindingId?: string; newBindingId?: string; status?: string }>
+  getAssessmentUpdateHistory(actorId: string, bindingId: string): Promise<{ bindingId: string; history: Array<{ eventType: string; actorId: string; detail: unknown; createdAt: string | number }> }>
 }
 
 export interface ApiRequestTrace { time: string; method: string; path: string; status: number | null; duration: number; request_id?: string; result: 'SUCCESS' | 'ERROR' }
@@ -413,6 +414,7 @@ export function createLocalAsyncApi(api: LocalApi): WorkbenchApi {
     getAssessmentShareUrl: async () => { throw new Error('本地 Demo 不支持测评链接获取') },
     supplementAssessmentShareUrl: async () => { throw new Error('本地 Demo 不支持测评链接补充') },
     updateAssessmentReport: async () => { throw new Error('本地 Demo 不支持测评报告更新') },
+    getAssessmentUpdateHistory: async () => ({ bindingId: '', history: [] }),
   }
 }
 
@@ -620,7 +622,8 @@ export function createHttpApi(baseUrl: string): WorkbenchApi {
     transferAssessment: (actorId, bindingId, targetCustomerId, reason) => request<{ oldBindingId: string; newBindingId: string; status: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/transfer`, actorId, { method: 'POST', body: JSON.stringify({ targetCustomerId, reason: reason || '' }) }),
     revokeAssessment: (actorId, bindingId, reason) => request<{ bindingId: string; status: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/revoke`, actorId, { method: 'POST', body: JSON.stringify({ reason: reason || '' }) }),
     getAssessmentShareUrl: (actorId, bindingId) => request<{ bindingId: string; shareUrl: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/share-url`, actorId),
-    supplementAssessmentShareUrl: (actorId, bindingId, shareUrl) => request<{ success: boolean; binding: AssessmentBinding }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/supplement-url`, actorId, { method: 'POST', body: JSON.stringify({ shareUrl }) }),
-    updateAssessmentReport: (actorId, bindingId, newShareUrl, reason) => request<{ success: boolean; binding: AssessmentBinding }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/update`, actorId, { method: 'POST', body: JSON.stringify({ shareUrl: newShareUrl, reason: reason || '' }) }),
+    supplementAssessmentShareUrl: (actorId, bindingId, shareUrl) => request<{ ok: boolean; bindingId: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/supplement-url`, actorId, { method: 'POST', body: JSON.stringify({ shareUrl }) }),
+    updateAssessmentReport: (actorId, bindingId, newShareUrl, reason) => request<{ success: boolean; idempotent?: boolean; oldBindingId?: string; newBindingId?: string; status?: string }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/update`, actorId, { method: 'POST', body: JSON.stringify({ shareUrl: newShareUrl, reason: reason || '' }) }),
+    getAssessmentUpdateHistory: (actorId, bindingId) => request<{ bindingId: string; history: Array<{ eventType: string; actorId: string; detail: unknown; createdAt: string | number }> }>(`/api/assessments/bindings/${encodeURIComponent(bindingId)}/update-history`, actorId),
   }
 }

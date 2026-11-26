@@ -339,13 +339,16 @@ export class CloudBaseAssessmentStore {
     }
   }
 
-  // V1.0.1: Get full share URL for viewing original report (mentor access only)
+  // V1.0.1: Get full share URL for viewing original report (decrypt server-side)
   async getShareUrlForViewing(bindingId) {
     if (!bindingId) return null
     try {
       const result = await this.rpc('get_share_url', { bindingId })
-      return result.encryptedShareUrl || result.encrypted_share_url || null
+      return result.shareUrl || null
     } catch (error) {
+      if (error.code === 'SHARE_URL_NOT_FOUND' || error.code === 'BINDING_NOT_FOUND' || error.code === 'BINDING_NOT_ACTIVE') {
+        throw error
+      }
       throw unavailable(error)
     }
   }
@@ -359,11 +362,18 @@ export class CloudBaseAssessmentStore {
       const result = await this.rpc('supplement_share_url', {
         bindingId,
         shareUrl,
-        supplementedBy: supplementedBy || '',
-        supplementedAt: this.clock().toISOString(),
+        actorId: supplementedBy || '',
+        now: this.clock().toISOString(),
       })
-      return result.binding ? normalizeBinding(result.binding) : null
+      if (result.error) {
+        const err = new Error(result.error.message || 'supplement failed')
+        err.code = result.error.code
+        err.status = result.error.status || 500
+        throw err
+      }
+      return { ok: true, bindingId }
     } catch (error) {
+      if (error.code) throw error
       throw unavailable(error)
     }
   }
@@ -371,34 +381,49 @@ export class CloudBaseAssessmentStore {
   // V1.0.1: Update/replace current report with new one of same type
   async updateReport({
     bindingId,
+    newBindingId,
     newShareUrl,
     newReportId,
     newSnapshot,
     newPreview,
+    newReportNickname = '',
+    newCompletedAt = '',
+    newAssessmentVersion = '',
     updatedBy,
     updateReason = '',
   }) {
-    if (!bindingId || !newShareUrl || !newReportId) {
+    if (!bindingId || !newBindingId || !newShareUrl || !newReportId) {
       throw new AssessmentStoreError('参数无效', 'INVALID_ARGUMENTS', 400)
     }
     const sanitizedSnapshot = sanitizeReportForStorage(newSnapshot)
     const sanitizedPreview = sanitizeReportForStorage(newPreview)
     const hash = snapshotHash(sanitizedSnapshot)
-    const now = this.clock().toISOString()
 
     try {
       const result = await this.rpc('update_report', {
         bindingId,
-        newShareUrl,
+        newBindingId,
         newReportId,
         newSnapshot: sanitizedSnapshot,
         newSnapshotHash: hash,
         newPreview: sanitizedPreview,
-        updatedBy: updatedBy || '',
-        updatedAt: now,
+        newEncryptedShareUrl: newShareUrl, // Will be encrypted in RPC
+        newReportNickname,
+        newCompletedAt,
+        newAssessmentVersion,
+        actorId: updatedBy || '',
         updateReason,
+        now: this.clock().toISOString(),
       })
-      return result.binding ? normalizeBinding(result.binding) : null
+      if (result.idempotent) {
+        return { bindingId, idempotent: true, status: 'ACTIVE' }
+      }
+      return {
+        oldBindingId: result.oldBindingId || bindingId,
+        newBindingId: result.newBindingId || newBindingId,
+        idempotent: false,
+        status: result.status || 'ACTIVE',
+      }
     } catch (error) {
       throw unavailable(error)
     }
@@ -433,9 +458,7 @@ function normalizeBinding(raw) {
     archiveConfirmedAt: raw.archiveConfirmedAt || raw.archive_confirmed_at,
     customerConsent: raw.customerConsent || raw.customer_consent || false,
     customerConsentAt: raw.customerConsentAt || raw.customer_consent_at,
-    // V1.0.1: Include encrypted share URL for viewing original report
-    encryptedShareUrl: raw.encryptedShareUrl || raw.encrypted_share_url || '',
-    customerConsentAt: raw.customerConsentAt || raw.customer_consent_at,
+    hasEncryptedShareUrl: raw.hasEncryptedShareUrl ?? (raw.encryptedShareUrl != null && raw.encryptedShareUrl !== ''),
     sourceRevoked: raw.sourceRevoked || raw.source_revoked || false,
     localRevoked: raw.localRevoked || raw.local_revoked || false,
   }
