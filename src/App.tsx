@@ -1558,7 +1558,8 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
       }
     } catch (err: any) {
       // If no share URL stored, prompt mentor to provide it
-      if (err?.code === 'SHARE_URL_NOT_FOUND') {
+      // Note: err.code is HTTP status (e.g. "HTTP_404"), err.serverCode is the server error code
+      if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
         const url = prompt(`此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）`)
         if (url?.trim()) {
           try {
