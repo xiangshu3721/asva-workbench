@@ -163,4 +163,25 @@ export class PgTestAssessmentStore {
     const result = await this.rpc('events', { bindingId })
     return result.events || []
   }
+
+  // V1.0.1: New methods for UX optimization
+  async getShareUrlForViewing(bindingId) {
+    const result = await this.rpc('get_share_url', { bindingId })
+    return result.encryptedShareUrl || null
+  }
+
+  async supplementShareUrl(bindingId, shareUrl, supplementedBy) {
+    const result = await this.rpc('supplement_share_url', {
+      bindingId,
+      shareUrl,
+      supplementedBy,
+      supplementedAt: new Date().toISOString(),
+    })
+    return result.binding ? normalizeBinding(result.binding) : null
+  }
+
+  async updateReport(params) {
+    const result = await this.rpc('update_report', params)
+    return result.binding ? normalizeBinding(result.binding) : null
+  }
 }

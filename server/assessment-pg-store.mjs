@@ -197,6 +197,8 @@ export class CloudBaseAssessmentStore {
         // AI consent: defaults false, must be explicitly granted
         customerConsent: Boolean(customerConsent),
         customerConsentAt: customerConsent ? now : '',
+        // V1.0.1: Store full share URL (with linkSecret) for viewing original report
+        encryptedShareUrl: shareUrl || '',
         customerConsentRecord: customerConsentRecord || '',
         now,
       })
@@ -336,6 +338,71 @@ export class CloudBaseAssessmentStore {
       throw unavailable(error)
     }
   }
+
+  // V1.0.1: Get full share URL for viewing original report (mentor access only)
+  async getShareUrlForViewing(bindingId) {
+    if (!bindingId) return null
+    try {
+      const result = await this.rpc('get_share_url', { bindingId })
+      return result.encryptedShareUrl || result.encrypted_share_url || null
+    } catch (error) {
+      throw unavailable(error)
+    }
+  }
+
+  // V1.0.1: Supplement missing share URL for existing binding
+  async supplementShareUrl(bindingId, shareUrl, supplementedBy) {
+    if (!bindingId || !shareUrl) {
+      throw new AssessmentStoreError('参数无效', 'INVALID_ARGUMENTS', 400)
+    }
+    try {
+      const result = await this.rpc('supplement_share_url', {
+        bindingId,
+        shareUrl,
+        supplementedBy: supplementedBy || '',
+        supplementedAt: this.clock().toISOString(),
+      })
+      return result.binding ? normalizeBinding(result.binding) : null
+    } catch (error) {
+      throw unavailable(error)
+    }
+  }
+
+  // V1.0.1: Update/replace current report with new one of same type
+  async updateReport({
+    bindingId,
+    newShareUrl,
+    newReportId,
+    newSnapshot,
+    newPreview,
+    updatedBy,
+    updateReason = '',
+  }) {
+    if (!bindingId || !newShareUrl || !newReportId) {
+      throw new AssessmentStoreError('参数无效', 'INVALID_ARGUMENTS', 400)
+    }
+    const sanitizedSnapshot = sanitizeReportForStorage(newSnapshot)
+    const sanitizedPreview = sanitizeReportForStorage(newPreview)
+    const hash = snapshotHash(sanitizedSnapshot)
+    const now = this.clock().toISOString()
+
+    try {
+      const result = await this.rpc('update_report', {
+        bindingId,
+        newShareUrl,
+        newReportId,
+        newSnapshot: sanitizedSnapshot,
+        newSnapshotHash: hash,
+        newPreview: sanitizedPreview,
+        updatedBy: updatedBy || '',
+        updatedAt: now,
+        updateReason,
+      })
+      return result.binding ? normalizeBinding(result.binding) : null
+    } catch (error) {
+      throw unavailable(error)
+    }
+  }
 }
 
 function normalizeBinding(raw) {
@@ -365,6 +432,9 @@ function normalizeBinding(raw) {
     archiveConfirmedBy: raw.archiveConfirmedBy || raw.archive_confirmed_by || '',
     archiveConfirmedAt: raw.archiveConfirmedAt || raw.archive_confirmed_at,
     customerConsent: raw.customerConsent || raw.customer_consent || false,
+    customerConsentAt: raw.customerConsentAt || raw.customer_consent_at,
+    // V1.0.1: Include encrypted share URL for viewing original report
+    encryptedShareUrl: raw.encryptedShareUrl || raw.encrypted_share_url || '',
     customerConsentAt: raw.customerConsentAt || raw.customer_consent_at,
     sourceRevoked: raw.sourceRevoked || raw.source_revoked || false,
     localRevoked: raw.localRevoked || raw.local_revoked || false,
