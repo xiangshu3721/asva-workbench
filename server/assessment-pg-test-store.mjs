@@ -15,18 +15,29 @@ export class PgTestAssessmentStore {
   }
 
   async rpc(action, payload = {}) {
-    const result = await this.pool.query(
-      'SELECT public.asva_assessment_guard($1::jsonb)',
-      [JSON.stringify({ action, table: 'asva_assessment_bindings', ...payload })]
-    )
-    const data = result.rows[0].asva_assessment_guard
-    if (data?.error) {
-      const err = new Error(data.error.message || 'PG RPC error')
-      err.code = data.error.code
-      err.status = data.error.status || 500
-      throw err
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query("SET LOCAL asva.encryption_key = 'test_v101_key_at_least_16_chars'")
+      const result = await client.query(
+        'SELECT public.asva_assessment_guard($1::jsonb)',
+        [JSON.stringify({ action, table: 'asva_assessment_bindings', ...payload })]
+      )
+      await client.query('COMMIT')
+      const data = result.rows[0].asva_assessment_guard
+      if (data?.error) {
+        const err = new Error(data.error.message || 'PG RPC error')
+        err.code = data.error.code
+        err.status = data.error.status || 500
+        throw err
+      }
+      return data
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
     }
-    return data
   }
 
   configured() { return true }
@@ -55,6 +66,7 @@ export class PgTestAssessmentStore {
       archiveConfirmedAt: new Date().toISOString(),
       customerConsent: Boolean(params.customerConsent),
       customerConsentRecord: params.customerConsentRecord || '',
+      encryptedShareUrl: params.shareUrl || '',
       now: new Date().toISOString(),
     })
     if (result.error) throw Object.assign(new Error(result.error.message), { code: result.error.code, status: result.error.status })
@@ -162,5 +174,59 @@ export class PgTestAssessmentStore {
   async getBindingEvents(bindingId) {
     const result = await this.rpc('events', { bindingId })
     return result.events || []
+  }
+
+  // V1.0.1: New methods for UX optimization
+  async getShareUrlForViewing(bindingId) {
+    const result = await this.rpc('get_share_url', { bindingId })
+    if (result.error) {
+      const err = new Error(result.error.message || 'PG RPC error')
+      err.code = result.error.code
+      err.status = result.error.status || 500
+      throw err
+    }
+    return result.shareUrl || null
+  }
+
+  async supplementShareUrl(bindingId, shareUrl, supplementedBy) {
+    const result = await this.rpc('supplement_share_url', {
+      bindingId,
+      shareUrl,
+      actorId: supplementedBy || '',
+      now: new Date().toISOString(),
+    })
+    if (result.error) {
+      const err = new Error(result.error.message || 'PG RPC error')
+      err.code = result.error.code
+      err.status = result.error.status || 500
+      throw err
+    }
+    return { ok: true, bindingId }
+  }
+
+  async updateReport(params) {
+    const result = await this.rpc('update_report', {
+      ...params,
+      now: new Date().toISOString(),
+    })
+    if (result.idempotent) {
+      return { bindingId: params.bindingId, idempotent: true, status: 'ACTIVE' }
+    }
+    return {
+      oldBindingId: result.oldBindingId || params.bindingId,
+      newBindingId: result.newBindingId,
+      idempotent: false,
+      status: result.status || 'ACTIVE',
+    }
+  }
+
+  async getBindingEvents(bindingId) {
+    const result = await this.rpc('events', { bindingId })
+    return (result.events || []).map(e => ({
+      eventType: e.eventType,
+      actorId: e.actorId,
+      detail: e.detail,
+      createdAt: e.createdAt,
+    }))
   }
 }

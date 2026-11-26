@@ -1277,8 +1277,8 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     </header>
     <CustomerUnderstandingOverview localSummary={oneLine} refs={understandingResponse?.evidence_refs || []} loading={understandingLoading} processing={understandingProcessing} error={understandingReadFailed} refreshing={understandingRefreshing} onRefresh={() => { void refreshUnderstanding(true).catch(() => { /* error already shown in consultation state */ }) }} />
     <CustomerProfileRenderer key={`profile-${customer.id}`} customer={customer} profile={profileResponse} loading={profileLoading} error={profileError} onLoad={loadCustomerProfile} refreshKey={customer.profileVersion ?? 0} />
-    <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} fallbackTopics={fallbackConsultationTopics} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => { void refreshUnderstanding(true).catch(() => { /* error already shown in consultation state */ }) }} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
     <AssessmentPanel key={`assessment-${customer.id}`} customer={customer} api={workbenchApi} actorId={props.staffId} isAdmin={props.canSeeAll} />
+    <CustomerUnderstandingPanel key={`understanding-${customer.id}`} response={understandingResponse} fallback={customer.understanding} fallbackTopics={fallbackConsultationTopics} status={panelUnderstandingStatus} error={panelUnderstandingError} loading={understandingLoading} refreshing={understandingRefreshing} onRefresh={() => { void refreshUnderstanding(true).catch(() => { /* error already shown in consultation state */ }) }} customerId={customer.id} onGetSafety={props.onGetSafetyAssessment} onRefreshSafety={props.onRefreshSafetyAssessment} onSafetyResponse={onSafetyResponse} view={understandingView} onViewChange={changeUnderstandingView} salesResponse={salesResponse} salesFallback={customer.salesUnderstanding} salesStatus={panelSalesStatus} salesError={salesError} salesLoading={salesLoading} salesRefreshing={salesRefreshing} onSalesRefresh={() => refreshSalesUnderstanding(true)} courses={courses} canEditEnrollments={props.canSeeAll} onEditEnrollments={() => setEditingEnrollments(true)} />
     <details ref={moreDetailsRef} className="customer-more-details"><summary><span><strong>更多详细资料</strong><small>服务记录、变更历史和原始依据</small></span><b>按需展开</b></summary><div className="customer-more-details-body"><CustomerHistory appointments={appointments} sessions={sessions} database={database} /><ProfileChangeHistory changes={database.profileChanges.filter((item) => item.customerId === customer.id)} /><details ref={evidenceDisclosureRef} className="record-disclosure evidence-disclosure" onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}><summary><span><strong>原始资料与查看依据</strong><small>用自然语言查看资料与依据</small></span><b>查看资料</b></summary><div className="record-disclosure-body">{evidenceOpen ? <EvidenceWorkspace key={customer.id} customer={customer} historyInitiallyRequested={composerRequest?.customerId !== customer.id} editorRequestId={composerRequest?.customerId === customer.id ? composerRequest.sequence : 0} isAdmin={props.canSeeAll} cachedWorkspace={cachedWorkspace} cachedWorkspaceFresh={cachedWorkspaceFresh} onLoad={loadWorkspace} onWorkspaceChange={setWorkspaceCache} onSourceStatus={props.onSourceStatus} onCreate={props.onCreateSource} onProcess={props.onProcessSource} onDemandAiManualAvailable={props.onDemandAiManualAvailable} onDemandAiAutoAvailable={props.onDemandAiAutoAvailable} onRefreshProfile={() => loadCustomerProfile(true)} onResolveConflict={props.onResolveConflict} onOverrideServiceNecessity={props.onOverrideServiceNecessity} /> : <p className="detail-empty-line">展开后加载该客户的资料与查看依据。</p>}</div></details></div></details>
     {editingEnrollments && <EnrollmentEditor customer={customer} products={sortProductsForSelection(database.products.filter(activeProductForManualEntry))} enrollments={enrollments} onClose={() => setEditingEnrollments(false)} onSave={async (drafts) => { await props.onUpdateEnrollments(customer.id, drafts); setEditingEnrollments(false) }} />}
   </article>
@@ -1457,8 +1457,6 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   const [error, setError] = useState('')
   const [previewError, setPreviewError] = useState('')
   const [showHistory, setShowHistory] = useState(false)
-  const [snapshotViewer, setSnapshotViewer] = useState<{ bindingId: string; data: unknown; sourceStatus: string; sourceStatusMessage: string; localRevoked: boolean; customerConsent: boolean } | null>(null)
-  const [snapshotLoading, setSnapshotLoading] = useState(false)
   const loadedRef = useRef(false)
 
   const loadAssessments = useCallback(async () => {
@@ -1508,38 +1506,29 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
     setBindLoading(true)
     setError('')
     try {
+      // V1.0.1: If name mismatch, ask mentor to confirm before binding
+      let confirmedBy = ''
+      let confirmedReason = ''
+      if (preview.nickname !== customer.name) {
+        const confirmed = confirm(`报告署名「${preview.nickname}」与客户「${customer.name}」不一致。\n\n已确认该报告属于此客户本人？`)
+        if (!confirmed) {
+          setBindLoading(false)
+          return
+        }
+        confirmedBy = actorId
+        confirmedReason = '导师确认报告归属'
+      }
       await api.confirmAssessmentBinding(actorId, customer.id, {
         shareUrl, // Server will re-read from source; no client report data
+        nameConfirmedBy: confirmedBy,
+        nameConfirmedReason: confirmedReason,
       })
       setImportOpen(false)
       setShareUrl('')
       setPreview(null)
       await loadAssessments()
     } catch (err: any) {
-      if (err?.code === 'NAME_MISMATCH_REQUIRES_CONFIRMATION') {
-        // Show confirmation dialog for admin
-        if (isAdmin) {
-          const confirmed = confirm(`报告署名「${err.reportNickname}」与客户「${err.customerName}」不一致。\n\n已确认该报告属于此客户本人？`)
-          if (confirmed) {
-            try {
-              await api.confirmAssessmentBinding(actorId, customer.id, {
-                shareUrl,
-                nameConfirmedBy: actorId,
-                nameConfirmedReason: '管理员人工确认身份一致',
-              })
-              setImportOpen(false)
-              setShareUrl('')
-              setPreview(null)
-              await loadAssessments()
-              return
-            } catch (retryErr: any) {
-              setError(retryErr?.message || '绑定失败')
-            }
-          }
-        } else {
-          setError('报告署名与客户姓名不一致，请联系管理员确认身份。')
-        }
-      } else if (err?.code === 'REPORT_ALREADY_BOUND' || err?.message?.includes('已绑定')) {
+      if (err?.code === 'REPORT_ALREADY_BOUND' || err?.message?.includes('已绑定')) {
         setError(err?.message || '此报告已绑定到其他客户。如需转移，请联系管理员。')
       } else {
         setError(err?.message || '绑定失败')
@@ -1550,63 +1539,82 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleUnbind = async (bindingId: string) => {
-    if (!isAdmin) return
-    if (!confirm('确定解绑此测评报告？解绑后可重新绑定到其他客户。')) return
+    if (!confirm('确定解绑此测评报告？解绑后将从客户档案中移除该报告。')) return
     try {
-      await api.unbindAssessment(actorId, bindingId, '管理员手动解绑')
+      await api.unbindAssessment(actorId, bindingId, '导师手动解绑')
       await loadAssessments()
     } catch (err: any) {
       alert(err?.message || '解绑失败')
     }
   }
 
-  const handleTransfer = async (bindingId: string) => {
-    if (!isAdmin) return
-    const targetId = prompt('请输入目标客户 ID：')
-    if (!targetId) return
-    const reason = prompt('转移原因（必填）：')
-    if (!reason?.trim()) { alert('转移原因不能为空'); return }
+  const handleViewOriginalReport = async (binding: AssessmentBinding) => {
     try {
-      await api.transferAssessment(actorId, bindingId, targetId, reason.trim())
-      await loadAssessments()
-    } catch (err: any) {
-      alert(err?.message || '转移失败')
-    }
-  }
-
-  const handleRevoke = async (bindingId: string) => {
-    if (!isAdmin) return
-    if (!confirm('确定撤销此测评报告的本地访问？撤销后该客户将无法查看此报告，但快照保留用于审计。')) return
-    try {
-      await api.revokeAssessment(actorId, bindingId, '管理员本地撤销')
-      await loadAssessments()
-    } catch (err: any) {
-      alert(err?.message || '撤销失败')
-    }
-  }
-
-  const handleViewSnapshot = async (bindingId: string) => {
-    setSnapshotLoading(true)
-    try {
-      const result = await api.getAssessmentSnapshot(actorId, bindingId)
-      setSnapshotViewer({
-        bindingId,
-        data: result.snapshot,
-        sourceStatus: result.sourceStatus || 'UNKNOWN',
-        sourceStatusMessage: result.sourceStatusMessage || '源报告状态未知',
-        localRevoked: result.localRevoked,
-        customerConsent: result.customerConsent,
-      })
-    } catch (err: any) {
-      if (err?.code === 'BINDING_NOT_ACTIVE') {
-        alert('此报告已不在活跃状态，无法查看快照。')
-      } else if (err?.code === 'AI_CONSENT_REQUIRED') {
-        alert('客户尚未授权 AI 使用此报告，无法查看完整快照。请先获取客户授权。')
-      } else {
-        alert(err?.message || '加载快照失败')
+      // First try to get the stored share URL
+      const result = await api.getAssessmentShareUrl(actorId, binding.bindingId)
+      if (result.shareUrl) {
+        window.open(result.shareUrl, '_blank', 'noopener,noreferrer')
+        return
       }
-    } finally {
-      setSnapshotLoading(false)
+    } catch (err: any) {
+      // If no share URL stored, prompt mentor to provide it
+      if (err?.code === 'SHARE_URL_NOT_FOUND') {
+        const url = prompt(`此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）`)
+        if (url?.trim()) {
+          try {
+            await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+            window.open(url.trim(), '_blank', 'noopener,noreferrer')
+            return
+          } catch (suppErr: any) {
+            alert(suppErr?.message || '补充链接失败')
+            return
+          }
+        }
+        return
+      }
+      alert(err?.message || '获取报告链接失败')
+    }
+  }
+
+  const handleUpdateReport = async (binding: AssessmentBinding) => {
+    const newUrl = prompt(`更新「${binding.assessmentName}」的报告：\n\n请粘贴新的分享链接（必须是同一测评类型）：\n（留空则取消）`)
+    if (!newUrl?.trim()) return
+    const reason = prompt('更新原因（可选）：') || ''
+    try {
+      const result = await api.updateAssessmentReport(actorId, binding.bindingId, newUrl.trim(), reason.trim())
+      await loadAssessments()
+      if (result.idempotent) {
+        alert('该链接已绑定到当前报告，无需重复更新。')
+      } else {
+        alert('报告已更新，旧版本保留在历史记录中。')
+      }
+    } catch (err: any) {
+      if (err?.code === 'ASSESSMENT_TYPE_MISMATCH') {
+        alert(err?.message || '新报告类型与原报告不一致，无法更新。')
+      } else {
+        alert(err?.message || '更新失败')
+      }
+    }
+  }
+
+  const handleViewUpdateHistory = async (bindingId: string) => {
+    try {
+      const result = await api.getAssessmentUpdateHistory(actorId, bindingId)
+      const history = result.history || []
+      if (history.length === 0) {
+        alert('该报告暂无更新记录。')
+        return
+      }
+      const lines = history.map(e => {
+        const time = formatDate(e.createdAt)
+        const type = e.eventType === 'REPORT_UPDATED' ? '报告被更新（新版本）' : e.eventType === 'REPORT_SUPERSEDED' ? '旧版本被替换' : e.eventType === 'SHARE_URL_SUPPLEMENTED' ? '补充了分享链接' : e.eventType
+        const actor = e.actorId || '未知'
+        const detail = (e.detail as any)?.reason || ''
+        return `${time} · ${type}\n  操作人：${actor}${detail ? `\n  原因：${detail}` : ''}`
+      })
+      alert(`📋 更新记录\n\n${lines.join('\n\n')}`)
+    } catch (err: any) {
+      alert(err?.message || '获取更新记录失败')
     }
   }
 
@@ -1656,7 +1664,6 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
           </div>
         ))}
         <p className="assessment-preview-headline">{preview.headline}</p>
-        <p className="assessment-preview-summary">{preview.summary}</p>
         <small className="assessment-preview-caution">{preview.caution}</small>
         {preview.nickname !== customer.name && <p className="assessment-name-mismatch-warning">⚠️ 报告署名（{preview.nickname}）与客户姓名（{customer.name}）不一致，请确认身份后再导入。</p>}
         <div className="assessment-preview-actions">
@@ -1706,7 +1713,6 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
                         <span>{m.labels?.join('、')}</span>
                       </div>
                     ))}
-                    {(binding.preview as any).headline && <p className="assessment-card-headline">{(binding.preview as any).headline}</p>}
                   </div>
                 ) : null}
                 <div className="assessment-card-footer">
@@ -1714,12 +1720,14 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
                   {!binding.customerConsent && <span className="assessment-card-no-consent" title="客户未授权 AI 使用">⚠ 未授权</span>}
                   {binding.sourceRevoked && <span className="assessment-card-source-revoked" title="源链接已失效">源已失效</span>}
                   {binding.localRevoked && <span className="assessment-card-revoked" title="本地已撤销">已撤销</span>}
-                  <button className="assessment-card-snapshot secondary-button small" type="button" onClick={() => handleViewSnapshot(binding.bindingId)} disabled={snapshotLoading}>
-                    {snapshotLoading ? '加载中…' : '查看快照'}
+                  <button className="assessment-card-view-original secondary-button small" type="button" onClick={() => handleViewOriginalReport(binding)}>
+                    查看原报告
                   </button>
-                  {isAdmin && <button className="assessment-card-transfer secondary-button small" type="button" onClick={() => handleTransfer(binding.bindingId)}>转移</button>}
-                  {isAdmin && <button className="assessment-card-unbind secondary-button small" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>}
-                  {isAdmin && <button className="assessment-card-revoke secondary-button small" type="button" onClick={() => handleRevoke(binding.bindingId)}>撤销</button>}
+                  <button className="assessment-card-history secondary-button small" type="button" onClick={() => handleViewUpdateHistory(binding.bindingId)}>
+                    更新记录
+                  </button>
+                  <button className="assessment-card-update secondary-button small" type="button" onClick={() => handleUpdateReport(binding)}>更新报告</button>
+                  <button className="assessment-card-unbind secondary-button small" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>
                 </div>
               </article>
             ))}
@@ -1727,26 +1735,6 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
         })}
       </div>
     )}
-
-    {snapshotViewer && <div className="assessment-snapshot-overlay" onClick={() => setSnapshotViewer(null)}>
-      <div className="assessment-snapshot-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="assessment-snapshot-header">
-          <strong>完整报告快照</strong>
-          <button className="secondary-button small" type="button" onClick={() => setSnapshotViewer(null)}>关闭</button>
-        </div>
-        <div className="assessment-snapshot-meta">
-          <div className={`assessment-status-badge assessment-status-${snapshotViewer.sourceStatus === 'REVOKED' ? 'revoked' : 'unknown'}`}>
-            源状态：{snapshotViewer.sourceStatus === 'REVOKED' ? '已撤销' : '未知'}
-          </div>
-          {snapshotViewer.localRevoked && <div className="assessment-status-badge assessment-status-revoked">本地已撤销</div>}
-          <div className={`assessment-status-badge ${snapshotViewer.customerConsent ? 'assessment-status-ok' : 'assessment-status-pending'}`}>
-            AI 授权：{snapshotViewer.customerConsent ? '已授权' : '未授权'}
-          </div>
-        </div>
-        <small className="assessment-snapshot-note">{snapshotViewer.sourceStatusMessage}</small>
-        <pre className="assessment-snapshot-content">{JSON.stringify(snapshotViewer.data, null, 2)}</pre>
-      </div>
-    </div>}
   </section>
 }
 function SummaryFact({ title, value, note, tone }: { title: string; value: string; note?: string; tone: string }) { return <div className={`summary-fact summary-fact-${tone}`}><span>{title}</span><strong>{value}</strong>{note && <small>{note}</small>}</div> }

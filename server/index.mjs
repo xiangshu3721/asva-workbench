@@ -9,7 +9,7 @@ import { generateInitialPassword } from './password-auth.mjs'
 import { featureFlags, releaseMetadata } from './release.mjs'
 import { responseHeaders } from './cors.mjs'
 import { importAssessmentFromShareUrl, readAssessmentReport } from './assessment-import.mjs'
-import { CloudBaseAssessmentStore, sanitizeReportForStorage, sanitizeShareUrl, snapshotHash } from './assessment-pg-store.mjs'
+import { CloudBaseAssessmentStore, generateBindingId, sanitizeReportForStorage, sanitizeShareUrl, snapshotHash } from './assessment-pg-store.mjs'
 import { parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs'
 import { normalizeStarReportPreview } from '../shared/assessment-import-star-contract.mjs'
 
@@ -387,38 +387,22 @@ async function handle(request, response, requestId) {
     const customerName = customer.name || customer.nickname || customer.id
     const nameMismatch = reportNickname && customerName && reportNickname !== customerName
 
-    // By default, name mismatch blocks binding unless admin confirms in the same request
-    if (nameMismatch && !body.nameConfirmedBy) {
-      return send(request, response, 409, {
-        error: '报告署名与客户姓名不一致，需要管理员确认身份后才能绑定',
-        code: 'NAME_MISMATCH_REQUIRES_CONFIRMATION',
-        reportNickname,
-        customerName,
-        preview: {
-          reportId: serverPreview.reportId,
-          assessmentId: serverPreview.assessmentId,
-          assessmentName: serverPreview.assessmentName,
-          nickname: serverPreview.nickname,
-          completedAt: serverPreview.completedAt,
-        },
-      }, requestId)
-    }
-
-    // Admin override: verify the actor is actually ADMIN (server-side check)
+    // By default, name mismatch shows warning but allows mentor to confirm
+    // V1.0.1: Remove strict blocking, allow mentor confirmation
     let nameConfirmedBy = ''
     let nameConfirmedReason = ''
     if (nameMismatch) {
-      // Must have explicit confirmation with reason
-      if (!body.nameConfirmedReason || body.nameConfirmedReason.trim().length === 0) {
-        fail('姓名不一致的确认必须提供核实依据', 'NAME_CONFIRM_REASON_REQUIRED', 400)
+      // Mentor can confirm if they have customer access
+      if (body.nameConfirmedBy) {
+        // Verify the actor has access to the customer
+        const hasAccess = await repository.customer(actorId, customerId).then(c => !!c)
+        if (!hasAccess) {
+          fail('无权确认此报告的归属', 'ACCESS_DENIED', 403)
+        }
+        nameConfirmedBy = actorId
+        nameConfirmedReason = (body.nameConfirmedReason || '导师确认报告归属').trim()
       }
-      // Verify the actor is an admin (server-side, cannot be spoofed)
-      const actor = await repository.staff(actorId)
-      if (!actor || actor.permissionRole !== 'ADMIN') {
-        fail('只有管理员可以确认姓名不一致的报告', 'PERMISSION_DENIED', 403)
-      }
-      nameConfirmedBy = actorId
-      nameConfirmedReason = body.nameConfirmedReason.trim()
+      // If not confirmed, continue with warning (don't block)
     }
 
     // Sanitize report for storage (strip credentials)
@@ -441,7 +425,7 @@ async function handle(request, response, requestId) {
         reportNickname: reportNickname,
         completedAt: serverPreview.completedAt || fullReport.completedAt || '',
         boundBy: actorId,
-        shareUrl: safeUrl,
+        shareUrl: body.shareUrl, // V1.0.1: Pass full share URL (with linkSecret) for encrypted storage
         fullReport: sanitizedSnapshot,
         safePreview: sanitizedPreview,
         snapshotHash: hash,
@@ -538,10 +522,17 @@ async function handle(request, response, requestId) {
   // Unbind assessment (admin only)
   const unbindPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/unbind$/)
   if (request.method === 'POST' && unbindPath) {
-    const actorId = await guardAdmin(request)
+    const actorId = await guard(request)
     const bindingId = decodeURIComponent(unbindPath[1])
     const body = await readBody(request)
     const store = getAssessmentStore()
+
+    // Verify binding exists and actor has customer access
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+    const hasAccess = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+    if (!hasAccess) fail('无权解绑此报告', 'ACCESS_DENIED', 403)
+
     try {
       const result = await store.unbindReport(bindingId, actorId, body.reason || '')
       return send(request, response, 200, result, requestId)
@@ -706,6 +697,244 @@ async function handle(request, response, requestId) {
         : '源报告状态未知（分享密钥已剥离，无法重新验证）。此为绑定时从源服务读取并存储的不可变快照。',
     }, requestId)
   }
+
+  // V1.0.1: Get share URL for viewing original report (mentor access only)
+  const shareUrlPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/share-url$/)
+  if (request.method === 'GET' && shareUrlPath) {
+    const actorId = await guard(request)
+    const bindingId = decodeURIComponent(shareUrlPath[1])
+    const store = getAssessmentStore()
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+
+    // Only ACTIVE bindings can share URL
+    if (binding.status !== 'ACTIVE') {
+      return send(request, response, 403, {
+        error: '此报告已不在活跃状态，无法获取分享链接',
+        code: 'BINDING_NOT_ACTIVE',
+      }, requestId)
+    }
+
+    // Staff must have access to the customer
+    const hasAccess = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+    if (!hasAccess) fail('无权获取此报告的分享链接', 'ACCESS_DENIED', 403)
+
+    let shareUrl
+    try {
+      shareUrl = await store.getShareUrlForViewing(bindingId)
+    } catch (err) {
+      if (err.code === 'SHARE_URL_NOT_FOUND') {
+        return send(request, response, 404, {
+          error: '此报告未保存分享链接，请补充后查看',
+          code: 'SHARE_URL_NOT_FOUND',
+        }, requestId)
+      }
+      if (err.code === 'BINDING_NOT_ACTIVE') {
+        return send(request, response, 403, {
+          error: '此报告已不在活跃状态，无法获取分享链接',
+          code: 'BINDING_NOT_ACTIVE',
+        }, requestId)
+      }
+      throw err
+    }
+    if (!shareUrl) {
+      return send(request, response, 404, {
+        error: '此报告未保存分享链接，请补充后查看',
+        code: 'SHARE_URL_NOT_FOUND',
+      }, requestId)
+    }
+
+    return send(request, response, 200, {
+      bindingId,
+      shareUrl,
+    }, requestId)
+  }
+
+  // V1.0.1: Supplement missing share URL for existing binding
+  const supplementUrlPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/supplement-url$/)
+  if (request.method === 'POST' && supplementUrlPath) {
+    const actorId = await guard(request)
+    const bindingId = decodeURIComponent(supplementUrlPath[1])
+    const body = await readBody(request)
+    const shareUrl = body?.shareUrl
+    if (!shareUrl || typeof shareUrl !== 'string') {
+      return send(request, response, 400, { error: '缺少分享链接' }, requestId)
+    }
+
+    const store = getAssessmentStore()
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+
+    // Only ACTIVE bindings can be supplemented
+    if (binding.status !== 'ACTIVE') {
+      return send(request, response, 403, {
+        error: '此报告已不在活跃状态，无法补充分享链接',
+        code: 'BINDING_NOT_ACTIVE',
+      }, requestId)
+    }
+
+    // Staff must have access to the customer
+    const hasAccess = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+    if (!hasAccess) fail('无权补充此报告的分享链接', 'ACCESS_DENIED', 403)
+
+    // Check if share URL already exists
+    if (binding.hasEncryptedShareUrl) {
+      return send(request, response, 409, {
+        error: '此报告已存在分享链接，无需重复补充',
+        code: 'SHARE_URL_ALREADY_EXISTS',
+      }, requestId)
+    }
+
+    const updated = await store.supplementShareUrl(bindingId, shareUrl, actorId)
+    return send(request, response, 200, {
+      ok: true,
+      bindingId,
+    }, requestId)
+  }
+
+  // V1.0.1: Update/replace current report with new one of same type
+  const updateReportPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/update$/)
+  if (request.method === 'POST' && updateReportPath) {
+    const actorId = await guard(request)
+    const bindingId = decodeURIComponent(updateReportPath[1])
+    const body = await readBody(request)
+    const newShareUrl = body?.shareUrl
+    if (!newShareUrl || typeof newShareUrl !== 'string') {
+      return send(request, response, 400, { error: '缺少新的分享链接' }, requestId)
+    }
+
+    const store = getAssessmentStore()
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+
+    // Permission: staff must have access to the customer
+    const hasAccess = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+    if (!hasAccess) fail('无权更新此报告', 'ACCESS_DENIED', 403)
+
+    // Only ACTIVE bindings can be updated
+    if (binding.status !== 'ACTIVE') {
+      return send(request, response, 403, {
+        error: '此报告已不在活跃状态，无法更新',
+        code: 'BINDING_NOT_ACTIVE',
+      }, requestId)
+    }
+
+    // Parse new share URL to get reportId
+    let parsed
+    try {
+      parsed = parseStarShareUrl(newShareUrl)
+    } catch (error) {
+      return send(request, response, 400, {
+        error: '分享链接格式不正确',
+        code: 'INVALID_SHARE_URL',
+      }, requestId)
+    }
+
+    // Idempotency: if same reportId as current binding, return existing
+    if (parsed.reportId === binding.reportId) {
+      return send(request, response, 200, {
+        success: true,
+        idempotent: true,
+        bindingId: binding.bindingId,
+        status: 'ACTIVE',
+      }, requestId)
+    }
+
+    // Read full report from source service
+    let fullReport
+    try {
+      fullReport = await readAssessmentReport(parsed.reportId, parsed.linkSecret)
+    } catch (err) {
+      if (err.code === 'REPORT_NOT_FOUND') return send(request, response, 404, { error: '报告不存在或链接已失效', code: 'REPORT_NOT_FOUND' }, requestId)
+      if (err.code === 'TIMEOUT') return send(request, response, 504, { error: '报告服务请求超时', code: 'TIMEOUT' }, requestId)
+      return send(request, response, 400, { error: err.message || '无法读取新的测评报告', code: 'IMPORT_FAILED' }, requestId)
+    }
+
+    // Verify reportId from source matches
+    if (fullReport.reportId !== parsed.reportId) {
+      return send(request, response, 400, { error: '报告标识不匹配', code: 'REPORT_ID_MISMATCH' }, requestId)
+    }
+
+    // Generate preview
+    let serverPreview
+    try {
+      serverPreview = normalizeStarReportPreview(fullReport, parsed.reportId)
+    } catch (error) {
+      return send(request, response, 400, { error: '报告内容不符合预期格式', code: 'INVALID_REPORT_CONTENT' }, requestId)
+    }
+
+    // Verify same assessment type
+    const newAssessmentId = serverPreview.assessmentId || fullReport.assessmentId || 'star'
+    if (newAssessmentId !== binding.assessmentId) {
+      return send(request, response, 400, {
+        error: `新报告类型与原标题报告不一致，无法更新`,
+        code: 'ASSESSMENT_TYPE_MISMATCH',
+      }, requestId)
+    }
+
+    // Sanitize report for storage
+    const sanitizedSnapshot = sanitizeReportForStorage(fullReport)
+    const sanitizedPreview = sanitizeReportForStorage(serverPreview)
+
+    // Perform the atomic update (supersede old + create new)
+    const newBindingId = generateBindingId()
+    const result = await store.updateReport({
+      bindingId,
+      newBindingId,
+      newShareUrl,
+      newReportId: fullReport.reportId,
+      newSnapshot: sanitizedSnapshot,
+      newPreview: sanitizedPreview,
+      newReportNickname: serverPreview.nickname || '',
+      newCompletedAt: serverPreview.completedAt || fullReport.completedAt || '',
+      newAssessmentVersion: serverPreview.assessmentVersion || fullReport.assessmentVersion || '',
+      updatedBy: actorId,
+      updateReason: body?.reason || '导师手动更新报告',
+    })
+
+    return send(request, response, 200, {
+      success: true,
+      idempotent: result.idempotent,
+      oldBindingId: bindingId,
+      newBindingId: result.newBindingId || newBindingId,
+      status: result.status || 'ACTIVE',
+    }, requestId)
+  }
+
+  // V1.0.1: Get update history for a binding chain
+  const updateHistoryPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/update-history$/)
+  if (request.method === 'GET' && updateHistoryPath) {
+    const actorId = await guard(request)
+    const bindingId = decodeURIComponent(updateHistoryPath[1])
+    const store = getAssessmentStore()
+
+    // Verify binding exists and actor has customer access
+    const binding = await store.findBindingById(bindingId)
+    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
+
+    // Staff must have access to the customer
+    const hasAccess = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
+    if (!hasAccess) fail('无权查看此报告的更新记录', 'ACCESS_DENIED', 403)
+
+    // Get events for this binding
+    const events = await store.getBindingEvents(bindingId)
+
+    // Filter to update-related events
+    const updateEvents = events.filter(e =>
+      ['REPORT_UPDATED', 'REPORT_SUPERSEDED', 'SHARE_URL_SUPPLEMENTED'].includes(e.eventType)
+    )
+
+    return send(request, response, 200, {
+      bindingId,
+      history: updateEvents.map(e => ({
+        eventType: e.eventType,
+        actorId: e.actorId,
+        detail: e.detail,
+        createdAt: e.createdAt,
+      })),
+    }, requestId)
+  }
+
   fail('接口不存在', 'NOT_FOUND', 404)
 }
 
