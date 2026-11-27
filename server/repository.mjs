@@ -13,6 +13,7 @@ import { documentFileRef, extractDocument, parseDocumentFileRef } from './docume
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
 import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
+import { extractAllAssessmentSummaries, assessmentFingerprint } from '../shared/assessment-understanding.mjs'
 import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, formatAutomaticProcessingFailure, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
@@ -1114,7 +1115,7 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
 }
 
 export class FeishuRepository {
-  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords, aiBudgetGuard = createAiBudgetGuard(config.features) } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.aiBudgetGuard = aiBudgetGuard; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
+  constructor({ authRepository = new FeishuAuthCredentialRepository(), evidenceExtractor = createEvidenceCandidates, dialogueClassifier = classifyDialogue, backgroundArchiveWorker = false, archiveSearch = searchRecords, aiBudgetGuard = createAiBudgetGuard(config.features), assessmentStore = null } = {}) { this.queryLogs = []; this.auditLogs = []; this.saveTraces = []; this.evidenceTraces = []; this.sourceSaveTimes = new Map(); this.recentCustomerWrites = new Map(); this.recentSourceWrites = new Map(); this.sourceProcessingLocks = new Map(); this.conflictResolutionLocks = new Map(); this.automaticProfilePendingKeys = new Set(); this.lastKnownGood = null; this.lastKnownGoodByCustomer = new Map(); this.customerWriteQueue = new CustomerWriteQueue(); this.authRepository = authRepository; this.evidenceExtractor = evidenceExtractor; this.dialogueClassifier = dialogueClassifier; this.backgroundArchiveWorker = backgroundArchiveWorker; this.archiveSearch = archiveSearch; this.aiBudgetGuard = aiBudgetGuard; this.assessmentStore = assessmentStore; this.understandingRefreshInFlight = new Map(); this.autoProcessingRecoveryTimer = null; this.autoProcessingRecoveryRunning = false; this.autoRecoveryCircuit = { day: '', count: 0, paused: false }; this.databaseCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.directoryCache = { data: null, savedAt: 0, promise: null, generation: 0 }; this.staffCache = { data: null, savedAt: 0, promise: null, generation: 0 } }
   audit(operation, targetId, operatorId, result = 'SUCCESS', error = '') {
     const entry = { operation, target_id: targetId || '', operator_id: operatorId || '', result, error_code: error ? 'OPERATION_FAILED' : undefined, timestamp: now() }
     this.auditLogs.unshift(entry)
@@ -1910,6 +1911,21 @@ export class FeishuRepository {
   }
   async customer(actorId, customerId) { return (await this.customerDetail(actorId, customerId)).customers.find((item) => item.id === customerId) }
 
+  /**
+   * V1.2: Load assessment summaries for a customer.
+   * Non-blocking: returns [] on any error so assessment read failure never blocks understanding.
+   */
+  async loadAssessmentSummariesSafe(customerId) {
+    if (!this.assessmentStore || !customerId) return []
+    try {
+      const bindings = await this.assessmentStore.getCustomerAssessments(customerId)
+      return extractAllAssessmentSummaries(bindings || [])
+    } catch (error) {
+      console.info('[ASVA_ASSESSMENT_READ]', JSON.stringify({ customerId, result: 'FAILED', error_code: error?.code || 'UNKNOWN' }))
+      return []
+    }
+  }
+
   async getCustomerUnderstanding(actorId, customerId) {
     const database = await this.load()
     const visible = scope(database, actorId)
@@ -1917,7 +1933,9 @@ export class FeishuRepository {
     if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
-    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts })
+    // V1.2: Load assessment summaries in parallel (non-blocking)
+    const assessmentSummaries = await this.loadAssessmentSummariesSafe(customerId)
+    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts, assessmentSummaries })
     return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: customerRecord.understandingMeta || {} })
   }
 
@@ -1969,8 +1987,10 @@ export class FeishuRepository {
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
-    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts })
-    const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts })
+    // V1.2: Load assessment summaries in parallel (non-blocking)
+    const assessmentSummaries = await this.loadAssessmentSummariesSafe(customerId)
+    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts, assessmentSummaries })
+    const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts, assessmentSummaries })
     const currentMeta = customerRecord.understandingMeta || {}
     if (activeUnderstandingProcessing(currentMeta)) { stages.result = 'REUSED_PROCESSING'; return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta }) }
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) { stages.result = 'REUSED_FRESH'; return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta }) }

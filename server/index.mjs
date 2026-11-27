@@ -27,10 +27,10 @@ function memorySnapshot(phase, requestId, extra = {}) {
 }
 
 memorySnapshot('startup_before_repository', 'module')
-const repository = new FeishuRepository()
 // Assessment store: PostgreSQL-backed binding storage.
 // Uses the existing CloudBase PG via RPC function (asva_assessment_guard).
 // No auto-table-creation; tables created via migration SQL.
+// V1.2: Created eagerly so the repository can use it for understanding integration.
 let assessmentStoreInstance = null
 function getAssessmentStore() {
   if (!assessmentStoreInstance) {
@@ -38,6 +38,7 @@ function getAssessmentStore() {
   }
   return assessmentStoreInstance
 }
+const repository = new FeishuRepository({ assessmentStore: getAssessmentStore() })
 // Test-only: allow injecting a custom store (e.g., real PG for integration tests)
 export function __setAssessmentStoreForTesting(store) {
   assessmentStoreInstance = store

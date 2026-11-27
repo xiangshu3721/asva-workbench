@@ -3,7 +3,7 @@ import { buildConsultationInputSnapshot } from './consultation-input-snapshot.mj
 import { buildConsultationTopics } from './consultation-topics.mjs'
 
 export const CUSTOMER_UNDERSTANDING_VERSION = 'customer-understanding-v1'
-export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v4-provisional-context-cache'
+export const CUSTOMER_UNDERSTANDING_PROMPT_VERSION = 'understanding-v5-assessment-integration'
 export const CONTEXT_DENSITY_POLICY_VERSION = 'DENSITY_V1'
 export const UNDERSTANDING_STATUSES = new Set(['FRESH', 'STALE', 'PROCESSING', 'FAILED'])
 export const UNDERSTANDING_CONFIDENCE = new Set(['LOW', 'MEDIUM', 'HIGH'])
@@ -159,7 +159,7 @@ export function applyUnderstandingDensityPolicy(value, density = {}) {
 // Keep the v4 cache key stable while the consultation snapshot is introduced.
 // Its independent fingerprint remains on consultation_input_snapshot and is not
 // a freshness signal for the saved _understanding in this phase.
-export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [] } = {}) {
+export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [], assessmentSummaries = [] } = {}) {
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS').map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey || '', value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((a, b) => a.id.localeCompare(b.id))
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
   const recordedContext = {
@@ -170,10 +170,42 @@ export function understandingInputFingerprint({ customer = {}, evidenceItems = [
     helpExpectation: safeText(customer.helpExpectation, 300),
     source: safeText(customer.source, 160),
   }
-  return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts }))
+  // V1.2: Include assessment summaries in fingerprint so changes invalidate cache
+  const assessmentFp = Array.isArray(assessmentSummaries)
+    ? assessmentSummaries.map((s) => ({ id: s.assessment_id || '', hash: s.content_hash || '', ver: s.assessment_version || '', at: s.completed_at || '' })).sort((a, b) => a.id.localeCompare(b.id))
+    : []
+  return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts, assessments: assessmentFp }))
 }
 
-export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], now = new Date().toISOString() } = {}) {
+/**
+ * Build the assessment_summaries section for the understanding context.
+ * V1.2: Includes structured assessment summaries without raw answer data.
+ */
+function buildAssessmentSectionForContext(summaries) {
+  if (!Array.isArray(summaries) || summaries.length === 0) {
+    return { available: false, count: 0, summaries: [] }
+  }
+  return {
+    available: true,
+    count: summaries.length,
+    summaries: summaries.map((s) => ({
+      assessment_id: safeText(s.assessment_id, 40),
+      assessment_name: safeText(s.assessment_name, 60),
+      completed_at: safeText(s.completed_at, 40),
+      headline: safeText(s.headline, 200),
+      summary: safeText(s.summary, 400),
+      caution: safeText(s.caution, 200),
+      key_metrics: Array.isArray(s.key_metrics)
+        ? s.key_metrics.filter((m) => m && m.name).map((m) => ({
+            name: safeText(m.name, 40),
+            labels: Array.isArray(m.labels) ? m.labels.map((l) => safeText(l, 80)).filter(Boolean).slice(0, 5) : [],
+          })).slice(0, 4)
+        : [],
+    })),
+  }
+}
+
+export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems = [], sourceRecords = [], sessions = [], conflicts = [], assessmentSummaries = [], now = new Date().toISOString() } = {}) {
   const consultationInputSnapshot = buildConsultationInputSnapshot({ customer, evidenceItems, sourceRecords, sessions, conflicts, now })
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS')
   const hypotheses = evidenceItems.filter((item) => item.evidenceType === 'HYPOTHESIS' || item.reviewStatus !== 'CONFIRMED')
@@ -234,7 +266,8 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     consultation_topics: buildConsultationTopics(consultationInputSnapshot),
     working_hypotheses: hypotheses.filter((item) => item.evidenceType === 'HYPOTHESIS').slice(0, 5).map((item) => ({ text: safeText(item.displayText), evidence_ids: [item.id] })),
     context_density: density,
-    input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts }),
+    assessment_summaries: buildAssessmentSectionForContext(assessmentSummaries),
+    input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts, assessmentSummaries }),
   }
 }
 

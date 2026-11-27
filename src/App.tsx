@@ -1066,7 +1066,18 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
     })
   }
   const autoRefreshStaleUnderstanding = (response: CustomerUnderstandingResponse, requestCustomerId: string, requestSequence: number) => {
-    if (response.status !== 'STALE' || response.meta.promptVersion !== 'understanding-v4-provisional-context-cache') return
+    if (response.status !== 'STALE') return
+    // V1.2: Auto-refresh for any understanding generated with an older prompt version
+    // (v4 or earlier) so that assessment integration takes effect on next view.
+    const storedPromptVersion = response.meta.promptVersion || ''
+    if (storedPromptVersion && storedPromptVersion !== 'understanding-v5-assessment-integration') {
+      // Older prompt version — eligible for auto-refresh
+    } else if (!storedPromptVersion) {
+      // No prompt version stored — eligible
+    } else {
+      // Already on the latest prompt version but STALE — skip auto-refresh, let user trigger manually
+      return
+    }
     if (response.context_summary?.has_meaningful_input !== true) return
     const identity = response.meta.currentInputFingerprint || response.meta.inputFingerprint || String(customer.profileVersion || 0)
     const attemptKey = `${requestCustomerId}:${identity}:${response.meta.promptVersion || ''}`
@@ -1733,7 +1744,6 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
                 ) : null}
                 <div className="assessment-card-footer">
                   <span className="assessment-card-bound">绑定于 {formatDate(binding.boundAt)}</span>
-                  {!binding.customerConsent && <span className="assessment-card-no-consent" title="客户未授权 AI 使用">⚠ 未授权</span>}
                   {binding.sourceRevoked && <span className="assessment-card-source-revoked" title="源链接已失效">源已失效</span>}
                   {binding.localRevoked && <span className="assessment-card-revoked" title="本地已撤销">已撤销</span>}
                   <button className="assessment-card-view-original secondary-button small" type="button" onClick={() => handleViewOriginalReport(binding)}>

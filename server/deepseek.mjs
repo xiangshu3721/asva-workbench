@@ -407,6 +407,7 @@ export async function createCustomerUnderstanding(input) {
   const raw = await callDeepSeek([
     { role: 'system', content: system },
     { role: 'system', content: '模块分工必须互不替代：core_blocks 只写可观察的行为或现实循环；key_tensions 只写两个同时存在、彼此拉扯的方向，并填写 side_a 与 side_b；next_conversation 只写下一次具体探索方向，必须包含 focus、why_now、suggested_entry，suggested_entry 要像导师可以直接说给客户的一句话，最多 1 至 2 个开场问题；working_hypotheses 只写尚未证实的解释可能，保持 LOW 把握。不要把同一段内容在这四个模块中重复复述。' },
+    { role: 'system', content: 'V1.2 assessment_summaries 处理规则：如果 assessment_summaries.available 为 true，其中包含客户已完成并导入的心理测评摘要。这些是客户自评的结构化整理，不是临床诊断。职业六芒星(star)帮助理解客户的内在动力和价值追求；情绪系列测评(beattie-*)帮助理解客户自评的情绪表现。可以将测评结果作为佐证或资源线索，但不能仅凭测评进行诊断推断。若测评 headline 或 caution 显示值得关注的信号，可写入 knowledge_gaps 或 service_cautions，但必须标注来源为 assessment_evidence_ref，并注明"客户自评，待进一步确认"。不得将测评结果作为 top_issues 的唯一依据；不得用于销售能力或购买意愿判断。' },
     { role: 'user', content: JSON.stringify(llmContext) },
   ], 0.15, { operation: 'customer_understanding', timeoutMs: CUSTOMER_UNDERSTANDING_TIMEOUT_MS, maxAttempts: 1, responseFormat: { type: 'json_object' }, requireJson: true })
   const normalized = normalizeCustomerUnderstanding(parseJson(raw), { evidenceIds: [...aliasToId.keys()], now: new Date().toISOString() })
