@@ -1067,19 +1067,20 @@ function CustomerDetail(props: CustomerDetailProps & { profileRefreshRevision: n
   }
   const autoRefreshStaleUnderstanding = (response: CustomerUnderstandingResponse, requestCustomerId: string, requestSequence: number) => {
     if (response.status !== 'STALE') return
-    // V1.2: Auto-refresh for any understanding generated with an older prompt version
-    // (v4 or earlier) so that assessment integration takes effect on next view.
-    const storedPromptVersion = response.meta.promptVersion || ''
-    if (storedPromptVersion && storedPromptVersion !== 'understanding-v5-assessment-integration') {
-      // Older prompt version — eligible for auto-refresh
-    } else if (!storedPromptVersion) {
-      // No prompt version stored — eligible
-    } else {
-      // Already on the latest prompt version but STALE — skip auto-refresh, let user trigger manually
+    if (response.context_summary?.has_meaningful_input !== true) return
+    // V1.2 final: Only auto-refresh when the BASE data fingerprint changed (profile, evidence, needs, etc.).
+    // This prevents burning through the daily AI limit when:
+    // 1. Prompt version upgrades (v4 → v5) — base fingerprint unchanged, skip auto-refresh
+    // 2. Assessment-only changes — base fingerprint unchanged, skip auto-refresh
+    // Assessment changes update the full fingerprint but NOT the base fingerprint,
+    // so they make understanding STALE but don't trigger auto-refresh.
+    const storedBaseFingerprint = response.meta.baseInputFingerprint || ''
+    const currentBaseFingerprint = response.meta.currentBaseFingerprint || ''
+    if (storedBaseFingerprint && currentBaseFingerprint && storedBaseFingerprint === currentBaseFingerprint) {
+      // Base data hasn't changed — this is just a prompt version or assessment-only change. Skip auto-refresh.
       return
     }
-    if (response.context_summary?.has_meaningful_input !== true) return
-    const identity = response.meta.currentInputFingerprint || response.meta.inputFingerprint || String(customer.profileVersion || 0)
+    const identity = currentBaseFingerprint || storedBaseFingerprint || response.meta.currentInputFingerprint || String(customer.profileVersion || 0)
     const attemptKey = `${requestCustomerId}:${identity}:${response.meta.promptVersion || ''}`
     if (autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)) return
     autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)

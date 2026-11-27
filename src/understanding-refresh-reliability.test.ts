@@ -18,14 +18,15 @@ describe('consultation refresh client reliability', () => {
     await pending
   })
 
-  it('keeps the floating assistant removed and automatically refreshes stale understanding with older prompt versions at most once per data/version key', () => {
+  it('keeps the floating assistant removed and automatically refreshes stale understanding only when base data changes, not prompt version or assessments', () => {
     const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
     expect(source).not.toContain('<GlobalAIAssistant ')
     expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.has(attemptKey)')
     expect(source).toContain('autoUnderstandingRefreshAttemptsRef.current.add(attemptKey)')
-    // V1.2: Auto-refresh for any STALE understanding with an older prompt version
+    // V1.2 final: Only auto-refresh when base data fingerprint changed
     expect(source).toContain("response.status !== 'STALE'")
-    expect(source).toContain('understanding-v5-assessment-integration')
+    expect(source).toContain('storedBaseFingerprint')
+    expect(source).toContain('currentBaseFingerprint')
     expect(source).toContain('response.context_summary?.has_meaningful_input !== true')
     expect(source).toContain('runConsultationRefresh(requestCustomerId, false)')
   })

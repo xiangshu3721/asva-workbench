@@ -159,7 +159,11 @@ export function applyUnderstandingDensityPolicy(value, density = {}) {
 // Keep the v4 cache key stable while the consultation snapshot is introduced.
 // Its independent fingerprint remains on consultation_input_snapshot and is not
 // a freshness signal for the saved _understanding in this phase.
-export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [], assessmentSummaries = [] } = {}) {
+/**
+ * Compute the base fingerprint (without assessments).
+ * Used by dashboard and auto-refresh to avoid triggering on assessment-only changes.
+ */
+export function understandingBaseFingerprint({ customer = {}, evidenceItems = [], conflicts = [] } = {}) {
   const confirmed = evidenceItems.filter((item) => item.reviewStatus === 'CONFIRMED' && item.evidenceType !== 'HYPOTHESIS').map((item) => ({ id: item.id, type: item.evidenceType, kind: item.semanticKind, field: item.fieldKey || '', value: stableValue(item.standardValue), occurredAt: item.occurredAt || '' })).sort((a, b) => a.id.localeCompare(b.id))
   const openConflicts = conflicts.filter((item) => item.status === 'OPEN').map((item) => ({ field: item.fieldKey, current: stableValue(item.currentValue), proposed: stableValue(item.newValue) })).sort((a, b) => a.field.localeCompare(b.field))
   const recordedContext = {
@@ -170,11 +174,16 @@ export function understandingInputFingerprint({ customer = {}, evidenceItems = [
     helpExpectation: safeText(customer.helpExpectation, 300),
     source: safeText(customer.source, 160),
   }
+  return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts }))
+}
+
+export function understandingInputFingerprint({ customer = {}, evidenceItems = [], conflicts = [], assessmentSummaries = [] } = {}) {
+  const baseFp = understandingBaseFingerprint({ customer, evidenceItems, conflicts })
   // V1.2: Include assessment summaries in fingerprint so changes invalidate cache
   const assessmentFp = Array.isArray(assessmentSummaries)
     ? assessmentSummaries.map((s) => ({ id: s.assessment_id || '', hash: s.content_hash || '', ver: s.assessment_version || '', at: s.completed_at || '' })).sort((a, b) => a.id.localeCompare(b.id))
     : []
-  return hashText(JSON.stringify({ base: summaryInputFingerprint({ customer, evidenceItems }), profileVersion: customer.profileVersion || 0, recordedContext, confirmed, openConflicts, assessments: assessmentFp }))
+  return hashText(JSON.stringify({ base: baseFp, assessments: assessmentFp }))
 }
 
 /**
@@ -268,6 +277,7 @@ export function buildCustomerUnderstandingContext({ customer = {}, evidenceItems
     context_density: density,
     assessment_summaries: buildAssessmentSectionForContext(assessmentSummaries),
     input_fingerprint: understandingInputFingerprint({ customer, evidenceItems, conflicts, assessmentSummaries }),
+    base_input_fingerprint: understandingBaseFingerprint({ customer, evidenceItems, conflicts }),
   }
 }
 

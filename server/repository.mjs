@@ -12,8 +12,8 @@ import { AuthCredentialStoreNotConfiguredError, FeishuAuthCredentialRepository, 
 import { documentFileRef, extractDocument, parseDocumentFileRef } from './document-extractor.mjs'
 import { CHANGE_TYPES, CONFLICT_RESOLUTIONS, CONFLICT_STATUSES, CONFLICT_TYPES, EVIDENCE_REVIEW_STATUSES, EVIDENCE_TYPES, PROPOSAL_ACTIONS, SEMANTIC_KINDS, SOURCE_STATUSES, SOURCE_TYPES, classifyEvidenceChange, conflictId, contentHash, dedupeEvidence, evidenceEquivalent, evidenceLogicalKey, normalizeEvidenceCandidate, normalizeText, proposalId, stableId, chunkText, sourcePerspectiveFromRole } from '../shared/evidence-contract.mjs'
 import { isSnapshotEvidence, materializeCustomerProfile, shouldAutoConfirmEvidence, summaryInputFingerprint } from '../shared/profile-materialization.mjs'
-import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint } from '../shared/customer-understanding.mjs'
-import { extractAllAssessmentSummaries, assessmentFingerprint } from '../shared/assessment-understanding.mjs'
+import { buildCustomerUnderstandingContext, createLocalCustomerUnderstanding, CUSTOMER_UNDERSTANDING_PROMPT_VERSION, CUSTOMER_UNDERSTANDING_VERSION, qualityCheckCustomerUnderstanding, understandingInputFingerprint, understandingBaseFingerprint } from '../shared/customer-understanding.mjs'
+import { extractAllAssessmentSummaries, assessmentResultFingerprint } from '../shared/assessment-understanding.mjs'
 import { AUTO_RECOVERY_CIRCUIT_MAX_PER_DAY, AUTO_RETRY_CAP_REACHED, formatAutomaticProcessingFailure, hasReachedAutoRetryCap, isNonRetryableAutoProcessingError, isStaleProcessing, processingErrorCode, shouldAutoRecoverSource } from '../shared/processing-contract.mjs'
 import { buildBasicDashboard } from './basic-dashboard.mjs'
 import { boundedReadAfterWrite, READ_AFTER_WRITE_DELAYS_MS, RECENT_WRITE_WINDOW_MS } from './read-after-write.mjs'
@@ -1082,9 +1082,14 @@ function evidenceWriteFields(item, source, sourceId) {
   return mapFields('evidenceItems', { evidence_id: item.id || stableId('EVD', `${sourceId}:${item.extractionBatchId}:${item.sourceExcerpt}:${item.displayText}`), subject_type: source.subjectType, subject_id: source.subjectId, customer_id: source.customerId, source_id: sourceId, evidence_type: item.evidenceType, semantic_kind: item.semanticKind, field_key: item.fieldKey || '', standard_value: stage2Json(item.standardValue), display_text: item.displayText, source_excerpt: item.sourceExcerpt, locator_json: stage2Json(item.locator), occurred_at: item.occurredAt || source.occurredAt || '', source_role: source.sourceRole, content_source: item.contentSource, information_nature: item.informationNature, verification_status: item.verificationStatus, confidence: item.confidence, review_status: item.reviewStatus, reviewer_id: '', reviewed_at: '', extraction_batch_id: item.extractionBatchId, provider: 'DEEPSEEK', model: item.model, model_version: item.modelVersion, prompt_version: item.promptVersion, created_at: now(), updated_at: now() })
 }
 
-function customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta = {}, understanding = customerRecord.understanding } = {}) {
+function customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta = {}, understanding = customerRecord.understanding, assessmentUnavailable = false } = {}) {
   const fingerprint = context.input_fingerprint
-  const matchesCurrentRulesAndData = storedMeta.inputFingerprint === fingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
+  // V1.2 final: When assessment read failed, use stored fingerprint to avoid
+  // triggering unnecessary STALE → refresh cycles for transient errors.
+  const effectiveFingerprint = assessmentUnavailable ? (storedMeta.inputFingerprint || fingerprint) : fingerprint
+  const baseFingerprint = context.base_input_fingerprint || ''
+  const effectiveBaseFingerprint = assessmentUnavailable ? (storedMeta.baseInputFingerprint || baseFingerprint) : baseFingerprint
+  const matchesCurrentRulesAndData = storedMeta.inputFingerprint === effectiveFingerprint && storedMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION
   const fresh = storedMeta.status === 'FRESH' && matchesCurrentRulesAndData
   const status = fresh ? 'FRESH' : activeUnderstandingProcessing(storedMeta) ? 'PROCESSING' : storedMeta.status === 'FAILED' && matchesCurrentRulesAndData ? 'FAILED' : 'STALE'
   const resolvedUnderstanding = understanding || createLocalCustomerUnderstanding(context)
@@ -1100,13 +1105,16 @@ function customerUnderstandingResponse({ customerId, customerRecord, context, st
       understandingVersion: CUSTOMER_UNDERSTANDING_VERSION,
       status,
       source,
-      inputFingerprint: storedMeta.inputFingerprint || fingerprint,
-      currentInputFingerprint: fingerprint,
+      inputFingerprint: storedMeta.inputFingerprint || effectiveFingerprint,
+      currentInputFingerprint: effectiveFingerprint,
+      baseInputFingerprint: storedMeta.baseInputFingerprint || effectiveBaseFingerprint,
+      currentBaseFingerprint: effectiveBaseFingerprint,
       storedPromptVersion: storedMeta.promptVersion || '',
-      evidenceFingerprint: storedMeta.evidenceFingerprint || fingerprint,
+      evidenceFingerprint: storedMeta.evidenceFingerprint || effectiveFingerprint,
       sourceProfileVersion: customerRecord.profileVersion || 0,
       profileVersion: customerRecord.profileVersion || 0,
       promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION,
+      assessmentUnavailable: assessmentUnavailable || undefined,
     },
     evidence_refs: context.evidence_refs,
     consultation_topics: context.consultation_topics,
@@ -1553,8 +1561,11 @@ export class FeishuRepository {
       const customerSessions = sessions.filter((session) => session.customerId === item.id)
       const profileEvidence = profileMaterializationEvidence({ evidenceItems: customerEvidence, sourceRecords, customer: item, actor: { permissionRole: 'ADMIN' } })
       item.profileMaterialization = materializeCustomerProfile({ customer: item, evidenceItems: profileEvidence, summaryMeta: item.aiSummaryMeta })
-      const currentFingerprint = understandingInputFingerprint({ customer: item, evidenceItems: customerEvidence, sourceRecords, sessions: customerSessions, conflicts: conflicts.filter((conflict) => conflict.customerId === item.id) })
-      if (!item.understandingMeta || item.understandingMeta.inputFingerprint !== currentFingerprint || item.understandingMeta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) item.understandingStatus = 'STALE'
+      // V1.2 final: Dashboard uses base fingerprint (without assessments) for STALE detection.
+      // This avoids marking customers as STALE just because assessments changed.
+      // Assessment changes are detected during individual customer view (which loads assessments).
+      const currentBaseFingerprint = understandingBaseFingerprint({ customer: item, evidenceItems: customerEvidence, conflicts: conflicts.filter((conflict) => conflict.customerId === item.id) })
+      if (!item.understandingMeta || item.understandingMeta.baseInputFingerprint !== currentBaseFingerprint || item.understandingMeta.promptVersion !== CUSTOMER_UNDERSTANDING_PROMPT_VERSION) item.understandingStatus = 'STALE'
     }
     if (config.appEnv === 'development') console.info('[ASVA_PERF_DASHBOARD_READ]', JSON.stringify({ external_request_count: entries.filter(([, tableId]) => Boolean(tableId)).length, parallel: true, table_durations_ms: tableDurations }))
     return {
@@ -1912,30 +1923,55 @@ export class FeishuRepository {
   async customer(actorId, customerId) { return (await this.customerDetail(actorId, customerId)).customers.find((item) => item.id === customerId) }
 
   /**
-   * V1.2: Load assessment summaries for a customer.
-   * Non-blocking: returns [] on any error so assessment read failure never blocks understanding.
+   * V1.2: Load assessment summaries for a customer with three-state result.
+   * Returns { status: 'NONE' | 'OK' | 'FAILED', summaries: [], errorCode: '' }
+   * 
+   * - NONE: no assessment store configured
+   * - OK: loaded successfully (summaries may be empty)
+   * - FAILED: read failed — caller must NOT change fingerprint
    */
-  async loadAssessmentSummariesSafe(customerId) {
-    if (!this.assessmentStore || !customerId) return []
+  async loadAssessmentSummariesSafe(customerId, timeoutMs = 2000) {
+    if (!this.assessmentStore || !customerId) {
+      return { status: 'NONE', summaries: [], errorCode: '' }
+    }
     try {
-      const bindings = await this.assessmentStore.getCustomerAssessments(customerId)
-      return extractAllAssessmentSummaries(bindings || [])
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(Object.assign(new Error('Assessment read timeout'), { code: 'ASSESSMENT_READ_TIMEOUT' })), timeoutMs)
+      })
+      const bindings = await Promise.race([
+        this.assessmentStore.getCustomerAssessments(customerId),
+        timeoutPromise,
+      ])
+      const summaries = extractAllAssessmentSummaries(bindings || [])
+      return { status: 'OK', summaries, errorCode: '' }
     } catch (error) {
-      console.info('[ASVA_ASSESSMENT_READ]', JSON.stringify({ customerId, result: 'FAILED', error_code: error?.code || 'UNKNOWN' }))
-      return []
+      const errorCode = error?.code || 'ASSESSMENT_READ_FAILED'
+      console.info('[ASVA_ASSESSMENT_READ]', JSON.stringify({ customerId, result: 'FAILED', error_code: errorCode }))
+      return { status: 'FAILED', summaries: [], errorCode }
     }
   }
 
   async getCustomerUnderstanding(actorId, customerId) {
+    // V1.2 final: Start assessment load in parallel with Feishu load.
+    // Assessment store is a separate PG database — no dependency on Feishu data.
+    // We need customerId for the assessment query, which is already known.
+    const assessmentPromise = this.loadAssessmentSummariesSafe(customerId)
     const database = await this.load()
     const visible = scope(database, actorId)
     const customerRecord = visible.customers.find((item) => item.id === customerId)
     if (!customerRecord) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
-    // V1.2: Load assessment summaries in parallel (non-blocking)
-    const assessmentSummaries = await this.loadAssessmentSummariesSafe(customerId)
-    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts, assessmentSummaries })
+    // Await assessment result (already started in parallel)
+    const assessmentResult = await assessmentPromise
+    // V1.2 final: On FAILED, use stored understanding without recomputing fingerprint
+    // to avoid triggering unnecessary refreshes for transient errors.
+    if (assessmentResult.status === 'FAILED') {
+      const storedMeta = customerRecord.understandingMeta || {}
+      // Return stored understanding as-is; status remains whatever it was
+      return customerUnderstandingResponse({ customerId, customerRecord, context: buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts }), storedMeta, assessmentUnavailable: true })
+    }
+    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts, assessmentSummaries: assessmentResult.summaries })
     return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: customerRecord.understandingMeta || {} })
   }
 
@@ -1972,6 +2008,8 @@ export class FeishuRepository {
     const deadline = startedAt + CUSTOMER_UNDERSTANDING_REFRESH_BUDGET_MS
     const generationDeadline = deadline - CUSTOMER_UNDERSTANDING_FINAL_WRITE_RESERVE_MS
     this.invalidateDatabaseCache()
+    // V1.2 final: Start assessment load in parallel with Feishu load (separate DB).
+    const assessmentPromise = this.loadAssessmentSummariesSafe(customerId)
     const sourceReadStartedAt = Date.now()
     let database
     try {
@@ -1987,14 +2025,22 @@ export class FeishuRepository {
     if (!customerRecord || !row) throw Object.assign(new Error('客户不存在或无权访问'), { code: 'CUSTOMER_NOT_FOUND', status: 404 })
     const evidenceItems = buildConsultationContext({ role: database.staff.find((item) => item.id === actorId)?.permissionRole || 'MENTOR', isAssignedMentor: true, evidenceItems: visible.evidenceItems.filter((item) => item.customerId === customerId), sourceRecords: visible.sourceRecords })
     const conflicts = visible.evidenceConflicts.filter((item) => item.customerId === customerId)
-    // V1.2: Load assessment summaries in parallel (non-blocking)
-    const assessmentSummaries = await this.loadAssessmentSummariesSafe(customerId)
-    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts, assessmentSummaries })
-    const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts, assessmentSummaries })
+    // V1.2 final: Await assessment result (already started in parallel above).
+    const assessmentResult = await assessmentPromise
+    // V1.2 final: On FAILED, refuse to refresh — fingerprint would be unreliable.
+    if (assessmentResult.status === 'FAILED') {
+      stages.result = 'ASSESSMENT_READ_FAILED'
+      const storedMeta = customerRecord.understandingMeta || {}
+      const fallbackContext = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts })
+      return customerUnderstandingResponse({ customerId, customerRecord, context: fallbackContext, storedMeta, assessmentUnavailable: true })
+    }
+    const context = buildCustomerUnderstandingContext({ customer: customerRecord, evidenceItems, sourceRecords: visible.sourceRecords, sessions: visible.sessions, conflicts, assessmentSummaries: assessmentResult.summaries })
+    const inputFingerprint = context.input_fingerprint || understandingInputFingerprint({ customer: customerRecord, evidenceItems, conflicts, assessmentSummaries: assessmentResult.summaries })
+    const baseInputFingerprint = context.base_input_fingerprint || understandingBaseFingerprint({ customer: customerRecord, evidenceItems, conflicts })
     const currentMeta = customerRecord.understandingMeta || {}
     if (activeUnderstandingProcessing(currentMeta)) { stages.result = 'REUSED_PROCESSING'; return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta }) }
     if (!force && currentMeta.status === 'FRESH' && currentMeta.inputFingerprint === inputFingerprint && currentMeta.promptVersion === CUSTOMER_UNDERSTANDING_PROMPT_VERSION) { stages.result = 'REUSED_FRESH'; return customerUnderstandingResponse({ customerId, customerRecord, context, storedMeta: currentMeta }) }
-    const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), processingExpiresAt: new Date(generationDeadline).toISOString(), payload: customerRecord.understanding || null }
+    const processingMeta = { ...currentMeta, understandingId: currentMeta.understandingId || `UNDERSTANDING-${customerId}`, customerId, understandingVersion: CUSTOMER_UNDERSTANDING_VERSION, status: 'PROCESSING', inputFingerprint, baseInputFingerprint, evidenceFingerprint: inputFingerprint, sourceProfileVersion: customerRecord.profileVersion || 0, profileVersion: customerRecord.profileVersion || 0, promptVersion: CUSTOMER_UNDERSTANDING_PROMPT_VERSION, provider: 'DEEPSEEK', model: config.deepseek.model, updatedAt: now(), processingExpiresAt: new Date(generationDeadline).toISOString(), payload: customerRecord.understanding || null }
     const writeMeta = (meta) => updateCustomerRecordSafely(row.record_id, customerId, (latestCustomer) => mapFields('customers', { profile_field_meta_json: serializeCustomerDerivedMeta(latestCustomer, { understanding: meta }) }), (latestCustomer) => latestCustomer.understandingMeta?.updatedAt === meta.updatedAt && latestCustomer.understandingMeta?.status === meta.status)
     const processingWriteStartedAt = Date.now()
     try {

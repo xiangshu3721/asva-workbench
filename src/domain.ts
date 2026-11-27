@@ -57,6 +57,8 @@ export interface CustomerUnderstandingMeta {
   status: SummaryStatus
   inputFingerprint?: string
   currentInputFingerprint?: string
+  baseInputFingerprint?: string
+  currentBaseFingerprint?: string
   clientSnapshotFingerprint?: string
   consultationClientFingerprint?: string
   storedPromptVersion?: string
@@ -71,6 +73,7 @@ export interface CustomerUnderstandingMeta {
   evidenceCount?: number
   quality?: { ungroundedClaimRate: number; unsupportedDiagnosis: boolean; unknownHandling: boolean; contradictionHandling: boolean }
   errorCode?: string
+  assessmentUnavailable?: boolean
 }
 
 export type SalesStrategy = 'STABILIZE_BEFORE_SALE' | 'DISCOVER_BEFORE_SALE' | 'EXPERIENCE_NURTURE' | 'COGNITIVE_GROWTH_READY' | 'LONG_TERM_SERVICE_EXPLORABLE'

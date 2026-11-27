@@ -58,7 +58,7 @@ describe('CustomerUnderstandingV1 contract', () => {
     ]
     const sourceRecords = [{ id: 'SRC-A', customerId: 'CUS-LEGACY-A', title: '新增资料', sourceType: 'NOTE', processingStatus: 'COMPLETED' }]
     const sessions = [{ id: 'SRV-A', customerId: 'CUS-LEGACY-A', date: '2026-11-01', note: '新增服务记录' }]
-    const expected = { 'CUS-LEGACY-A': '83789c9b', 'CUS-LEGACY-B': '8eda627f', 'CUS-NEW-C': '06cad56e' }
+    const expected = { 'CUS-LEGACY-A': 'b7092c0e', 'CUS-LEGACY-B': '4d27215c', 'CUS-NEW-C': '3eded470' }
 
     for (const item of customers) {
       const scopedEvidence = evidenceItems.filter((evidence) => evidence.customerId === item.id)

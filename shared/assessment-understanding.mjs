@@ -158,3 +158,40 @@ export function assessmentFingerprint(bindings) {
     .join('|')
   return crypto.createHash('sha256').update(stable).digest('hex').slice(0, 16)
 }
+
+/**
+ * Three-state assessment loading result.
+ * Distinguishes between: no assessments, loaded successfully, and read failure.
+ *
+ * - status 'NONE': no assessment store configured, or no eligible assessments
+ * - status 'OK': loaded successfully (summaries may be empty if no eligible bindings)
+ * - status 'FAILED': read failed — must NOT change fingerprint, keep old understanding valid
+ *
+ * When FAILED, the caller should NOT include assessments in the fingerprint
+ * to avoid triggering unnecessary STALE → refresh cycles for transient errors.
+ */
+export function createAssessmentResult(status, summaries, errorCode = '') {
+  return {
+    status, // 'NONE' | 'OK' | 'FAILED'
+    summaries: summaries || [],
+    errorCode: errorCode || '',
+  }
+}
+
+/**
+ * Compute the fingerprint contribution from an assessment result.
+ * Returns '' for FAILED status to avoid invalidating understanding on transient errors.
+ */
+export function assessmentResultFingerprint(assessmentResult) {
+  if (!assessmentResult) return ''
+  if (assessmentResult.status === 'FAILED') return ''
+  if (assessmentResult.status === 'NONE') return ''
+  // Summaries are already extracted — compute fingerprint directly
+  const summaries = assessmentResult.summaries || []
+  if (summaries.length === 0) return ''
+  const stable = summaries
+    .map((s) => `${s.assessment_id}:${s.content_hash}:${s.assessment_version}:${s.completed_at}`)
+    .sort()
+    .join('|')
+  return crypto.createHash('sha256').update(stable).digest('hex').slice(0, 16)
+}
