@@ -3,7 +3,8 @@
 // using the linkSecret extracted from the user's pasted share URL.
 // No importKey is needed — security is provided by the linkSecret.
 
-import { normalizeStarReportPreview, parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs'
+import { parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs'
+import { getAssessmentAdapter, isAssessmentSupported } from './assessment-adapters.mjs'
 
 // assessmentReportDev service base URL (same CloudBase environment)
 // This is the ONLY trusted endpoint. Never allow user-controlled URLs.
@@ -119,12 +120,29 @@ export async function importAssessmentFromShareUrl(shareUrl, options = {}) {
   // Read the report from assessmentReportDev
   const report = await readAssessmentReport(reportId, linkSecret, options)
 
-  // Generate a safe preview (strips sensitive fields, validates star words)
+  // Get the assessment-specific adapter
+  const assessmentId = report.assessmentId
+  if (!assessmentId) {
+    throw Object.assign(new Error('报告缺少测评类型标识'), { code: 'INVALID_REPORT_CONTENT' })
+  }
+
+  const adapter = getAssessmentAdapter(assessmentId)
+  if (!adapter) {
+    throw Object.assign(
+      new Error(`暂不支持该测评类型: ${assessmentId}`), 
+      { code: 'UNSUPPORTED_ASSESSMENT', assessmentId }
+    )
+  }
+
+  // Generate a safe preview using the assessment-specific adapter
   let preview
   try {
-    preview = normalizeStarReportPreview(report, reportId)
+    preview = adapter.parsePreview(report)
   } catch (error) {
-    throw Object.assign(new Error('报告内容不符合职业六芒星规范'), { code: 'INVALID_REPORT_CONTENT', cause: error })
+    throw Object.assign(
+      new Error(`报告内容解析失败: ${error.message}`), 
+      { code: 'INVALID_REPORT_CONTENT', cause: error }
+    )
   }
 
   return {

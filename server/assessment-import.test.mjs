@@ -337,7 +337,7 @@ describe('assessment-import', () => {
 
       await expect(
         importAssessmentFromShareUrl(validShareUrl, { fetch: mockFetch })
-      ).rejects.toThrow('报告内容不符合职业六芒星规范')
+      ).rejects.toThrow('报告内容解析失败')
     })
 
     it('propagates REPORT_NOT_FOUND from readAssessmentReport', async () => {
