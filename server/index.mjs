@@ -12,6 +12,7 @@ import { importAssessmentFromShareUrl, readAssessmentReport } from './assessment
 import { CloudBaseAssessmentStore, generateBindingId, sanitizeReportForStorage, sanitizeShareUrl, snapshotHash } from './assessment-pg-store.mjs'
 import { parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs'
 import { normalizeStarReportPreview } from '../shared/assessment-import-star-contract.mjs'
+import { getAssessmentAdapter } from './assessment-adapters.mjs'
 
 function memorySnapshot(phase, requestId, extra = {}) {
   const memory = process.memoryUsage()
@@ -373,7 +374,11 @@ async function handle(request, response, requestId) {
     // Generate preview server-side from the source report (not from client)
     let serverPreview
     try {
-      serverPreview = normalizeStarReportPreview(fullReport, reportId)
+      const adapter = getAssessmentAdapter(fullReport.assessmentId)
+      if (!adapter) {
+        fail('暂不支持该测评类型', 'UNSUPPORTED_ASSESSMENT', 400)
+      }
+      serverPreview = adapter.parsePreview(fullReport)
     } catch (error) {
       fail('报告内容不符合预期格式', 'INVALID_REPORT_CONTENT', 400)
     }
@@ -858,7 +863,11 @@ async function handle(request, response, requestId) {
     // Generate preview
     let serverPreview
     try {
-      serverPreview = normalizeStarReportPreview(fullReport, parsed.reportId)
+      const adapter = getAssessmentAdapter(fullReport.assessmentId)
+      if (!adapter) {
+        return send(request, response, 400, { error: '暂不支持该测评类型', code: 'UNSUPPORTED_ASSESSMENT' }, requestId)
+      }
+      serverPreview = adapter.parsePreview(fullReport)
     } catch (error) {
       return send(request, response, 400, { error: '报告内容不符合预期格式', code: 'INVALID_REPORT_CONTENT' }, requestId)
     }

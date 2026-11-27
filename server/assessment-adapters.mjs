@@ -303,12 +303,512 @@ function formatHollandCode(code) {
   return names[code] || code
 }
 
-// ============ Future Adapters (P1/P2) ============
+// ============ P1 Adapters ============
 
 /**
- * Placeholder for loves5, zhenai, root, gcd, etc.
- * These will be implemented based on real data contracts
+ * loves5 (爱的5种语言) adapter
  */
+registerAssessmentAdapter('loves5', {
+  parsePreview(report) {
+    const score = report.score || report.viewModel || {}
+    const scores = score.scores || {}
+    const primaries = score.primaries || []
+    const primary = primaries[0] || score.primaryLoveLanguage || ''
+    
+    // Map love language codes to names
+    const loveLanguageNames = {
+      'A': '肯定的言词', 'words': '肯定的言词',
+      'B': '精心的时刻', 'time': '精心的时刻',
+      'C': '接受礼物', 'gifts': '接受礼物',
+      'D': '服务的行动', 'service': '服务的行动',
+      'E': '身体的接触', 'touch': '身体的接触'
+    }
+    
+    const primaryName = loveLanguageNames[primary] || primary || '未确定'
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'loves5',
+      assessmentName: '爱的5种语言',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '主要爱语', labels: [primaryName] }
+      ],
+      headline: primary ? `主要爱的语言: ${primaryName}` : '爱的语言评估完成',
+      summary: buildLoves5Summary(scores),
+      caution: ''
+    }
+  },
+  
+  keyMetrics(report) {
+    const score = report.score || report.viewModel || {}
+    const primaries = score.primaries || []
+    const primary = primaries[0] || score.primaryLoveLanguage || ''
+    const loveLanguageNames = {
+      'A': '肯定的言词', 'words': '肯定的言词',
+      'B': '精心的时刻', 'time': '精心的时刻',
+      'C': '接受礼物', 'gifts': '接受礼物',
+      'D': '服务的行动', 'service': '服务的行动',
+      'E': '身体的接触', 'touch': '身体的接触'
+    }
+    return [
+      { name: '主要爱语', labels: [loveLanguageNames[primary] || primary || '未确定'] }
+    ]
+  },
+  
+  headline(report) {
+    const score = report.score || report.viewModel || {}
+    const primaries = score.primaries || []
+    const primary = primaries[0] || score.primaryLoveLanguage || ''
+    const loveLanguageNames = {
+      'A': '肯定的言词', 'words': '肯定的言词',
+      'B': '精心的时刻', 'time': '精心的时刻',
+      'C': '接受礼物', 'gifts': '接受礼物',
+      'D': '服务的行动', 'service': '服务的行动',
+      'E': '身体的接触', 'touch': '身体的接触'
+    }
+    const primaryName = loveLanguageNames[primary] || primary
+    return primaryName ? `主要爱的语言: ${primaryName}` : '爱的语言评估完成'
+  }
+})
+
+function buildLoves5Summary(scores) {
+  if (!scores || Object.keys(scores).length === 0) return ''
+  const loveLanguageNames = {
+    'A': '肯定的言词', 'words': '肯定的言词',
+    'B': '精心的时刻', 'time': '精心的时刻',
+    'C': '接受礼物', 'gifts': '接受礼物',
+    'D': '服务的行动', 'service': '服务的行动',
+    'E': '身体的接触', 'touch': '身体的接触'
+  }
+  const items = Object.entries(scores)
+    .map(([code, score]) => `${loveLanguageNames[code] || code}: ${score}`)
+    .join(', ')
+  return items
+}
+
+/**
+ * zhenai (珍爱金字塔) adapter
+ */
+registerAssessmentAdapter('zhenai', {
+  parsePreview(report) {
+    const view = report.reportContent?.viewModel || {}
+    const scores = view.scores || {}
+    const dims = view.dims || []
+    const lowest = view.lowest || ''
+    const total = view.total
+    
+    // Map dimension keys to names
+    const dimNames = {
+      'A': '自我价值', 'B': '亲密关系', 'C': '家庭关系',
+      'D': '社交关系', 'E': '职业成就', 'F': '身心健康'
+    }
+    
+    const lowestName = dimNames[lowest] || lowest || ''
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'zhenai',
+      assessmentName: '珍爱金字塔',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '最薄弱层', labels: [lowestName || '未确定'] },
+        { name: '总分', labels: [total != null ? String(total) : '-'] }
+      ],
+      headline: lowestName ? `最薄弱的一层: ${lowestName}` : '珍爱金字塔评估完成',
+      summary: buildZhenaiSummary(dims, dimNames),
+      caution: ''
+    }
+  },
+  
+  keyMetrics(report) {
+    const view = report.reportContent?.viewModel || {}
+    const lowest = view.lowest || ''
+    const total = view.total
+    const dimNames = {
+      'A': '自我价值', 'B': '亲密关系', 'C': '家庭关系',
+      'D': '社交关系', 'E': '职业成就', 'F': '身心健康'
+    }
+    return [
+      { name: '最薄弱层', labels: [dimNames[lowest] || lowest || '未确定'] },
+      { name: '总分', labels: [total != null ? String(total) : '-'] }
+    ]
+  },
+  
+  headline(report) {
+    const view = report.reportContent?.viewModel || {}
+    const lowest = view.lowest || ''
+    const dimNames = {
+      'A': '自我价值', 'B': '亲密关系', 'C': '家庭关系',
+      'D': '社交关系', 'E': '职业成就', 'F': '身心健康'
+    }
+    const lowestName = dimNames[lowest] || lowest
+    return lowestName ? `最薄弱的一层: ${lowestName}` : '珍爱金字塔评估完成'
+  }
+})
+
+function buildZhenaiSummary(dims, dimNames) {
+  if (!Array.isArray(dims) || dims.length === 0) return ''
+  return dims
+    .map(d => `${dimNames[d.key] || d.key}: ${d.score || '-'}`)
+    .join(', ')
+}
+
+/**
+ * root (寻根之旅/生命成长地图) adapter
+ */
+registerAssessmentAdapter('root', {
+  parsePreview(report) {
+    const view = report.reportContent?.viewModel || {}
+    const dimensions = view.dimensions || []
+    const modules = view.modules || []
+    const headline = view.headline || ''
+    
+    // Extract top 2 dimensions by score
+    const topDims = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 2)
+    
+    const topDimNames = topDims.map(d => d.name).filter(Boolean)
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'root',
+      assessmentName: '寻根之旅',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '核心能力', labels: topDimNames.length > 0 ? topDimNames : ['未确定'] }
+      ],
+      headline: headline || (topDimNames.length > 0 ? `核心能力: ${topDimNames.join('、')}` : '生命成长地图评估完成'),
+      summary: `${dimensions.length} 个维度, ${modules.length} 个模块`,
+      caution: ''
+    }
+  },
+  
+  keyMetrics(report) {
+    const view = report.reportContent?.viewModel || {}
+    const dimensions = view.dimensions || []
+    const topDims = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 2)
+    const topDimNames = topDims.map(d => d.name).filter(Boolean)
+    return [
+      { name: '核心能力', labels: topDimNames.length > 0 ? topDimNames : ['未确定'] }
+    ]
+  },
+  
+  headline(report) {
+    const view = report.reportContent?.viewModel || {}
+    const headline = view.headline || ''
+    const dimensions = view.dimensions || []
+    const topDims = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 2)
+    const topDimNames = topDims.map(d => d.name).filter(Boolean)
+    return headline || (topDimNames.length > 0 ? `核心能力: ${topDimNames.join('、')}` : '生命成长地图评估完成')
+  }
+})
+
+/**
+ * gcd (个人充电) adapter
+ */
+registerAssessmentAdapter('gcd', {
+  parsePreview(report) {
+    const view = report.reportContent?.viewModel || {}
+    const score = view.score
+    const band = view.band || {}
+    const topDim = view.topDim || ''
+    
+    // Map dimension keys to names
+    const dimNames = {
+      'body': '身体', 'emotion': '情绪', 'mind': '思维', 'spirit': '精神'
+    }
+    
+    const bandLabel = band.label || ''
+    const topDimName = dimNames[topDim] || topDim || ''
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'gcd',
+      assessmentName: '个人充电',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '电量', labels: [score != null ? `${score}/100` : '-'] },
+        { name: '状态', labels: [bandLabel || '未确定'] }
+      ],
+      headline: bandLabel ? `当前状态: ${bandLabel}` : '个人充电评估完成',
+      summary: topDimName ? `耗电最多: ${topDimName}` : '',
+      caution: ''
+    }
+  },
+  
+  keyMetrics(report) {
+    const view = report.reportContent?.viewModel || {}
+    const score = view.score
+    const band = view.band || {}
+    return [
+      { name: '电量', labels: [score != null ? `${score}/100` : '-'] },
+      { name: '状态', labels: [band.label || '未确定'] }
+    ]
+  },
+  
+  headline(report) {
+    const view = report.reportContent?.viewModel || {}
+    const band = view.band || {}
+    return band.label ? `当前状态: ${band.label}` : '个人充电评估完成'
+  }
+})
+
+// ============ P2 Adapters ============
+
+/**
+ * sefs (主观体验地图) adapter
+ */
+registerAssessmentAdapter('sefs', {
+  parsePreview(report) {
+    const score = report.score || report.viewModel || {}
+    const total = score.total
+    const dimensions = score.dimensions || []
+    
+    // Extract top dimension
+    const topDim = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'sefs',
+      assessmentName: '主观体验地图',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '总分', labels: [total != null ? String(total) : '-'] },
+        { name: '最高维度', labels: [topDim?.name || '未确定'] }
+      ],
+      headline: total != null ? `总分: ${total}` : '主观体验评估完成',
+      summary: topDim ? `${topDim.name}: ${topDim.score}` : '',
+      caution: ''
+    }
+  },
+  
+  keyMetrics(report) {
+    const score = report.score || report.viewModel || {}
+    const total = score.total
+    const dimensions = score.dimensions || []
+    const topDim = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+    return [
+      { name: '总分', labels: [total != null ? String(total) : '-'] },
+      { name: '最高维度', labels: [topDim?.name || '未确定'] }
+    ]
+  },
+  
+  headline(report) {
+    const score = report.score || report.viewModel || {}
+    const total = score.total
+    return total != null ? `总分: ${total}` : '主观体验评估完成'
+  }
+})
+
+/**
+ * sensmap (心力地图) adapter
+ */
+registerAssessmentAdapter('sensmap', {
+  parsePreview(report) {
+    const view = report.reportContent?.viewModel || {}
+    const dimensions = view.dimensions || []
+    
+    // Map dimension IDs to names
+    const dimNames = {
+      'F': '身体感受', 'R': '关系感受', 'E': '情绪感受', 'M': '思维感受'
+    }
+    
+    // Extract top dimension
+    const topDim = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+    
+    const topDimName = topDim ? (dimNames[topDim.id] || topDim.name || topDim.id) : ''
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'sensmap',
+      assessmentName: '心力地图',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '敏感维度', labels: [topDimName || '未确定'] }
+      ],
+      headline: topDimName ? `最敏感维度: ${topDimName}` : '心力地图评估完成',
+      summary: `${dimensions.length} 个维度`,
+      caution: ''
+    }
+  },
+  
+  keyMetrics(report) {
+    const view = report.reportContent?.viewModel || {}
+    const dimensions = view.dimensions || []
+    const dimNames = {
+      'F': '身体感受', 'R': '关系感受', 'E': '情绪感受', 'M': '思维感受'
+    }
+    const topDim = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+    const topDimName = topDim ? (dimNames[topDim.id] || topDim.name || topDim.id) : ''
+    return [
+      { name: '敏感维度', labels: [topDimName || '未确定'] }
+    ]
+  },
+  
+  headline(report) {
+    const view = report.reportContent?.viewModel || {}
+    const dimensions = view.dimensions || []
+    const dimNames = {
+      'F': '身体感受', 'R': '关系感受', 'E': '情绪感受', 'M': '思维感受'
+    }
+    const topDim = dimensions
+      .filter(d => d.score != null)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+    const topDimName = topDim ? (dimNames[topDim.id] || topDim.name || topDim.id) : ''
+    return topDimName ? `最敏感维度: ${topDimName}` : '心力地图评估完成'
+  }
+})
+
+/**
+ * juying (巨婴测评) adapter
+ */
+registerAssessmentAdapter('juying', {
+  parsePreview(report) {
+    const score = report.score || report.viewModel || {}
+    const total = score.total
+    const band = score.band || result.band || ''
+    
+    // Map band IDs to names
+    const bandNames = {
+      'mature': '心智成熟',
+      'partial': '有部分巨婴特质',
+      'infant': '巨婴',
+      'child': '儿童状态'
+    }
+    
+    const bandName = bandNames[band] || band || ''
+    
+    return {
+      reportId: report.reportId,
+      assessmentId: 'juying',
+      assessmentName: '巨婴测评',
+      assessmentVersion: report.assessmentVersion || '1.0',
+      completedAt: report.completedAt || report.createdAt,
+      nickname: report.nickname || '',
+      keyMetrics: [
+        { name: '总分', labels: [total != null ? String(total) : '-'] },
+        { name: '分档', labels: [bandName || '未确定'] }
+      ],
+      headline: bandName ? `分档: ${bandName}` : '巨婴测评完成',
+      summary: total != null ? `总分: ${total}` : '',
+      caution: '非严肃科学,仅供理解学习'
+    }
+  },
+  
+  keyMetrics(report) {
+    const score = report.score || report.viewModel || {}
+    const total = score.total
+    const band = score.band || report.result?.band || ''
+    const bandNames = {
+      'mature': '心智成熟',
+      'partial': '有部分巨婴特质',
+      'infant': '巨婴',
+      'child': '儿童状态'
+    }
+    return [
+      { name: '总分', labels: [total != null ? String(total) : '-'] },
+      { name: '分档', labels: [bandNames[band] || band || '未确定'] }
+    ]
+  },
+  
+  headline(report) {
+    const score = report.score || report.viewModel || {}
+    const band = score.band || report.result?.band || ''
+    const bandNames = {
+      'mature': '心智成熟',
+      'partial': '有部分巨婴特质',
+      'infant': '巨婴',
+      'child': '儿童状态'
+    }
+    const bandName = bandNames[band] || band
+    return bandName ? `分档: ${bandName}` : '巨婴测评完成'
+  }
+})
+
+/**
+ * Beattie emotional health series adapter factory
+ */
+function createBeattieAdapter(assessmentId, assessmentName) {
+  return {
+    parsePreview(report) {
+      const view = report.reportContent?.viewModel || {}
+      const total = view.total
+      const maxPossible = view.maxPossible
+      const band = view.band || {}
+      const chapter = view.chapter || ''
+      
+      return {
+        reportId: report.reportId,
+        assessmentId,
+        assessmentName,
+        assessmentVersion: report.assessmentVersion || '1.0',
+        completedAt: report.completedAt || report.createdAt,
+        nickname: report.nickname || '',
+        keyMetrics: [
+          { name: '总分', labels: [total != null ? `${total}/${maxPossible || '-'}` : '-'] },
+          { name: '等级', labels: [band.text || '未确定'] }
+        ],
+        headline: band.text ? `等级: ${band.text}` : `${assessmentName}完成`,
+        summary: chapter ? `第 ${chapter} 章` : '',
+        caution: ''
+      }
+    },
+    
+    keyMetrics(report) {
+      const view = report.reportContent?.viewModel || {}
+      const total = view.total
+      const maxPossible = view.maxPossible
+      const band = view.band || {}
+      return [
+        { name: '总分', labels: [total != null ? `${total}/${maxPossible || '-'}` : '-'] },
+        { name: '等级', labels: [band.text || '未确定'] }
+      ]
+    },
+    
+    headline(report) {
+      const view = report.reportContent?.viewModel || {}
+      const band = view.band || {}
+      return band.text ? `等级: ${band.text}` : `${assessmentName}完成`
+    }
+  }
+}
+
+// Register all 6 Beattie assessments
+registerAssessmentAdapter('beattie-emotional-health', createBeattieAdapter('beattie-emotional-health', '情绪健康测试'))
+registerAssessmentAdapter('beattie-anger', createBeattieAdapter('beattie-anger', '愤怒测试'))
+registerAssessmentAdapter('beattie-fear', createBeattieAdapter('beattie-fear', '恐惧测试'))
+registerAssessmentAdapter('beattie-drama', createBeattieAdapter('beattie-drama', '戏剧化与不幸成瘾测试'))
+registerAssessmentAdapter('beattie-guilt', createBeattieAdapter('beattie-guilt', '内疚测试'))
+registerAssessmentAdapter('beattie-grief', createBeattieAdapter('beattie-grief', '悲痛与失落测试'))
 
 // Export for testing
 export const _adapterRegistry = adapterRegistry

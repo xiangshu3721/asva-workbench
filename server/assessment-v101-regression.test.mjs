@@ -65,8 +65,8 @@ vi.mock('./assessment-import.mjs', () => ({
     if (reportId === 'rpt_v101_02') return { ...SYNTHETIC_REPORT_V2 }
     if (reportId === 'rpt_v101_wrong_type') return {
       reportId: 'rpt_v101_wrong_type',
-      assessmentId: 'different-test',
-      assessmentName: '不同测试',
+      assessmentId: 'scl90',
+      assessmentName: 'SCL-90 症状自评量表',
       assessmentVersion: 'v1',
       schemaVersion: '1.0.0',
       nickname: '测试',
