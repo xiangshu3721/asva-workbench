@@ -1457,6 +1457,9 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   const [error, setError] = useState('')
   const [previewError, setPreviewError] = useState('')
   const [showHistory, setShowHistory] = useState(false)
+  const [historyBindingId, setHistoryBindingId] = useState<string | null>(null)
+  const [historyData, setHistoryData] = useState<any[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const loadedRef = useRef(false)
 
   const loadAssessments = useCallback(async () => {
@@ -1549,21 +1552,32 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleViewOriginalReport = async (binding: AssessmentBinding) => {
+    // Open blank tab immediately to bypass popup blocker and provide instant feedback
+    const newTab = window.open('', '_blank', 'noopener,noreferrer')
+    
     try {
-      // First try to get the stored share URL
+      // Fetch the stored share URL
       const result = await api.getAssessmentShareUrl(actorId, binding.bindingId)
       if (result.shareUrl) {
-        window.open(result.shareUrl, '_blank', 'noopener,noreferrer')
+        // Navigate the already-opened tab to the share URL
+        if (newTab) {
+          newTab.location.href = result.shareUrl
+        }
         return
       }
     } catch (err: any) {
       // If no share URL stored, prompt mentor to provide it
       // Note: err.code is HTTP status (e.g. "HTTP_404"), err.serverCode is the server error code
       if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
+        // Close the blank tab since we need user input
+        if (newTab) {
+          newTab.close()
+        }
         const url = prompt(`此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）`)
         if (url?.trim()) {
           try {
             await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+            // Open new tab with the supplemented URL
             window.open(url.trim(), '_blank', 'noopener,noreferrer')
             return
           } catch (suppErr: any) {
@@ -1572,6 +1586,10 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
           }
         }
         return
+      }
+      // Close the blank tab on error
+      if (newTab) {
+        newTab.close()
       }
       alert(err?.message || '获取报告链接失败')
     }
@@ -1599,23 +1617,20 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleViewUpdateHistory = async (bindingId: string) => {
+    // Show modal immediately with loading state
+    setHistoryBindingId(bindingId)
+    setHistoryData([])
+    setHistoryLoading(true)
+    setShowHistory(true)
+    
     try {
       const result = await api.getAssessmentUpdateHistory(actorId, bindingId)
-      const history = result.history || []
-      if (history.length === 0) {
-        alert('该报告暂无更新记录。')
-        return
-      }
-      const lines = history.map(e => {
-        const time = formatDate(e.createdAt)
-        const type = e.eventType === 'REPORT_UPDATED' ? '报告被更新（新版本）' : e.eventType === 'REPORT_SUPERSEDED' ? '旧版本被替换' : e.eventType === 'SHARE_URL_SUPPLEMENTED' ? '补充了分享链接' : e.eventType
-        const actor = e.actorId || '未知'
-        const detail = (e.detail as any)?.reason || ''
-        return `${time} · ${type}\n  操作人：${actor}${detail ? `\n  原因：${detail}` : ''}`
-      })
-      alert(`📋 更新记录\n\n${lines.join('\n\n')}`)
+      setHistoryData(result.history || [])
     } catch (err: any) {
+      setHistoryData([])
       alert(err?.message || '获取更新记录失败')
+    } finally {
+      setHistoryLoading(false)
     }
   }
 
@@ -1734,6 +1749,41 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
             ))}
           </div>
         })}
+      </div>
+    )}
+    {showHistory && (
+      <div className="modal-backdrop" onClick={() => setShowHistory(false)}>
+        <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+          <button type="button" className="modal-close" onClick={() => setShowHistory(false)}>×</button>
+          <div className="eyebrow">UPDATE HISTORY</div>
+          <h2>更新记录</h2>
+          {historyLoading ? (
+            <div className="modal-lede">加载中...</div>
+          ) : historyData.length === 0 ? (
+            <div className="modal-lede">该报告暂无更新记录。</div>
+          ) : (
+            <div className="history-list">
+              {historyData.map((e, idx) => {
+                const time = formatDate(e.createdAt)
+                const type = e.eventType === 'REPORT_UPDATED' ? '报告被更新（新版本）' : e.eventType === 'REPORT_SUPERSEDED' ? '旧版本被替换' : e.eventType === 'SHARE_URL_SUPPLEMENTED' ? '补充了分享链接' : e.eventType
+                const actor = e.actorId || '未知'
+                const detail = (e.detail as any)?.reason || ''
+                return (
+                  <div key={idx} className="history-item">
+                    <div className="history-item-header">
+                      <strong>{time}</strong>
+                      <span className="history-item-type">{type}</span>
+                    </div>
+                    <div className="history-item-body">
+                      <div>操作人：{actor}</div>
+                      {detail && <div>原因：{detail}</div>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </div>
     )}
   </section>

@@ -935,3 +935,46 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
   .assessment-preview-actions { flex-direction: column; }
   .assessment-card-footer { flex-wrap: wrap; }
 }
+
+/* History Modal */
+.history-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-top: 16px;
+}
+
+.history-item {
+  padding: 12px;
+  border-left: 3px solid #4a7dff;
+  background: #f8f9fc;
+  margin-bottom: 12px;
+  border-radius: 6px;
+}
+
+.history-item-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.history-item-header strong {
+  font-size: 13px;
+  color: #2c3e58;
+}
+
+.history-item-type {
+  font-size: 12px;
+  color: #4a7dff;
+  font-weight: 500;
+}
+
+.history-item-body {
+  font-size: 12px;
+  color: #5a6d85;
+  line-height: 1.5;
+}
+
+.history-item-body div {
+  margin-bottom: 2px;
+}
