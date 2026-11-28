@@ -590,22 +590,38 @@ registerAssessmentAdapter('gcd', {
  */
 registerAssessmentAdapter('sefs', {
   parsePreview(report) {
-    // V1.3 fix: SEFS reports are stored under reportContent.viewModel (same as other H5 assessments),
-    // not under report.score / report.viewModel. Previously the adapter read the wrong path,
+    // V1.3 fix: SEFS reports store data in multiple paths depending on version:
+    // - viewModel: { total, scores: [], levels: [] } — scores/levels as parallel arrays
+    // - reportContent.dimensions: [{ name, score, max, level, id }] — full dimension metadata
+    // The previous adapter only read viewModel.dimensions (which doesn't exist),
     // causing total=null and top dimension='未确定' for all stored SEFS reports.
     const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
     const total = view.total ?? null
-    const dimensions = view.dimensions || []
 
-    // Also support items array (some SEFS versions use items instead of dimensions)
-    const items = Array.isArray(view.items) ? view.items : []
-    const allDims = dimensions.length > 0 ? dimensions : items
+    // Read dimensions with full metadata (name, score, max) from reportContent.dimensions
+    // Fallback to viewModel.dimensions or viewModel.items for other SEFS versions
+    const rcDims = Array.isArray(report.reportContent?.dimensions) ? report.reportContent.dimensions : []
+    const viewDims = Array.isArray(view.dimensions) ? view.dimensions : []
+    const viewItems = Array.isArray(view.items) ? view.items : []
+    const rawDims = rcDims.length > 0 ? rcDims : (viewDims.length > 0 ? viewDims : viewItems)
+
+    // If dimensions have names but no scores, merge scores from viewModel.scores
+    const viewScores = Array.isArray(view.scores) ? view.scores : []
+    const allDims = rawDims.map((d, i) => ({
+      name: d.name || '',
+      score: d.score != null ? d.score : (viewScores[i] ?? null),
+      max: d.max != null ? d.max : null,
+    })).filter(d => d.score != null)
 
     // Extract top dimensions sorted by score
-    const orderedDims = allDims.filter(d => d.score != null) // preserve original order
+    const orderedDims = [...allDims] // preserve original order
     const sortedDims = [...orderedDims].sort((a, b) => (b.score || 0) - (a.score || 0))
     const topDim = sortedDims[0]
     const top3 = sortedDims.slice(0, 3)
+
+    // Determine fixed max score per dimension from actual data
+    // Use the first dimension's max if available; fallback to 24 (SEFS standard: 6 items × 4-point scale)
+    const dimMax = allDims.length > 0 && allDims[0].max != null ? allDims[0].max : 24
 
     const base = {
       reportId: report.reportId,
@@ -624,20 +640,17 @@ registerAssessmentAdapter('sefs', {
     }
 
     // V1.3: Add displayPayload for radar chart visualization
-    // Use fixed max score per dimension (30 is standard for SEFS 6-item × 5-point scales)
-    // instead of normalizing to current max — preserves original score interpretation.
-    const FIXED_MAX_PER_DIM = 30
-
+    // Use actual max score per dimension from data (not normalizing to current max)
     base.displayPayload = {
       kind: 'sefs-radar',
       total: total ?? null,
       topDimension: topDim ? { name: topDim.name || '', score: topDim.score } : null,
       top3: top3.map(d => ({ name: d.name || '', score: d.score ?? 0 })),
-      maxScorePerDim: FIXED_MAX_PER_DIM,
+      maxScorePerDim: dimMax,
       radarAxes: orderedDims.slice(0, 8).map(d => ({
         name: d.name || '',
         score: d.score ?? 0,
-        maxScore: FIXED_MAX_PER_DIM,
+        maxScore: d.max != null ? d.max : dimMax,
       })),
       headline: base.headline,
     }
@@ -648,11 +661,16 @@ registerAssessmentAdapter('sefs', {
   keyMetrics(report) {
     const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
     const total = view.total ?? null
-    const dimensions = view.dimensions || []
-    const items = Array.isArray(view.items) ? view.items : []
-    const allDims = dimensions.length > 0 ? dimensions : items
+    const rcDims = Array.isArray(report.reportContent?.dimensions) ? report.reportContent.dimensions : []
+    const viewDims = Array.isArray(view.dimensions) ? view.dimensions : []
+    const viewItems = Array.isArray(view.items) ? view.items : []
+    const rawDims = rcDims.length > 0 ? rcDims : (viewDims.length > 0 ? viewDims : viewItems)
+    const viewScores = Array.isArray(view.scores) ? view.scores : []
+    const allDims = rawDims.map((d, i) => ({
+      name: d.name || '',
+      score: d.score != null ? d.score : (viewScores[i] ?? null),
+    })).filter(d => d.score != null)
     const topDim = allDims
-      .filter(d => d.score != null)
       .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
     return [
       { name: '总分', labels: [total != null ? String(total) : '-'] },

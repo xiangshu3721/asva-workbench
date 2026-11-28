@@ -122,7 +122,7 @@ describe('V1.3 — SEFS adapter fix', () => {
   })
 
   it('SEFS adapter uses fixed max score per dimension (not current max)', () => {
-    expect(adapterSource).toContain('FIXED_MAX_PER_DIM')
+    expect(adapterSource).toContain('dimMax')
     expect(adapterSource).toContain('maxScorePerDim')
     // Must NOT normalize to current max
     expect(adapterSource).not.toContain('Math.max(...sortedDims')

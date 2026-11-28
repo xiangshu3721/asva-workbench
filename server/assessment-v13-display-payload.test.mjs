@@ -84,7 +84,8 @@ describe('V1.3 — Assessment adapter displayPayload', () => {
       const adapter = getAssessmentAdapter('sefs')
       expect(adapter).not.toBeNull()
       
-      // V1.3 fix: SEFS reports are stored under reportContent.viewModel (same as other H5 assessments)
+      // V1.3 fix: SEFS reports are stored under reportContent.viewModel
+      // Dimensions inside viewModel without explicit max → default to 24
       const report = {
         reportId: 'rpt_sefs_01',
         reportContent: {
@@ -112,12 +113,73 @@ describe('V1.3 — Assessment adapter displayPayload', () => {
       expect(preview.displayPayload.topDimension.name).toBe('情绪觉察')
       expect(preview.displayPayload.top3).toHaveLength(3)
       expect(preview.displayPayload.radarAxes.length).toBeGreaterThan(0)
-      // V1.3 fix: use fixed max score per dimension, not current max
-      expect(preview.displayPayload.maxScorePerDim).toBe(30)
+      // V1.3 fix: use actual max from data; fallback to 24 (SEFS standard: 6 items × 4-point)
+      expect(preview.displayPayload.maxScorePerDim).toBe(24)
       for (const axis of preview.displayPayload.radarAxes) {
-        expect(axis.maxScore).toBe(30)
+        expect(axis.maxScore).toBe(24)
         expect(axis.score).toBeGreaterThanOrEqual(0)
       }
+    })
+
+    it('reads dimensions from reportContent.dimensions with actual max values', () => {
+      const adapter = getAssessmentAdapter('sefs')
+      // Matches the actual production data structure
+      const report = {
+        reportId: 'rpt_sefs_prod',
+        reportContent: {
+          dimensions: [
+            { id: 'breadth', max: 24, name: '体验广度', score: 8 },
+            { id: 'capacity', max: 24, name: '体验容纳', score: 4 },
+            { id: 'belonging', max: 24, name: '体验归属', score: 15 },
+            { id: 'autonomy', max: 24, name: '体验自主', score: 10 },
+          ],
+          viewModel: {
+            total: 37,
+            scores: [8, 4, 15, 10],
+            levels: ['轻度受损', '功能基本完好', '中度受损', '轻度受损'],
+          },
+        },
+        assessmentVersion: 'sefs-h5-v1',
+        completedAt: '2026-11-27T14:46:02+08:00',
+        nickname: '阿文',
+      }
+      const preview = adapter.parsePreview(report)
+      expect(preview.displayPayload.total).toBe(37)
+      expect(preview.displayPayload.maxScorePerDim).toBe(24)
+      expect(preview.displayPayload.radarAxes).toHaveLength(4)
+      expect(preview.displayPayload.radarAxes[0].name).toBe('体验广度')
+      expect(preview.displayPayload.radarAxes[0].score).toBe(8)
+      expect(preview.displayPayload.radarAxes[0].maxScore).toBe(24)
+      expect(preview.displayPayload.topDimension.name).toBe('体验归属')
+      expect(preview.displayPayload.topDimension.score).toBe(15)
+      // Original dimension order preserved
+      expect(preview.displayPayload.radarAxes[0].name).toBe('体验广度')
+      expect(preview.displayPayload.radarAxes[3].name).toBe('体验自主')
+    })
+
+    it('merges viewModel.scores when dimensions lack scores', () => {
+      const adapter = getAssessmentAdapter('sefs')
+      const report = {
+        reportId: 'rpt_sefs_merge',
+        reportContent: {
+          dimensions: [
+            { id: 'a', max: 24, name: '维度A' },
+            { id: 'b', max: 24, name: '维度B' },
+          ],
+          viewModel: {
+            total: 30,
+            scores: [18, 12],
+          },
+        },
+        assessmentVersion: '1.0',
+        completedAt: '2026-11-28T10:00:00Z',
+        nickname: 'T',
+      }
+      const preview = adapter.parsePreview(report)
+      expect(preview.displayPayload.total).toBe(30)
+      expect(preview.displayPayload.radarAxes[0].score).toBe(18)
+      expect(preview.displayPayload.radarAxes[1].score).toBe(12)
+      expect(preview.displayPayload.maxScorePerDim).toBe(24)
     })
 
     it('supports items array as alternative to dimensions', () => {
@@ -146,6 +208,8 @@ describe('V1.3 — Assessment adapter displayPayload', () => {
       expect(preview.displayPayload.radarAxes[0].name).toBe('维度A')
       expect(preview.displayPayload.radarAxes[1].name).toBe('维度B')
       expect(preview.displayPayload.radarAxes[2].name).toBe('维度C')
+      // No explicit max → fallback to 24
+      expect(preview.displayPayload.maxScorePerDim).toBe(24)
     })
 
     it('handles empty dimensions gracefully', () => {
