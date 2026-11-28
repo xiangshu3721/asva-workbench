@@ -18,6 +18,19 @@ import { releasesMatch } from './release-meta'
 // @ts-expect-error Shared runtime module intentionally stays framework-neutral.
 import { aiFailureMessage, persistenceFailureMessage, sourceProcessingPresentation } from '../shared/source-processing-state.mjs'
 import { canCommitCustomerResponse, createCustomerScopedState, isCustomerScopedStateFor, type CustomerScopedState } from './customer-switch-safety'
+
+// V1.3: Assessment H5 share capability set.
+// Only these assessments have actual H5 share pages and can show "查看原报告".
+const H5_CAPABLE_ASSESSMENT_IDS = new Set([
+  'star',
+  'beattie-emotional-health',
+  'beattie-anger',
+  'beattie-fear',
+  'beattie-drama',
+  'beattie-guilt',
+  'beattie-grief',
+  'sefs',
+])
 import { UNASSIGNED_OWNER_FILTER, filterCustomerDirectory, ownerFilterStaffOptions, type OwnerFilterValue } from './customer-directory-filter'
 import { customerDirectoryConcernPreview } from './customer-directory-concern-preview'
 import { consultationAiDisplayStatus } from './consultation-ai-display-status'
@@ -1458,6 +1471,185 @@ function CustomerUnderstandingPanel({ response, fallback, fallbackTopics, status
 
 function DetailMetric({ label, value, note }: { label: string; value: string; note?: string }) { return <div className="detail-metric"><span>{label}</span><strong>{value}</strong>{note && <small>{note}</small>}</div> }
 function SectionHeading({ title, meta, icon, action }: { title: string; meta?: string; icon?: string; action?: ReactNode }) { return <div className="customer-section-heading"><div><h2><span className="section-icon">{icon}</span>{title}</h2>{meta && <small>{meta}</small>}</div>{action}</div> }
+
+// V1.3: Assessment card visualization component.
+// Renders enhanced display based on displayPayload.kind.
+// Visual styles adapted from mindtest-web original report rendering.
+// All data comes from stored preview — no external fetches.
+function AssessmentCardVisualization({ displayPayload, assessmentId }: { displayPayload: any; assessmentId: string }) {
+  const kind = displayPayload.kind || ''
+
+  // Star hexagram: SVG hexagram (two triangles) + drive/pursue word lists
+  // Matches mindtest-web star report visual structure
+  if (kind === 'star-hexagram') {
+    const drive = displayPayload.drive?.words || []
+    const pursue = displayPayload.pursue?.words || []
+    const keywords = displayPayload.keywords || []
+    return (
+      <div className="assessment-card-viz assessment-card-viz-star">
+        <div className="star-hexagram-layout">
+          <div className="star-dimension drive">
+            <span className="star-dimension-label drive-name">底层动力</span>
+            <ol className="star-word-list">{drive.map((w: string, i: number) => <li key={i} className="star-word-tag drive">{w}</li>)}</ol>
+          </div>
+          <svg className="star-mark" viewBox="0 0 100 100" aria-hidden="true">
+            <polygon className="up" points="50,8 86.4,71 13.6,71" />
+            <polygon className="down" points="50,92 13.6,29 86.4,29" />
+          </svg>
+          <div className="star-dimension pursue">
+            <span className="star-dimension-label pursue-name">现实追求</span>
+            <ol className="star-word-list">{pursue.map((w: string, i: number) => <li key={i} className="star-word-tag pursue">{w}</li>)}</ol>
+          </div>
+        </div>
+        {keywords.length > 0 && (
+          <div className="star-keywords">
+            {keywords.map((kw: string, i: number) => <span key={i} className="star-keyword-tag">#{kw}</span>)}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Beattie gauge: score + level + sub-scale bars
+  // Matches mindtest-web beattie result-score / score-grid / bar-track visual structure
+  if (kind === 'beattie-gauge') {
+    const pct = displayPayload.percentage ?? null
+    const color = displayPayload.color || '#9e9e9e'
+    const level = displayPayload.level || ''
+    const subScales = displayPayload.subScales || []
+    return (
+      <div className="assessment-card-viz assessment-card-viz-beattie">
+        <div className="beattie-gauge-header">
+          <span className="beattie-level" style={{ color }}>{level}</span>
+          {displayPayload.total != null && (
+            <span className="beattie-score">{displayPayload.total}{displayPayload.maxPossible != null ? `/${displayPayload.maxPossible}` : ''}</span>
+          )}
+          {displayPayload.chapter && <span className="beattie-chapter">第{displayPayload.chapter}章</span>}
+        </div>
+        {pct != null && (
+          <div className="beattie-bar-track">
+            <div className="beattie-bar-fill" style={{ width: `${Math.min(100, pct)}%`, backgroundColor: color }} />
+          </div>
+        )}
+        {subScales.length > 0 && (
+          <div className="beattie-sub-scales">
+            {subScales.map((s: any, i: number) => (
+              <div key={i} className="beattie-sub-scale">
+                <span className="beattie-sub-name">{s.name}</span>
+                <div className="beattie-sub-bar-track">
+                  <div className="beattie-sub-bar-fill" style={{ width: s.maxScore ? `${Math.min(100, ((s.score || 0) / s.maxScore) * 100)}%` : '0%', backgroundColor: color, opacity: 0.7 }} />
+                </div>
+                <span className="beattie-sub-score">{s.score ?? '-'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // SEFS radar: SVG radar chart with fixed max score per dimension
+  // Uses fixed scale (maxScorePerDim), not normalized to current max
+  if (kind === 'sefs-radar') {
+    const axes = displayPayload.radarAxes || []
+    const maxScore = displayPayload.maxScorePerDim || 30
+    const top3 = displayPayload.top3 || []
+
+    // SVG radar chart calculation
+    const cx = 100, cy = 100, r = 70
+    const n = axes.length
+    const angleStep = n > 0 ? (2 * Math.PI) / n : 0
+
+    const polarToCart = (angle: number, radius: number) => ({
+      x: cx + radius * Math.cos(angle - Math.PI / 2),
+      y: cy + radius * Math.sin(angle - Math.PI / 2),
+    })
+
+    // Grid rings at 25%, 50%, 75%, 100%
+    const rings = [0.25, 0.5, 0.75, 1.0]
+    const gridLines = rings.map(ring => {
+      const pts = axes.map((_: any, i: number) => {
+        const pt = polarToCart(i * angleStep, r * ring)
+        return `${pt.x},${pt.y}`
+      })
+      return pts.join(' ')
+    })
+
+    // Axis lines from center to each vertex
+    const axisLines = axes.map((_: any, i: number) => {
+      const pt = polarToCart(i * angleStep, r)
+      return { x1: cx, y1: cy, x2: pt.x, y2: pt.y }
+    })
+
+    // Data polygon
+    const dataPoints = axes.map((axis: any, i: number) => {
+      const ratio = maxScore > 0 ? Math.min(1, (axis.score || 0) / maxScore) : 0
+      const pt = polarToCart(i * angleStep, r * ratio)
+      return `${pt.x},${pt.y}`
+    })
+    const dataPolygon = dataPoints.join(' ')
+
+    // Axis labels
+    const labels = axes.map((axis: any, i: number) => {
+      const pt = polarToCart(i * angleStep, r + 16)
+      return { x: pt.x, y: pt.y, name: axis.name || '', score: axis.score ?? 0 }
+    })
+
+    return (
+      <div className="assessment-card-viz assessment-card-viz-sefs">
+        {displayPayload.total != null && <div className="sefs-total">总分：<strong>{displayPayload.total}</strong></div>}
+        {top3.length > 0 && (
+          <div className="sefs-top-dims">
+            <span className="sefs-top-label">关键维度</span>
+            {top3.map((d: any, i: number) => (
+              <span key={i} className="sefs-dim-tag">{d.name}{d.score != null ? ` (${d.score})` : ''}</span>
+            ))}
+          </div>
+        )}
+        {n >= 3 && (
+          <svg className="sefs-radar-svg" viewBox="0 0 200 200" aria-hidden="true">
+            {/* Grid rings */}
+            {gridLines.map((pts, i) => (
+              <polygon key={`ring-${i}`} points={pts} className="sefs-radar-ring" />
+            ))}
+            {/* Axis lines */}
+            {axisLines.map((line: { x1: number; y1: number; x2: number; y2: number }, i: number) => (
+              <line key={`axis-${i}`} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} className="sefs-radar-axis" />
+            ))}
+            {/* Data polygon */}
+            <polygon points={dataPolygon} className="sefs-radar-data" />
+            {/* Data points */}
+            {axes.map((axis: any, i: number) => {
+              const ratio = maxScore > 0 ? Math.min(1, (axis.score || 0) / maxScore) : 0
+              const pt = polarToCart(i * angleStep, r * ratio)
+              return <circle key={`dot-${i}`} cx={pt.x} cy={pt.y} r="3" className="sefs-radar-dot" />
+            })}
+            {/* Axis labels */}
+            {labels.map((label: { x: number; y: number; name: string }, i: number) => (
+              <text key={`label-${i}`} x={label.x} y={label.y} className="sefs-radar-label" textAnchor="middle" dominantBaseline="central">
+                {label.name}
+              </text>
+            ))}
+          </svg>
+        )}
+      </div>
+    )
+  }
+
+  // Fallback: render keyMetrics as before
+  return (
+    <div className="assessment-card-preview">
+      {(displayPayload.keyMetrics || []).map((m: any, i: number) => (
+        <div key={i} className="assessment-card-metric">
+          <span>{m.name}：</span>
+          <span>{m.labels?.join('、')}</span>
+        </div>
+      ))}
+      {displayPayload.headline && <p className="assessment-card-headline">{displayPayload.headline}</p>}
+    </div>
+  )
+}
+
 function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: { customer: Customer; api: WorkbenchApi; actorId: string; isAdmin: boolean; refreshCustomer?: () => void }) {
   const [assessments, setAssessments] = useState<AssessmentBinding[]>([])
   const [loading, setLoading] = useState(false)
@@ -1564,46 +1756,84 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
   }
 
   const handleViewOriginalReport = async (binding: AssessmentBinding) => {
-    // Open blank tab immediately to bypass popup blocker and provide instant feedback
-    const newTab = window.open('', '_blank', 'noopener,noreferrer')
-    
+    // V1.3 fix: open a blank tab first (without noopener, so we can navigate it),
+    // then call the authenticated share-url API, then navigate the tab to the URL.
+    // This avoids the about:blank residue from the old pattern while keeping auth via Bearer token.
+    const newTab = window.open('about:blank', '_blank')
+    if (!newTab) {
+      // Popup blocked — fall back to same-window navigation
+      try {
+        const result = await api.getAssessmentShareUrl(actorId, binding.bindingId)
+        if (result.shareUrl) {
+          window.location.href = result.shareUrl
+        } else {
+          alert('此报告未保存原始链接')
+        }
+      } catch (err: any) {
+        if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
+          const url = prompt('此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）')
+          if (url?.trim()) {
+            try {
+              await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+              await loadAssessments()
+            } catch (suppErr: any) {
+              alert(suppErr?.message || '补充链接失败')
+            }
+          }
+        } else {
+          alert(err?.message || '获取报告链接失败')
+        }
+      }
+      return
+    }
+
     try {
-      // Fetch the stored share URL
       const result = await api.getAssessmentShareUrl(actorId, binding.bindingId)
       if (result.shareUrl) {
         // Navigate the already-opened tab to the share URL
-        if (newTab) {
-          newTab.location.href = result.shareUrl
-        }
-        return
-      }
-    } catch (err: any) {
-      // If no share URL stored, prompt mentor to provide it
-      // Note: err.code is HTTP status (e.g. "HTTP_404"), err.serverCode is the server error code
-      if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
-        // Close the blank tab since we need user input
-        if (newTab) {
-          newTab.close()
-        }
-        const url = prompt(`此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）`)
+        newTab.location.href = result.shareUrl
+        // Security: disconnect opener so the opened page can't access our window
+        try { newTab.opener = null } catch { /* cross-origin may block this */ }
+      } else {
+        // No URL stored — close the blank tab and prompt for supplement
+        try { newTab.close() } catch { /* ignore */ }
+        const url = prompt('此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）')
         if (url?.trim()) {
           try {
             await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
-            // Open new tab with the supplemented URL
-            window.open(url.trim(), '_blank', 'noopener,noreferrer')
-            return
+            await loadAssessments()
           } catch (suppErr: any) {
             alert(suppErr?.message || '补充链接失败')
-            return
           }
         }
-        return
       }
-      // Close the blank tab on error
-      if (newTab) {
-        newTab.close()
+    } catch (err: any) {
+      // Error — close the blank tab
+      try { newTab.close() } catch { /* ignore */ }
+      if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
+        const url = prompt('此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）')
+        if (url?.trim()) {
+          try {
+            await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+            await loadAssessments()
+          } catch (suppErr: any) {
+            alert(suppErr?.message || '补充链接失败')
+          }
+        }
+      } else {
+        alert(err?.message || '获取报告链接失败')
       }
-      alert(err?.message || '获取报告链接失败')
+    }
+  }
+
+  const handleSupplementShareUrl = async (binding: AssessmentBinding) => {
+    const url = prompt(`请粘贴该报告的原始分享链接：\n（留空则取消）`)
+    if (!url?.trim()) return
+    try {
+      await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+      await loadAssessments()
+    } catch (err: any) {
+      alert(err?.message || '补充链接失败')
     }
   }
 
@@ -1726,30 +1956,45 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
               <strong>{latest.assessmentName}</strong>
               <span className="assessment-group-count">{items.length} 份{items.length > 1 ? '（含历史）' : ''}</span>
             </div>
-            {items.map((binding) => (
+            {items.map((binding) => {
+              const previewData = binding.preview != null && typeof binding.preview === 'object' ? binding.preview as any : null
+              const displayPayload = previewData?.displayPayload || null
+              const isH5Capable = H5_CAPABLE_ASSESSMENT_IDS.has(binding.assessmentId)
+              const hasStoredUrl = binding.hasEncryptedShareUrl
+              return (
               <article key={binding.bindingId} className="assessment-card">
                 <div className="assessment-card-header">
                   <span className="assessment-card-nickname">{binding.reportNickname || '匿名'}</span>
                   <span className="assessment-card-date">{formatDate(binding.completedAt)}</span>
                   {items.length > 1 && binding === latest && <span className="assessment-card-latest">最新</span>}
                 </div>
-                {binding.preview != null && typeof binding.preview === 'object' ? (
+                {displayPayload ? (
+                  <AssessmentCardVisualization displayPayload={displayPayload} assessmentId={binding.assessmentId} />
+                ) : previewData ? (
                   <div className="assessment-card-preview">
-                    {(binding.preview as any).keyMetrics?.map((m: any) => (
-                      <div key={m.id} className="assessment-card-metric">
+                    {previewData.keyMetrics?.map((m: any) => (
+                      <div key={m.id || m.name} className="assessment-card-metric">
                         <span>{m.name}：</span>
                         <span>{m.labels?.join('、')}</span>
                       </div>
                     ))}
+                    {previewData.headline && <p className="assessment-card-headline">{previewData.headline}</p>}
                   </div>
                 ) : null}
                 <div className="assessment-card-footer">
                   <span className="assessment-card-bound">绑定于 {formatDate(binding.boundAt)}</span>
                   {binding.sourceRevoked && <span className="assessment-card-source-revoked" title="源链接已失效">源已失效</span>}
                   {binding.localRevoked && <span className="assessment-card-revoked" title="本地已撤销">已撤销</span>}
-                  <button className="assessment-card-view-original secondary-button small" type="button" onClick={() => handleViewOriginalReport(binding)}>
-                    查看原报告
-                  </button>
+                  {isH5Capable && hasStoredUrl && (
+                    <button className="assessment-card-view-original secondary-button small" type="button" onClick={() => handleViewOriginalReport(binding)}>
+                      查看原报告
+                    </button>
+                  )}
+                  {isH5Capable && !hasStoredUrl && (
+                    <button className="assessment-card-supplement-url secondary-button small" type="button" onClick={() => handleSupplementShareUrl(binding)}>
+                      补充原报告链接
+                    </button>
+                  )}
                   <button className="assessment-card-history secondary-button small" type="button" onClick={() => handleViewUpdateHistory(binding.bindingId)}>
                     更新记录
                   </button>
@@ -1757,7 +2002,8 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
                   <button className="assessment-card-unbind secondary-button small" type="button" onClick={() => handleUnbind(binding.bindingId)}>解绑</button>
                 </div>
               </article>
-            ))}
+              )
+            })}
           </div>
         })}
       </div>

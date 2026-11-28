@@ -14,6 +14,28 @@ import { parseStarShareUrl } from '../shared/assessment-import-star-contract.mjs
 import { normalizeStarReportPreview } from '../shared/assessment-import-star-contract.mjs'
 import { getAssessmentAdapter } from './assessment-adapters.mjs'
 
+// V1.3: Enrich preview from stored snapshot when displayPayload is missing.
+// This backfills V1.3 display enhancements for reports imported before V1.3,
+// without requiring re-import. Returns the (possibly enriched) preview.
+function enrichPreviewFromSnapshot(preview, snapshot) {
+  if (!preview || !snapshot || typeof snapshot !== 'object') return preview
+  // Only enrich if displayPayload is missing and the preview has an assessmentId
+  if (preview.displayPayload) return preview
+  const assessmentId = preview.assessmentId || snapshot.assessmentId
+  if (!assessmentId) return preview
+  try {
+    const adapter = getAssessmentAdapter(assessmentId)
+    if (!adapter || typeof adapter.parsePreview !== 'function') return preview
+    const enriched = adapter.parsePreview(snapshot)
+    if (enriched?.displayPayload) {
+      return { ...preview, displayPayload: enriched.displayPayload }
+    }
+  } catch {
+    // Silently fall back to stored preview
+  }
+  return preview
+}
+
 function memorySnapshot(phase, requestId, extra = {}) {
   const memory = process.memoryUsage()
   console.info('[ASVA_MEMORY]', JSON.stringify({
@@ -487,7 +509,15 @@ async function handle(request, response, requestId) {
     const store = getAssessmentStore()
     try {
       const assessments = await store.getCustomerAssessments(customerId)
-      const body = { customerId, assessments: assessments || [] }
+      // V1.3: Enrich stored previews from snapshots when displayPayload is missing.
+      // This backfills V1.3 visualizations for reports imported before the upgrade.
+      // snapshot is stripped before sending to frontend (not exposed to client).
+      const enriched = (assessments || []).map(a => {
+        const enrichedPreview = enrichPreviewFromSnapshot(a.preview, a.snapshot)
+        const { snapshot: _omit, ...rest } = a
+        return { ...rest, preview: enrichedPreview }
+      })
+      const body = { customerId, assessments: enriched }
       return send(request, response, 200, body, requestId)
     } catch (error) {
       if (error.code === 'ASSESSMENT_STORE_UNCONFIGURED') return send(request, response, 200, { customerId, assessments: [] }, requestId)

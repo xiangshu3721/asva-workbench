@@ -53,7 +53,20 @@ export function listSupportedAssessments() {
  */
 registerAssessmentAdapter('star', {
   parsePreview(report) {
-    return normalizeStarReportPreview(report, report.reportId)
+    const base = normalizeStarReportPreview(report, report.reportId)
+    // V1.3: Add displayPayload for enhanced card visualization
+    const content = report.reportContent || report
+    const keywords = Array.isArray(content.keywords) ? content.keywords.slice(0, 8) : []
+    const drive = (base.keyMetrics.find(m => m.name === '底层动力') || {}).labels || []
+    const pursue = (base.keyMetrics.find(m => m.name === '现实追求') || {}).labels || []
+    base.displayPayload = {
+      kind: 'star-hexagram',
+      drive: { label: '底层动力', words: drive },
+      pursue: { label: '现实追求', words: pursue },
+      keywords,
+      headline: base.headline,
+    }
+    return base
   },
   
   keyMetrics(report) {
@@ -577,16 +590,24 @@ registerAssessmentAdapter('gcd', {
  */
 registerAssessmentAdapter('sefs', {
   parsePreview(report) {
-    const score = report.score || report.viewModel || {}
-    const total = score.total
-    const dimensions = score.dimensions || []
-    
-    // Extract top dimension
-    const topDim = dimensions
-      .filter(d => d.score != null)
-      .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
-    
-    return {
+    // V1.3 fix: SEFS reports are stored under reportContent.viewModel (same as other H5 assessments),
+    // not under report.score / report.viewModel. Previously the adapter read the wrong path,
+    // causing total=null and top dimension='未确定' for all stored SEFS reports.
+    const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
+    const total = view.total ?? null
+    const dimensions = view.dimensions || []
+
+    // Also support items array (some SEFS versions use items instead of dimensions)
+    const items = Array.isArray(view.items) ? view.items : []
+    const allDims = dimensions.length > 0 ? dimensions : items
+
+    // Extract top dimensions sorted by score
+    const orderedDims = allDims.filter(d => d.score != null) // preserve original order
+    const sortedDims = [...orderedDims].sort((a, b) => (b.score || 0) - (a.score || 0))
+    const topDim = sortedDims[0]
+    const top3 = sortedDims.slice(0, 3)
+
+    const base = {
       reportId: report.reportId,
       assessmentId: 'sefs',
       assessmentName: '主观体验地图',
@@ -599,15 +620,38 @@ registerAssessmentAdapter('sefs', {
       ],
       headline: total != null ? `总分: ${total}` : '主观体验评估完成',
       summary: topDim ? `${topDim.name}: ${topDim.score}` : '',
-      caution: ''
+      caution: '',
     }
+
+    // V1.3: Add displayPayload for radar chart visualization
+    // Use fixed max score per dimension (30 is standard for SEFS 6-item × 5-point scales)
+    // instead of normalizing to current max — preserves original score interpretation.
+    const FIXED_MAX_PER_DIM = 30
+
+    base.displayPayload = {
+      kind: 'sefs-radar',
+      total: total ?? null,
+      topDimension: topDim ? { name: topDim.name || '', score: topDim.score } : null,
+      top3: top3.map(d => ({ name: d.name || '', score: d.score ?? 0 })),
+      maxScorePerDim: FIXED_MAX_PER_DIM,
+      radarAxes: orderedDims.slice(0, 8).map(d => ({
+        name: d.name || '',
+        score: d.score ?? 0,
+        maxScore: FIXED_MAX_PER_DIM,
+      })),
+      headline: base.headline,
+    }
+
+    return base
   },
-  
+
   keyMetrics(report) {
-    const score = report.score || report.viewModel || {}
-    const total = score.total
-    const dimensions = score.dimensions || []
-    const topDim = dimensions
+    const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
+    const total = view.total ?? null
+    const dimensions = view.dimensions || []
+    const items = Array.isArray(view.items) ? view.items : []
+    const allDims = dimensions.length > 0 ? dimensions : items
+    const topDim = allDims
       .filter(d => d.score != null)
       .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
     return [
@@ -615,10 +659,10 @@ registerAssessmentAdapter('sefs', {
       { name: '最高维度', labels: [topDim?.name || '未确定'] }
     ]
   },
-  
+
   headline(report) {
-    const score = report.score || report.viewModel || {}
-    const total = score.total
+    const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
+    const total = view.total ?? null
     return total != null ? `总分: ${total}` : '主观体验评估完成'
   }
 })
@@ -758,6 +802,15 @@ registerAssessmentAdapter('juying', {
  * Beattie emotional health series adapter factory
  */
 function createBeattieAdapter(assessmentId, assessmentName) {
+  // Beattie level → color mapping for card visualization
+  const LEVEL_COLORS = {
+    '轻微': '#4caf50',
+    '轻度': '#8bc34a',
+    '中等': '#ff9800',
+    '偏高': '#f44336',
+    '严重': '#b71c1c',
+  }
+
   return {
     parsePreview(report) {
       const view = report.reportContent?.viewModel || {}
@@ -765,8 +818,13 @@ function createBeattieAdapter(assessmentId, assessmentName) {
       const maxPossible = view.maxPossible
       const band = view.band || {}
       const chapter = view.chapter || ''
+      const subScales = Array.isArray(view.subScales) ? view.subScales : []
       
-      return {
+      const bandText = band.text || '未确定'
+      // Determine color from band text
+      const color = Object.entries(LEVEL_COLORS).find(([key]) => bandText.includes(key))?.[1] || '#9e9e9e'
+      
+      const base = {
         reportId: report.reportId,
         assessmentId,
         assessmentName,
@@ -775,12 +833,31 @@ function createBeattieAdapter(assessmentId, assessmentName) {
         nickname: report.nickname || '',
         keyMetrics: [
           { name: '总分', labels: [total != null ? `${total}/${maxPossible || '-'}` : '-'] },
-          { name: '等级', labels: [band.text || '未确定'] }
+          { name: '等级', labels: [bandText] }
         ],
-        headline: band.text ? `等级: ${band.text}` : `${assessmentName}完成`,
+        headline: bandText !== '未确定' ? `等级: ${bandText}` : `${assessmentName}完成`,
         summary: chapter ? `第 ${chapter} 章` : '',
-        caution: ''
+        caution: '',
       }
+      
+      // V1.3: Add displayPayload for enhanced card visualization
+      base.displayPayload = {
+        kind: 'beattie-gauge',
+        total: total ?? null,
+        maxPossible: maxPossible ?? null,
+        percentage: total != null && maxPossible ? Math.round((total / maxPossible) * 100) : null,
+        level: bandText,
+        color,
+        chapter: chapter || null,
+        subScales: subScales.slice(0, 6).map((s) => ({
+          name: s.name || '',
+          score: s.score ?? null,
+          maxScore: s.maxScore ?? null,
+        })),
+        headline: base.headline,
+      }
+      
+      return base
     },
     
     keyMetrics(report) {
