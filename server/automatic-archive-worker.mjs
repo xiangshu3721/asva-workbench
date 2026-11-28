@@ -1,7 +1,19 @@
-import { FeishuRepository } from './repository.mjs'
-
 export async function main() {
   const startedAt = Date.now()
+  // This is intentionally separate from FEATURE_AUTOMATIC_PROFILE_ARCHIVING.
+  // A deployment must opt in to both flags before this background worker can
+  // perform any I/O.  Keep the default closed so a timer or queued invocation
+  // cannot restart archiving merely because application feature config changes.
+  if (process.env.AUTOMATIC_ARCHIVE_WORKER_ENABLED !== 'true') {
+    const result = {
+      status: 'DISABLED',
+      reason: 'WORKER_KILL_SWITCH',
+      durationMs: Date.now() - startedAt,
+    }
+    console.info('[ASVA_AUTO_ARCHIVE_TICK]', JSON.stringify(result))
+    return result
+  }
+  const { FeishuRepository } = await import('./repository.mjs')
   const before = process.memoryUsage()
   const repository = new FeishuRepository({ backgroundArchiveWorker: true })
   try {

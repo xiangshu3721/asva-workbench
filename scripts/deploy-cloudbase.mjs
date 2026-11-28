@@ -14,6 +14,9 @@ const workerName = 'asva-ai-archive'
 const workerDir = path.join(root, 'cloudbase/functions/asva-ai-archive')
 const workerTriggerName = 'asva-auto-archive-every-minute'
 const workerCron = '0 */1 * * * * *'
+// Production telemetry showed the Worker using roughly 570–619MB. Keep the
+// current 1024MB allocation until a dedicated benchmark supports a change.
+export const WORKER_MEMORY_MB = 1024
 
 export function parseEnv(text) {
   const values = {}
@@ -188,6 +191,43 @@ export function buildProductionEnvVariables(values, buildMetadata) {
   }
 }
 
+// Deploying the Worker must never make it runnable by accident.  The caller
+// must deliberately opt in on the command line and in the reviewed deployment
+// environment.  Timer restoration has an additional, auditable approval value.
+export function workerRestorePolicy(values, args = process.argv.slice(2)) {
+  const enableWorker = args.includes('--enable-archive-worker')
+  const restoreTimer = args.includes('--restore-worker-timer')
+  const deployMode = values.ASVA_DEPLOY_MODE || 'normal'
+  const workerRuntimeEnabled = enableWorker
+    && values.AUTOMATIC_ARCHIVE_WORKER_ENABLED === 'true'
+    && values.FEATURE_AUTOMATIC_PROFILE_ARCHIVING === 'true'
+    && deployMode === 'production'
+
+  if (restoreTimer && !enableWorker) {
+    throw new Error('--restore-worker-timer 必须同时提供 --enable-archive-worker')
+  }
+  if (enableWorker && !workerRuntimeEnabled) {
+    throw new Error('启用自动归档 Worker 需要 production 模式、功能开关和 AUTOMATIC_ARCHIVE_WORKER_ENABLED=true')
+  }
+  if (restoreTimer && values.ASVA_WORKER_TIMER_RESTORE_APPROVED !== 'true') {
+    throw new Error('恢复自动归档定时器需要 ASVA_WORKER_TIMER_RESTORE_APPROVED=true 的单独批准')
+  }
+
+  return {
+    workerRuntimeEnabled,
+    restoreTimer: restoreTimer && workerRuntimeEnabled,
+  }
+}
+
+export function buildWorkerEnvVariables(values, buildMetadata, policy = workerRestorePolicy(values, [])) {
+  return {
+    ...buildProductionEnvVariables(values, buildMetadata),
+    // Explicitly write false during every ordinary Worker deployment instead
+    // of relying on an old cloud-side value surviving a configuration update.
+    AUTOMATIC_ARCHIVE_WORKER_ENABLED: policy.workerRuntimeEnabled ? 'true' : 'false',
+  }
+}
+
 function run(command, args, cwd, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: 'inherit', env: environment })
@@ -214,7 +254,7 @@ export function parseDeploymentTarget(args = process.argv.slice(2)) {
   return target
 }
 
-export async function deployProduction({ target = parseDeploymentTarget() } = {}) {
+export async function deployProduction({ target = parseDeploymentTarget(), args = process.argv.slice(2) } = {}) {
   if (!['api', 'worker', 'all'].includes(target)) throw new Error('部署目标必须是 api、worker 或 all')
   if (!process.env.ASVA_DEPLOY_ENV_FILE) throw new Error('生产部署必须显式设置 ASVA_DEPLOY_ENV_FILE，禁止回退到仓库默认配置')
   const envPath = path.resolve(process.env.ASVA_DEPLOY_ENV_FILE)
@@ -222,8 +262,10 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
   const buildMetadata = JSON.parse(await readFile(path.join(root, 'build-meta.json'), 'utf8'))
   const summary = validateProductionEnv(values, envPath)
   const envVariables = buildProductionEnvVariables(values, buildMetadata)
+  const workerPolicy = workerRestorePolicy(values, args)
+  const workerEnvVariables = buildWorkerEnvVariables(values, buildMetadata, workerPolicy)
   if (process.argv.includes('--preflight')) {
-    console.log(JSON.stringify({ ok: true, preflight: summary, release: `R${String(buildMetadata.releaseCounter).padStart(3, '0')}${buildMetadata.releasePatch > 0 ? `.${buildMetadata.releasePatch}` : ''}`, gitCommit: buildMetadata.gitCommit }))
+    console.log(JSON.stringify({ ok: true, preflight: summary, worker: workerPolicy, release: `R${String(buildMetadata.releaseCounter).padStart(3, '0')}${buildMetadata.releasePatch > 0 ? `.${buildMetadata.releasePatch}` : ''}`, gitCommit: buildMetadata.gitCommit }))
     return
   }
 
@@ -249,8 +291,8 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
       handler: 'index.main',
       runtime: 'Nodejs20.19',
       timeout: 60,
-      memorySize: 256,
-      envVariables,
+      memorySize: WORKER_MEMORY_MB,
+      envVariables: workerEnvVariables,
     })
     await writeFile(path.join(tempDir, 'cloudbaserc.json'), JSON.stringify({
       envId,
@@ -285,12 +327,16 @@ export async function deployProduction({ target = parseDeploymentTarget() } = {}
       if (hasExistingWorker) workerArgs.push('--force')
       workerArgs.push('--json')
       await run(tcb, workerArgs, tempDir)
-      const workerDetailOutput = await runCapture(tcb, ['fn', 'detail', workerName, '--env-id', envId, '--json'], root)
-      const workerDetailJsonStart = workerDetailOutput.indexOf('{')
-      const workerDetail = workerDetailJsonStart >= 0 ? JSON.parse(workerDetailOutput.slice(workerDetailJsonStart)) : { data: {} }
-      const workerTriggers = workerDetail.data?.Triggers || []
-      const hasWorkerTrigger = workerTriggers.some((trigger) => trigger.TriggerName === workerTriggerName || trigger.triggerName === workerTriggerName || trigger.Name === workerTriggerName || trigger.name === workerTriggerName)
-      if (!hasWorkerTrigger) await run(tcb, ['fn', 'trigger', 'create', workerName, '--trigger-name', workerTriggerName, '--cron', workerCron, '--json'], tempDir)
+      if (workerPolicy.restoreTimer) {
+        const workerDetailOutput = await runCapture(tcb, ['fn', 'detail', workerName, '--env-id', envId, '--json'], root)
+        const workerDetailJsonStart = workerDetailOutput.indexOf('{')
+        const workerDetail = workerDetailJsonStart >= 0 ? JSON.parse(workerDetailOutput.slice(workerDetailJsonStart)) : { data: {} }
+        const workerTriggers = workerDetail.data?.Triggers || []
+        const hasWorkerTrigger = workerTriggers.some((trigger) => trigger.TriggerName === workerTriggerName || trigger.triggerName === workerTriggerName || trigger.Name === workerTriggerName || trigger.name === workerTriggerName)
+        if (!hasWorkerTrigger) await run(tcb, ['fn', 'trigger', 'create', workerName, '--trigger-name', workerTriggerName, '--cron', workerCron, '--json'], tempDir)
+      } else {
+        console.info('[ASVA_AUTO_ARCHIVE_DEPLOY]', JSON.stringify({ worker: workerName, timer: 'UNCHANGED', reason: 'RESTORE_NOT_EXPLICITLY_AUTHORIZED' }))
+      }
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
