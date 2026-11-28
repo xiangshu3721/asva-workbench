@@ -121,6 +121,35 @@ describe('V1.3 — Assessment adapter displayPayload', () => {
       }
     })
 
+    it('reads dimensions from top-level report (snapshot structure)', () => {
+      const adapter = getAssessmentAdapter('sefs')
+      // Matches actual production snapshot structure: dimensions at top level
+      const report = {
+        reportId: 'rpt_sefs_snapshot',
+        dimensions: [
+          { id: 'breadth', max: 24, name: '体验广度', score: 8 },
+          { id: 'capacity', max: 24, name: '体验容纳', score: 4 },
+          { id: 'belonging', max: 24, name: '体验归属', score: 15 },
+          { id: 'autonomy', max: 24, name: '体验自主', score: 10 },
+        ],
+        reportContent: {
+          viewModel: {
+            total: 37,
+            scores: [8, 4, 15, 10],
+            levels: ['轻度受损', '功能基本完好', '中度受损', '轻度受损'],
+          },
+        },
+        assessmentVersion: 'sefs-h5-v1',
+        completedAt: '2026-11-27T14:46:02+08:00',
+        nickname: '阿文',
+      }
+      const preview = adapter.parsePreview(report)
+      expect(preview.displayPayload.total).toBe(37)
+      expect(preview.displayPayload.maxScorePerDim).toBe(24)
+      expect(preview.displayPayload.radarAxes).toHaveLength(4)
+      expect(preview.displayPayload.topDimension.name).toBe('体验归属')
+    })
+
     it('reads dimensions from reportContent.dimensions with actual max values', () => {
       const adapter = getAssessmentAdapter('sefs')
       // Matches the actual production data structure

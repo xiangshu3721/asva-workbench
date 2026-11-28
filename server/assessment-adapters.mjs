@@ -598,12 +598,15 @@ registerAssessmentAdapter('sefs', {
     const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
     const total = view.total ?? null
 
-    // Read dimensions with full metadata (name, score, max) from reportContent.dimensions
-    // Fallback to viewModel.dimensions or viewModel.items for other SEFS versions
+    // Read dimensions with full metadata (name, score, max) from multiple possible paths:
+    // 1. Top-level dimensions (actual snapshot structure: report.dimensions)
+    // 2. reportContent.dimensions (some SEFS versions nest here)
+    // 3. viewModel.dimensions or viewModel.items (alternative formats)
+    const topDims = Array.isArray(report.dimensions) ? report.dimensions : []
     const rcDims = Array.isArray(report.reportContent?.dimensions) ? report.reportContent.dimensions : []
     const viewDims = Array.isArray(view.dimensions) ? view.dimensions : []
     const viewItems = Array.isArray(view.items) ? view.items : []
-    const rawDims = rcDims.length > 0 ? rcDims : (viewDims.length > 0 ? viewDims : viewItems)
+    const rawDims = topDims.length > 0 ? topDims : (rcDims.length > 0 ? rcDims : (viewDims.length > 0 ? viewDims : viewItems))
 
     // If dimensions have names but no scores, merge scores from viewModel.scores
     const viewScores = Array.isArray(view.scores) ? view.scores : []
@@ -661,10 +664,11 @@ registerAssessmentAdapter('sefs', {
   keyMetrics(report) {
     const view = report.reportContent?.viewModel || report.score || report.viewModel || {}
     const total = view.total ?? null
+    const topDims = Array.isArray(report.dimensions) ? report.dimensions : []
     const rcDims = Array.isArray(report.reportContent?.dimensions) ? report.reportContent.dimensions : []
     const viewDims = Array.isArray(view.dimensions) ? view.dimensions : []
     const viewItems = Array.isArray(view.items) ? view.items : []
-    const rawDims = rcDims.length > 0 ? rcDims : (viewDims.length > 0 ? viewDims : viewItems)
+    const rawDims = topDims.length > 0 ? topDims : (rcDims.length > 0 ? rcDims : (viewDims.length > 0 ? viewDims : viewItems))
     const viewScores = Array.isArray(view.scores) ? view.scores : []
     const allDims = rawDims.map((d, i) => ({
       name: d.name || '',
