@@ -935,45 +935,51 @@ input:focus, textarea:focus, select:focus { border-color: #168d7b !important; bo
 /* V1.3: Assessment card visualization */
 .assessment-card-viz { margin: 8px 0; padding: 10px; border-radius: 8px; background: #f8fafd; }
 
-/* Star hexagram */
-.assessment-card-viz-star { background: linear-gradient(135deg, #f0f4ff 0%, #faf0ff 100%); }
+/* Star hexagram — adapted from mindtest-web star report CSS */
+.assessment-card-viz-star { background: linear-gradient(180deg, rgba(255, 252, 248, 0.7), transparent 280px), #f3ece4; border: 1px solid rgba(36, 28, 24, 0.08); }
 .star-hexagram-layout { display: flex; gap: 12px; align-items: stretch; }
 .star-dimension { flex: 1; }
-.star-dimension-label { display: block; font-size: 11px; font-weight: 600; color: #6b7d94; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.star-word-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.star-word-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
-.star-word-tag.drive { background: #e3f0ff; color: #2a5db0; }
-.star-word-tag.pursue { background: #fce4ff; color: #8b3aad; }
-.star-divider { width: 1px; background: #d0d8e5; align-self: stretch; }
+.star-dimension-label { display: block; font-size: 13px; font-weight: 560; margin-bottom: 4px; font-family: "Songti SC", "STSong", "Noto Serif SC", serif; }
+.drive-name { color: #1d6a3a; }
+.pursue-name { color: #8d2f2a; }
+.star-word-list { list-style: none; padding: 0; margin: 4px 0 0; }
+.star-word-tag { display: block; padding: 4px 0; border-top: 1px dashed rgba(36, 28, 24, 0.14); font-size: 13px; color: #241c18; }
+.star-word-tag:first-child { border-top: none; }
+.star-word-tag.drive { color: #641f30; }
+.star-word-tag.pursue { color: #5c4010; }
+.star-mark { width: 60px; height: 60px; flex-shrink: 0; align-self: center; }
+.star-mark polygon.up { fill: none; stroke: #7a3140; stroke-width: 2; }
+.star-mark polygon.down { fill: none; stroke: #7a3140; stroke-width: 2; }
 .star-keywords { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
-.star-keyword-tag { font-size: 11px; color: #6b7d94; padding: 1px 6px; background: #fff; border-radius: 8px; border: 1px solid #e0e8f0; }
+.star-keyword-tag { font-size: 11px; color: #4e433d; padding: 1px 6px; background: #fffaf7; border-radius: 8px; border: 1px solid rgba(36, 28, 24, 0.14); }
 
-/* Beattie gauge */
-.assessment-card-viz-beattie { background: #fafbfc; }
-.beattie-gauge-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.beattie-level { font-size: 14px; font-weight: 700; }
-.beattie-score { font-size: 13px; color: #4a5d75; }
-.beattie-chapter { font-size: 11px; color: #8a96a8; margin-left: auto; }
-.beattie-bar-track { height: 6px; background: #e8ecf2; border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
-.beattie-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
-.beattie-sub-scales { display: flex; flex-direction: column; gap: 3px; }
-.beattie-sub-scale { display: flex; align-items: center; gap: 6px; font-size: 11px; }
-.beattie-sub-name { width: 60px; flex-shrink: 0; color: #4a5d75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.beattie-sub-bar-track { flex: 1; height: 4px; background: #e8ecf2; border-radius: 2px; overflow: hidden; }
-.beattie-sub-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
-.beattie-sub-score { width: 24px; text-align: right; color: #6b7d94; flex-shrink: 0; }
+/* Beattie gauge — adapted from mindtest-web beattie result-score / bar-track CSS */
+.assessment-card-viz-beattie { background: #fffaf3; border: 1px solid #e4d3bf; }
+.beattie-gauge-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.beattie-level { font-family: "Songti SC", "STSong", serif; font-size: 16px; font-weight: 700; }
+.beattie-score { font-family: "Songti SC", "STSong", serif; font-size: 20px; color: #6e4028; }
+.beattie-chapter { font-size: 11px; color: #9a7f6e; margin-left: auto; }
+.beattie-bar-track { height: 10px; background: #f1e6d6; border-radius: 999px; overflow: hidden; margin-bottom: 8px; }
+.beattie-bar-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease; }
+.beattie-sub-scales { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.beattie-sub-scale { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.beattie-sub-name { width: 70px; flex-shrink: 0; color: #6b5346; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.beattie-sub-bar-track { flex: 1; height: 10px; background: #f1e6d6; border-radius: 999px; overflow: hidden; }
+.beattie-sub-bar-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease; }
+.beattie-sub-score { width: 28px; text-align: right; color: #6b5346; flex-shrink: 0; font-size: 11px; }
 
-/* SEFS radar / dimension bars */
-.assessment-card-viz-sefs { background: linear-gradient(135deg, #f0fff4 0%, #f0f8ff 100%); }
-.sefs-total { font-size: 13px; color: #3a5068; margin-bottom: 4px; }
+/* SEFS radar — SVG radar chart with fixed scale */
+.assessment-card-viz-sefs { background: linear-gradient(135deg, #f0fff4 0%, #f0f8ff 100%); border: 1px solid #d8e8d8; }
+.sefs-total { font-size: 14px; color: #3a5068; margin-bottom: 4px; font-family: "Songti SC", serif; }
 .sefs-top-dims { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
 .sefs-top-label { font-size: 11px; color: #6b7d94; margin-right: 4px; }
 .sefs-dim-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e0f5e8; color: #2a6b42; }
-.sefs-axis-bars { display: flex; flex-direction: column; gap: 3px; }
-.sefs-axis-bar { display: flex; align-items: center; gap: 6px; font-size: 11px; }
-.sefs-axis-name { width: 64px; flex-shrink: 0; color: #4a5d75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sefs-axis-track { flex: 1; height: 5px; background: #e0e8f0; border-radius: 3px; overflow: hidden; }
-.sefs-axis-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #4caf50, #2196f3); transition: width 0.3s ease; }
+.sefs-radar-svg { width: 100%; max-width: 240px; height: auto; margin: 0 auto; display: block; }
+.sefs-radar-ring { fill: none; stroke: #d0d8e0; stroke-width: 0.5; }
+.sefs-radar-axis { stroke: #d0d8e0; stroke-width: 0.5; }
+.sefs-radar-data { fill: rgba(76, 175, 80, 0.2); stroke: #4caf50; stroke-width: 1.5; }
+.sefs-radar-dot { fill: #4caf50; stroke: #fff; stroke-width: 1; }
+.sefs-radar-label { font-size: 7px; fill: #4a5d75; font-family: "PingFang SC", sans-serif; }
 
 @media (max-width: 780px) {
   .assessment-import-input-row { flex-direction: column; }

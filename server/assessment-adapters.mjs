@@ -602,9 +602,8 @@ registerAssessmentAdapter('sefs', {
     const allDims = dimensions.length > 0 ? dimensions : items
 
     // Extract top dimensions sorted by score
-    const sortedDims = allDims
-      .filter(d => d.score != null)
-      .sort((a, b) => (b.score || 0) - (a.score || 0))
+    const orderedDims = allDims.filter(d => d.score != null) // preserve original order
+    const sortedDims = [...orderedDims].sort((a, b) => (b.score || 0) - (a.score || 0))
     const topDim = sortedDims[0]
     const top3 = sortedDims.slice(0, 3)
 
@@ -625,16 +624,20 @@ registerAssessmentAdapter('sefs', {
     }
 
     // V1.3: Add displayPayload for radar chart visualization
-    const maxScore = sortedDims.length > 0 ? Math.max(...sortedDims.map(d => d.score || 0), 1) : 1
+    // Use fixed max score per dimension (30 is standard for SEFS 6-item × 5-point scales)
+    // instead of normalizing to current max — preserves original score interpretation.
+    const FIXED_MAX_PER_DIM = 30
+
     base.displayPayload = {
       kind: 'sefs-radar',
       total: total ?? null,
       topDimension: topDim ? { name: topDim.name || '', score: topDim.score } : null,
       top3: top3.map(d => ({ name: d.name || '', score: d.score ?? 0 })),
-      radarAxes: sortedDims.slice(0, 8).map(d => ({
+      maxScorePerDim: FIXED_MAX_PER_DIM,
+      radarAxes: orderedDims.slice(0, 8).map(d => ({
         name: d.name || '',
         score: d.score ?? 0,
-        normalized: maxScore > 0 ? (d.score || 0) / maxScore : 0,
+        maxScore: FIXED_MAX_PER_DIM,
       })),
       headline: base.headline,
     }

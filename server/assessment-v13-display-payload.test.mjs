@@ -112,10 +112,11 @@ describe('V1.3 — Assessment adapter displayPayload', () => {
       expect(preview.displayPayload.topDimension.name).toBe('情绪觉察')
       expect(preview.displayPayload.top3).toHaveLength(3)
       expect(preview.displayPayload.radarAxes.length).toBeGreaterThan(0)
-      // Normalized values should be between 0 and 1
+      // V1.3 fix: use fixed max score per dimension, not current max
+      expect(preview.displayPayload.maxScorePerDim).toBe(30)
       for (const axis of preview.displayPayload.radarAxes) {
-        expect(axis.normalized).toBeGreaterThanOrEqual(0)
-        expect(axis.normalized).toBeLessThanOrEqual(1)
+        expect(axis.maxScore).toBe(30)
+        expect(axis.score).toBeGreaterThanOrEqual(0)
       }
     })
 
@@ -141,6 +142,10 @@ describe('V1.3 — Assessment adapter displayPayload', () => {
       expect(preview.displayPayload.total).toBe(70)
       expect(preview.displayPayload.topDimension.name).toBe('维度A')
       expect(preview.displayPayload.radarAxes).toHaveLength(3)
+      // Original dimension order preserved
+      expect(preview.displayPayload.radarAxes[0].name).toBe('维度A')
+      expect(preview.displayPayload.radarAxes[1].name).toBe('维度B')
+      expect(preview.displayPayload.radarAxes[2].name).toBe('维度C')
     })
 
     it('handles empty dimensions gracefully', () => {

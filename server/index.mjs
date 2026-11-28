@@ -511,10 +511,12 @@ async function handle(request, response, requestId) {
       const assessments = await store.getCustomerAssessments(customerId)
       // V1.3: Enrich stored previews from snapshots when displayPayload is missing.
       // This backfills V1.3 visualizations for reports imported before the upgrade.
-      const enriched = (assessments || []).map(a => ({
-        ...a,
-        preview: enrichPreviewFromSnapshot(a.preview, a.snapshot),
-      }))
+      // snapshot is stripped before sending to frontend (not exposed to client).
+      const enriched = (assessments || []).map(a => {
+        const enrichedPreview = enrichPreviewFromSnapshot(a.preview, a.snapshot)
+        const { snapshot: _omit, ...rest } = a
+        return { ...rest, preview: enrichedPreview }
+      })
       const body = { customerId, assessments: enriched }
       return send(request, response, 200, body, requestId)
     } catch (error) {
@@ -730,59 +732,6 @@ async function handle(request, response, requestId) {
         ? '源链接已被上游撤销，此为绑定时保存的不可变快照'
         : '源报告状态未知（分享密钥已剥离，无法重新验证）。此为绑定时从源服务读取并存储的不可变快照。',
     }, requestId)
-  }
-
-  // V1.3: Server-side redirect to original H5 report page.
-  // Avoids about:blank residue from async window.open + location.href pattern.
-  const openOriginalPath = url.pathname.match(/^\/api\/assessments\/bindings\/([^/]+)\/open-original$/)
-  if (request.method === 'GET' && openOriginalPath) {
-    const actorId = await guard(request)
-    const bindingId = decodeURIComponent(openOriginalPath[1])
-    const store = getAssessmentStore()
-    const binding = await store.findBindingById(bindingId)
-    if (!binding) return send(request, response, 404, { error: '绑定记录不存在' }, requestId)
-
-    // Only ACTIVE bindings can open original
-    if (binding.status !== 'ACTIVE') {
-      return send(request, response, 403, {
-        error: '此报告已不在活跃状态',
-        code: 'BINDING_NOT_ACTIVE',
-      }, requestId)
-    }
-
-    // Staff must have access to the customer
-    const hasAccess = binding.customerId && await repository.customer(actorId, binding.customerId).then(c => !!c)
-    if (!hasAccess) fail('无权打开此报告的原始链接', 'ACCESS_DENIED', 403)
-
-    let shareUrl
-    try {
-      shareUrl = await store.getShareUrlForViewing(bindingId)
-    } catch (err) {
-      if (err.code === 'SHARE_URL_NOT_FOUND') {
-        return send(request, response, 404, {
-          error: '此报告未保存原始链接，请先补充',
-          code: 'SHARE_URL_NOT_FOUND',
-        }, requestId)
-      }
-      if (err.code === 'BINDING_NOT_ACTIVE') {
-        return send(request, response, 403, {
-          error: '此报告已不在活跃状态',
-          code: 'BINDING_NOT_ACTIVE',
-        }, requestId)
-      }
-      throw err
-    }
-    if (!shareUrl) {
-      return send(request, response, 404, {
-        error: '此报告未保存原始链接，请先补充',
-        code: 'SHARE_URL_NOT_FOUND',
-      }, requestId)
-    }
-
-    // 302 redirect to the H5 page — no about:blank residue
-    response.writeHead(302, { Location: shareUrl, 'Cache-Control': 'no-store' })
-    response.end()
-    return
   }
 
   // V1.0.1: Get share URL for viewing original report (mentor access only)

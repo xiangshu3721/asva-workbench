@@ -1474,11 +1474,13 @@ function SectionHeading({ title, meta, icon, action }: { title: string; meta?: s
 
 // V1.3: Assessment card visualization component.
 // Renders enhanced display based on displayPayload.kind.
+// Visual styles adapted from mindtest-web original report rendering.
 // All data comes from stored preview — no external fetches.
 function AssessmentCardVisualization({ displayPayload, assessmentId }: { displayPayload: any; assessmentId: string }) {
   const kind = displayPayload.kind || ''
 
-  // Star hexagram: show drive/pursue words + keywords
+  // Star hexagram: SVG hexagram (two triangles) + drive/pursue word lists
+  // Matches mindtest-web star report visual structure
   if (kind === 'star-hexagram') {
     const drive = displayPayload.drive?.words || []
     const pursue = displayPayload.pursue?.words || []
@@ -1486,14 +1488,17 @@ function AssessmentCardVisualization({ displayPayload, assessmentId }: { display
     return (
       <div className="assessment-card-viz assessment-card-viz-star">
         <div className="star-hexagram-layout">
-          <div className="star-dimension">
-            <span className="star-dimension-label">{displayPayload.drive?.label || '底层动力'}</span>
-            <div className="star-word-tags">{drive.map((w: string, i: number) => <span key={i} className="star-word-tag drive">{w}</span>)}</div>
+          <div className="star-dimension drive">
+            <span className="star-dimension-label drive-name">底层动力</span>
+            <ol className="star-word-list">{drive.map((w: string, i: number) => <li key={i} className="star-word-tag drive">{w}</li>)}</ol>
           </div>
-          <div className="star-divider" />
-          <div className="star-dimension">
-            <span className="star-dimension-label">{displayPayload.pursue?.label || '现实追求'}</span>
-            <div className="star-word-tags">{pursue.map((w: string, i: number) => <span key={i} className="star-word-tag pursue">{w}</span>)}</div>
+          <svg className="star-mark" viewBox="0 0 100 100" aria-hidden="true">
+            <polygon className="up" points="50,8 86.4,71 13.6,71" />
+            <polygon className="down" points="50,92 13.6,29 86.4,29" />
+          </svg>
+          <div className="star-dimension pursue">
+            <span className="star-dimension-label pursue-name">现实追求</span>
+            <ol className="star-word-list">{pursue.map((w: string, i: number) => <li key={i} className="star-word-tag pursue">{w}</li>)}</ol>
           </div>
         </div>
         {keywords.length > 0 && (
@@ -1505,7 +1510,8 @@ function AssessmentCardVisualization({ displayPayload, assessmentId }: { display
     )
   }
 
-  // Beattie gauge: score bar + level color + sub-scales
+  // Beattie gauge: score + level + sub-scale bars
+  // Matches mindtest-web beattie result-score / score-grid / bar-track visual structure
   if (kind === 'beattie-gauge') {
     const pct = displayPayload.percentage ?? null
     const color = displayPayload.color || '#9e9e9e'
@@ -1542,10 +1548,53 @@ function AssessmentCardVisualization({ displayPayload, assessmentId }: { display
     )
   }
 
-  // SEFS radar: top dimensions with bar visualization
+  // SEFS radar: SVG radar chart with fixed max score per dimension
+  // Uses fixed scale (maxScorePerDim), not normalized to current max
   if (kind === 'sefs-radar') {
+    const axes = displayPayload.radarAxes || []
+    const maxScore = displayPayload.maxScorePerDim || 30
     const top3 = displayPayload.top3 || []
-    const radarAxes = displayPayload.radarAxes || []
+
+    // SVG radar chart calculation
+    const cx = 100, cy = 100, r = 70
+    const n = axes.length
+    const angleStep = n > 0 ? (2 * Math.PI) / n : 0
+
+    const polarToCart = (angle: number, radius: number) => ({
+      x: cx + radius * Math.cos(angle - Math.PI / 2),
+      y: cy + radius * Math.sin(angle - Math.PI / 2),
+    })
+
+    // Grid rings at 25%, 50%, 75%, 100%
+    const rings = [0.25, 0.5, 0.75, 1.0]
+    const gridLines = rings.map(ring => {
+      const pts = axes.map((_: any, i: number) => {
+        const pt = polarToCart(i * angleStep, r * ring)
+        return `${pt.x},${pt.y}`
+      })
+      return pts.join(' ')
+    })
+
+    // Axis lines from center to each vertex
+    const axisLines = axes.map((_: any, i: number) => {
+      const pt = polarToCart(i * angleStep, r)
+      return { x1: cx, y1: cy, x2: pt.x, y2: pt.y }
+    })
+
+    // Data polygon
+    const dataPoints = axes.map((axis: any, i: number) => {
+      const ratio = maxScore > 0 ? Math.min(1, (axis.score || 0) / maxScore) : 0
+      const pt = polarToCart(i * angleStep, r * ratio)
+      return `${pt.x},${pt.y}`
+    })
+    const dataPolygon = dataPoints.join(' ')
+
+    // Axis labels
+    const labels = axes.map((axis: any, i: number) => {
+      const pt = polarToCart(i * angleStep, r + 16)
+      return { x: pt.x, y: pt.y, name: axis.name || '', score: axis.score ?? 0 }
+    })
+
     return (
       <div className="assessment-card-viz assessment-card-viz-sefs">
         {displayPayload.total != null && <div className="sefs-total">总分：<strong>{displayPayload.total}</strong></div>}
@@ -1557,17 +1606,31 @@ function AssessmentCardVisualization({ displayPayload, assessmentId }: { display
             ))}
           </div>
         )}
-        {radarAxes.length > 0 && (
-          <div className="sefs-axis-bars">
-            {radarAxes.slice(0, 6).map((axis: any, i: number) => (
-              <div key={i} className="sefs-axis-bar">
-                <span className="sefs-axis-name">{axis.name}</span>
-                <div className="sefs-axis-track">
-                  <div className="sefs-axis-fill" style={{ width: `${Math.round((axis.normalized || 0) * 100)}%` }} />
-                </div>
-              </div>
+        {n >= 3 && (
+          <svg className="sefs-radar-svg" viewBox="0 0 200 200" aria-hidden="true">
+            {/* Grid rings */}
+            {gridLines.map((pts, i) => (
+              <polygon key={`ring-${i}`} points={pts} className="sefs-radar-ring" />
             ))}
-          </div>
+            {/* Axis lines */}
+            {axisLines.map((line: { x1: number; y1: number; x2: number; y2: number }, i: number) => (
+              <line key={`axis-${i}`} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} className="sefs-radar-axis" />
+            ))}
+            {/* Data polygon */}
+            <polygon points={dataPolygon} className="sefs-radar-data" />
+            {/* Data points */}
+            {axes.map((axis: any, i: number) => {
+              const ratio = maxScore > 0 ? Math.min(1, (axis.score || 0) / maxScore) : 0
+              const pt = polarToCart(i * angleStep, r * ratio)
+              return <circle key={`dot-${i}`} cx={pt.x} cy={pt.y} r="3" className="sefs-radar-dot" />
+            })}
+            {/* Axis labels */}
+            {labels.map((label: { x: number; y: number; name: string }, i: number) => (
+              <text key={`label-${i}`} x={label.x} y={label.y} className="sefs-radar-label" textAnchor="middle" dominantBaseline="central">
+                {label.name}
+              </text>
+            ))}
+          </svg>
         )}
       </div>
     )
@@ -1692,14 +1755,74 @@ function AssessmentPanel({ customer, api, actorId, isAdmin, refreshCustomer }: {
     }
   }
 
-  const handleViewOriginalReport = (binding: AssessmentBinding) => {
-    // V1.3: Use server-side redirect endpoint — no about:blank residue.
-    // The server validates permissions, decrypts the shareUrl, and 302 redirects.
-    const openUrl = `${remoteBaseUrl}/api/assessments/bindings/${encodeURIComponent(binding.bindingId)}/open-original`
-    const newTab = window.open(openUrl, '_blank', 'noopener,noreferrer')
-    // If popup was blocked, provide a fallback link
+  const handleViewOriginalReport = async (binding: AssessmentBinding) => {
+    // V1.3 fix: open a blank tab first (without noopener, so we can navigate it),
+    // then call the authenticated share-url API, then navigate the tab to the URL.
+    // This avoids the about:blank residue from the old pattern while keeping auth via Bearer token.
+    const newTab = window.open('about:blank', '_blank')
     if (!newTab) {
-      window.location.href = openUrl
+      // Popup blocked — fall back to same-window navigation
+      try {
+        const result = await api.getAssessmentShareUrl(actorId, binding.bindingId)
+        if (result.shareUrl) {
+          window.location.href = result.shareUrl
+        } else {
+          alert('此报告未保存原始链接')
+        }
+      } catch (err: any) {
+        if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
+          const url = prompt('此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）')
+          if (url?.trim()) {
+            try {
+              await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+              await loadAssessments()
+            } catch (suppErr: any) {
+              alert(suppErr?.message || '补充链接失败')
+            }
+          }
+        } else {
+          alert(err?.message || '获取报告链接失败')
+        }
+      }
+      return
+    }
+
+    try {
+      const result = await api.getAssessmentShareUrl(actorId, binding.bindingId)
+      if (result.shareUrl) {
+        // Navigate the already-opened tab to the share URL
+        newTab.location.href = result.shareUrl
+        // Security: disconnect opener so the opened page can't access our window
+        try { newTab.opener = null } catch { /* cross-origin may block this */ }
+      } else {
+        // No URL stored — close the blank tab and prompt for supplement
+        try { newTab.close() } catch { /* ignore */ }
+        const url = prompt('此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）')
+        if (url?.trim()) {
+          try {
+            await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+            await loadAssessments()
+          } catch (suppErr: any) {
+            alert(suppErr?.message || '补充链接失败')
+          }
+        }
+      }
+    } catch (err: any) {
+      // Error — close the blank tab
+      try { newTab.close() } catch { /* ignore */ }
+      if (err?.serverCode === 'SHARE_URL_NOT_FOUND') {
+        const url = prompt('此报告未保存原始链接，无法直接打开。\n\n请粘贴该报告的原始分享链接以补充：\n（留空则取消）')
+        if (url?.trim()) {
+          try {
+            await api.supplementAssessmentShareUrl(actorId, binding.bindingId, url.trim())
+            await loadAssessments()
+          } catch (suppErr: any) {
+            alert(suppErr?.message || '补充链接失败')
+          }
+        }
+      } else {
+        alert(err?.message || '获取报告链接失败')
+      }
     }
   }
 
